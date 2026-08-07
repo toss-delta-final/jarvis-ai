@@ -55,6 +55,13 @@ $0.053~0.054(240콜)이었다 — union 단계가 추가하는 콜(매핑 임베
 (`gemini-embedding-001`), 튜너블 9종 전부 `Settings` 기본값과 일치
 (`tunablesDifferFromDefault`=`[]`).
 
+**⚠️ F-2 캐비엇(리뷰 findings-432-r1)**: 이 판이 기록한 `run_manifest.json` 도 위 9종만 담고
+있다 — `category_select_margin_max`·`embedding_task_query`·`needs_expansion_tier`·
+`needs_expansion_min_items`(4종)는 이 판 당시 `UNION_TUNABLE_FIELDS` 에 없어 manifest 에
+기록되지 않았다(이 리뷰 반영 커밋에서 추가됨, 산출물은 개변하지 않는다). 같은 로컬 `.env`로
+**지금** 관측한 실제 값은 전부 `Settings` 기본값과 일치한다(smart 판 README §시드·튜너블
+재현성의 캐비엇과 동일한 값).
+
 ## 부작용
 
 `_prepare_recommendation` 끝부분이 `get_revert_store()` 를 불러 로컬 pg-profile 에 되돌리기

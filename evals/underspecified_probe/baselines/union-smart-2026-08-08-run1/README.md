@@ -54,12 +54,23 @@ CI95 [2.1%, 16.8%].
 3건(48건의 decompose-True 표본 중 6.2%)에서 매핑이 카테고리를 채워 되물음을 **억제**했고,
 그 억제가 `expectedReask=true` 라벨과는 어긋나 union 관점의 미탐 3건을 새로 만들었다(56→59).
 
-`expansionGateFiredRate`(실측 20.3%, 분모 232)가 `expansionGateWouldFireRate`(가정 6.2%,
-분모 48)보다 큰 것은 **분모가 다르기 때문**이다(가정판은 판정 True 인 recommend 표본만 보고,
-실측판은 union 성공한 recommend 표본 전부를 본다) — 두 수치를 직접 비율로 대조하지 마라.
-그래도 실측판이 보여주는 것은 분명하다: **실 `unresolved` 기반 게이트는 가정(`unresolved=[]`)
-보다 훨씬 자주 발동한다** — 가정판은 D2(`mapping_failed`) 규칙이 구조적으로 발동할 수 없어
-전개 게이트의 실제 노출 규모를 과소평가하고 있었다.
+`expansionGateFiredRate`(20.3%, 분모 232)가 `expansionGateWouldFireRate`(6.2%, 분모 48)보다
+큰 것은 **분모가 다르기 때문**이다(전자는 판정 True 인 recommend 표본만 보고, 후자는 union
+성공한 recommend 표본 전부를 본다) — 두 수치를 직접 비율로 대조하지 마라. 그래도 두 축이
+보여주는 것은 분명하다: **실 `unresolved` 기반 게이트는 가정(`unresolved=[]`)보다 훨씬 자주
+발동한다** — 좁은 분모(가정판)는 D2(`mapping_failed`) 규칙이 구조적으로 발동할 수 없어 전개
+게이트의 실제 노출 규모를 과소평가하고 있었다.
+
+**⚠️ 왜 `expansionSuppressionRate`(3/48)와 `expansionGateWouldFireRate`(3/48)가 똑같은
+숫자인가(F-5) — 우연이 아니라 구조다, 중복 계산 버그가 아니다.** 억제(decompose True → union
+False)는 게이트 발동의 **부분집합**이다 — 게이트가 안 걸리면 전개 LLM 이 안 돌아 새 leg 이
+생기지 않고, leg 이 없으면 union 판정을 뒤집을 수 없다. 이 판에서는 게이트가 발동한 3건
+(`expansionGateWouldFireRate`) **전부**가 재매핑에 성공해 판정을 뒤집었으므로(억제 3건,
+`samples.csv` 로 확인: 셋 다 `under-nc-0003`, `unionExpansionReason=no_legs`,
+`unionMappedLegCount` 1~2) 두 수치가 우연히 같은 값(3/48)으로 등호가 됐다 — 게이트가 발동했지만
+재매핑에 실패한 표본이 있었다면 억제 건수가 게이트 발동 건수보다 **작았을 것**이다(억제 ≤
+게이트 발동은 이 하네스의 구조적 부등식이다, `test_expansion_suppression_rate_numerator_is_subset_of_gate_would_fire_numerator`
+가 임의 표본 집합에서 이를 고정한다).
 
 ## 시드·튜너블 재현성
 
@@ -68,6 +79,15 @@ CI95 [2.1%, 16.8%].
 - `embeddingModelId` = `gemini-embedding-001`
 - 튜너블 9종 전부 `Settings` 기본값과 **일치**(`tunablesDifferFromDefault` = `[]`) — 로컬
   `.env` 가 측정 대상을 바꾸지 않았다.
+
+**⚠️ F-2 캐비엇(리뷰 findings-432-r1)**: 이 판이 기록한 `run_manifest.json` 은 위 9종만 담고
+있다 — `category_select_margin_max`·`embedding_task_query`·`needs_expansion_tier`·
+`needs_expansion_min_items`(4종)는 이 판 **당시**의 코드가 `UNION_TUNABLE_FIELDS` 에 넣지
+않아 manifest 에 기록되지 않았다(이 리뷰 반영 커밋에서 추가됨, 산출물은 개변하지 않는다). 이
+런들과 같은 로컬 `.env`로 **지금** 관측한 실제 값은 전부 `Settings` 기본값과 일치한다
+(`category_select_margin_max=0.02`·`embedding_task_query=RETRIEVAL_QUERY`·
+`needs_expansion_tier=fast`·`needs_expansion_min_items=2`, 전부 기본값) — 이 판이 그 4종에서
+드리프트를 겪었을 가능성은 낮지만, manifest 자체의 보증은 아니다.
 
 ## 부작용
 

@@ -18,6 +18,7 @@ from evals.underspecified_probe.loader import load_anchor_set
 from evals.underspecified_probe.metrics import (
     UNION_AXIS_BUILDERS,
     axis_expansion_gate_fired_rate,
+    axis_expansion_gate_would_fire_rate,
     axis_expansion_suppression_rate,
     axis_miss_rate,
     axis_miss_rate_after_expansion,
@@ -66,6 +67,7 @@ def _sample(
     decision: RouteDecision | None = None,
     index: int = 0,
     union: UnionSampleResult | None = None,
+    expansion_reason: str | None = None,
 ) -> Sample:
     return Sample(
         case_id=case_id,
@@ -73,7 +75,7 @@ def _sample(
         decision=decision if decision is not None else _blank_decision(),
         prior=None,
         verdict=verdict,
-        expansion_reason=None,
+        expansion_reason=expansion_reason,
         latency_ms=1,
         union=union,
     )
@@ -169,6 +171,149 @@ def test_union_columns_absent_from_samples_csv_when_union_disabled(tmp_path) -> 
         assert column not in header
 
 
+# ─── (F-3) union 콜이 budget max_calls 에 산식대로 반영된다 ───
+
+
+def test_max_llm_calls_with_union_is_larger_by_the_documented_formula() -> None:
+    """[F-3] union 콜(카테고리 택일 + 전개)을 반영하지 않으면 union 이 decompose 의
+    BudgetTracker 를 소진시켜 그 뒤 셀들의 decompose 호출까지 실패한다 — union on 이 off 보다
+    산식(`expectedCalls * (categorySelectMaxCalls+1)`)만큼 정확히 커야 한다."""
+    from evals.underspecified_probe.cli import max_llm_calls, union_extra_calls_per_sample
+
+    expected_calls = 240  # 30셀 × N=8
+    attempt_multiplier = 3
+    category_select_max_calls = 2
+
+    off = max_llm_calls(
+        expected_calls=expected_calls,
+        attempt_multiplier=attempt_multiplier,
+        union_enabled=False,
+        category_select_max_calls=category_select_max_calls,
+    )
+    on = max_llm_calls(
+        expected_calls=expected_calls,
+        attempt_multiplier=attempt_multiplier,
+        union_enabled=True,
+        category_select_max_calls=category_select_max_calls,
+    )
+    assert off == expected_calls * attempt_multiplier  # union 무관 — 기존 산식 그대로
+    assert union_extra_calls_per_sample(category_select_max_calls) == 3  # 2(택일) + 1(전개)
+    assert on == off + expected_calls * 3  # 표본당 3콜씩, 재시도 없이 정확히 더해진다
+    assert on > off  # 회귀 테스트의 핵심 단언 — union on 이 off 보다 산식대로 크다
+
+
+# ─── (F-4) 기본 off 산출물에 union 키가 안 샌다 — 전체 키 구조 대조 ───
+
+
+def _recursive_keys(payload, prefix: str = "") -> set[str]:
+    """dict/list 를 재귀적으로 훑어 모든 키 경로를 모은다(리스트는 원소가 다양한 형태를 가질 수
+    있어 원소별로 전부 훑는다 — 표본마다 다른 union 필드 유무를 놓치지 않기 위해서다)."""
+    keys: set[str] = set()
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            path = f"{prefix}.{key}" if prefix else key
+            keys.add(path)
+            keys |= _recursive_keys(value, path)
+    elif isinstance(payload, list):
+        for item in payload:
+            keys |= _recursive_keys(item, f"{prefix}[]")
+    return keys
+
+
+def test_off_mode_output_leaks_no_union_key_and_on_mode_adds_exactly_the_known_set(
+    tmp_path,
+) -> None:
+    """[F-4] 기존 테스트는 축·CSV 헤더만 봐서 `results.json` 최상위 `unionEnabled`,
+    `diagnostics.unionStageErrorCount` 누출을 놓쳤다 — 이번엔 `results.json`·`run_manifest.json`
+    **전체 키 구조**(중첩 포함)를 --union 유무로 대조한다. off 쪽 키 경로 문자열 어디에도
+    "union"(대소문자 무관)이 섞이면 안 되고, on 쪽은 off 대비 **정확히 알려진 키 집합만**
+    늘어나야 한다(엉뚱한 키가 새로 섞여도 이 테스트가 잡는다) — 30앵커 실 산출물이라 키 수가
+    많아 리터럴 전체를 손으로 나열하지 않고 **경로 문자열 검사 + 델타 비교**로 구조를 고정한다.
+    """
+    import json
+
+    from evals.underspecified_probe.cli import main as cli_main
+
+    off_out = tmp_path / "off"
+    on_out = tmp_path / "on"
+    assert cli_main(["--out", str(off_out), "--dry-run", "--n", "1"]) == 0
+    assert cli_main(["--out", str(on_out), "--dry-run", "--union", "--n", "1"]) == 0
+
+    off_results = json.loads((off_out / "results.json").read_text(encoding="utf-8"))
+    on_results = json.loads((on_out / "results.json").read_text(encoding="utf-8"))
+    off_manifest = json.loads((off_out / "run_manifest.json").read_text(encoding="utf-8"))
+    on_manifest = json.loads((on_out / "run_manifest.json").read_text(encoding="utf-8"))
+
+    # `hashes.underspecifiedProbeModules.union.py` 는 --union 과 무관하게 항상 있다(모듈
+    # 인벤토리 — union.py 도 이 하네스의 파일이라 해시가 잡힌다, 리크가 아니다).
+    always_present_union_keys = {"hashes.underspecifiedProbeModules.union.py"}
+    off_result_keys = _recursive_keys(off_results)
+    off_manifest_keys = _recursive_keys(off_manifest)
+    leaked = {
+        k
+        for k in off_result_keys | off_manifest_keys
+        if "union" in k.lower() and k not in always_present_union_keys
+    }
+    assert leaked == set(), f"off 산출물에 union 관련 키가 샜다: {sorted(leaked)}"
+
+    on_result_keys = _recursive_keys(on_results)
+    new_result_keys = on_result_keys - off_result_keys
+    expected_new_result_keys = {
+        "unionEnabled",
+        "diagnostics.unionStageErrorCount",
+        "diagnostics.definition.unionStageErrorCount",
+    }
+    axis_result_fields = (
+        "axisId",
+        "belowSampleThreshold",
+        "ci95",
+        "definition",
+        "definition.denominator",
+        "definition.numerator",
+        "denominator",
+        "nature",
+        "numerator",
+        "ratio",
+        "title",
+    )
+    for axis_id in UNION_AXIS_BUILDERS:
+        expected_new_result_keys.add(f"axes.{axis_id}")
+        for field in axis_result_fields:
+            expected_new_result_keys.add(f"axes.{axis_id}.{field}")
+        expected_new_result_keys.add(f"slices.{axis_id}")
+    for slice_name in {row["slice"] for row in on_results["cells"]}:
+        for axis_id in UNION_AXIS_BUILDERS:
+            expected_new_result_keys.add(f"slices.{axis_id}.{slice_name}")
+            for field in axis_result_fields:
+                expected_new_result_keys.add(f"slices.{axis_id}.{slice_name}.{field}")
+    # sampleRows 원소마다 union 필드가 붙는다 — 표본별로 다른 부분집합일 수 있어(예: outcome ==
+    # None 은 unionOutcome 이 빠지지 않지만 값이 null) 리스트 원소 전체를 훑은 결과에서
+    # `sampleRows[].union*` 접두 경로만 뽑아 비교한다(개별 caseId 값은 무관).
+    sample_row_union_keys = {k for k in new_result_keys if k.startswith("sampleRows[].union")}
+    assert sample_row_union_keys, "samples.csv 대응 sampleRows 에 union 컬럼이 하나도 안 늘었다"
+    assert (new_result_keys - sample_row_union_keys) == expected_new_result_keys
+
+    on_manifest_keys = _recursive_keys(on_manifest)
+    new_manifest_keys = on_manifest_keys - off_manifest_keys
+    assert new_manifest_keys, "on 쪽 manifest 에 union 섹션이 하나도 안 늘었다"
+    # 새 키는 딱 두 갈래여야 한다: (1) `underspecifiedProbe.union*` 섹션 자체,
+    # (2) `axisDefinitions.<union 축>*` — `scored["axes"]` 를 그대로 옮겨 적는 기존 배선이라
+    # union 축이 늘면 자연히 함께 늘어난다(리크가 아니라 기존 로직의 정상 파생 결과).
+    unexpected_manifest_keys = {
+        k
+        for k in new_manifest_keys
+        if not (k == "underspecifiedProbe.union" or k.startswith("underspecifiedProbe.union."))
+        and not any(
+            k == f"underspecifiedProbe.axisDefinitions.{axis_id}"
+            or k.startswith(f"underspecifiedProbe.axisDefinitions.{axis_id}.")
+            for axis_id in UNION_AXIS_BUILDERS
+        )
+    }
+    assert unexpected_manifest_keys == set(), (
+        f"manifest 에 예상 밖 키가 늘었다: {sorted(unexpected_manifest_keys)}"
+    )
+
+
 # ─────────── (b) union 축 분모 = 대응 기존 축과 정확히 같은 표본 집합(union 실패 제외) ───────────
 
 
@@ -216,7 +361,7 @@ def test_union_stage_error_count_diagnostic_matches_excluded_samples() -> None:
         _sample("buy-under-0002", verdict=True, index=2, union=_union_error()),
     ]
     cells = [_cell("buy-under-0002", samples)]
-    diag = diagnostics(cells, ANCHORS)
+    diag = diagnostics(cells, ANCHORS, union_enabled=True)
     assert diag["unionStageErrorCount"] == 2
 
 
@@ -388,6 +533,76 @@ async def test_expansion_suppression_rate_flips_when_mapping_fills_legs_bidirect
     assert (
         flip_miss_after.ratio > base_miss.ratio
     )  # flip: 억제된 만큼 missRateAfterExpansion 이 커진다
+
+
+# ─── (F-5) expansionSuppressionRate 는 expansionGateWouldFireRate 의 부분집합이다 ───
+
+
+def test_expansion_suppression_rate_numerator_is_subset_of_gate_would_fire_numerator() -> None:
+    """[F-5] 억제(decompose True → union False)는 게이트 발동의 **부분집합**이다 — 게이트가 안
+    걸리면 전개 LLM 이 안 돌아 새 leg 이 생기지 않고, leg 이 없으면 union 판정을 뒤집을 수 없다.
+    임의 표본 집합 3가지로 이 부등식(억제 ≤ 게이트 발동)이 항상 성립함을 고정한다 — 등호(전부
+    성공)·진부등식(일부만 성공)·0(게이트 자체가 안 걸림) 세 경우 모두."""
+
+    def _pair(*, verdict: bool, expansion_reason: str | None, union: UnionSampleResult | None):
+        decision = _blank_decision(case=3)
+        sample = _sample(
+            "buy-under-0002",
+            verdict=verdict,
+            decision=decision,
+            expansion_reason=expansion_reason,
+            union=union,
+        )
+        return sample, BY_ID["buy-under-0002"]
+
+    # 시나리오 1 — 게이트 발동 3건, 재매핑 전부 성공(억제 3건) → 3 == 3 (실제 smart 판과 동형).
+    all_success = [
+        _pair(
+            verdict=True,
+            expansion_reason="no_legs",
+            union=_union_ok(verdict=False, expansion_reason="no_legs"),
+        )
+        for _ in range(3)
+    ]
+    all_success_suppression = axis_expansion_suppression_rate(all_success)
+    all_success_gate = axis_expansion_gate_would_fire_rate(all_success)
+    assert all_success_suppression.numerator == 3
+    assert all_success_gate.numerator == 3
+    assert all_success_suppression.numerator <= all_success_gate.numerator
+
+    # 시나리오 2 — 게이트 발동 3건인데 재매핑은 1건만 성공(억제 1건) → 1 < 3, 진부등식.
+    partial_success = [
+        _pair(
+            verdict=True,
+            expansion_reason="no_legs",
+            union=_union_ok(verdict=False, expansion_reason="no_legs"),
+        ),
+        _pair(
+            verdict=True,
+            expansion_reason="no_legs",
+            union=_union_ok(verdict=True, expansion_reason="no_legs"),  # 재매핑 실패 — 안 뒤집힘
+        ),
+        _pair(
+            verdict=True,
+            expansion_reason="no_legs",
+            union=_union_ok(verdict=True, expansion_reason="no_legs"),  # 재매핑 실패 — 안 뒤집힘
+        ),
+    ]
+    partial_suppression = axis_expansion_suppression_rate(partial_success)
+    partial_gate = axis_expansion_gate_would_fire_rate(partial_success)
+    assert partial_suppression.numerator == 1
+    assert partial_gate.numerator == 3
+    assert partial_suppression.numerator < partial_gate.numerator
+
+    # 시나리오 3 — 게이트가 애초에 안 걸림(reason=None) → 억제 0, 게이트 발동 0 → 0 <= 0.
+    no_gate = [
+        _pair(verdict=True, expansion_reason=None, union=_union_ok(verdict=True)) for _ in range(2)
+    ]
+    no_gate_suppression = axis_expansion_suppression_rate(no_gate)
+    no_gate_gate = axis_expansion_gate_would_fire_rate(no_gate)
+    assert no_gate_suppression.numerator == 0
+    assert no_gate_gate.numerator == 0
+    assert no_gate_suppression.numerator <= no_gate_gate.numerator
 
 
 # ─────────── (g) union 단계 LLM 은 SystemPromptOverrideLLM 이 아니다 ───────────

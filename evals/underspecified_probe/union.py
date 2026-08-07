@@ -90,6 +90,14 @@ UNION_TUNABLE_FIELDS = (
     "category_select_max_calls",
     "category_expand_legs",
     "category_scope_classifier_enabled",
+    # [F-2, 리뷰 findings-432-r1] 사용처를 호출 사슬로 직접 확인해 추가했다 — 전부 union 단계가
+    # 실제로 부르는 함수 안에서 settings 로 읽힌다:
+    "category_select_margin_max",  # category_mapping.py::map_categories — §4.4 택일 LLM 발동 마진
+    "embedding_task_query",  # category_mapping.py::map_categories — 앵커 임베딩 task_type
+    "needs_expansion_tier",  # needs_expansion.py::expand_needs — 전개 모델 티어
+    "needs_expansion_min_items",  # needs_expansion.py::expand_needs — 전개 성공/실패 판정 임계
+    "embedding_model_id",  # app/pipelines/embedding.py::embed_texts — 임베딩 모델(run_manifest
+    # 에는 이미 별도 필드로도 기록되지만, `Settings` 기본값이 있어 튜너블 드리프트 감지에도 넣는다)
 )
 
 

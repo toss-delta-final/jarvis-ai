@@ -315,8 +315,17 @@ def axis_expansion_suppression_rate(pairs: list[Pair]) -> AxisResult:
 
 
 def axis_expansion_gate_fired_rate(pairs: list[Pair]) -> AxisResult:
-    """[#432] `expansionGateWouldFireRate`(가정판, `unresolved=[]`)의 **실측 대응물** — union
-    단계에서 `detect_expansion_need` 가 실제 `unresolved` 로 사유를 돌려준 표본의 비율."""
+    """[#432, F-5 리뷰 반영] union 단계에서 `detect_expansion_need` 가 실제 `unresolved` 로
+    사유를 돌려준 표본의 비율.
+
+    **`expansionGateWouldFireRate`(가정판)의 "실측 대응물"이 아니다** — 분모가 다르다. 가정판은
+    "판정 True 표본 중 몇 %가 게이트에 걸리나"를 묻고, 이 축은 "전체 recommend 표본 중 몇 %에서
+    게이트가 실제로 발동하나"를 묻는다. **분모를 가정판과 맞추지 않은 이유**: 판정 True 표본은
+    정의상 `category_queries` 가 비어 있고, `detect_expansion_need([], case=…, unresolved=…)`
+    는 `unresolved` 값과 무관하게 `no_legs` 를 돌려준다 — 그 좁은 분모 안에서는 가정판과 실측판이
+    **구조적으로 항상 같은 값**이 된다(2차 리뷰어가 분모를 맞추라고 제안했으나 반려한 근거).
+    분모를 좁히면 이 축은 기존 축의 복제가 되어 새로 재는 정보가 0이 된다 — 넓은 분모라야 비로소
+    D2(`mapping_failed`) 가 처음 관측된다."""
     rp = _union_ok_pairs(_recommend_pairs(pairs))
     numerator = sum(1 for s, _ in rp if s.union.expansion_reason is not None)
     return AxisResult(
@@ -411,7 +420,9 @@ def score_all(
     return {"axes": axes, "slices": slices}
 
 
-def diagnostics(results: list[CellResult], anchors: AnchorSet) -> dict[str, Any]:
+def diagnostics(
+    results: list[CellResult], anchors: AnchorSet, *, union_enabled: bool = False
+) -> dict[str, Any]:
     """[§D10.2, F-1] 합불이 아닌 진단 카운터.
 
     `categoryEchoWithoutQueriesCount` — `filters.category` 가 비어 있지 않은데 `categoryQueries`
@@ -435,18 +446,12 @@ def diagnostics(results: list[CellResult], anchors: AnchorSet) -> dict[str, Any]
             continue
         per_intent = non_recommend_by_case.setdefault(anchor.case_id, {})
         per_intent[sample.intent] = per_intent.get(sample.intent, 0) + 1
-    # [#432, §2-6 항목2] union 단계 실패 건수 — 표본을 버리지 않고 union 축 분모에서만 뺀
-    # 규모를 여기 수치로 남긴다. union 모드가 아니면 union 이 전부 None 이라 항상 0.
-    union_stage_error_count = sum(
-        1 for sample, _ in pairs if sample.union is not None and not sample.union.ok
-    )
-    return {
+    payload = {
         "categoryEchoWithoutQueriesCount": category_echo_without_queries,
         "nonRecommendIntentCount": {
             case_id: dict(sorted(counts.items()))
             for case_id, counts in sorted(non_recommend_by_case.items())
         },
-        "unionStageErrorCount": union_stage_error_count,
         "definition": {
             "categoryEchoWithoutQueriesCount": "filters.category 가 비어 있지 않은데 "
             "categoryQueries 는 빈 표본 수 — §D10 항목 2(프로덕션이 필터를 덮어쓰는 괴리)의 "
@@ -455,11 +460,21 @@ def diagnostics(results: list[CellResult], anchors: AnchorSet) -> dict[str, Any]
             "프로덕션은 이 표본에서 is_underspecified_turn 에 도달하지 않는다(F-1). confirmatory "
             "축 분모에서 제외된 표본의 노출 크기이며, 그 실패는 intent 라우팅 축"
             "(evals/intent_probe)의 소관이다.",
-            "unionStageErrorCount": "union 단계(_prepare_recommendation)가 예외를 낸 표본 수 "
-            "(#432, §2-6 항목2) — 그 표본은 decompose 단계 표본으로는 살아 있고 union 축 "
-            "분모에서만 제외된다.",
         },
     }
+    if union_enabled:
+        # [F-4, 리뷰 findings-432-r1] 기본(off) 산출물 형상을 그대로 얼린다(§2-1) — union 단계
+        # 실패 건수는 union_enabled 일 때만 넣는다. 표본을 버리지 않고 union 축 분모에서만 뺀
+        # 규모를 여기 수치로 남긴다.
+        union_stage_error_count = sum(
+            1 for sample, _ in pairs if sample.union is not None and not sample.union.ok
+        )
+        payload["unionStageErrorCount"] = union_stage_error_count
+        payload["definition"]["unionStageErrorCount"] = (
+            "union 단계(_prepare_recommendation)가 예외를 낸 표본 수 (#432, §2-6 항목2) — 그 "
+            "표본은 decompose 단계 표본으로는 살아 있고 union 축 분모에서만 제외된다."
+        )
+    return payload
 
 
 def _outcome(*, expected_reask: bool, verdict: bool) -> str:

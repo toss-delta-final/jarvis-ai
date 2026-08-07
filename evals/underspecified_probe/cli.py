@@ -116,6 +116,34 @@ def _command(argv: list[str]) -> str:
     )
 
 
+def union_extra_calls_per_sample(category_select_max_calls: int) -> int:
+    """[F-3, 리뷰 findings-432-r1] union 단계(카테고리 택일 + 전개)가 표본 1건당 추가로 부를 수
+    있는 LLM 콜 상한 — `category_select_max_calls`(원 매핑 + 재매핑의 택일 합, §4.4 — 재매핑
+    호출은 `select_max_calls=max(0, category_select_max_calls - mapping.select_calls)` 로
+    첫 매핑이 쓴 몫을 빼고 넘겨받으므로 **두 배가 아니라 합쳐서** 이 값이 상한이다) + 전개
+    LLM 1회(`expand_needs` 는 트리거당 최대 1콜)."""
+    return category_select_max_calls + 1
+
+
+def max_llm_calls(
+    *,
+    expected_calls: int,
+    attempt_multiplier: int,
+    union_enabled: bool,
+    category_select_max_calls: int,
+) -> int:
+    """[F-3] decompose 재시도 상한(`expected_calls * attempt_multiplier`)에 union 단계가 표본당
+    추가로 부를 수 있는 콜 수를 더한다. 반영하지 않으면 union 호출이 `BudgetTracker` 를 영구
+    exceeded 로 만들어 그 뒤 셀들의 decompose 호출까지 실패시킨다(union 실패 격리 원칙이 예산
+    축에서 깨진다, §2-6 항목2)."""
+    max_calls = expected_calls * attempt_multiplier
+    if union_enabled:
+        # union 단계는 채워진 표본(N개)마다 한 번만 돈다(재시도 없음) — 상한은 attempt_multiplier
+        # 가 아니라 목표 표본 수(expected_calls, "셀수×N") 기준으로 더한다.
+        max_calls += expected_calls * union_extra_calls_per_sample(category_select_max_calls)
+    return max_calls
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     args = _parser().parse_args(argv)
@@ -147,8 +175,16 @@ def main(argv: list[str] | None = None) -> int:
     category_fanout_max = Settings.model_fields["category_fanout_max"].default
     repurchase_max = Settings.model_fields["dedup_repurchase_max"].default
     max_total_tokens = Settings.model_fields["model_eval_max_total_tokens_per_run"].default
+    # [F-3] category_select_max_calls 도 같은 이유로 고정값을 쓴다 — union 이 추가로 부를 콜
+    # 상한 산정에만 쓰이고, --union 이 아니면 이 값 자체가 결과에 영향을 주지 않는다.
+    category_select_max_calls = Settings.model_fields["category_select_max_calls"].default
     expected_calls = len(cells) * n
-    max_calls = expected_calls * args.attempt_multiplier
+    max_calls = max_llm_calls(
+        expected_calls=expected_calls,
+        attempt_multiplier=args.attempt_multiplier,
+        union_enabled=args.union,
+        category_select_max_calls=category_select_max_calls,
+    )
     budget = BudgetTracker(
         BudgetLimits(
             max_calls=max_calls,
@@ -234,7 +270,7 @@ def main(argv: list[str] | None = None) -> int:
         exit_code = EXIT_BUDGET
 
     scored = score_all(results_cells, anchors, union_enabled=args.union)
-    diag = diagnostics(results_cells, anchors)
+    diag = diagnostics(results_cells, anchors, union_enabled=args.union)
     baseline = compute_baseline(results_cells, anchors)
     rows = sample_rows(results_cells, anchors, JUDGMENT_SETTINGS)
     cause_summary = cause_axis_summary(rows)
@@ -267,10 +303,22 @@ def main(argv: list[str] | None = None) -> int:
     )
     union_manifest_section: dict[str, Any] | None = None
     if args.union:
+        # [F-3] budget 산식 — dry-run·live 공통으로 남긴다(재현·감사용).
+        budget_call_formula = {
+            "expectedCalls": expected_calls,
+            "attemptMultiplier": args.attempt_multiplier,
+            "categorySelectMaxCalls": category_select_max_calls,
+            "unionExtraCallsPerSample": union_extra_calls_per_sample(category_select_max_calls),
+            "maxCalls": max_calls,
+            "formula": "maxCalls = expectedCalls*attemptMultiplier + expectedCalls*"
+            "(categorySelectMaxCalls+1) — union 은 표본당(재시도 없이) 최대 "
+            "categorySelectMaxCalls(원 매핑+재매핑 택일 합)+1(전개) 콜을 추가로 쓴다",
+        }
         if args.dry_run:
             union_manifest_section = {
                 "enabled": True,
                 "dryRunSkipped": True,
+                "budgetCallFormula": budget_call_formula,
                 "note": "--dry-run --union 은 pg 접근 0 — 배관만 확인했다(§2-6 항목5). "
                 "실측이 아니다(union 축은 전부 unionStageError 로 채워진다).",
             }
@@ -285,6 +333,7 @@ def main(argv: list[str] | None = None) -> int:
                 "tunables": union_tunables["actual"],
                 "tunableDefaults": union_tunables["defaults"],
                 "tunablesDifferFromDefault": union_tunables["differsFromDefault"],
+                "budgetCallFormula": budget_call_formula,
                 "embeddingCallsNotCountedInBudget": "union 이 추가로 부르는 임베딩 호출은 "
                 "예산·페이서에 안 잡힌다(§2-6 항목4) — 관측 비용은 LLM 콜만의 부분합이다.",
                 "revertStoreSideEffect": "_prepare_recommendation 끝부분이 get_revert_store() "

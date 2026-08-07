@@ -148,7 +148,7 @@ USD 0.03~0.10(legs_probe 312콜 실측 부분합 $0.07 에서 환산). `--budget
 | `missRateAfterExpansion`(#432, `--union` 전용) | union 판정 False | `missRate` 와 동일(union 실패 표본 제외) | exploratory |
 | `falseAlarmRateAfterExpansion`(#432, `--union` 전용) | union 판정 True | `falseAlarmRate` 와 동일(union 실패 표본 제외) | exploratory |
 | `expansionSuppressionRate`(#432, `--union` 전용) | decompose 판정 True ∧ union 판정 False | decompose 판정 True 인 recommend 표본(union 실패 제외) | exploratory |
-| `expansionGateFiredRate`(#432, `--union` 전용) | union 단계에서 `detect_expansion_need` 가 **실제 unresolved** 로 사유를 돌려준 표본 | recommend 표본(union 실패 제외) | exploratory — `expansionGateWouldFireRate`(가정)의 실측 대응물 |
+| `expansionGateFiredRate`(#432, `--union` 전용) | union 단계에서 `detect_expansion_need` 가 **실제 unresolved** 로 사유를 돌려준 표본 | recommend 표본(union 실패 제외) | exploratory — `expansionGateWouldFireRate` 와 **분모가 달라 직접 비교 불가**(F-5, §union 측정 모드 참조) |
 
 **primary 선정 사유**: `missRate` 는 "플래그를 켜도 되물음이 조용히 아무 일도 하지 않는가"를
 직접 재는 축이고, 이슈가 지목한 두 위험 중 코드 테스트로 절대 못 잡는 쪽이다. `falseAlarmRate`
@@ -208,6 +208,16 @@ pacer, `evals/intent_probe/client.py`) — `SystemPromptOverrideLLM` 을 union �
 전역 함수 하나를 잠깐 패치하므로 union 단계 호출 전체를 모듈 잠금(`_UNION_STAGE_LOCK`)으로
 직렬화한다(decompose 단계의 `--concurrency` 는 영향받지 않는다, union 부가 단계만 순차 실행).
 
+**`expansionGateFiredRate` 는 `expansionGateWouldFireRate`(가정판)의 "실측 대응물"이 아니다**
+(F-5, 2차 리뷰어가 분모를 맞추라고 제안했으나 반려했다) — 둘은 분모가 다른 별개 질문이다.
+가정판은 "판정 True 표본 중 몇 %가 게이트에 걸리나", 실측판은 "전체 recommend 표본 중 몇 %에서
+게이트가 실제로 발동하나"를 답한다. **분모를 맞추지 않은 이유**: 판정 True 표본은 정의상
+`category_queries` 가 비어 있고, `detect_expansion_need([], case=…, unresolved=…)` 는
+`unresolved` 값과 무관하게 `no_legs` 를 돌려준다 — 그 좁은 분모 안에서는 가정판과 실측판이
+**구조적으로 항상 같은 값**이 된다(분모를 좁히면 이 축이 기존 축의 복제가 되어 새로 재는
+정보가 0이 된다). 넓은 분모라야 비로소 D2(`mapping_failed`)가 처음 관측된다. 두 수치를 직접
+비율로 대조하지 마라.
+
 **오염 통제**: union 축에는 `#331`(카테고리 매핑 품질)·`#332`(니즈 전개 품질)의 실패가 섞인다
 — 없앨 수 없어 대신 **보이게** 만든다. union 축은 전부 `exploratory` 다(confirmatory 로
 승격하지 않는다). 분해는 `samples.csv` 의 `unionMappedLegCount`·`unionExpansionReason`·
@@ -226,7 +236,10 @@ pacer, `evals/intent_probe/client.py`) — `SystemPromptOverrideLLM` 을 union �
 임베딩 모델(`embeddingModelId`), union 경로가 읽는 튜너블 전부의 실제 값
 (`needs_expansion_enabled`·`category_expand_enabled`·`category_fanout_max`·`category_top_k`·
 `category_distance_max`·`category_distance_override_margin`·`category_select_max_calls`·
-`category_expand_legs`·`category_scope_classifier_enabled`)과 그 값이 `Settings` 기본값과
+`category_expand_legs`·`category_scope_classifier_enabled`·`category_select_margin_max`(F-2,
+§4.4 택일 LLM 발동 마진)·`embedding_task_query`(F-2, 앵커 임베딩 task_type)·
+`needs_expansion_tier`(F-2, 전개 모델 티어)·`needs_expansion_min_items`(F-2, 전개 성공/실패
+판정 임계)·`embedding_model_id`)과 그 값이 `Settings` 기본값과
 다른 것이 있으면 목록(`tunablesDifferFromDefault`)을 박는다 — 다른 것이 있으면 CLI 가 stderr
 에 경고를 찍는다(로컬 `.env` 가 측정 대상을 조용히 바꾸는 것을 막는다).
 

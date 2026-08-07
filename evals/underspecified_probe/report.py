@@ -112,7 +112,7 @@ def build_results(
 ) -> dict[str, Any]:
     axes = scored["axes"]
     slices = scored["slices"]
-    return {
+    payload = {
         "prompt": prompt,
         "tier": tier,
         "modelConfig": model_config,
@@ -121,7 +121,6 @@ def build_results(
         "judgment": judgment,
         "cellCount": len(cells),
         "dryRun": dry_run,
-        "unionEnabled": union_enabled,
         "axes": {axis_id: axis.as_dict() for axis_id, axis in axes.items()},
         "slices": {
             axis_id: {slice_name: axis.as_dict() for slice_name, axis in per_slice.items()}
@@ -147,6 +146,12 @@ def build_results(
         ],
         "sampleRows": sample_rows_payload,
     }
+    if union_enabled:
+        # [F-4, 리뷰 findings-432-r1] 기본(off) 산출물 형상을 그대로 얼린다(§2-1) — union 관련
+        # 키는 union_enabled 일 때만 넣는다. off 에서 이 키가 섞이면 #433 이 굳힌 6판과 구조
+        # 비교를 할 때 union 을 안 켰는데도 키가 달라진다.
+        payload["unionEnabled"] = True
+    return payload
 
 
 def _axis_row(axis_id: str, axis: dict[str, Any]) -> str:
@@ -362,8 +367,8 @@ def render_report(results: dict[str, Any]) -> str:
             f"`missRateAfterExpansion` {_fmt_score(axes['missRateAfterExpansion'])} |",
             f"| 오탐율 | `falseAlarmRate` {_fmt_score(axes['falseAlarmRate'])} | "
             f"`falseAlarmRateAfterExpansion` {_fmt_score(axes['falseAlarmRateAfterExpansion'])} |",
-            f"| 전개 게이트 발동률 | `expansionGateWouldFireRate`(가정) "
-            f"{_fmt_score(axes['expansionGateWouldFireRate'])} | `expansionGateFiredRate`(실측) "
+            f"| 전개 게이트 발동률(분모가 서로 다르다 — 아래 참조) | `expansionGateWouldFireRate` "
+            f"{_fmt_score(axes['expansionGateWouldFireRate'])} | `expansionGateFiredRate` "
             f"{_fmt_score(axes['expansionGateFiredRate'])} |",
             "",
             f"`expansionSuppressionRate`(전개가 되물음을 꺼뜨린 비율, decompose True → union "
@@ -374,8 +379,21 @@ def render_report(results: dict[str, Any]) -> str:
                 else ""
             ),
             "",
-            '`missRateAfterExpansion` 과 `missRate` 의 차이가 곧 "전개가 되물음을 얼마나 '
-            '꺼뜨리는가"다(#432 체크리스트 3항) — 두 값을 위 표에서 나란히 읽는다.',
+            "위 두 miss 축의 분모는 `expectedReask=true` 앵커의 recommend 표본(라벨 기준)이고, "
+            "`expansionSuppressionRate` 의 분모는 라벨과 무관한 decompose 판정 True 표본이다 — "
+            "**분모가 다르므로 두 miss 축의 차이가 `expansionSuppressionRate` 와 같지 않다**"
+            "(F-1, 2차 리뷰어 발견). `expansionSuppressionRate` 는 독립 축으로 읽어라 — 두 miss "
+            '축은 "전개 후 미탐이 어떻게 되는가"를, 억제율은 "판정 True 였던 것 중 몇 %가 '
+            '꺼졌는가"를 각각 답한다.',
+            "",
+            "`expansionGateWouldFireRate` 와 `expansionGateFiredRate` 도 **분모가 다른 별개 "
+            '질문**이다(F-5) — 전자는 "판정 True 표본 중 몇 %가 게이트에 걸리나", 후자는 '
+            '"전체 recommend 표본 중 몇 %에서 게이트가 실제로 발동하나"를 답한다. 분모를 '
+            "일부러 좁히지 않았다 — 판정 True 표본은 정의상 `category_queries` 가 비어 있고, "
+            "`detect_expansion_need([], case=…, unresolved=…)` 는 `unresolved` 값과 무관하게 "
+            "`no_legs` 를 돌려주므로 그 좁은 분모 안에서는 두 값이 **구조적으로 항상 같다**(분모를 "
+            "좁히면 이 축이 기존 축의 복제가 되어 새로 재는 정보가 0 이 된다). 넓은 분모라서 "
+            "비로소 D2(`mapping_failed`)가 처음 관측된다 — 두 수치를 직접 비율로 대조하지 마라.",
         ]
 
     lines += ["", "## 셀별 표본 수", "", "| 셀 | 슬라이스 | 표본 | 시도 |", "|---|---|---|---|"]
