@@ -28,7 +28,11 @@ from app.agents.buyer._frames import sse
 from app.agents.buyer.cart.graph import stream_cart_add, stream_cart_view
 from app.agents.buyer.cart.remove import stream_cart_remove
 from app.agents.buyer.cart.state import get_cart_store
-from app.agents.buyer.cart.wishlist import stream_wishlist_add, stream_wishlist_remove
+from app.agents.buyer.cart.wishlist import (
+    stream_wishlist_add,
+    stream_wishlist_remove,
+    stream_wishlist_view,
+)
 from app.agents.buyer.fallback import stream_fallback
 from app.agents.buyer.order_status import stream_order_status
 from app.agents.buyer.recommendation.category_mapping import CategoryMapping, dedup_truncate
@@ -42,6 +46,7 @@ from app.agents.buyer.recommendation.decompose import (
     prior_echo_tokens,
     resolve_category_action,
 )
+from app.agents.buyer.recommendation.needs_expansion import count_signal_legs
 from app.agents.buyer.recommendation.needs_expansion import detect_expansion_need
 from app.agents.buyer.recommendation.needs_expansion import expand_needs as _expand_needs
 from app.agents.buyer.recommendation.no_condition import is_no_condition_turn
@@ -273,7 +278,15 @@ def _relaxed_filters_from_offer(offer, base: ProductSearchFilters) -> ProductSea
 
 
 async def _map_or_empty(
-    mapper, queries, utterance, settings, llm, observer, *, select_max_calls: int | None = None
+    mapper,
+    queries,
+    utterance,
+    settings,
+    llm,
+    observer,
+    *,
+    select_max_calls: int | None = None,
+    sibling_expansion: bool = False,
 ) -> CategoryMapping:
     """매핑 1회 — 호출 자체의 예외는 **빈 결과**로 흡수한다(canonical-or-null 불변식).
 
@@ -310,6 +323,8 @@ async def _map_or_empty(
             # 택일 호출도 chat_request 모델 집계(§6.3)에 실어야 한다 — 기록은 모델을 실제로
             # 부르는 select_category 안에서 하므로 여기 책임은 seam 까지 전달하는 것뿐이다.
             observer=observer,
+            # [#428] 전개 후 재매핑에서만 True 로 넘어온다 — 매퍼의 대분류 합의 필터 게이트.
+            sibling_expansion=sibling_expansion,
         )
     except Exception as exc:  # noqa: BLE001 - 매핑 호출 자체의 예외(시그니처 불일치·버그 등)
         logger.warning("category_map_failed", extra={"reason": str(exc)})
@@ -464,6 +479,23 @@ async def _prepare_recommendation(
                         select_max_calls=max(
                             0, settings.category_select_max_calls - mapping.select_calls
                         ),
+                        # [#428] 이 leg 들은 전개(#217)가 **하나의 니즈**에서 낸 형제 아이템이다(위
+                        # `_expand_needs` 호출 결과) — 첫 매핑(원 발화의 서로 다른 니즈들)과 달리
+                        # 형제끼리 **최근접(top-1) 대분류 일치**로 서로를 검증할 수 있어 True 로
+                        # 넘긴다(리뷰 1차 F-1 — 후보 꼬리까지 세면 잡동사니 대분류가 승자가 된다).
+                        # 첫 매핑은 기본값 False 그대로 둔다(예: "캠핑용품이랑 낚시용품"은 대분류가
+                        # 갈리는 것이 정상이라 합의 필터를 적용하면 안 된다).
+                        # [#428 리뷰 5차 R5-1] 단, 원 발화가 이미 서로 다른 니즈를 2개 이상 명시했으면
+                        # ("이어폰이랑 노트북 추천해줘" — case=3 은 다중 상품도 포함한다,
+                        # decompose.py case 정의) `expand_needs` 는 발화 전체를 한 번에 전개하므로
+                        # 전개 산출도 그 니즈들에 걸쳐 섞인다. 그때는 동률 보존·R3-1 가드가 대개
+                        # 막지만, 니즈별 leg 수가 불균등하고 소수 니즈의 후보 tail 에 다수 니즈의
+                        # 승자 대분류가 우연히 끼어 있으면 뚫린다(Claude PR Review, PR #444 —
+                        # 실측 무재현은 "구조적으로 막혔다"를 증명하지 않는다). 값싼 구조적 게이트가
+                        # 있으므로 상류에서 끈다. `count_signal_legs` 는 `detect_expansion_need`
+                        # 의 D1 판정과 **같은 식**(규칙 한 벌, PR #203 리뷰 규약)이다. `#428` 턴은
+                        # `categoryQueries: []` 라 니즈 0개 → 게이트를 통과해 필터가 그대로 동작한다.
+                        sibling_expansion=count_signal_legs(decision.category_queries) < 2,
                     )
                     # **합집합**(§6) — 원 leg 을 **앞에** 둬 fanout_max 절단에서 사용자가 명시한
                     # 카테고리가 먼저 살아남게 한다. 종전 교체 배선은 전개가 트리거되면 성공한 leg
@@ -744,7 +776,8 @@ async def run_buyer_turn(
         # 장애 시 504 재현 가능). 상세·협의 선택지는 scratchpad/draft-progress-contract.md §4.
         if settings.progress_events_enabled:
             yield progress_frame("analyzing", settings.progress_analyzing_message)
-        # decompose — fast tier 1회 (intent 5-way 라우팅 + 필터 + 장바구니 의도)
+        # decompose — fast tier 1회 (intent 9-way 라우팅 + 필터 + 장바구니 의도)
+        # 정본은 `RouteDecision.intent` Literal 이다 — 여기 숫자는 설명용이라 늘 낡을 수 있다.
         if observer is not None:
             observer.record_model_call(resolve_model_id(settings, "fast"))
         reco_state = await cart_store.get_last_reco_state(thread_key)
@@ -1029,6 +1062,17 @@ async def run_buyer_turn(
             trace.set_lane("cart")
         with trace_span("buyer.graph.cart", "chain"):
             async for frame in stream_cart_view(identity=identity, observer=observer):
+                yield frame
+        return
+
+    # [#386] 찜 목록 조회 — cart_view 와 같은 성격이라 바로 옆에 둔다. 조회는 지목 대상이 없어
+    # 아래 화면 지시어 해소를 타지 않는다(cart_view 도 마찬가지). lane 은 기존 "cart" 를 재사용
+    # 한다 — 새 lane 을 만들면 OBSERVABILITY_LANES 밖이라 set_lane 이 경고를 낸다.
+    if decision.intent == "wishlist_view":
+        if trace := current_request_trace():
+            trace.set_lane("cart")
+        with trace_span("buyer.graph.cart", "chain"):
+            async for frame in stream_wishlist_view(identity=identity, observer=observer):
                 yield frame
         return
 

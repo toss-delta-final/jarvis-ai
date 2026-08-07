@@ -137,6 +137,35 @@ async def test_wishlist_remove_does_not_append_to_profile_buffer(monkeypatch) ->
     assert fake_store.calls == []
 
 
+async def test_wishlist_view_does_not_append_to_profile_buffer(monkeypatch) -> None:  # noqa: ANN001
+    """[#386] "내가 뭐 찜했지?"(wishlist_view)도 버퍼에 쌓이면 안 된다.
+
+    다만 제외 사유가 형제들과 다르다 — cart_remove·wishlist_remove 는 **부호가 반대인 신호**라
+    빼지만, 이쪽은 cart_view·order_status 와 같은 **취향 신호 0인 상태 조회**다. 매 세션 반복되며
+    슬라이딩 윈도우를 채워 정작 취향 발화를 밀어낸다(config.py 주석 참조).
+    """
+    import app.services.spring_client as sc
+    from app.schemas.spring import WishlistItem, WishlistView
+
+    async def fake_get_wishlist(user_id):
+        return WishlistView(items=[WishlistItem(product_id=10, name="이어폰")])
+
+    monkeypatch.setattr(sc, "get_wishlist", fake_get_wishlist)
+    fake_store = _patch_profile_store(monkeypatch)
+
+    llm = FakeLLM(decompose={"intent": "wishlist_view", "cart": {}})
+    request = _req("내가 뭐 찜했지?", "t-buffer-wishlist-view")
+    events = await _collect(run_buyer_turn(request, _member(), llm=llm))
+
+    assert fake_store.calls == []
+    # 라우팅이 실제로 조회 핸들러에 닿았는지도 함께 고정한다 — 분기가 없으면 추천 레인으로
+    # 새면서도 버퍼 제외만은 통과해 이 테스트가 조용히 무의미해진다.
+    # `progress` 는 상위 스트림이 모든 턴에 싣는 이벤트라(#289) 핸들러 산출과 분리해 본다.
+    assert [e["type"] for e in events if e["type"] != "progress"] == ["token", "done"]
+    tokens = [e for e in events if e["type"] == "token"]
+    assert "이어폰" in tokens[0]["data"]["text"]
+
+
 async def test_cart_add_still_appends_to_profile_buffer(monkeypatch) -> None:  # noqa: ANN001
     """회귀 방지 — `cart_add`(긍정 행동 신호)는 기존대로 버퍼에 계속 쌓여야 한다."""
     import app.services.spring_client as sc

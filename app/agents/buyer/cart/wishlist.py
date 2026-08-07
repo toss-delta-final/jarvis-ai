@@ -1,9 +1,19 @@
-"""찜 추가·해제 서브그래프 (이슈 #117, I-26/I-27 — 확정 2026-08-05, Spring 구현 진행 중).
+"""찜 추가·해제·조회 서브그래프 (이슈 #117 · #386, I-26/I-27/I-28 — 확정 2026-08-05).
+
+**[#436] Spring 은 이미 구현했다** — BE main `InternalWishlistController` 실측(2026-08-07).
+이 파일에 있던 "Spring 구현 진행 중" 표기는 그래서 지웠다. 같은 문구가 `remove.py`·
+`config.py`·`spring_client.py`·`schemas/spring.py` 등에도 남아 있는데, 그 일괄 점검과
+api-spec §4.14~4.16 헤더 갱신은 **#436 소유**라 여기서 건드리지 않는다.
 
 `stream_cart_add` 가 `classify_cart_utterance` 로 "wishlist_add"/"wishlist_remove" 로 판정하면
 항상 위임받는다(패킷 §5.4, 라운드 23 — 온/오프를 가리던 설정 필드 제거). 게스트 찜은 없다(I-26)
 — 회원이 아니면 internal 호출 없이 degrade한다. 이벤트에 productId 를 싣지 않는다(확정, 경로 B)
 — `remove.py` 와 구조·어조를 맞춘 형제 모듈이다.
+
+**[#386] `stream_wishlist_view` 는 위 두 흐름과 위임 경로가 다르다** — `classify_cart_utterance`
+2선 방어를 거치지 않고 `buyer/graph.py` 의 intent 분기에서 곧장 온다. 그 판별기는 `cart_add` 로
+라우팅된 발화만 보는데 조회 발화는 거기 도달하지 않기 때문이다(반환 어휘에 `cart_view` 가 없는
+것과 같은 이유, `intent_guard.py`).
 """
 
 from __future__ import annotations
@@ -192,6 +202,17 @@ def _resolve_wishlist_remove_target(
         (name := _strip_unsafe(item.name or "")) and name in message for item in items
     )
 
+    # ⚠️ [#440] 아래 2·3번은 사용자가 이름을 대지 않은 대상을 **코드가 고른다** — 조회성 발화가
+    # `wishlist_remove` 로 오분류돼 들어오면 요청하지 않은 항목이 해제된다(찜이 1건뿐이면 3번이,
+    # 문맥 id 가 남아 있으면 2번이). #386 에서 이 자리에 "해제 근거가 있을 때만 허용" 가드를
+    # 넣어 봤다가 **되돌렸다** — 짧은 표지(`"찜"` ⊂ `찜닭`, `"빼"` ⊂ `빼고`)로는 조회와 해제를
+    # 가를 수 없어 오히려 `"찜닭 빼고 보여줘"` 를 해제 근거로 오인했고, 어절 경계가 없는 한국어에서
+    # 부분 문자열만으로 이걸 가르려면 인접성 판정을 새로 만들어야 한다. 그건 이 함수와
+    # `negation.py`·`remove.py` 가 얽힌 별도 작업이라 **#440 으로 옮겼다.**
+    #
+    # 이 위험은 #386 이 만든 것이 아니다 — `wishlist_remove` 로 온 **어떤** 발화든 이름이 없으면
+    # 원래부터 1건을 자동 선택했다. `evals/intent_probe` 실측에서 찜 조회 발화 3종이 8/8 로
+    # 정확히 `wishlist_view` 에 가는 것도 확인했다(오분류가 관측되지 않았다).
     if cart.product_id is not None and not has_negation and not name_mentioned:
         direct = [item for item in items if item.product_id == cart.product_id]
         if direct:
@@ -200,6 +221,75 @@ def _resolve_wishlist_remove_target(
     if not has_negation and not name_mentioned and len(items) == 1:
         return items[0]
     return None
+
+
+async def stream_wishlist_view(
+    *,
+    identity,
+    get_wishlist_fn=None,
+    observer=None,
+) -> AsyncIterator[str]:
+    """찜 목록 조회 서브그래프 (이슈 #386, I-28 §4.16).
+
+    **`cart/graph.py::stream_cart_view` 와 같은 성격**이다 — 목록을 `token` 텍스트로만 답하고
+    상품 카드도 `action` 도 내지 않는다(경로 B). 다만 신원 게이트는 **형제 찜 핸들러 쪽**을
+    따른다: 장바구니는 게스트도 갖지만 찜은 회원 전용(I-26/I-27/I-28, M-4)이라
+    `user_id is None` 하나로 게스트·익명을 함께 막는다. `stream_cart_view` 의
+    `user_id is None and guest_id is None` 을 그대로 베끼면 게스트에게 계약 밖 경로가 열린다.
+
+    **실패 처분이 `stream_wishlist_remove` 와 갈린다**(형제라고 베끼면 안 되는 지점) — 저쪽은
+    조회를 *해제 대상 해소 수단*으로 부르므로 그 턴의 실패는 변경 실패이고
+    `action(WISHLIST_REMOVE_FAILED)` 로 답한다. 이 턴은 상태를 바꾸지 않으므로 `token` 안내 후
+    정상 `done` 으로 끝낸다 — `ActionData.type` 유니온(api-spec §3.1)에 조회 실패 어휘가 애초에
+    없다. 개별 처리 자체는 형제 4개와 같은 규약이다(#368 — 빠뜨리면 상위 스트림의 범용
+    catch-all 이 `error(INTERNAL)` 로 내보낸다).
+
+    잡는 예외는 `SpringUnavailableError` **하나뿐**이다. `get_wishlist`(조회 계열)는
+    `WishlistError` 를 내지 않는다 — `stream_wishlist_add` 가 두 타입을 함께 잡는 것은 주입
+    가능한 인자를 방어하는 것이지 어댑터 규약이 아니다(`docs/lessons.md` #368 항목).
+
+    `observer` 는 형제 핸들러(`stream_cart_view`·`stream_wishlist_add`/`_remove`)와 시그니처를
+    맞추려고 받을 뿐 **이 함수는 쓰지 않는다**.
+    """
+    get_wishlist_fn = get_wishlist_fn or spring_client.get_wishlist
+
+    user_id, _guest_id = cart_identity(identity)
+    if user_id is None:
+        yield sse(
+            "token",
+            TokenData(text="찜 목록 조회에는 로그인이 필요해요.").model_dump(by_alias=True),
+        )
+        yield _done()
+        return
+
+    try:
+        wishlist_view = await get_wishlist_fn(user_id)
+    except SpringUnavailableError:
+        yield sse(
+            "token",
+            TokenData(text="찜 목록을 불러오지 못했어요. 잠시 후 다시 시도해 주세요.").model_dump(
+                by_alias=True
+            ),
+        )
+        yield _done()
+        return
+
+    items = list(wishlist_view.items)
+    if not items:
+        yield sse("token", TokenData(text="찜한 상품이 없어요.").model_dump(by_alias=True))
+        yield _done()
+        return
+
+    # 못 사는 항목은 짧은 라벨로만 가른다(#310, 장바구니 조회와 같은 규칙). 문단 끝
+    # `state_advice_lines` 안내는 **싣지 않는다** — 그 문구는 장바구니 어휘("다시 담을 수
+    # 있어요")이고, 예시로 드는 `'{품목} 빼줘'` 는 `intent_guard` 가 의도적으로 `cart_add` 로
+    # 떨어뜨리는 발화라(알려진 거짓음성, intent_guard.py) 답할 수 없는 안내가 된다.
+    lines = [f"{_display_wishlist_name(item)}{state_suffix(item.purchase_state)}" for item in items]
+    yield sse(
+        "token",
+        TokenData(text="찜한 상품이에요:\n" + "\n".join(lines)).model_dump(by_alias=True),
+    )
+    yield _done()
 
 
 async def stream_wishlist_add(

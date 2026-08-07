@@ -2536,7 +2536,7 @@ X-Internal-Token: {서비스 토큰}
 
 - **AI 실사용 필드는 `productId`·`name`·`purchaseState` 뿐**이다 — 나머지 표시 필드는 파싱하지 않는다(`app/schemas/spring.py`의 `WishlistItem`이 이 서브셋만 선언).
 - **페이징 없음 — MVP 전량 반환**(I-18 전례). **찜 0건도 200 + `items: []`**(404 아님).
-- **AI 동작**: "내가 뭐 찜했지?" 질의는 별도 SSE 이벤트 없이 `token` 텍스트로 답한다(I-18 동형, §3.1) — 조회라 새 `action`을 내지 않는다.
+- **AI 동작**: "내가 뭐 찜했지?" 질의는 별도 SSE 이벤트 없이 `token` 텍스트로 답한다(I-18 동형, §3.1) — 조회라 새 `action`을 내지 않는다. **[AI 구현 완료 #386]** `wishlist_view` intent + `stream_wishlist_view` 로 구현했다(계약 개정 없음 — 이 절이 이미 규정한 동작을 뒤늦게 구현한 것이다). 조회 실패(`SpringUnavailableError`)도 `token` 안내 후 정상 `done` 이다 — `action.type` 유니온(§3.1)에 조회 실패 어휘가 없다.
 - **AI 동작(`purchaseState`)**: `SOLD_OUT`/`HIDDEN` 항목은 **사유별로 갈라 안내한다** — 미수신(키 없음)은 "모름"으로 보고 안내하지 않는다. §4.9(I-18)와 같은 규칙이다(#310).
 - 실패: `400 VALIDATION_ERROR`(신원 이상, 자원별 신규 code 미채택) · `401 INTERNAL_TOKEN_INVALID` · `403 AUTH_FORBIDDEN`(회원 전용) · `500 INTERNAL_ERROR`.
 

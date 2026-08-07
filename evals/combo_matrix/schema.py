@@ -46,6 +46,10 @@ OBSERVED_GUARDED_FIELDS: frozenset[str] = frozenset(
         "searchCallCount",
         "searchFilters",
         "unappliedSearchFilters",
+        # [#426] attr_conditions 는 Spring payload 축이 아니라 AI 사후필터라 `searchFilters` 로는
+        # 적용 여부를 알 수 없다 — 사후필터가 실제로 호출됐는지·무엇을 걸렀는지가 그 축의 유일한
+        # 계약 신호이므로 가드 대상이다(attr 축 present 행에만 존재하고, 키 존재 여부까지 대조된다).
+        "attrConditionsPostFilter",
         "unhandledException",
         "outcome",
         "itemCount",
