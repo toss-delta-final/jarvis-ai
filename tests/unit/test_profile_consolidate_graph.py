@@ -96,6 +96,7 @@ def _document(edges: list[GraphEdge]) -> GraphDocument:
         nodes=[GraphNode(node_id="brand:소니", type="brand", label="소니", verified=False)],
         edges=edges,
         unprojected_count=0,
+        truncated=False,
         purged_at=None,
         updated_at=NOW,
     )

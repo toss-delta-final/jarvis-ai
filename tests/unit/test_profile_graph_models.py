@@ -213,6 +213,7 @@ def test_graph_document_round_trips_through_json() -> None:
         nodes=[GraphNode(node_id="brand:소니", type="brand", label="소니", verified=False)],
         edges=[_edge()],
         unprojected_count=2,
+        truncated=True,
         purged_at=None,
         updated_at="2026-08-06T00:00:00+00:00",
     )

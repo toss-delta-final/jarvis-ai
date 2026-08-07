@@ -68,7 +68,13 @@ logger = logging.getLogger(__name__)
 def empty_document(now: str) -> GraphDocument:
     """첫 배치 이전 상태. `revision=0` 에서 시작해 실질 변경마다 오른다."""
     return GraphDocument(
-        revision=0, nodes=[], edges=[], unprojected_count=0, purged_at=None, updated_at=now
+        revision=0,
+        nodes=[],
+        edges=[],
+        unprojected_count=0,
+        truncated=False,
+        purged_at=None,
+        updated_at=now,
     )
 
 
@@ -107,6 +113,9 @@ def build_graph_document(
     ]
     edges.extend(_carried_tombstones(existing, seen=set(grouped)))
     edges = _resolve_conflicts(edges)
+    # 절단 여부는 **개수 차이로** 판정한다 — `_truncate` 의 두 분기(일반 절단·사용자 삭제가 상한을
+    # 넘겨 보존)를 한 규칙으로 덮고, "상한을 넘겼다"가 아니라 "버린 게 있다"라는 뜻이 그대로 산다.
+    before_truncation = len(edges)
     edges = _truncate(edges, settings.profile_graph_max_edges)
 
     nodes = _nodes_for(edges, observations, existing)
@@ -115,6 +124,7 @@ def build_graph_document(
         nodes=sorted(nodes, key=lambda n: n.node_id),
         edges=sorted(edges, key=_edge_sort_key),
         unprojected_count=unprojected,
+        truncated=len(edges) < before_truncation,
         purged_at=existing.purged_at,
         updated_at=now,
     )
@@ -535,4 +545,6 @@ def _fingerprint(document: GraphDocument, settings: Settings) -> str:
         {k: v for k, v in node.model_dump(mode="json").items() if k not in volatile_node}
         for node in document.nodes
     ]
-    return repr((nodes, edges, document.unprojected_count, document.purged_at))
+    # `truncated`·`unprojected_count` 는 **와이어에 나가는 값**이라(api-spec §3.8) 지문에 든다 —
+    # 절단 여부가 뒤집히면 사용자가 보는 안내가 바뀌므로 실질 변경이다.
+    return repr((nodes, edges, document.unprojected_count, document.truncated, document.purged_at))

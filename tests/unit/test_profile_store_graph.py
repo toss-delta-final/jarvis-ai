@@ -57,6 +57,7 @@ def _document(**overrides: object) -> GraphDocument:
         "nodes": [_node()],
         "edges": [_edge()],
         "unprojected_count": 0,
+        "truncated": False,
         "purged_at": None,
         "updated_at": NOW,
     }

@@ -778,6 +778,84 @@ def test_truncation_drops_active_before_superseded(settings: Settings) -> None:
     assert [(e.edge_key, e.status) for e in document.edges] == [("likes|brand:애플", "superseded")]
 
 
+def test_truncated_flag_records_that_edges_were_dropped(settings: Settings) -> None:
+    """절단이 실제로 일어났으면 문서에 표식을 남긴다 (REQ-PGRAPH-005, PR #410 리뷰).
+
+    절단을 **쓰기 시점**으로 옮긴 결과, 읽는 쪽(#150 투영)은 저장된 edge 수가 상한 이하라
+    "절단 안 됨"으로 볼 수밖에 없다 — `len(edges) == limit` 로 추정하는 것도 "우연히 딱 상한인
+    정상 사용자"와 구분되지 않는다. 그래서 자른 쪽이 기록해야 한다.
+    """
+    tight = Settings(_env_file=None, profile_graph_max_edges=1)
+    facts = [
+        _fact("f1", triples=[_triple("brand:엘지", label="엘지", salience=0.9)]),
+        _fact("f2", triples=[_triple("brand:애플", label="애플", salience=0.2)]),
+    ]
+
+    document = build_graph_document(facts, existing=empty_document(NOW), settings=tight, now=NOW)
+
+    assert len(document.edges) == 1
+    assert document.truncated is True
+
+
+def test_truncated_flag_is_false_when_everything_fits(settings: Settings) -> None:
+    """상한 안이면 거짓이다 — 매 배치 참이면 표식이 신호 노릇을 못 한다."""
+    document = build_graph_document(
+        [_fact("f1")], existing=empty_document(NOW), settings=settings, now=NOW
+    )
+
+    assert document.truncated is False
+
+
+def test_truncated_flag_is_false_when_the_cap_is_exceeded_but_nothing_dropped(
+    settings: Settings,
+) -> None:
+    """사용자 삭제만으로 상한을 넘긴 경우는 **자른 게 아니다** — 넘긴 채 전부 보존했다.
+
+    `truncated` 의 뜻은 "상한을 넘었다"가 아니라 "**버린 게 있다**"이다. 여기서 참이면 사용자는
+    잘리지도 않은 목록을 보고 "일부만 표시됨"이라는 안내를 받는다.
+    """
+    tight = Settings(_env_file=None, profile_graph_max_edges=1)
+    existing = _document_of(
+        [
+            _stored_edge("소니", status="suppressed", suppressed_at=NOW),
+            _stored_edge("애플", status="suppressed", suppressed_at=NOW),
+        ]
+    )
+
+    document = build_graph_document([], existing=existing, settings=tight, now=NOW)
+
+    assert len(document.edges) == 2  # 상한(1)을 넘겨서라도 삭제는 지킨다
+    assert document.truncated is False  # 넘겼을 뿐 버리지 않았다
+
+
+def test_revision_bumps_when_only_truncated_flips(settings: Settings) -> None:
+    """`truncated` 만 달라져도 revision 은 오른다 — 와이어 응답이 바뀌기 때문이다.
+
+    이 필드를 지문에 넣은 것이 **중복이 아니라는** 근거다. 상한을 넘겨 잘린 배치와, 잘린 대상의
+    근거 fact 가 트리밍돼 절단이 사라진 다음 배치는 **남은 edge·node 가 완전히 동일**하다 —
+    지문에서 빼면 "일부만 표시됨 → 전부 표시됨"이라는 사용자가 보는 변화를 놓치고 #150 의
+    `If-Match` 토큰이 낡은 채로 유효해진다(PR #410 리뷰 대응에 딸린 판단).
+    """
+    tight = Settings(_env_file=None, profile_graph_max_edges=2)
+    keep = [
+        _fact("f1", triples=[_triple("brand:소니", label="소니", salience=0.95)]),
+        _fact("f2", triples=[_triple("brand:애플", label="애플", salience=0.90)]),
+    ]
+    dropped = _fact("f3", triples=[_triple("brand:삼성", label="삼성", salience=0.10)])
+
+    first = build_graph_document(
+        [*keep, dropped], existing=empty_document(NOW), settings=tight, now=NOW
+    )
+    second = build_graph_document(keep, existing=first, settings=tight, now=NOW)  # f3 트리밍
+
+    assert first.truncated is True and second.truncated is False
+    # 남은 것은 완전히 같다 — 그래서 truncated 가 유일한 차이다.
+    assert [e.model_dump(mode="json") for e in second.edges] == [
+        e.model_dump(mode="json") for e in first.edges
+    ]
+    assert second.revision == first.revision + 1
+
+
 def test_truncation_keeps_active_edges_within_the_remaining_budget(settings: Settings) -> None:
     """tombstone 이 상한 안이면 남은 자리는 `active` 가 확신도 순으로 채운다.
 
@@ -917,6 +995,7 @@ def _document_of(edges: list[GraphEdge]) -> GraphDocument:
         nodes=list(nodes.values()),
         edges=edges,
         unprojected_count=0,
+        truncated=False,
         purged_at=None,
         updated_at="2026-07-01T00:00:00+00:00",
     )

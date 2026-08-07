@@ -155,5 +155,13 @@ class GraphDocument(BaseModel):
     nodes: list[GraphNode]
     edges: list[GraphEdge]
     unprojected_count: int  # 트리플을 못 만든 fact 개수만. 내용은 어떤 형태로도 싣지 않는다
+    # 이번 배치 절단에서 **버린 edge 가 있었나**(REQ-PGRAPH-005). SPEC §5.3 의 저장 모델에는 원래
+    # 없던 필드다 — 명세는 절단을 §6.1 **투영 시점**으로 뒀는데 구현이 저장 폭주 방어를 위해
+    # 쓰기 시점으로 옮겼기 때문에(`profile_graph_max_edges` 주석), 표식도 같이 옮겨야 한다.
+    # 안 남기면 #150 투영은 저장분이 늘 상한 이하라 "절단 안 됨"만 내보내고, `len(edges) == 상한`
+    # 추정은 "우연히 딱 상한인 정상 사용자"와 구분되지 않는다.
+    # 뜻은 "상한을 넘겼나"가 아니라 **"버린 게 있나"** 다 — 사용자 삭제만으로 상한을 넘겨 전부
+    # 보존한 경우는 거짓이다(자르지 않았으므로).
+    truncated: bool
     purged_at: str | None
     updated_at: str
