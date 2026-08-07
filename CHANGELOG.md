@@ -257,6 +257,31 @@
 - **#299 — 요청 바디 크기 상한** — 필드별 상한(`chat_message_max_chars`·`screen_products_raw_scan_max` 등)은 흩어져 있고 상한 없는 필드(`conditionActions` 등)도 계속 생기는데, 레이트 리밋(§2.8)은 요청 **건수**만 세 임의 크기 바디를 반복 전송할 수 있었다. `app/core/body_limit.py`에 `BodySizeLimitMiddleware`(순수 ASGI)를 신설해 `Content-Length` 초과는 바디를 읽기 전에, 헤더가 없는(chunked) 경우는 `receive`를 감싼 실수신 바이트 누적으로 상한(`request_body_max_bytes`, 기본 1MiB — 필드 상한이 절단 없이 받아들이는 최대 정상 페이로드의 약 4.8배)을 넘기면 거절한다. 초과 응답은 새 코드를 내지 않고 기존 `400 BAD_REQUEST` 봉투를 그대로 쓴다(§2.5에 413/`PAYLOAD_TOO_LARGE`가 없어 신설은 별도 명세 개정 대상) — 와이어 계약 변경 0. 미들웨어는 레이트 리밋 **바깥**(거대 바디가 JWT 서명 검증 비용·레이트 리밋 슬롯을 소모하지 않게)·CORS **안쪽**(400 응답에도 CORS 헤더가 실리게)에 등록한다.
 
 ### Docs
+- **#425 — overspecified_zero 는 완화 축이 없어 재검색이 안 돈다, 정의된 동작으로 판정** —
+  combo_matrix 매트릭스가 README·`expected_behavior.jsonl` 의 `expected` 서술("0건이면 자동 완화·
+  완화 칩으로 대안 제시")과 실측(combo-0031: `searchCallCount=1`·`finishReason=zero_result`,
+  재검색 0회)이 어긋난다고 표시해 갭인지 확인했다. 판정: **갭이 아니라 정의된 동작** — combo-0031
+  에 present 인 필터축은 `price_min` 하나뿐인데
+  `app.agents.buyer.recommendation.relaxation.FIELD_TO_ATTR` 에 `price_min` 이 없어(완화 축은
+  `priceMax`·`ratingMin`·`brand`·`color` 뿐) `build_relaxation_candidates() == []` 다 — config
+  로도 넣을 수 없다(`Settings._require_known_relaxation_chip_fields` 기동 검증). 그 결과
+  `stream_recommendation` 의 `may_auto_relax` 게이트·자동완화 루프·완화 칩 probe 가 전부 조용히
+  0회로 빈다. **대조군 재검토도 정정했다**: combo-0026·0054·0055 의 `searchCallCount:5`,
+  combo-0053 의 `:2` 는 README 가 "자동완화 재검색"이라 잘못 서술하고 있었는데, 실제로는 **완화
+  칩 estCount probe**(주검색 1 + 칩 probe N)다 — 이 매트릭스의 ci 케이스 어디에서도 자동완화
+  루프(`relaxation_auto_fields` 화이트리스트)는 한 번도 실행된 적이 없다(0건이면서 완화 가능
+  축이 present 인 조합이 데이터에 없어서). `runner.py::_observe_chat` 의 오래된 주석(자동완화가
+  돈다는 서술)을 정정하고 `observed.notes` 에 이 판정을 남기도록 `refresh-observed` 를 1회
+  재실행했다(combo-0031 의 `notes` 만 변경, #424 드리프트 가드는 여전히 통과 — `notes` 는 가드
+  제외 필드라 경계 설계가 맞다는 실측 증거). 새 잠금 테스트
+  `test_overspecified_zero_axis_has_no_relaxable_filter_axis_so_no_research_runs`
+  (`tests/eval/test_combo_matrix_eval.py`)이 완화 후보 0건 전제와 그로부터 나오는 관측(재검색
+  0회)을 함께 고정한다. **0건 주입은 유지**한다(#381 결론 유지) — 자연 발생시키려면 과지정
+  전용 표본값이 필요한데 present 축 구성(`price_min` 하나) 자체는 안 바뀌어 완화 축이 새로
+  생기지 않는다. **자동완화 전용 축도 이 매트릭스에 새로 뽑지 않는다** — 자동완화 실검증은
+  이미 `tests/unit/test_relaxation.py` 소관이고, 이 하네스의 고정 대역 카탈로그 + 0건 주입으로는
+  "완화가 결과를 살린다"를 표현할 수 없다. `expected_behavior.jsonl` 의 `status`·`expected`·
+  `undefined_tuple` 은 건드리지 않았다(미정의 셀 등재 아님). `app/` 무변경, 계약(api-spec) 무변경.
 - **#384 — #363 후속: 구제~자동완화를 아우르는 공유 왕복 예산/first-token 데드라인 가드 설계** —
   #363의 전제("첫 SSE=`conditions`, 예산=first-token 10s")가 #396(구매자 `progress` 상시화,
   api-spec v0.26.2)으로 깨져 재기준선했다. 구속 예산은 이제 `stream_total_timeout_buyer_s`(30s)

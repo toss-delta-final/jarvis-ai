@@ -391,6 +391,64 @@ async def test_home_profile_unavailable_injection_actually_runs() -> None:
     assert observed["outcome"] == "PERSONALIZED", observed
 
 
+# ─────────── 6c. overspecified_zero 판정 잠금 (이슈 #425) ───────────
+
+
+async def test_overspecified_zero_axis_has_no_relaxable_filter_axis_so_no_research_runs() -> None:
+    """`constraint_strength=overspecified_zero` 는 0건이면서도 자동완화·완화칩이 돌지 않는다 —
+    갭이 아니라 **완화 가능 축이 하나도 없어서 생기는 정의된 동작**이다(#425 판정).
+
+    전제(코드 근거): `app.agents.buyer.recommendation.relaxation.FIELD_TO_ATTR` 는 `priceMax`·
+    `ratingMin`·`brand`·`color` 뿐이다(모듈 docstring "비카테고리 조건(가격 상한·평점 하한·브랜드·
+    색상)만 한 단계 푼다") — `price_min` 은 완화 축이 아니다. `app.core.config.
+    Settings._require_known_relaxation_chip_fields` 가 기동 시점에 `FIELD_TO_ATTR` 밖 이름을
+    거부하므로 config 로도 `priceMin` 을 완화 축에 넣을 수 없다. combo-0031(overspecified_zero)의
+    실현 필터는 `price_min` 하나뿐이라 `build_relaxation_candidates(filters, settings) == []` 다.
+
+    이로부터 나오는 관측(재검색 0회): `app.agents.buyer.recommendation.graph.
+    stream_recommendation` 의 `may_auto_relax` 게이트가 False, 자동완화 루프(`if not candidates
+    and not underspecified:`)는 진입해도 후보가 비어 0회 반복, 완화 칩 블록(`if not underspecified
+    and (not candidates or len(candidates) < settings.relaxation_min_results):`)도 진입해도 probe
+    후보가 비어 칩 0개 — 그래서 `searchCallCount == 1`·`finishReason == "zero_result"` 다.
+
+    이 축에 완화 가능 축이 생겼다면(예: `FIELD_TO_ATTR` 에 `price_min` 추가) #425 판정("자동완화·
+    완화칩은 돌지 않는다 — 정의된 동작")과 README 서술을 함께 재판정해야 한다.
+    """
+    from app.agents.buyer.recommendation.relaxation import build_relaxation_candidates
+    from app.core.config import get_settings
+    from app.schemas.spring import ProductSearchFilters
+
+    cases = {c.case_id: c for c in load_cases()}
+    overspecified_zero_ci_cases = [
+        c
+        for c in cases.values()
+        if c.observation_mode == "ci" and c.axes.get("constraint_strength") == "overspecified_zero"
+    ]
+    assert overspecified_zero_ci_cases, (
+        "overspecified_zero ci 케이스가 하나도 없다 — 전제 확인 불가"
+    )
+
+    settings = get_settings()
+    for case in overspecified_zero_ci_cases:
+        filters = ProductSearchFilters.model_validate(build_decompose_json(case.axes)["filters"])
+        candidates = build_relaxation_candidates(filters, settings)
+        assert candidates == [], (
+            f"{case.case_id}: 완화 후보가 생겼다 — #425 판정이 전제하는 '완화 가능 축이 하나도 "
+            f"없다'가 더 이상 성립하지 않는다(candidates={candidates}). README·판정 재검토 필요."
+        )
+
+        observed = await observe(case)
+        assert observed is not None
+        assert observed["searchCallCount"] == 1, (
+            f"{case.case_id}: searchCallCount={observed['searchCallCount']} — 완화 후보가 없는데도 "
+            "재검색이 돌았다면 #425 판정과 어긋난다."
+        )
+        assert observed["finishReason"] == "zero_result", (
+            f"{case.case_id}: finishReason={observed['finishReason']!r} — 0건 zero_result 종료가 "
+            "아니라면 #425 판정의 전제가 깨진 것이다."
+        )
+
+
 # ─────────── 7. 미정의 셀 최소 보증 ───────────
 
 
