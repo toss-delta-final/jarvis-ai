@@ -10,6 +10,45 @@
 ## [Unreleased]
 
 ### Added
+- **#356 — consolidation 구조화 트리플 산출 + 그래프 입력 전환(OPEN-G0 해소)** —
+  취향을 자유형 한국어 문장 하나가 아니라 `주어–술어–목적어` 트리플로 만들고, consolidation이
+  fact 목록 대신 **그래프 문서를 입력으로 읽게** 했다. 지금까지는 지울 수 있는 단위가 없어
+  사용자가 취향을 삭제해도 다음 배치가 다시 써넣었다 — 삭제 기능이 겉모습만 남는 상태였다.
+  트리플 생산과 입력 전환을 **한 PR로** 낸 이유가 그것이다(REQ-PGRAPH-023 [HARD]).
+  신규 `app/agents/profile/graph_models.py`(GraphNode/GraphEdge/GraphDocument, 내부 저장 모델) ·
+  `resolver.py`(kind별 결정론적 식별) · `graph_merge.py`(순수 함수 병합 엔진).
+  식별자는 `node_id = "{type}:{정규화 라벨}"` · `edge_id = "e_" + sha256(edge_key)[:16]`로
+  고정했다(REQ-PGRAPH-010) — 랜덤 id면 재파생이 tombstone을 우회한다. `hashlib` 고정(내장
+  `hash()`는 PYTHONHASHSEED 랜덤화로 프로세스마다 값이 달라진다). LLM은 타입 붙은 제안까지만
+  내고 키는 코드가 확정한다(REQ-PGRAPH-011, #115 실측 근거). resolve는 **쓰기 시 1회**로
+  고정 — 배치마다 재계산하면 임계·어휘가 바뀔 때 같은 fact가 다른 `node_id`로 붙는다.
+  `priceBand`·`ratingBand`·`product`는 임베딩 없이 규칙·정확 일치(REQ-PGRAPH-014), 어휘 없는
+  kind는 `verified:false`로 남기고(C-28 미해결 상태에서도 동작) 어휘가 있는데 못 붙으면 드롭한다.
+  병합은 감쇠 가중 EMA·승격/강등 히스테리시스·충돌 supersede(삭제 금지)·tombstone 보존이며,
+  edge 상한 절단에서도 **사용자 삭제(`suppressed`·pin)는 상한보다 우선**한다 — 잘리면 다음
+  배치에 `active`로 부활해 복구 경로가 없다. **먼저 밀려나는 순서는 `active` → `superseded` →
+  (자르지 않음) `suppressed`·pin**이다. 직관과 반대로 보이지만 잃는 것이 다르다 — `active`가
+  잘려도 그 fact는 요약 입력에 남지만(문서에 없는 `edge_key`는 `active`로 간주된다), `superseded`가
+  잘리면 같은 규칙 때문에 **진 취향이 요약에 되살아난다**. 사용자 삭제만으로 상한을 넘으면
+  넘긴 채 보존하고 경고 로그를 남긴다. 상충 판정은 쌍 열거가 아니라 **`avoids` vs 임의의 긍정**
+  (`prefers`·`likes`·`interestedIn`)이다 — `{likes, avoids}`만 등록하면 resolver가 kind별로 다른
+  긍정을 만드는 탓에 7개 kind 중 4개가 판정 밖에 남아 모순된 두 취향이 둘 다 `active`로 공존한다.
+  요약 입력은 살아 있는 edge + 트리플 없는 fact이고 `suppressed`/`superseded`와 그 근거 fact
+  원문은 제외한다 — 입력이 비면 기존 요약을 **보존**하고 `NO_WORK`(빈 문자열로 덮으면 요약은
+  사라지는데 홈 랭킹은 캐리오버된 옛 벡터로 계속 개인화한다). LLM은 그래프 락 밖에서 부른다
+  (`#323`의 요약 락과 중첩하면 advisory 풀 커넥션을 둘 점유해 구매자 턴까지 말라 죽는다).
+  신규 config 11종 전부 주입(`graph_node_distance_max`·`graph_decay_half_life_days` 등) —
+  거리 임계는 #59 값을 **상속하지 않는다**(앵커 분포가 다르다, OPEN-G1/#344 재측정 대기).
+  프롬프트 교체는 `profile_graph_delta_enabled` 롤백 스위치 뒤에 두고 분포 비교 프로브를
+  동봉했다(OPEN-G8). 발표·수동 검증용 시드 스크립트 신설.
+  **델타·요약 LLM 출력 예산도 하드코딩(800/1000)에서 `profile_delta_max_tokens`·
+  `profile_summary_max_tokens`(각 2048)로 이관했다** — 구조화 필드가 늘어 출력이 길어지자
+  운영 smart tier(reasoning 모델)에서 추론 토큰이 예산을 먼저 먹어 분포 프로브 4세션 중 2건이
+  `LengthFinishReasonError`로 죽었고(구 프롬프트 0건), 이관 후 0건이 됐다. 세션 버퍼는 보존된 채
+  재시도되지만 같은 입력이면 또 실패해 방치하면 그 사용자의 승격이 버퍼 상한까지 멈춘다(#325 계열).
+  **비범위**: 그래프 API 표면(#150) · 저널·revision CAS·멱등 원장(#358) · pin 규약 ·
+  브랜드 어휘 수집(C-28). `purchased` edge는 대화에서 만들지 않는다(원천은 질의 시점 I-19).
+  (SPEC-PROFILE-GRAPH-149 v0.2.6, SPEC-PROFILE-001 v0.8.1 — api-spec 무개정)
 - **#424 — combo_matrix `observed` 드리프트 가드 신설** — `expected_behavior.jsonl` 의 `observed`
   는 러너 재실행 **기록**이라, 다른 레인이 SSE 이벤트를 바꾸면 커밋본이 조용히 낡아도 아무
   테스트도 잡지 못했다(PR #420 작업 중 실측 2회, 둘 다 `eventTypes` 만 드리프트하고 핵심 계약
@@ -444,6 +483,8 @@
 
 ### Fixed
 - **#435 — 프로필 벡터 경로로 추천된 상품을 이름으로 지목한 찜/담기가 실패하던 문제 (api-spec §3.1, v0.28.1)** — 조건 없는 발화의 회원 경로(`no_condition.rank_by_profile`, 취향 벡터 랭킹)가 `set_last_reco` 에 빈 이름(`(pid, "")`)만 저장해, decompose 프롬프트의 `LAST_RECOMMENDATIONS` 에 이름이 없어 이름 매칭(#118 실측 8/8 신호)이 원천적으로 불가능했다 — FE 위조방지 설계(추천 카드는 `screen` 에 실리지 않는다)와 AI 상품명 공백(AI 카탈로그 인덱스에 원본 컬럼 없음)의 이음매였다. `products.search_doc`(AI 생성물, `build_search_doc` 임베딩 입력으로 이미 조립돼 저장됨) 첫 줄에서 이름을 최선노력 복원해(`_extract_name_from_search_doc`, 필드 순서 커플링을 왕복 테스트로 고정) `set_last_reco` 에 실었다. 노출 집합 안에서 이름이 중복되면(name 없는 상품은 첫 줄이 category 로 밀려 여러 상품이 같은 문자열을 가질 수 있다) 모호함을 확정하지 않고 전부 버린다(`dedup_exposed_names`, G2). `products.search_doc` 는 판매자 입력이라 `_strip_unsafe` 로 신뢰경계를 통과시키고(G3), 스토어 조회·추출 실패는 예외 없이 이름 없음으로 degrade 한다(G4) — pg-profile 에는 여전히 productId 만 영속하고 이름은 기존과 같이 프로세스 로컬 휘발성 캐시로만 흐른다(CLAUDE.md 원본 컬럼 사본 금지 불변). 되물음 문구도 함께 고쳤다 — `last_reco`(스레드 누적 추천)가 비어 있지 않은 담기/찜 미해소 턴은 "추천을 먼저 받아보시면"(거짓 — 이미 추천을 받았다) 대신 "추천해 드린 상품 중에서 이름을 말씀해 주시면"으로 안내한다(화면 지시어 문구가 있으면 그쪽이 우선, `last_reco` 가 비면 오늘 문구와 바이트 동일). 담기·찜 계열 턴에 `last_reco_name_coverage`(개수만, PII 미포함) INFO 로그를 추가해 다음 추적 라운드가 같은 미확정을 반복하지 않게 했다. **판정(프로필 경로 vs 화면 vs LLM)은 운영 로그로 확증한 것이 아니라 코드 경로·저장소 실측(캐시 LRU 미축출·I-3 폴백은 정상 경로 합류)으로 추론한 것이다.** `resolve_screen_reference`(결정적 화면 지시어 해소기)는 손대지 않았다 — 그 모듈은 이름 지목을 의도적으로 LLM 에 양보하는 설계라(§3.1 v0.28.1 서술 추가) 이 이슈는 이름 **공급**을 고치는 것이지 해소기를 늘리는 것이 아니다. 담기 허용 목록(`allowed`) 계산·미해소 판정 조건은 불변.
+- **#430 — `decompose` 가 "아무거나"류 발화에도 `semanticQuery` 를 지어내 과소지정 되물음(#336)이 100% 발동하지 않던 문제** — `_SYSTEM` 은 `semanticQuery` 를 "찾는 상품의 의미"로 정의만 하고 **"지정할 게 없으면 비워라"는 지시가 없었다.** LLM 이 무엇이든 텍스트를 내면 `semantic_query_is_fallback` 이 즉시 False 가 되고 `is_underspecified_turn` 이 "의미 신호가 있는 턴"으로 읽어 되물음을 껐다 — 실측 `missRate` **111/112(99.1%)**, 독립 2런 동일. `- recommend:` 규칙 절 **끝에 규칙 한 줄만** 넣어 고쳤다: "찾는 상품의 단서(종류·용도·상황·목적·브랜드·색상)가 발화에도 PRIOR_FILTERS·LAST_RECOMMENDATIONS·SCREEN 맥락에도 없으면 `semanticQuery` 는 빈 문자열". 판정 코드(`underspecified.is_underspecified_turn`·`no_condition.py`)는 **한 줄도 바뀌지 않았다** — 실측이 판정 코드는 정상이라 말한다. 같은 하네스·같은 앵커·같은 티어(fast, `gpt-5-nano`)로 전/후 각 2런(전부 `source=repo:_SYSTEM`, 출고판 sha12 `865ed6fd771e`): `missRate` 99.1%·99.1% → **9.8%·6.2%**, `falseAlarmRate` 0.0%·0.0% → **1.9%·2.9%**(사전 등록 상한 3.6% 내), `judgmentAccuracy` 48.6% → 94.0%·95.4%, 의미신호 소실 가드(상품명이 실제로 발화에 있는 category·keyword 4앵커 32표본) 1/32·0/32, 불변식(`flagOffInvariant`·`priorGateInvariant`) 4런 모두 0/240. 산출물 `evals/underspecified_probe/baselines/fast-2026-08-07-430-{before,merged,after}-*/`(판정표 정본은 `after-1/README.md`, 탈락 후보 9종의 sha12·수치 포함). **작업 중 `origin/dev` 병합이 측정물을 바꿨다** — #386(PR #441, 커밋 `3547e43`, `wishlist_view` 의도 신설)이 `_SYSTEM` 에 548자를 더한 판(`f99a98867e4a`)에서 `falseAlarmRate` 가 1.9 → 3.8 → 4.8% 로 단조 상승해 상한을 3런 중 2런에서 넘겼고(오탐 11건 중 9건이 브랜드-only 앵커 — 모델이 "삼성"·"LG"를 `filters.brand` 로 추출하지 못한 표본이 드러난 것이다), 비움 트리거의 단서 목록에 **브랜드·색상 10자**를 더해 되찾았다(병합판 3런은 `-merged-{1,2,3}` 에 근거로 커밋). **잔여 회귀를 알고 머지한다** — 같은 픽스처(v6)에서 그 10자만 다른 `evals/intent_probe` 대조에서 `categoryClear` 31·31 → **28·28**(−3)이고 `demonstrative`·`mainIntent` 도 각 −3 이다(팔 내부 분산 0이라 노이즈로 보기 어렵다). 반대로 `categoryAction3Way` +4.5 · `general` +3.5(#386 이 떨어뜨린 것을 병합 전 수준으로 복구) · `categoryMixedReplace` +3.5 · `conditionOnlyNoCategoryQuery` +3.0 등 **10축이 올랐고**, `screenExactPick` 과 안전축 `screenNoHallucination`·`screenReask` 는 무회귀다. 이슈 「할 일」 ②·③은 **진단하고 반려**했다 — ②(수치 제약 지시)는 재작성 후보 2종이 primary 를 +31.2pp·+6.2pp 깎았고 원인이 어휘가 아니라 같은 절 뒤쪽의 무조건 긍정 명령이었으며, ③(`attrConditions` 억제)은 미탐의 그 갈래를 11건 → 0건으로 없앴지만 `screenExactPick` 을 추가로 −1.5 끌어 별도 이슈로 분리를 제안한다(`docs/lessons.md` 2026-08-07 4건). 계약(api-spec) 무변경.
+- **#430 부수 — #162(조건 없는 발화 → I-3 인기 경로, api-spec §4.17)가 기본 설정에서 비로소 발동한다** — `semantic_query_is_fallback` 의 소비자는 둘인데(`is_underspecified_turn` #336 · `is_no_condition_turn` #162) **후자에는 플래그가 없다.** 위 프롬프트 수정은 `underspecified_reask_enabled`(기본 False)를 켜지 않아도 **오늘 운영 동작을 바꾼다**: `semanticQueryIsFallback=true` 표본이 1/240·1/240 → **출고판 2런에서 `no_condition` 슬라이스 39~40/40** 이 됐고, 그중 `is_no_condition_turn` 의 더 엄격한 조건(`_FILTER_AXES` 전부 빔 + `prior is None`)까지 통과하는 것이 바로 그 슬라이스다. 즉 "아무거나 추천해줘"류가 무필터 I-1(실측 7,245건·13.33MB·1.112s, `docs/specs/MEASURE-I1-RESPONSE-132.md`)로 새던 것이 멈추고 #162 설계대로 I-3 인기 경로 + 고지로 간다 — `no_condition.py` 모듈 docstring 이 그 무필터 호출을 "계약 위반"이라고 부르고 있었다. 회귀가 아니라 **두 번째 죽은 기능이 살아나는 것**이며, `no_condition.py` 는 한 줄도 바뀌지 않았다. 가격 제약만 있는 턴이 여전히 `is_no_condition_turn=False` 로 남는 혈반경은 기존 `tests/unit/test_no_condition.py::test_any_single_condition_axis_blocks_trigger` 가 고정한다. 계약(api-spec) 무변경.
 - **#439 — 스트림 티켓 신원 discriminator XOR 규약이 운영에서 실제 발급되는 판매자 티켓을 전부 거부하던 문제(api-spec §2.3, v0.28.0)** — 종전 `_claims_to_identity`(jwks 레인)는 `role`과 `sub_type`이 함께 있으면 값과 무관하게 `401 TOKEN_INVALID`(`exactly one identity discriminator is required`)였다. BE `StreamTicketProvider` 실측과 CH-6 정본(2026-07-18 확정)을 확인한 결과 실제 발급 형식은 "`sub_type`은 모든 티켓 공통, 판매자만 `role="seller"`·`brandId` 추가"이며 판매자 티켓은 `sub_type="member"`를 항상 동반한다 — 즉 XOR 규약이 BE가 실제로 발급하는 판매자 티켓을 전부 거부하고 있었고, 이것이 운영 `/seller/chat 401`(#408이 사유 로깅을 넣은 바로 그 401)의 원인이었다. `sub_type`을 모든 티켓의 필수 클레임으로, `role`을 선택적 권한 클레임(있으면 exact `"seller"` + `sub_type="member"` 요구)으로 재정의해 XOR을 폐지했다 — `role="seller"`+`sub_type="member"` both-claims 티켓을 신규 수용하고, `sub_type` 없는 판매자 티켓만 종전 허용에서 `401`로 강화했다(CH-6 정본상 실존하지 않는 형식이라 와이어 영향 0). BE 확답에 따라 구매자 티켓에는 `role`을 싣지 않으므로 buyer role 값(`"buyer"` 등 추측 상수)은 신설하지 않았다. 401 사유 문자열은 `invalid sub_type claim`/`invalid seller role claim` 2종으로 정리했고 #408 로그 경로에 그대로 반영됨을 테스트로 확인했다. dev 레인(`AUTH_MODE=dev`)은 이번 개정 대상이 아니며 무변경이다.
 - **#386 — `evals/combo_matrix` 러너가 찜 조회(I-28)를 스텁하지 않아 정상 케이스도 실패를
   관측하던 문제** — 담기 계열과 달리 `get_wishlist` 는 `degrade=none` 에서도 호출되는데 패치가
