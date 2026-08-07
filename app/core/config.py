@@ -1257,6 +1257,59 @@ class Settings(BaseSettings):
     profile_facts_query_margin: int = 50
     profile_session_buffer_cap: int = 100  # 세션 transient 버퍼 발화 개수 상한(무제한 누적 방어)
 
+    # [#356] 델타 추출 LLM 출력 예산. **하드코딩 800 을 실측으로 걷어낸 값이다** —
+    # 구조화 제안 필드(kind·label·anchorPhrase·polarity·predicateHint)를 요구하면서 출력이
+    # 길어졌는데, 운영 smart tier(gpt-5.6-luna, reasoning 모델)에서 추론 토큰이 예산을 먼저 먹어
+    # 분포 프로브 4세션 중 2건이 openai.LengthFinishReasonError 로 죽었다(구 프롬프트는 0건).
+    # #325 가 enrichment 에서 밟은 것과 같은 함정이다. 실패는 세션 버퍼가 보존된 채 재시도되지만
+    # 같은 입력이면 또 실패하므로, 방치하면 그 사용자의 승격이 버퍼 상한까지 멈춘다.
+    #
+    # #325 는 여기에 effort 고정(`minimal`)까지 얹었지만 **그쪽은 fast tier(gpt-5-nano)** 다.
+    # 같은 값을 smart tier 의 gpt-5.6-luna 에 넣으면 400 이 온다(실측: `Unsupported value:
+    # 'reasoning_effort' does not support 'minimal' with this mode`, 프로브 8/8 실패) —
+    # 이 모델은 tool 동반 호출에서도 effort 를 못 받아 openai_tool_reasoning_incompatible_models
+    # 에 이미 올라 있다. 예산 문제는 이 키 하나로 풀리므로 effort 노브는 만들지 않는다.
+    profile_delta_max_tokens: int = Field(default=2048, ge=1)
+    # [#356] 요약 재작성 LLM 출력 예산(하드코딩 1000 이관). 산출은 profile_summary_max_chars 로
+    # 다시 잘리므로 여기서는 그 길이가 reasoning 몫을 뺀 뒤에도 남을 만큼만 잡는다.
+    profile_summary_max_tokens: int = Field(default=2048, ge=1)
+
+    # ── 개인화 그래프 (이슈 #356, SPEC-PROFILE-GRAPH-149 §11) ──
+    # resolver 어휘 스냅 거리 컷. **category_distance_max(0.22)를 그대로 옮기지 않는다** — 그 값은
+    # decompose 가 만든 카테고리 질의 앵커에서 측정됐고 여기 앵커는 발화 파생 구절이라 분포가
+    # 다르다(OPEN-G1). 임계는 사전에 종속한다는 실측 전례가 있다(taxonomy 재시드로 골든셋 90%가
+    # 드롭된 건, docs/lessons.md 2026-08-05). #344 재측정 전까지는 보수적인 쪽에 선다 —
+    # 틀린 노드는 측정된 손실(-0.053/-0.117)을 만들고 없는 노드는 손실이 0에 가깝다(REQ-PGRAPH-012b).
+    graph_node_distance_max: float = Field(default=0.10, ge=0.0, le=2.0)
+    # 거리 컷을 넘겨도 top1-top2 margin 이 이 값 이상이면 채택한다. 거리는 도메인 어휘에
+    # 오염되지만 margin 은 차분이라 상쇄된다(#59 §4.3). category 쪽(0.035)보다 **크게** 잡는 것이
+    # 보수적이다 — margin 이 클수록 예외가 드물어진다.
+    graph_node_override_margin: float = Field(default=0.05, ge=0.0, le=2.0)
+    # 강등 임계 = profile_gate_threshold - graph_demote_margin (REQ-PGRAPH-016 히스테리시스).
+    # **승격 임계는 기존 게이트 임계를 재사용한다 — 두 번째 임계 키를 만들지 않는다**(§11).
+    graph_demote_margin: float = Field(default=0.1, ge=0.0, lt=1.0)
+    # confidence 감쇠 반감기(일). 이 키가 없으면 강등이 **구조적으로 도달 불가**하다 — 게이트가
+    # salience >= profile_gate_threshold 인 관측만 저장하므로 감쇠 없이는 confidence 가 승격 임계
+    # 아래로 내려갈 수 없고, 히스테리시스가 형식만 만족된다(SPEC v0.1.1 §11 보강).
+    graph_decay_half_life_days: float = Field(default=30.0, gt=0.0)
+    # edge 당 보관하는 근거 fact key 개수 상한(무제한 누적 방어).
+    graph_evidence_refs_max: int = Field(default=20, ge=1)
+    profile_graph_label_max_chars: int = Field(default=60, ge=1)
+    # 문서 edge 개수 상한. suppressed·superseded 는 영구 보존이라 단일 jsonb 가 단조 증가하므로
+    # 저장 폭주는 여기서 막는다. 다만 **사용자 삭제(suppressed·pin)에는 걸리지 않는다** — 절단이
+    # tombstone 을 지우면 지운 취향이 다음 배치에 active 로 부활하고 복구 경로가 없다. 밀리는
+    # 순서는 superseded(재파생으로 자기복구) → active 이고, 사용자 삭제만으로 이 값을 넘으면
+    # 넘긴 채 보존하고 경고한다(graph_merge._truncate).
+    profile_graph_max_edges: int = Field(default=200, ge=1)
+    # 와이어 3버킷 라벨의 경계 2개. **버킷 경계는 계약이 아니다**(§6 공통 규약) — 내부 수치는
+    # 노출하지 않고 라벨만 나간다.
+    profile_graph_confidence_buckets: list[float] = Field(default_factory=lambda: [0.34, 0.67])
+    # 델타 추출 프롬프트를 구조화 제안(kind·label·anchorPhrase·polarity·predicateHint) 형식으로
+    # 쓸지. 끄면 #356 이전의 자유형 fact 프롬프트로 되돌아간다 — 프롬프트 변경은 동작 중인 LLM
+    # 계약을 바꾸는 일이고 측정 가능한 회귀를 만든 전례가 있어(#198 rerank 3/3 -> 1/3, #115 앵커
+    # 12건 중 11건 오분류) 롤백 경로를 남긴다(OPEN-G8).
+    profile_graph_delta_enabled: bool = True
+
     # ── 프로필 개인화 강도 (이슈 #119, SPEC-PROFILE-001 §5.1 v0.6.0 · REQ-REC-005-A) ──
     # 프로필을 **어느 소비처에** 주입할지. 기본 rerank_only 인 근거: decompose(fast tier, 한 호출에
     # intent 라우팅+필터+장바구니 의도가 얹힌다)의 _SYSTEM 에 프로필 사용 규칙이 없어 LLM 이 취향을
@@ -1836,6 +1889,45 @@ class Settings(BaseSettings):
                 f"(got {self.category_distance_override_margin} <= "
                 f"{self.category_select_margin_max}): "
                 "'ambiguous' and 'confident' margin bands must not overlap"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _require_demote_threshold_below_promote(self) -> "Settings":
+        """강등 임계가 승격 임계보다 낮지 않으면 기동 실패 (REQ-PGRAPH-016).
+
+        강등 임계 = `profile_gate_threshold - graph_demote_margin` 이므로, margin 이 승격 임계
+        이상이면 강등 임계가 0 이하로 내려가 **강등이 영영 일어나지 않는다** — 히스테리시스가
+        조용히 사라지고 "임계 두 개"라는 설계 의도가 무력화된다. 반대로 margin 이 0 이면 두 임계가
+        같아져 경계값에서 배치마다 승격/강등이 깜빡이고, 사용자에게는 항목이 나타났다 사라지는
+        것으로 보인다. 관계를 코드로 고정한다.
+        """
+        if self.graph_demote_margin >= self.profile_gate_threshold:
+            raise ValueError(
+                "GRAPH_DEMOTE_MARGIN must be < PROFILE_GATE_THRESHOLD "
+                f"(got {self.graph_demote_margin} >= {self.profile_gate_threshold}): "
+                "demote threshold would collapse to zero and demotion could never fire"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _require_two_interior_confidence_buckets(self) -> "Settings":
+        """확신도 경계가 2개·오름차순·(0,1) 내부가 아니면 기동 실패.
+
+        와이어는 3버킷 라벨만 노출한다(§5.2) — 경계 개수가 어긋나면 버킷 수가 조용히 바뀌고,
+        0·1 을 경계로 두면 한쪽 버킷이 비어 라벨이 실질 2종이 된다. 값 자체는 계약이 아니지만
+        (§6 공통 규약) **모양은 계약**이다.
+        """
+        buckets = self.profile_graph_confidence_buckets
+        ok = (
+            len(buckets) == 2
+            and all(0.0 < bound < 1.0 for bound in buckets)
+            and buckets[0] < buckets[1]
+        )
+        if not ok:
+            raise ValueError(
+                "PROFILE_GRAPH_CONFIDENCE_BUCKETS must be exactly two ascending bounds "
+                f"strictly inside (0, 1) (got {buckets}): the wire exposes three labels"
             )
         return self
 

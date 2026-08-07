@@ -16,10 +16,15 @@ zero-result 분기도 degrade 고지도 타지 않는다.
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 from app.agents.buyer.recommendation.decompose import _FILTER_AXES
 from app.agents.buyer.recommendation.state import RouteDecision
+from app.core.text import _strip_unsafe
 from app.schemas.spring import ProductSearchFilters
+
+if TYPE_CHECKING:
+    from app.pipelines.artifact_store import ArtifactStore, CatalogArtifact
 
 logger = logging.getLogger(__name__)
 
@@ -104,9 +109,7 @@ def _is_blank(value: object) -> bool:
     return not value
 
 
-def is_no_condition_turn(
-    decision: RouteDecision, prior: ProductSearchFilters | None
-) -> bool:
+def is_no_condition_turn(decision: RouteDecision, prior: ProductSearchFilters | None) -> bool:
     """이번 턴이 "조건이 하나도 없는 추천 발화"인가.
 
     다섯을 **모두** 만족해야 한다:
@@ -149,10 +152,122 @@ def is_no_condition_turn(
     return all(_is_blank(getattr(decision.filters, field, None)) for field in _FILTER_AXES)
 
 
+def _extract_name_from_search_doc(search_doc: str) -> str:
+    """`search_doc` 의 첫 비어있지 않은 줄에서 상품명을 복원한다 (#435).
+
+    **`build_search_doc`(app/pipelines/embedding.py) 의 필드 순서(`name`, `category`, `brand`,
+    `description`)에 직접 커플링된 추출기다** — 그 순서가 바뀌면 이 함수도 같이 바뀌어야 한다
+    (왕복 테스트가 이 커플링을 고정한다, tests/unit/test_recommendation.py). `name` 이 있으면
+    첫 줄이 곧 상품명이다.
+
+    **[#435 리뷰 C1] `name` 이 없으면 첫 줄이 `category` 로 밀린다 — 이것은 바람직한 동작이
+    아니라 이 함수가 무조건 삼키는 위험한 입력이다.** `ProductChange.name` 은 `str | None`
+    이고 `artifacts_batch` 에 이름 유무 가드가 없어, 이름 없는 상품이 실제로 적재될 수 있다
+    (`app/schemas/spring.py`). 카테고리 문자열은 여러 상품이 공유하므로 그대로 두면 "바디로션
+    찜해줘" 같은 발화가 엉뚱한 한 건으로 확정될 위험이 있다 — 이 함수는 그 위험을 **판정하지
+    않고 그대로 돌려준다**. 위험을 실제로 받아내는 것은 호출부의 상위 가드
+    (`dedup_exposed_names`, 이번 턴 노출 집합 + 스레드 누적 `last_reco` 범위)다. `_strip_unsafe`
+    도 호출부가 적용한다(이 함수는 순수 추출만 한다).
+
+    **알려진 한계(닫지 않음, 후속 이슈 후보)** — 이름 없는 상품이 노출 집합 + 누적 어디와도
+    겹치지 않는 **유일한 카테고리 폴백**이면 여전히 이름처럼 쓰인다. 카테고리 사전
+    (`db/catalog/seed/categories.json`)으로 폴백 여부를 판별해 닫는 방법이 있으나, 그 사전은
+    `"DIY자재/용품 > 반제품"` 같은 경로형이고 `ProductChange.category` 는 `"여행용품"` 처럼
+    leaf 형이라(테스트 픽스처로 확인) 문자열이 그대로 대조되지 않는다 — 추천 hot path 를
+    카테고리 사전 서브시스템에 묶는 것은 이 레인 범위 밖이다.
+    """
+    for line in search_doc.split("\n"):
+        stripped = line.strip()
+        if stripped:
+            return stripped
+    return ""
+
+
+def dedup_exposed_names(
+    exposed: list[int],
+    name_by_id: dict[int, str],
+    accumulated_names: dict[int, str] | None = None,
+) -> dict[int, str]:
+    """노출 집합(`exposed`) 안에서, 그리고 **스레드 누적(`accumulated_names`)과** 같은 이름을
+    공유하는 상품은 이름을 버린다 (#435 가드 G2, 리뷰 C1 로 판정 범위 확장).
+
+    `name` 이 없는 상품은 `search_doc` 첫 줄이 `category` 로 밀린다(`_extract_name_from_search_doc`
+    참조) — "바디로션"·"샴푸"처럼 여러 상품이 같은 카테고리명을 공유하면, 사용자가 "바디로션
+    찜해줘"라고 말했을 때 그중 아무 것도 가리키는지 결정할 수 없다. 이름이 모호했을 때의 대가는
+    "이름 지목이 그 상품에서만 안 된다"이지 "엉뚱한 상품이 확정된다"가 아니어야 한다.
+
+    **[#435 리뷰 C1] 왜 이번 턴 노출 집합만으로는 부족한가** — 판정을 `exposed` 안으로만
+    좁히면 턴을 넘나드는 충돌을 놓친다. 재현: 턴 1 이 상품 101(이름 없음)을 노출해 추출 이름
+    `"생활용품"`(카테고리 폴백)을 그 턴 안에서 유일하므로 그대로 저장하고, 턴 3 이 상품 202
+    (이름 없음)를 노출해 같은 `"생활용품"` 을 **역시 그 턴 안에서는 유일**하므로 그대로
+    저장하면, 스레드 누적 `last_reco` 에 `(101,"생활용품")`·`(202,"생활용품")` 이 **둘 다**
+    남아 프롬프트에도 둘 다 실린다 — "생활용품 찜해줘"에 LLM 이 둘 중 하나를 임의로 확정한다
+    (오확정). 그래서 이번 턴 이름이 **누적의 다른 productId** 이름과 겹치면 그 이름도 버린다.
+    누적 이름에는 정상 경로(B, Spring 원본 이름)에서 온 것도 섞여 있어 그쪽과 겹쳐도 같은
+    이유로 버린다 — "모호하면 확정하지 않는다"는 방향이 같다. **같은 productId 가 재노출된
+    경우는 겹침이 아니다**(자기 자신과는 항상 같은 이름이거나, 달라도 최신 값으로 자연히
+    갱신될 대상이라 여기서 판단할 모호함이 없다).
+
+    판정 범위를 노출/누적 **상품**으로 좁힌 이유는, 그 어디에도 없는 후보와만 겹치는 이름은
+    사용자가 그 상품을 볼 방법이 없어 모호함이 실제로 발생하지 않기 때문이다(남는 한계는
+    `_extract_name_from_search_doc` 참조).
+    """
+    counts: dict[str, int] = {}
+    for pid in exposed:
+        name = name_by_id.get(pid, "")
+        if name:
+            counts[name] = counts.get(name, 0) + 1
+    accumulated = accumulated_names or {}
+    result: dict[int, str] = {}
+    for pid in exposed:
+        name = name_by_id.get(pid, "")
+        if not name or counts[name] != 1:
+            continue
+        conflicts_with_accumulated = any(
+            other_pid != pid and other_name == name for other_pid, other_name in accumulated.items()
+        )
+        if conflicts_with_accumulated:
+            continue
+        result[pid] = name
+    return result
+
+
+class _PreloadedArtifactStore:
+    """`get_many` 프리로드 파사드 (#435 리뷰 C2).
+
+    **왜 파사드인가** — `build_reasons`(app/services/home_recommendation.py)는 홈 추천(I-22)과
+    공유하는 함수라 시그니처를 건드리지 않는다(원 판단 그대로, `rank_by_profile` 참조). 그런데
+    그 함수가 내부에서 이미 `store.get_many(product_ids)` 를 불러 근거를 만드는데, 이름 추출도
+    같은 id 집합의 같은 artifact(`search_doc`)를 필요로 해서, 시그니처를 안 바꾸는 한 호출부가
+    두 번 조회하게 된다 — DB 라운드트립·페이로드(`embedding` 1536 차원 포함)가 2배, 벽시계도
+    `home_reco_store_timeout_s` 가 호출마다 따로 걸려 최악 2배로 늘었다(리뷰 실측). 그래서
+    `store` 자리에 **미리 받아 둔 artifact 를 그대로 돌려주는 이 얇은 대리자**를 넣어, 호출부가
+    한 번만 조회한 결과를 `build_reasons` 도 그대로 재사용하게 한다.
+
+    **프리로드에 없는 id 가 오면 실제 store 로 위임한다** — 오늘은 `cart_ids`·`viewed_ids` 가
+    항상 비어 있어 `build_reasons` 가 요청하는 집합이 정확히 `ranked`(프리로드 전체)와 같지만,
+    나중에 채팅 경로에 시그널이 붙어 요청 집합이 넓어져도 미스가 조용히 `{}`(reason 소실)로
+    새지 않는다 — 그때만 실제 조회가 한 번 더 나가고, 오늘 조합(시그널 없음)에서는 절대 나가지
+    않는다. 프리로드 조회 자체가 실패해 비어 있으면(`{}`) 전량이 미스라 **전량 위임** — 이 경우
+    호출 수는 오늘(변경 전) 그대로다(오늘 동작으로 degrade).
+    """
+
+    def __init__(self, preloaded: dict[int, CatalogArtifact], real_store: ArtifactStore) -> None:
+        self._preloaded = preloaded
+        self._real_store = real_store
+
+    def get_many(self, product_ids: list[int]) -> dict[int, CatalogArtifact]:
+        missing = [pid for pid in product_ids if pid not in self._preloaded]
+        result = {pid: self._preloaded[pid] for pid in product_ids if pid in self._preloaded}
+        if missing:
+            result.update(self._real_store.get_many(missing))
+        return result
+
+
 async def rank_by_profile(
     profile_vec: list[float], *, exclude: set[int], settings
-) -> tuple[list[int], dict[int, str]] | None:
-    """취향 벡터에 가까운 상품 top-k 와 그 근거 문장 — **홈 추천(I-22)과 같은 엔진·같은 인덱스**.
+) -> tuple[list[int], dict[int, str], dict[int, str]] | None:
+    """취향 벡터에 가까운 상품 top-k · 근거 문장 · 상품명 — **홈 추천(I-22)과 같은 엔진·같은 인덱스**.
 
     조건이 하나도 없는 턴의 회원 경로다. 발화에 검색어가 될 조건이 없다는 점이 홈과 같아
     (`home_recommendation` 모듈 docstring: "홈은 발화가 없어 검색어를 만들 수 없다"), 자체
@@ -170,6 +285,18 @@ async def rank_by_profile(
       · 개인화된 근거 문장 — `build_reasons` 의 맞춤 문구는 장바구니·조회 시그널이 있어야
         나오고, 채팅 경로엔 그 시그널을 넘기지 않아 상품 고유 폴백(리뷰 장점)이 된다.
         **개인화는 랭킹(벡터)에 있고 문장에 있지 않다.**
+
+    **[#435] 상품명은 `products.search_doc` 첫 줄에서 복원한 최선노력 값이다** — 원본 컬럼을
+    새로 저장하는 것이 아니라 이미 저장된 임베딩 입력을 읽는 것뿐이다(`_extract_name_from_search_doc`
+    참조). 스토어 조회·추출이 실패하면 이름 없이(`{}`) 진행한다 — 이 값은 담기 가드가 쓰는
+    `productId` 와 달리 **없어도 턴이 죽지 않는 선택 필드**다.
+
+    **[#435 리뷰 C6, 알려진 한계]** `CartStateStore.set_last_reco` 의 이름 병합은 "비어있지
+    않은 이름이면 덮어쓴다"는 규약이다(승계된 옛 이름이 이번 턴 미스로 지워지지 않게 하려는
+    목적). 그런데 같은 상품이 정상 경로(B, Spring 원본 이름 — 권위 있는 소스)로 먼저 실린 뒤
+    이 경로(A)로 재노출되면, 이 최선노력 이름이 그 권위 있는 이름을 **교체할 수 있다.** 동작을
+    바꾸지 않는 이유: 대개 두 이름은 동일 문자열이고, 어긋나는 드문 경우에도 결과는 안전한
+    방향(이름 매칭 실패 → 오늘처럼 미해소)이라 오확정으로 이어지지 않는다.
 
     실패·타임아웃·0건이면 `None` — 호출부가 인기 상품(I-3)으로 폴백한다.
     """
@@ -224,12 +351,25 @@ async def rank_by_profile(
     if not ranked:
         return None
 
+    # [#435 리뷰 C2] artifact 는 **한 번만** 가져온다 — `build_reasons` 가 내부에서 이미
+    # `store.get_many(ranked)` 를 부르는데, 이름도 같은 id 집합의 같은 artifact(`search_doc`)를
+    # 필요로 해서 종전엔 이 조회가 두 번 나갔다(payload 2배, 벽시계 최악 2× home_reco_store_
+    # timeout_s). 여기서 한 번 가져와 `_PreloadedArtifactStore` 로 감싸 `build_reasons` 에 넘기면
+    # 그 함수는 프리로드를 그대로 재사용한다(시그니처는 안 바꾼다 — 홈 I-22 공유 함수라 여기서
+    # 바꾸면 이름이 필요 없는 홈 경로까지 끌고 들어간다). 실패해도 이름 없이(오늘 동작) degrade —
+    # 이름은 담기 가드가 쓰는 productId 와 달리 없어도 턴이 죽지 않는 선택 필드다(G4).
+    try:
+        artifacts = await _call_store(store.get_many, timeout=timeout, product_ids=ranked)
+    except Exception as exc:  # noqa: BLE001 - 이름은 선택 필드다(G4). 없어도 목록은 나간다
+        logger.warning("profile_names_failed", extra={"reason": str(exc)})
+        artifacts = {}
+
     try:
         reasons = await _call_store(
             build_reasons,
             timeout=timeout,
             product_ids=ranked,
-            store=store,
+            store=_PreloadedArtifactStore(artifacts, store),
             cart_ids=[],
             viewed_ids=[],
             settings=settings,
@@ -237,4 +377,12 @@ async def rank_by_profile(
     except Exception as exc:  # noqa: BLE001 - 근거는 선택 필드다(§4.2). 없어도 목록은 나간다
         logger.warning("profile_reasons_failed", extra={"reason": str(exc)})
         reasons = {}
-    return ranked, reasons
+
+    names = {
+        pid: cleaned
+        for pid in ranked
+        if (art := artifacts.get(pid))
+        # G3 — 판매자 입력(search_doc)을 프롬프트에 싣기 전 신뢰경계를 통과시킨다.
+        and (cleaned := _strip_unsafe(_extract_name_from_search_doc(art.search_doc)))
+    }
+    return ranked, reasons, names
