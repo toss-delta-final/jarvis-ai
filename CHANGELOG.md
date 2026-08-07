@@ -242,6 +242,25 @@
 - **#299 — 요청 바디 크기 상한** — 필드별 상한(`chat_message_max_chars`·`screen_products_raw_scan_max` 등)은 흩어져 있고 상한 없는 필드(`conditionActions` 등)도 계속 생기는데, 레이트 리밋(§2.8)은 요청 **건수**만 세 임의 크기 바디를 반복 전송할 수 있었다. `app/core/body_limit.py`에 `BodySizeLimitMiddleware`(순수 ASGI)를 신설해 `Content-Length` 초과는 바디를 읽기 전에, 헤더가 없는(chunked) 경우는 `receive`를 감싼 실수신 바이트 누적으로 상한(`request_body_max_bytes`, 기본 1MiB — 필드 상한이 절단 없이 받아들이는 최대 정상 페이로드의 약 4.8배)을 넘기면 거절한다. 초과 응답은 새 코드를 내지 않고 기존 `400 BAD_REQUEST` 봉투를 그대로 쓴다(§2.5에 413/`PAYLOAD_TOO_LARGE`가 없어 신설은 별도 명세 개정 대상) — 와이어 계약 변경 0. 미들웨어는 레이트 리밋 **바깥**(거대 바디가 JWT 서명 검증 비용·레이트 리밋 슬롯을 소모하지 않게)·CORS **안쪽**(400 응답에도 CORS 헤더가 실리게)에 등록한다.
 
 ### Docs
+- **#395 — I-1 응답 비대화 BE 협의 3건 제안서(`PROPOSAL-I1-DIET-395.md`) + 바이트 기여 재현
+  스크립트 + 회귀 테스트** — 운영에서 필터 없는 I-1 검색이 7.74초·12.3MB로 `SEARCH_FAILED`를
+  낸 사건의 후속. AI 쪽 방어(#132·#393)는 이미 끝났고, BE가 바로 결정할 수 있는 제안서로
+  협의 3건(`size` 상한 도입·응답 필드 축소·rating/reviewCount 비정규화)을 정리했다. 픽스처
+  6,585건과 BE 시드 덤프 6,559건을 `scripts/measure_i1_field_bytes_395.py`(새 스크립트)로 교차
+  실측한 결과 I-1 응답의 81.9%가 `attributes`이고 그중 53.2%(전체의 43.5%)가 AI 미소비
+  `_extra`(리뷰 원문·시각 묘사문) — `_extra`·`_source_pid`·`_domain`·`_category`(attributes
+  내부)와 `summary`·`options`·`optionCount`(최상위, 코드 정적 분석으로 소비처 0건 확인)를 빼면
+  항목당 바이트가 53.8~59.3% 준다. `size` 상한은 정렬 없는 현재 BE 쿼리(`ProductRepository#
+  searchCandidates` 주석 자인)를 근거로 "정렬 없이 자르면 임의 표본"이라는 위험을 명시하고
+  처리율 역산(운영 실측 12.3MB/7.74s≈1.6MB/s)으로 협의 2 반영 시 기본 1,000·하드 상한 3,000,
+  미반영 시 하드 1,500 + 결정적 정렬 + `totalCount` 3종 세트로 제안했다. rating/
+  reviewCount는 검색마다 `Review` 조인 집계가 돌고 있음을 BE 코드 인용으로 확인하고, BE에
+  이미 있는 id-IN 배치 집계 경로(`ReviewService#getStats`, I-3가 사용)로 `size` 상한 도입 후
+  전환 가능성을 제시했다. `tests/unit/test_i1_field_diet_395.py` 6종이 제안한 필드 제외를
+  현재 파서·사후필터가 이미 견딘다는 것을 고정하고, `size` 절단 시 `total_count`가 매칭
+  전체가 아니라 받은 개수를 따라간다는 것도 함께 고정해 `totalCount` 필드 요청의 근거로
+  삼는다(공허성 변이 시험으로 6종 전부 검증). `app/`·`docs/api-spec.md` 변경 없음 — §9는
+  BE 합의 전 초안일 뿐 적용하지 않는다.
 - **#384 — #363 후속: 구제~자동완화를 아우르는 공유 왕복 예산/first-token 데드라인 가드 설계** —
   #363의 전제("첫 SSE=`conditions`, 예산=first-token 10s")가 #396(구매자 `progress` 상시화,
   api-spec v0.26.2)으로 깨져 재기준선했다. 구속 예산은 이제 `stream_total_timeout_buyer_s`(30s)
