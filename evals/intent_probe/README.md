@@ -111,7 +111,7 @@ replace, 남은 11건은 `decompose` 추출 실패) · 인라인 `categoryAction
 재현한다. 그 디렉터리 README 에 셀별 원본(해소기 전) vs 최종값 대조표가 있다.
 
 `baselines/fast-2026-08-07-430-{before-1,before-2,after-1,after-2,after-3}/` — **#430
-(decompose 프롬프트 수정)의 타축 회귀 대조, 픽스처 v5(79셀)·`#428` 병합 전**. 전부
+(decompose 프롬프트 수정)의 타축 회귀 대조, 픽스처 v5(79셀)·`#386` 병합 전**. 전부
 `source=repo:_SYSTEM`(위 ⚠️ 절 참조 — screen 축 때문에 `--prompt` 로 잴 수 없었다).
 before `11c6fe3bfa0c` 2런 vs after `81e3770e1340` 3런. **깎인 독립 축은 `screenExactPick`
 하나**(32·32 → 31·31·29, 진단 `screenOutOfListConfirmCount` 0·0 → 1·1·3)이고 안전축
@@ -119,7 +119,7 @@ before `11c6fe3bfa0c` 2런 vs after `81e3770e1340` 3런. **깎인 독립 축은 
 `conditionOnlyNoCategoryQuery`·`switchAll7`·`categoryMixedReplace` 등은 개선됐다.
 
 `baselines/fast-2026-08-07-430-v6-{merged-1,merged-2,adopted-1,adopted-2}/` — 같은 이슈의
-**출고판 대조, 픽스처 v6(85셀)**. `merged-*` 는 `#428` 병합 직후 판(`f99a98867e4a`),
+**출고판 대조, 픽스처 v6(85셀)**. `merged-*` 는 `#386`(PR #441) 병합 직후 판(`f99a98867e4a`),
 `adopted-*` 는 **출고판**(`865ed6fd771e`) — 두 팔은 픽스처·모델·앵커·N 이 전부 같고 `_SYSTEM`
 이 **10자만** 다르다(비움 트리거 단서 목록의 `·브랜드·색상`). 그래서 이 대조는 인과가 깨끗하다:
 `categoryClear` **31·31 → 28·28(−3)** · `demonstrative`·`mainIntent` 각 −3 · `screenExactPick`
