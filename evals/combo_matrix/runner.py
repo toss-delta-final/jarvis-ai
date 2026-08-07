@@ -41,7 +41,12 @@ if str(_REPO_ROOT) not in sys.path:
 from app.core.auth import Identity  # noqa: E402
 from app.services import home_recommendation as home_svc  # noqa: E402
 from app.services import spring_client  # noqa: E402
-from app.services.spring_client import CartError, WishlistError  # noqa: E402
+from app.schemas.spring import WishlistItem, WishlistView  # noqa: E402
+from app.services.spring_client import (  # noqa: E402
+    CartError,
+    SpringUnavailableError,
+    WishlistError,
+)
 from evals.combo_matrix.fakes import (  # noqa: E402
     RecordingFilteringSearch,
     RecordingPush,
@@ -205,6 +210,37 @@ async def _failing_add_to_cart(*_args, **_kwargs):
     raise CartError("장바구니 담기 시간 초과(주입)")
 
 
+async def _failing_get_wishlist(*_args, **_kwargs):
+    """`spring_client.get_wishlist`(I-28) 몽키패치용 타임아웃 근사.
+
+    **담기 계열과 예외 타입이 다르다** — 조회 어댑터는 4xx/5xx·도달 불가·스키마 불일치를 전부
+    `SpringUnavailableError` 로 낙성한다(`get_cart` 와 같은 degrade 규약, spring_client.py).
+    담기 계열의 `WishlistError` 를 여기에 쓰면 실 어댑터가 절대 내지 않는 예외를 주입하는
+    것이라 관측이 인공물이 된다(#376 이 고친 바로 그 실수, docs/lessons.md).
+    """
+    raise SpringUnavailableError("wishlist 조회 시간 초과(주입)")
+
+
+async def _ok_get_wishlist(*_args, **_kwargs):
+    """정상 찜 목록 — degrade=none 인 찜 조회·해제 케이스용.
+
+    패치하지 않으면 실 네트워크 호출이 나가 로컬에 Spring 이 없을 때 **정상 케이스가 degrade 를
+    관측한다**(관측이 환경에 따라 뒤집힌다 — docs/lessons.md "주입하지 않은 기본값은 하네스 경계
+    밖"). 품절 항목을 하나 섞어 `state_suffix` 라벨 경로(#310)도 함께 관측되게 한다.
+    """
+    return WishlistView(
+        items=[
+            WishlistItem(product_id=101, name="무선 이어폰", purchase_state="AVAILABLE"),
+            WishlistItem(product_id=102, name="가죽 크로스백", purchase_state="SOLD_OUT"),
+        ]
+    )
+
+
+async def _ok_remove_wishlist(*_args, **_kwargs):
+    """정상 찜 해제 — `_ok_get_wishlist` 와 같은 이유로 둔다(해제 성공 경로 관측용)."""
+    return None
+
+
 async def _observe_chat(case: ComboCase) -> dict:
     axes = case.axes
     degrade = axes["degrade"]
@@ -266,12 +302,26 @@ async def _observe_chat(case: ComboCase) -> dict:
     # 실패를 잡아 degrade 처리")과 어긋나 있었다.
     patch_add_wishlist = axes["intent"] == "wishlist_add" and degrade == "spring_timeout"
     patch_add_to_cart = axes["intent"] == "cart_add" and degrade == "spring_timeout"
+    # [#386] 찜 **조회**(I-28)는 degrade 여부와 무관하게 늘 패치한다 — 담기 계열이 실패 주입
+    # 때만 패치하면 되는 것과 다르다. `get_wishlist` 는 정상 케이스에서도 호출되는데, 패치하지
+    # 않으면 로컬에 Spring 이 없을 때 실 네트워크 호출이 실패해 **degrade=none 케이스가 degrade 를
+    # 관측한다**(환경에 따라 결과가 뒤집힌다). wishlist_remove 도 대상 해소용으로 같은 함수를
+    # 부르므로 함께 잡는다 — 이 케이스가 이번 재생성으로 ci·degrade=none 조합이 되면서 그
+    # 공백이 드러났다.
+    patch_wishlist_read = axes["intent"] in ("wishlist_view", "wishlist_remove")
     original_add_wishlist = spring_client.add_wishlist
     original_add_to_cart = spring_client.add_to_cart
+    original_get_wishlist = spring_client.get_wishlist
+    original_remove_wishlist = spring_client.remove_wishlist
     if patch_add_wishlist:
         spring_client.add_wishlist = _failing_add_wishlist
     if patch_add_to_cart:
         spring_client.add_to_cart = _failing_add_to_cart
+    if patch_wishlist_read:
+        spring_client.get_wishlist = (
+            _failing_get_wishlist if degrade == "spring_timeout" else _ok_get_wishlist
+        )
+        spring_client.remove_wishlist = _ok_remove_wishlist
     try:
         events = await _collect(
             run_buyer_turn(
@@ -311,6 +361,9 @@ async def _observe_chat(case: ComboCase) -> dict:
             spring_client.add_wishlist = original_add_wishlist
         if patch_add_to_cart:
             spring_client.add_to_cart = original_add_to_cart
+        if patch_wishlist_read:
+            spring_client.get_wishlist = original_get_wishlist
+            spring_client.remove_wishlist = original_remove_wishlist
     event_types = [e["type"] for e in events]
     terminal = events[-1] if events else None
     # action/token 이벤트는 degrade 결과(CART_ADD_FAILED reason 등)를 실어 나르는데, 예전엔
@@ -356,7 +409,10 @@ async def _observe_chat(case: ComboCase) -> dict:
             "search 주입 경계는 search_service.py 임베딩 재정렬보다 상류 — degrade=none 과 "
             "동일하게 실행됨(runner.py 모듈 docstring 참조)"
         )
-    if axes["intent"] in ("wishlist_add", "wishlist_remove") and axes["identity"] == "guest":
+    if (
+        axes["intent"] in ("wishlist_add", "wishlist_remove", "wishlist_view")
+        and axes["identity"] == "guest"
+    ):
         notes.append(
             "identity=guest 는 로그인 필요 게이트가 Spring 호출보다 먼저 걸려 이 케이스는 "
             "SpringUnavailableError 미처리 갭(expected_behavior.status=partial 근거)을 실제로는 "
