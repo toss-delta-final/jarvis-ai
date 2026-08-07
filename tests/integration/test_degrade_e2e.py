@@ -212,3 +212,60 @@ def test_cart_view_degrades_when_spring_unreachable(client, spring, llm, monkeyp
 
     events = parse_sse(_chat(client, "장바구니 보여줘").text)
     assert event_types(events)[-1] == "done"
+
+
+def _wishlist_view_turn(client, llm, message: str = "내가 뭐 찜했지?"):
+    llm._decompose = {
+        "intent": "wishlist_view",
+        "reply": "",
+        "case": 2,
+        "semanticQuery": "",
+        "filters": {},
+    }
+    return parse_sse(_chat(client, message, thread="th-wv").text)
+
+
+def test_wishlist_view_degrades_when_spring_unreachable(client, spring, llm) -> None:
+    """[#386] 찜 목록 조회 실패 → `token` 안내 후 정상 종료. `action` 은 내지 않는다.
+
+    조회는 상태를 바꾸지 않으므로 `ActionData.type` 유니온에 실패 어휘가 없다(§3.1) —
+    `stream_wishlist_remove` 가 `action(WISHLIST_REMOVE_FAILED)` 로 답하는 것과 갈리는 지점이다.
+    개별 처리를 빠뜨리면 상위 스트림 catch-all 이 `error(INTERNAL)` 로 내보낸다(#368).
+    """
+    spring.fail_wishlist = True
+
+    events = _wishlist_view_turn(client, llm)
+    assert event_types(events)[-1] == "done"
+    assert first_of(events, "error") is None
+    assert first_of(events, "action") is None
+    token = first_of(events, "token")
+    assert token is not None and "찜 목록을 불러오지 못했어요" in token["text"]
+
+
+def test_wishlist_view_lists_items_over_real_http_boundary(client, spring, llm) -> None:
+    """[#386] 완료조건 ① — 회원이 물으면 찜 상품명이 `token` 텍스트로 나온다(실 HTTP 경계)."""
+    spring.wishlist_items = [
+        {"productId": 101, "name": "무선 이어폰", "purchaseState": "AVAILABLE"},
+        {"productId": 102, "name": "가죽 크로스백", "purchaseState": "SOLD_OUT"},
+    ]
+
+    events = _wishlist_view_turn(client, llm)
+    assert event_types(events)[-1] == "done"
+    assert first_of(events, "action") is None
+    assert first_of(events, "products.ready") is None  # 경로 B — 상품 카드 없음
+    token = first_of(events, "token")
+    assert token is not None
+    assert "무선 이어폰" in token["text"]
+    assert "가죽 크로스백 (품절)" in token["text"]
+    assert spring.requests_to("/internal/wishlist")
+
+
+def test_wishlist_view_empty_is_guidance_not_error(client, spring, llm) -> None:
+    """[#386] 완료조건 ④ — 찜 0건은 200 + items:[] 이고 정상 안내로 끝난다(오류 아님)."""
+    spring.wishlist_items = []
+
+    events = _wishlist_view_turn(client, llm)
+    assert event_types(events)[-1] == "done"
+    assert first_of(events, "error") is None
+    token = first_of(events, "token")
+    assert token is not None and token["text"] == "찜한 상품이 없어요."

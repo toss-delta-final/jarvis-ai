@@ -116,6 +116,10 @@ def test_expected_denominators_match_issue_240_shape() -> None:
         "screenResolution": 48,
         # [#344 라운드 2] 조건 전용 5발화 × none 컨텍스트 × N=8.
         "conditionOnlyNoCategoryQuery": 40,
+        # [#386] 찜 조회 6발화 × none 컨텍스트 × N=8 — 양성 3(24) · 음성 대조 3(24) = 48.
+        "wishlistViewPositive": 24,
+        "wishlistViewNoSteal": 24,
+        "wishlistViewRouting": 48,
     }
 
 

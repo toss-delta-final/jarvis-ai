@@ -419,13 +419,26 @@ async def test_overspecified_zero_has_no_relaxable_axis_so_no_relaxation_search(
     from app.schemas.spring import ProductSearchFilters
 
     cases = {c.case_id: c for c in load_cases()}
+    # [#386] `degrade` 를 `none` 으로 좁힌다 — **판정을 완화한 게 아니라 적용 범위를 정확히 한
+    # 것이다.** 이 판정은 "0건 → 완화 단계에서 후보가 없어 재검색 0회 → zero_result 종료"라는
+    # 경로에 대한 것인데, `degrade=spring_timeout` 케이스는 검색 자체가 실패해(SEARCH_FAILED)
+    # 완화 단계에 **닿지도 않는다** — 거기서 "완화 후보가 없어야 한다"를 요구하면 판정과 무관한
+    # 축(필터 8축 전부 present 여도 무방한 케이스)까지 끌어들여 테스트가 엉뚱한 곳에서 깨진다.
+    #
+    # #448 시점에는 overspecified_zero ci 케이스가 `degrade=none` 하나뿐이라 이 구분이 필요
+    # 없었다. #386 재생성으로 그 자리가 `spring_timeout` 으로 바뀌면서 드러났고, 판정이 관측되던
+    # `degrade=none` 자리는 `axes.json` 의 `overspecified_zero_member_none_price_min`
+    # directedCase 로 복원했다(그 `reason` 에 경위가 있다).
     overspecified_zero_ci_cases = [
         c
         for c in cases.values()
-        if c.observation_mode == "ci" and c.axes.get("constraint_strength") == "overspecified_zero"
+        if c.observation_mode == "ci"
+        and c.axes.get("constraint_strength") == "overspecified_zero"
+        and c.axes.get("degrade") == "none"
     ]
     assert overspecified_zero_ci_cases, (
-        "overspecified_zero ci 케이스가 하나도 없다 — 전제 확인 불가"
+        "overspecified_zero × degrade=none 인 ci 케이스가 하나도 없다 — #425 판정을 관측할 자리가 "
+        "사라졌다는 뜻이다(재생성이 그 조합을 지우면 directedCase 로 복원할 것)."
     )
 
     settings = get_settings()
@@ -501,27 +514,29 @@ def test_axes_document_is_the_single_source_of_truth() -> None:
 
 async def test_representable_filters_actually_narrow_search_results() -> None:
     """D8-1 — 표현 가능한 하드필터(category·brand·rating_min)가 present 인 ci 케이스는 결과가
-    필터 없을 때보다 실제로 줄어든다(공허 통과 방지). combo-0026(필터 8축 전부 present)의
+    필터 없을 때보다 실제로 줄어든다(공허 통과 방지). combo-0058(필터 8축 전부 present)의
+    (#386 재생성 전에는 combo-0026 이 이 자리였다 — 축 조합이 같은 케이스로 옮겼다: recommend·
+    guest·rerank_failed·case=3·normal·필터 8축 present. 관측값도 그대로다.)
     `PAIR_CATALOG`(4건) 대비 product 101 하나만 category=무선이어폰·brand=나이키·
     rating_min=4.0·price 20000~50000 을 전부 만족한다."""
     cases = {c.case_id: c for c in load_cases()}
-    observed = await observe(cases["combo-0026"])
+    observed = await observe(cases["combo-0058"])
     assert observed["searchCallCount"] > 0
     assert observed["pushProductCount"] == 1, (
-        "combo-0026 은 category·brand·rating_min·price 하드필터로 4건 중 1건(product 101)만 "
+        "combo-0058 은 category·brand·rating_min·price 하드필터로 4건 중 1건(product 101)만 "
         "남아야 한다 — 필터가 실제로 결과를 줄이지 않으면 이 값이 4에 가깝게 나온다"
     )
 
 
 async def test_search_filters_is_boundary_value_not_injected_value() -> None:
     """D8-2 — `observed.searchFilters` 는 decompose 주입값이 아니라 search 콜러블이 실제로 받은
-    경계 도달값(첫 호출)이다. combo-0026 은 decompose 산출 filters.keyword="가벼운" 을 주입하지만,
+    경계 도달값(첫 호출)이다. combo-0058 은 decompose 산출 filters.keyword="가벼운" 을 주입하지만,
     category leg 가 있으면(#381 D5) `#51` 규칙(`app/agents/buyer/recommendation/graph.py::_leg` 의
     `leg_keyword = None if drop_keyword else ...`)이 leg 검색어에서 keyword 를 비운다 — 주입값과
     경계 도달값이 실제로 갈리는 축이다. 또한 첫 호출은 자동완화 재검색(축별로 하나씩 완화)이 시작되기
     전 값이라 이후 호출(예: color 완화 재검색)과도 달라야 한다 — "첫 호출" 계약 자체를 잠근다."""
     cases = {c.case_id: c for c in load_cases()}
-    case = cases["combo-0026"]
+    case = cases["combo-0058"]
     injected = build_decompose_json(case.axes)["filters"]
     assert injected["keyword"] == "가벼운"
 
@@ -543,13 +558,15 @@ async def test_unapplied_search_filters_are_loud_for_unrepresentable_axes() -> N
     비어 있다."""
     cases = {c.case_id: c for c in load_cases()}
     with_unrepresentable = await observe(
-        cases["combo-0026"]
+        cases["combo-0058"]
     )  # keyword·color·attr_conditions 전부 present
     assert set(with_unrepresentable["unappliedSearchFilters"]) == {"color", "attrConditions"}, (
         with_unrepresentable["unappliedSearchFilters"]
     )
 
-    representable_only = await observe(cases["combo-0023"])  # price_min 만 present
+    # (#386 재생성 전에는 combo-0023 이 이 자리였다 — 표현 가능한 축만 present 인 ci 케이스로
+    # 옮겼다. 그쪽은 price_min, 이쪽은 category 가 present 인데 이 단언과는 무관하다.)
+    representable_only = await observe(cases["combo-0057"])  # category 만 present
     assert representable_only["unappliedSearchFilters"] == []
 
 
