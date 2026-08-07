@@ -77,8 +77,8 @@ class RescueStageCounts(NamedTuple):
     first-token 에서 30s 로 넓혔다)까지 함께 건너뛰게 만들어, `RELAXATION_MAX_ROUNDS=0`
     조합에서 F-1 의 재시도 총량이 30s 예산에 기여하는지를 기동 검증이 아예 안 하는 구멍이
     됐다. **미룸(deferral) 제약이 실제로 필요한 곳(first-token 비교)에만**
-    `_deferred_first_event_i1_calls`/`_deferred_first_event_rescue_i1_calls` 래퍼가 그 게이트를
-    적용한다 — 이 함수 자신은 게이트하지 않는다.
+    `_deferred_first_event_i1_calls` 래퍼가 그 게이트를 적용한다 — 이 함수 자신은 게이트하지
+    않는다.
     """
 
     main: int  # 본검색 — 미룸 여부와 무관하게 항상 1
@@ -213,8 +213,7 @@ def _deferred_first_event_i1_calls(
     """미룬 턴의 첫 이벤트(`conditions`) 앞에 직렬로 놓이는 I-1 호출 수 (#288, #383 보정).
 
     [#427 D7] 구현은 `_rescue_chain_stage_counts` 로 위임한다 — 세 항의 정의·근거는 그
-    함수 docstring 참조. 이 함수는 총합(`main + rescue + auto_relax`)만 남긴 하위 호환
-    래퍼다(기존 두 불변식 `rescue ≤ total`·`total == 0 → rescue == 0` 을 그대로 보존한다).
+    함수 docstring 참조. 이 함수는 총합(`main + rescue + auto_relax`)만 남긴다.
 
     [PR #452 리뷰 R3] `_rescue_chain_stage_counts` 는 더 이상 미룸(`may_auto_relax`) 게이트로
     조기 return 하지 않는다(물리적 사실만 담는다) — **이 함수 이름이 뜻하는 "첫 이벤트 앞"
@@ -223,6 +222,18 @@ def _deferred_first_event_i1_calls(
     없으므로 0을 낸다 — first-token 비교(`_require_search_retry_within_stream_budget`)에만
     쓰는 값이다. 구매자 30s 상한·observe 꼬리 예약 비교는 미룸과 무관하므로 이 게이트가 적용
     안 된 `_rescue_chain_stage_counts` 를 직접 쓴다(그 검증기 참조).
+
+    [PR #452 리뷰 R6] #383(PR #414)이 "구제 폴백 항만 떼는" 자매 함수(rescue-only 추출기)를
+    별도로 뒀던 이유는, 그 시절 검증기가 억제된 항(1 회분)과 구제 폴백 항(`budget = 검색예산 ×
+    (재시도+1)`)을 항목별로 직접 조립했기
+    때문이다 — **F-1/#343 재검색은 `suppress_search_retry()` 블록 밖이라 억제 여부와 무관하게
+    항상 `spring_max_retries` 만큼 재시도한다**(#383 의 핵심 발견, 그 사실 근거는 이제
+    `_rescue_chain_serial_budget_s` docstring 이 갖고 있다). R2 이후 그 항목별 조립은
+    `_rescue_chain_serial_budget_s` 안으로 옮겨져 `counts.rescue` 를 함수 내부에서 직접
+    곱하므로, 별도 추출기가 더 이상 필요 없어져 R6 가 삭제했다 — 운영 소비처가 이미 0곳이었고
+    (D7 이 막으려는 "같은 계수의 두 번째 미사용 추출기" 드리프트 미끼), 카테고리 토글이
+    `rescue` 항을 켜고 끄는 성질은 `_rescue_chain_stage_counts(...).rescue` 에 대해 직접
+    잰다(`tests/unit/test_config.py`).
     """
     if relaxation_max_rounds <= 0 or not (set(auto_fields) & set(chip_fields)):
         return 0  # may_auto_relax가 False — conditions가 검색 앞에 나가 직렬 검증 대상이 아니다.
@@ -233,51 +244,6 @@ def _deferred_first_event_i1_calls(
         category_expand_enabled=category_expand_enabled,
     )
     return counts.main + counts.rescue + counts.auto_relax
-
-
-def _deferred_first_event_rescue_i1_calls(
-    *,
-    relaxation_max_rounds: int,
-    auto_fields: list[str],
-    chip_fields: list[str],
-    category_expand_enabled: bool,
-) -> int:
-    """위 총합 중 **구제 폴백 항(0 또는 1)만** 떼어낸다 (#383 R5, PR #414 Claude 리뷰).
-
-    존재 이유는 값 매김이 다르기 때문이다 — `_require_search_retry_within_stream_budget` 의
-    가드 OFF 분기(기본)는 `graph.py::stream_recommendation` 의 `suppress_deferred_search_
-    retry = may_auto_relax and not search_retry_on_deferred_conditions` 로 재시도를
-    끄는데, 그 `with spring_client.suppress_search_retry()` 블록은 저장소 전체에 **딱 두
-    곳**뿐이다(같은 함수 안에서 본 검색을 감싼 곳, 자동 완화 probe `_probe(cand)` 를 감싼
-    곳 — 둘 다 `await` 직후 블록을 닫는다). F-1(#222) 구제 폴백과 #343 억제-후 재판정
-    (둘 다 같은 함수의 `_run_search_unfiltered()` 호출)은 그 블록 **밖**에서 돈다 —
-    `spring_client.py::search` 의 `attempts = 1 if _search_retry_suppressed.get() else
-    settings.spring_max_retries + 1` 을 그대로 타므로 가드 OFF 여도 **항상**
-    `SPRING_MAX_RETRIES` 만큼 재시도한다. 그래서 이 항만은 검색 예산 1 회분이 아니라
-    `budget = 검색예산 * (spring_max_retries + 1)` 으로 값을 매겨야 한다 — 총합 함수와
-    세 항을 균질하게 검색예산 1 회분으로 매기면 `SPRING_MAX_RETRIES=1`
-    (`.env.example` 이 한때 싣던 값)에서 이 항을 과소평가한다(이 이슈가 원래 고치려던
-    실패 모드를 항 하나에서 되풀이하는 셈이다).
-
-    구제 경로 자체를 억제하도록 `graph.py` 를 바꾸는 선택지는 **런타임 동작 변경**이라
-    범위 밖이다(#384/#288 소관) — 여기서는 가드가 현실을 정확히 재는 것만 고친다.
-
-    [#427 D7] 구현은 `_rescue_chain_stage_counts` 로 위임한다.
-
-    [PR #452 리뷰 R3] 미룸 게이트는 이 함수가 직접 적용한다(위 `_deferred_first_event_i1_
-    calls` 와 **같은 조건** — 그래야 `rescue ≤ total` 과 `total == 0 → rescue == 0` 두
-    불변식이 항상 성립한다). `_rescue_chain_stage_counts` 자신은 더 이상 조기 return 하지
-    않는다(물리적 사실만 담는다, 위 참조).
-    """
-    if relaxation_max_rounds <= 0 or not (set(auto_fields) & set(chip_fields)):
-        return 0  # may_auto_relax가 False — 위 총합 함수와 같은 게이트(불변식 보존).
-    counts = _rescue_chain_stage_counts(
-        relaxation_max_rounds=relaxation_max_rounds,
-        auto_fields=auto_fields,
-        chip_fields=chip_fields,
-        category_expand_enabled=category_expand_enabled,
-    )
-    return counts.rescue
 
 
 class Settings(BaseSettings):

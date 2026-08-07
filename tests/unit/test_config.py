@@ -634,43 +634,59 @@ def test_deferred_first_event_i1_calls_category_expand_enabled_toggles_rescue_te
     assert _deferred_first_event_i1_calls(**base_kwargs, category_expand_enabled=False) == 2
 
 
-def test_deferred_first_event_rescue_i1_calls_isolates_the_rescue_term():
-    """[#383 R5] 구제 폴백 항만 떼는 헬퍼 — True/False 에서 1/0, 미룸 불성립(rounds=0 /
-    교집합 0)에서는 둘 다 0이다. `rescue ≤ total`·`total == 0 → rescue == 0` 불변식도 고정한다
-    (총합 함수와 조기 return 조건이 어긋나면 이 두 불변식이 깨진다).
+def test_rescue_chain_stage_counts_rescue_term_toggles_with_category_expand_enabled():
+    """[#383, PR #452 리뷰 R6 — 재조준] `category_expand_enabled` 이 `_rescue_chain_stage_
+    counts` 의 `rescue` 항(F-1/#343 구제 폴백)을 켜고 끈다 — True/False 에서 1/0.
+
+    [R6] 구제 항만 떼는 하위 호환 래퍼(#383 R5, rescue-only 추출기)가 운영 소비처 없이 죽은
+    코드가 돼 삭제됐다(#427 이 그 조립을 `_rescue_chain_serial_budget_s` 안으로 옮기면서
+    호출이 사라졌다, `config.py::_deferred_first_event_i1_calls` docstring 참조) — 이
+    테스트가 재던 "카테고리 토글이 rescue 항을 켜고 끈다"는 성질을 이제
+    `_rescue_chain_stage_counts(...).rescue` 에 직접 잰다.
+
+    옛 테스트가 함께 쟀던 "rounds=0/교집합 0 이면 rescue 도 0" 어설션은 옮기지 **않는다** —
+    R3 이후 `rescue` 는 `may_auto_relax` 게이트와 무관해져(design D6, F-1/#343 은 미룸
+    성립 여부와 무관하게 돈다) 더 이상 참이 아니다(의도적으로 그렇게 재정의됐다). 그 조건에서
+    **총합**이 0이 되는 성질(첫 이벤트 앞 직렬 검증 자체가 대상이 아님)은
+    `_deferred_first_event_i1_calls` 의 게이트 테스트
+    (`test_deferred_first_event_i1_calls_zero_when_relaxation_disabled`·
+    `..._zero_when_auto_field_missing_from_chip`)가 이미 고정하고 있어 중복이라 다시 두지
+    않는다.
     """
-    from app.core.config import (
-        _deferred_first_event_i1_calls,
-        _deferred_first_event_rescue_i1_calls,
-    )
+    from app.core.config import _rescue_chain_stage_counts
 
     base_kwargs = {
         "relaxation_max_rounds": 3,
         "auto_fields": ["ratingMin"],
         "chip_fields": ["priceMax", "ratingMin", "brand", "color"],
     }
-    rounds_disabled = {**base_kwargs, "relaxation_max_rounds": 0}
-    intersection_disabled = {**base_kwargs, "auto_fields": []}
 
-    assert _deferred_first_event_rescue_i1_calls(**base_kwargs, category_expand_enabled=True) == 1
-    assert _deferred_first_event_rescue_i1_calls(**base_kwargs, category_expand_enabled=False) == 0
-    assert (
-        _deferred_first_event_rescue_i1_calls(**rounds_disabled, category_expand_enabled=True) == 0
-    )
-    assert (
-        _deferred_first_event_rescue_i1_calls(**intersection_disabled, category_expand_enabled=True)
-        == 0
-    )
+    assert _rescue_chain_stage_counts(**base_kwargs, category_expand_enabled=True).rescue == 1
+    assert _rescue_chain_stage_counts(**base_kwargs, category_expand_enabled=False).rescue == 0
 
-    for enabled in (True, False):
-        for kwargs in (base_kwargs, rounds_disabled, intersection_disabled):
-            total = _deferred_first_event_i1_calls(**kwargs, category_expand_enabled=enabled)
-            rescue = _deferred_first_event_rescue_i1_calls(
-                **kwargs, category_expand_enabled=enabled
-            )
-            assert rescue <= total
-            if total == 0:
-                assert rescue == 0
+
+def test_rescue_chain_stage_counts_rescue_term_never_exceeds_the_total():
+    """[PR #452 리뷰 R6 — 재조준] 옛 `rescue ≤ total` 불변식을 지금 실제로 의미가 남는 대상
+    (`_rescue_chain_stage_counts` 자신)에 대해 다시 잰다 — `main`(항상 1)·`auto_relax`
+    (0 이상)가 함께 더해지는 구조라 성립해야 한다. 여러 rounds·교집합·category_expand_enabled
+    조합으로 재서 상수 하나만 우연히 통과하는 공허한 어설션이 아니게 한다.
+    """
+    from app.core.config import _rescue_chain_stage_counts
+
+    for rounds, auto_fields, category_expand_enabled in (
+        (3, ["ratingMin"], True),
+        (3, ["ratingMin"], False),
+        (0, ["ratingMin"], True),
+        (3, [], True),
+        (1, ["ratingMin", "priceMax"], True),
+    ):
+        counts = _rescue_chain_stage_counts(
+            relaxation_max_rounds=rounds,
+            auto_fields=auto_fields,
+            chip_fields=["priceMax", "ratingMin", "brand", "color"],
+            category_expand_enabled=category_expand_enabled,
+        )
+        assert counts.rescue <= counts.main + counts.rescue + counts.auto_relax
 
 
 def test_deferred_first_event_i1_calls_zero_when_relaxation_disabled():
@@ -750,11 +766,13 @@ def test_default_settings_pass_deferred_serial_budget_by_formula():
     (#383 R5). `retries=0` 이면 `budget == spring_timeout_s` 라 억제된 항(본 검색·자동완화
     probe)과 구제 폴백 항의 값이 갈리지 않는 경계 조건이다 — 이 테스트는 총 호출 수만이
     아니라 **항별로 나눈 값 매김**을 명시적으로 계산해도 여전히 9.0 임을 고정한다.
+
+    [PR #452 리뷰 R6 — 재조준] 구제 항만 떼던 하위 호환 래퍼(#383 R5)가 죽은 코드로 삭제됐다
+    — 여기서 뗀 값은 `_rescue_chain_stage_counts(...).rescue` 로 조립한다(기본 설정은 미룸
+    게이트가 성립해 `_deferred_first_event_i1_calls` 의 게이트된 총합과
+    `_rescue_chain_stage_counts` 의 물리적 rescue 항이 같은 값을 낸다).
     """
-    from app.core.config import (
-        _deferred_first_event_i1_calls,
-        _deferred_first_event_rescue_i1_calls,
-    )
+    from app.core.config import _deferred_first_event_i1_calls, _rescue_chain_stage_counts
 
     settings = Settings(_env_file=None)
     kwargs = {
@@ -764,7 +782,7 @@ def test_default_settings_pass_deferred_serial_budget_by_formula():
         "category_expand_enabled": settings.category_expand_enabled,
     }
     calls = _deferred_first_event_i1_calls(**kwargs)
-    rescue_calls = _deferred_first_event_rescue_i1_calls(**kwargs)
+    rescue_calls = _rescue_chain_stage_counts(**kwargs).rescue
     suppressed_calls = calls - rescue_calls
     budget = settings.spring_timeout_s * (settings.spring_max_retries + 1)
 
