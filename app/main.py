@@ -11,6 +11,11 @@ FE 가 AI 서버를 다른 오리진에서 직접 호출하므로 CORS 가 앞�
 스케줄러(app/pipelines/scheduler.py)를
 기동/종료한다 — TestClient(app) 를 `with` 없이 쓰는 기존 테스트들은 lifespan 이 발동하지 않아
 영향이 없다(경험적으로 확인).
+
+[추가 2026-08-06, 이슈 #401] lifespan 에서 categories 0행/0임베딩 가드
+(app/pipelines/category_seed.py check_category_dictionary)를 검사한다. 기본값(log)·off 는
+DB 연결 실패로 기동을 막지 않는다. category_dictionary_startup_check="fail" 로 강한 검증을
+opt-in 하면 사전 상태를 확인 못하는 모든 경우(도달 불가 포함)에 기동을 거부한다(라운드 7 F8).
 """
 
 from __future__ import annotations
@@ -45,6 +50,11 @@ from app.core.pg_store import close_store as close_pg_store
 from app.core.pg_resilience import close_advisory_pool
 from app.core.session_context import close_session_lifecycle, initialize_session_lifecycle
 from app.core.ratelimit import rate_limit_middleware
+from app.pipelines.category_seed import (
+    CategoryDictionaryError,
+    check_category_dictionary,
+    unreachable_db_error_types,
+)
 from app.pipelines.scheduler import start_scheduler, stop_scheduler
 
 logger = get_logger(__name__)
@@ -126,11 +136,71 @@ async def _close_owned_resources() -> None:
         raise cancellation
 
 
+async def _check_category_dictionary_startup() -> None:
+    """categories 0행/0임베딩 가드(이슈 #401) — 기동 시 1회.
+
+    세 갈래로 원인을 구분해 로그는 정직하게 남기되(진단 정보는 뭉개지 않는다), **거부 여부는
+    `fail` 모드에서 하나로 통일**한다(#401 라운드 7 리뷰 F8). 라운드 5(F7)의 "도달 불가는 모든
+    모드에서 WARNING"은 리뷰가 실측으로 반박했다 — `psycopg.OperationalError` 는 일시적 도달
+    불가(연결 거부·타임아웃)와 **영구적 구성 오류**(비밀번호·dbname 오타)를 **같은 타입**으로
+    낸다. libpq 는 연결 수립 실패에 `sqlstate` 등 구조화된 판별자를 주지 않고 차이는 지역화되는
+    메시지 문자열뿐이라(실측 확인) 예외 타입으로 "진짜 구성 오류"만 골라내는 건 불가능하다.
+
+    그래서 분류 대신 `fail` 의 **의미**를 바꾼다 — `fail` 은 "강한 검증을 opt-in 한 모드"이므로
+    계약은 "**사전이 건강함을 확인하지 못하면 기동하지 않는다**"다(원인이 오타든 일시적 불통이든
+    가드 자체의 버그든 상관없이). `log`(기본값)·`off` 의 동작은 이전과 동일하다:
+
+    1. `CategoryDictionaryError`(0행/0임베딩·비연결 DB 오류 — 모드는 `check_category_dictionary`
+       안에서 이미 적용됨) — 그대로 전파해 기동을 거부한다.
+    2. **도달 불가 계열**(`OSError`·`psycopg.OperationalError` —
+       `category_seed.unreachable_db_error_types()` 로 얻는다. `app/main.py` 는 psycopg 를
+       import 하지 않는다는 lazy-import 관례를 지키려고 `category_seed.py` 가 타입을 대신
+       노출한다) — `log`/`off` 는 WARNING 후 계속(부팅 순간 DB 흔들림으로 서버 전체를 못 뜨게
+       하는 건 과하다). **`fail` 은 ERROR 로그 후 전파**한다 — 잘못된 DSN(비밀번호·dbname
+       오타)도 이 타입으로 나오므로, `fail` 을 건 운영자가 가장 잡고 싶은 실수를 잡으려면
+       도달 불가도 "확인 실패"로 다뤄야 한다.
+    3. **그 밖의 예상 못 한 예외**(가드 코드 자체 버그) — ERROR 로그("도달 불가"가 아니라
+       "예상 못 한 실패"임을 정직하게 남긴다, `exc_info=True`). `log`/`off` 는 계속하고
+       `fail` 은 전파한다 — 같은 "확인 실패면 거부" 원칙의 연장이다.
+    """
+    settings = get_settings()
+    mode = settings.category_dictionary_startup_check
+    try:
+        await asyncio.to_thread(
+            check_category_dictionary,
+            settings.catalog_db_url,
+            mode=mode,
+        )
+    except CategoryDictionaryError:
+        raise
+    except unreachable_db_error_types():
+        if mode == "fail":
+            logger.error(
+                "category dictionary startup check could not reach the database — "
+                "failing startup because fail mode requires confirmed dictionary health "
+                "(cause may be transient unreachability OR a permanent misconfiguration "
+                "such as a wrong password/dbname — psycopg cannot reliably distinguish them)",
+                exc_info=True,
+            )
+            raise
+        logger.warning(
+            "category dictionary startup check could not reach the database", exc_info=True
+        )
+    except Exception:
+        logger.error(
+            "category dictionary startup check failed unexpectedly (guard bug, not a reachability issue)",
+            exc_info=True,
+        )
+        if mode == "fail":
+            raise
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Lifecycle migration 뒤 scheduler를 시작하고 owned resources를 역순 종료한다."""
     scheduler_started = False
     try:
+        await _check_category_dictionary_startup()
         await initialize_session_lifecycle()
         start_scheduler()
         scheduler_started = True

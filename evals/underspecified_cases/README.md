@@ -20,8 +20,11 @@
 
 **`decomposeFixture` 는 decompose 산출 가정값이다** — 발화(`utterance`)가 실제로 그
 필드값을 산출하는지(예: "이어폰 추천해줘"가 정말 `category_queries` 를 채우는지)는 이
-케이스가 검증하지 않는다. 그 발화→산출 정합은 e2e 커버리지(#335)의 소관이다. 여기서는
-"decompose 가 이 값을 냈다면 판정이 이렇게 나와야 한다"만 고정한다.
+케이스가 검증하지 않는다. 여기서는 "decompose 가 이 값을 냈다면 판정이 이렇게 나와야 한다"만
+고정한다. **그 발화→산출 정합은 `evals/underspecified_probe`(#380)가 실 LLM 반복 분포로
+잰다** — #335 는 e2e 커버리지 소관으로 이 정합을 이행하지 않았고, #380 이 이 8건 중 7건을
+`cases.json` 승계 앵커로 그대로 흡수해 실측한다(`evals/underspecified_probe/README.md` 의
+「cases.json 8건 매핑표」 참조).
 
 앵커 로더는 `tests/unit/test_underspecified.py::test_cases_json_anchor` — 하네스는 이
 PR 에 커밋되고, `cases.json`(데이터 파일)만 바뀌면 케이스가 늘어난다.

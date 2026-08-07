@@ -53,6 +53,7 @@ ROUTE_INTENTS = frozenset(
         "cart_remove",
         "wishlist_add",
         "wishlist_remove",
+        "wishlist_view",
     }
 )
 
@@ -213,6 +214,15 @@ class Settings(BaseSettings):
     # 탄다. 상한 없으면 느린 응답이 SSE first-token 을 무기한 블로킹한다(CLAUDE.md 'AI→외부 3s' 규약).
     # 초과 시 embed_texts 가 예외 → EmbeddingRerankBackend 가 Spring 순서 degrade(#101 #7, PR#166).
     embedding_timeout_s: float = 3.0
+    # embedding_timeout_s 는 청크(HTTP 요청) 1건당 상한인 반면, 이건 embed_texts 호출 1회
+    # 전체의 벽시계 상한이다(#391) — 100건 초과 입력은 여러 청크로 나뉘어 순차 호출되므로
+    # 요청당 상한만으로는 총 소요가 청크 수만큼 누적될 수 있다. hot path 규약은 "질의 1건
+    # (=청크 1개)"이라 CLAUDE.md 'AI→외부 3s' 규약에 맞춰 기본값을 요청당 상한과 같은 3.0s 로
+    # 둔다 — 즉 기본 설정에서 100건 초과 입력은 두 번째 청크를 내기 전에 거부된다. 초과 시
+    # embed_texts 가 EmbeddingError → EmbeddingRerankBackend 가 Spring 순서로 degrade한다
+    # (#101 #7, PR#166). 오프라인 1회 빌드(category_seed.seed_from_file)는
+    # embed_texts(..., total_timeout_s=math.inf) 로 이 예산을 명시 제외한다.
+    embedding_total_timeout_s: float = Field(default=3.0, gt=0.0)
     catalog_batch_page_size: int = 500  # I-17 배치 페이지 크기(§4.8, config 주입)
     # [#325] 운영 fast tier(gpt-5-nano, reasoning 모델)에서 하드코딩 max_tokens=600 전량이
     # reasoning_tokens 로 소진돼 본문 0자 → openai.LengthFinishReasonError 로 매 5분 주기 정지.
@@ -773,6 +783,25 @@ class Settings(BaseSettings):
     # 20 = 2 × fanout_max(한 턴) × 동시 턴 2. 하한은 아래 _require_pool_covers_anchor_concurrency
     # 가 기동 시 강제한다.
     category_search_pool_max_size: int = 20
+    # [#401] 기동 시 categories 0행/0임베딩 가드(app/pipelines/category_seed.py
+    # check_category_dictionary) 를 어떻게 처리할지. "off"=검사 생략, "log"=원인별로 로그만
+    # 남기고 계속(ERROR/WARNING, 아래 참조), "fail"=사전이 건강함을 **확인하지 못하면** 기동
+    # 거부(app/main.py::_check_category_dictionary_startup).
+    # [라운드 7 F8] "fail" 은 원인을 "구성 오류"로 좁혀 잡지 않는다 — 0행/0임베딩·
+    # `UndefinedTable` 같은 비연결 DB 오류뿐 아니라 **도달 불가**(`OSError`·
+    # `psycopg.OperationalError`)와 가드 코드 자체의 예상 못 한 예외까지 전부 거부 사유다.
+    # `psycopg.OperationalError` 하나에 일시적 도달 불가(연결 거부·타임아웃)와 영구적 구성
+    # 오류(비밀번호·dbname 오타)가 구조화된 판별자 없이 섞여 나온다(실측 확인, 메시지 문자열은
+    # 서버 `lc_messages` 에 따라 지역화돼 매칭에 못 쓴다) — 그래서 "진짜 구성 오류만" 골라
+    # 거부하는 분류는 불가능하고, "fail" 을 건 이상 확인 실패 자체를 거부 사유로 삼는다(로그
+    # 문구는 원인별로 계속 구분해 남긴다 — 거부 여부만 같아질 뿐 진단 정보는 그대로 유지).
+    # 기본이 "fail" 이 아닌 이유: 사전 결측은 map_categories 가 canonical-or-null 로 무필터
+    # 퇴화하는 상태다 — 카테고리 매핑만 못 쓸 뿐 서비스는 계속 응답 가능하다. 반면 기동 거부는
+    # 서비스 전면 중단이라 하방이 무계다(§4 거리컷과 같은 "미회수는 안전, 오염이 위험" 비대칭의
+    # 거울상 — 여기서는 "결함을 못 알아채는 것"이 회수 실패고 "서비스가 안 뜨는 것"이 오염 쪽
+    # 위험). 그래서 결함 교정(=시끄럽게 만들기)은 기본 on(`log`) 이고, 기동 거부는 그걸 원하는
+    # 환경(예: 배치 세팅 직후 강한 검증)이 옵트인한다.
+    category_dictionary_startup_check: Literal["off", "log", "fail"] = "log"
     # [#115] 최근접 채택 상한 — 채택 거리가 이 값을 **초과**하면 그 leg 를 canonical 없이 드롭한다
     # (§4 거리 조건부 채택. 종전 never-null "멀어도 억지로 채택"은 폐기). 거리 초과는 "맞는 칸이
     # taxonomy 에 없다"의 신호다.
@@ -793,6 +822,10 @@ class Settings(BaseSettings):
     # 재측정 없이는 무효다 — `evals/category_probe/manifest.py` 의 `dictionaryHash`(categories
     # 행 수 + 정렬된 canonical 전체의 sha256)로 과거 런과 사전 상태가 같은지 대조할 수 있다.
     # 재측정은 `uv run python -m evals.category_probe.sweep --run <hits.csv 있는 런 디렉터리>`.
+    # [#401] 근거 사전은 이제 repo 정본 `db/catalog/seed/categories.json`(leaf 1,007) — codepoint
+    # 정렬 sha256 `db81e849616ec5782f9d1b4ecda1f6eb15f9dbc7a2ec939b40e33fa786d65089`, en_US.utf8
+    # 정렬(현행 `dictionaryHash` 가 재는 순서) sha256 `fb9ca975af1ea86ce013caeb018b7adcefc80a96d529aad0dd0555e464f21fe6`.
+    # 정본이 밖에 있어 이 임계 근거를 재현할 수 없던 문제를 편입으로 없앤다(`db/catalog/seed/README.md`).
     # 절단 튜너블(ge=0)이 아니라 비교 임계라 코사인 거리 정의역 [0,2] 로 범위 검증한다.
     category_distance_max: float = Field(default=0.26, ge=0.0, le=2.0)
     # [#115 §4.5] 거리컷 마진 예외 — 거리가 임계를 넘어도 마진이 이 값 **이상**이면 채택한다.
@@ -982,6 +1015,13 @@ class Settings(BaseSettings):
     # 찜 지시 표지 — "찜한 거 담아줘"·"찜해둔 이어폰 담아줘"류에서 찜은 지시 대상을 수식할 뿐
     # 동작이 아니다. 이 표지가 있으면 찜 판정에 개입하지 않는다(그 발화의 동사는 담기다).
     wishlist_reference_markers: list[str] = ["찜한", "찜해둔", "찜해 놓은", "찜했던"]
+    # ⚠️ [#440] **찜 조회/해제를 가르는 표지 목록은 두지 않는다.** #386 에서 두 번 시도했다가
+    # 둘 다 뺐다 — 조회 표지 목록은 조회 표현을 전수로 알아야 성립해 `"내 찜 뭐야"` 류에서 뚫렸고,
+    # 반대로 "찜 명사 + 해제 동사" 결합은 짧은 표지가 다른 낱말에 묻혀(`"찜"` ⊂ `찜닭`,
+    # `"빼"` ⊂ `빼고`) `"찜닭 빼고 보여줘"` 를 해제 근거로 오인했다. 바로 위
+    # `cart_remove_markers` 주석이 이미 경고한 그 함정이다. 어절 경계가 없는 한국어에서
+    # 부분 문자열만으로 이 둘을 가르려면 인접성 판정이 필요하고, 그건 `negation.py`·`remove.py`
+    # 와 얽힌 별도 작업이라 #440 으로 옮겼다.
     # 부정·유보 표지(2차 리뷰 지적 1·2·3, `intent_guard.py::_matches_unnegated`) — 표지 출현
     # 바로 뒤 짧은 창 안에 이 표지 중 하나가 오면 그 표지 출현은 없는 것으로 친다("장바구니에
     # 넣지는 마" 의 담기 표지 무효화, "빼줘야 할까"의 삭제 표지 무효화). 이 규칙은 **개입을
@@ -1139,8 +1179,9 @@ class Settings(BaseSettings):
     # 상한을 완전히 끄려면(종전 동작) profile_session_buffer_cap 이상으로 올린다.
     profile_buffer_repeat_cap: int = Field(default=2, ge=2)
     # 취향 신호가 **구조적으로** 없는 intent 만 버퍼에서 뺀다(REQ-PROF-026) — 주문조회
-    # ("주문 어디까지 왔어")·장바구니 조회("장바구니 보여줘")는 상태 조회라 원하는 게 뭔지에
-    # 대한 정보가 0인데, 매 세션 반복되며 슬라이딩 윈도우를 채워 정작 취향 발화를 밀어낸다.
+    # ("주문 어디까지 왔어")·장바구니 조회("장바구니 보여줘")·찜 목록 조회("내가 뭐 찜했지?",
+    # #386)는 상태 조회라 원하는 게 뭔지에 대한 정보가 0인데, 매 세션 반복되며 슬라이딩
+    # 윈도우를 채워 정작 취향 발화를 밀어낸다.
     #
     # general·cart_add 는 **일부러 남긴다**(PR #223 리뷰 확인):
     #  - general: "나 소니 좋아해" 같은 명시적 취향 표명이 잡담 턴으로 들어온다.
@@ -1171,6 +1212,9 @@ class Settings(BaseSettings):
         "cart_view",
         "cart_remove",
         "wishlist_remove",
+        # [#386] cart_view·order_status 와 같은 부류(취향 신호 0인 상태 조회)다 —
+        # cart_remove·wishlist_remove 처럼 "부호가 반대인 신호"라서 빼는 것이 아니다.
+        "wishlist_view",
     ]
     # I-20 처리 중 claim lease. delta+consolidation LLM 2단계의 기본 최악시간(약 120s)보다
     # 길게 두되, 프로세스 crash 잔재가 영구 duplicate가 되지 않도록 유한하게 유지한다.
@@ -1718,6 +1762,25 @@ class Settings(BaseSettings):
                 f"{self.color_synonym_query_timeout_s}): "
                 "the app-side clock must degrade first and the DB clock must later reclaim "
                 "the connection"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _require_embedding_total_timeout_covers_request_timeout(self) -> "Settings":
+        """embed_texts 총 예산이 요청 1건당 상한보다 작으면 기동 실패 (#391 PR #412 Claude 리뷰).
+
+        경계(같은 값)는 허용한다 — 기본값 3.0 == 3.0 이 "hot path 는 청크 1개분"이라는 의도된
+        조합이다. 이보다 작게 잡으면 1청크 호출(idx==0, 현재 hot path 전부)은 예산 검사 자체를
+        건너뛰므로 설정을 줄여도 아무 효과가 없고, 2청크 이상 호출은 정상 상황에서도 두 번째
+        청크에서 거의 항상 거부된다 — 설정이 의미하는 바와 실제 동작이 갈린다.
+        """
+        if self.embedding_total_timeout_s < self.embedding_timeout_s:
+            raise ValueError(
+                "EMBEDDING_TOTAL_TIMEOUT_S must be >= EMBEDDING_TIMEOUT_S "
+                f"(got {self.embedding_total_timeout_s} < {self.embedding_timeout_s}): "
+                "a smaller total budget has no effect on single-chunk (hot path) calls "
+                "since idx==0 always skips the budget check, while multi-chunk calls would "
+                "be rejected almost every time even under normal conditions"
             )
         return self
 

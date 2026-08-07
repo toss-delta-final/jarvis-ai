@@ -52,6 +52,172 @@
     다음 사람이 같은 판단을 처음부터 다시 한다.
 - 관련: 이슈 #269 · PR #284 · 이슈 #345, `docs/specs/DESIGN-SELLER-PERIOD.md`
 
+## [2026-08-07] `uv run ruff check --fix && uv run ruff format` 커밋 워크플로 문구를 문자 그대로 실행하면 무관 파일 30개가 재포맷된다
+- 증상: #439 구현 검증 단계에서 CLAUDE.md 커밋 워크플로 2항을 그대로 `uv run ruff check --fix &&
+  uv run ruff format`으로 실행했더니 `ruff check`는 `All checks passed!`였지만 `ruff format`은
+  `30 files reformatted, 448 files left unchanged`를 냈다 — 이번에 만진 파일은 6개뿐인데
+  `data-analysis/*`·`evals/ablation/*`·`evals/scoring/*`·`docs/research/research-275-harness/*`·
+  `tests/unit/test_color_synonym*` 등 이 리포에서 지금까지 `ruff format`이 한 번도 전면 적용된 적
+  없던 파일들이 함께 재작성돼 diff가 +1622/−587로 부풀었다. `git status --short`로 발견해
+  `git checkout --`로 전부 되돌렸다.
+- 원인: 이 항목의 실수 자체는 [2026-08-06] `ruff format`/`--fix` 항목과 같은 패턴(쓰기 명령을
+  전체 스코프로 돌림)의 재발이지만, 이번엔 **왜 이 패턴이 평소 드러나지 않는지**가 추가로
+  드러났다 — `.pre-commit-config.yaml`의 `ruff-format` 훅은 **스테이징된 파일에만** 걸리고
+  CI는 `ruff check`만 강제한다(`ruff format --check` 게이트가 없다). 그래서 리포 전체가
+  `ruff format` 기준으로 정합한 적이 없어도 아무도 알아채지 못했고, 누구든 커밋 워크플로 2항을
+  스코프 없이 실행하면 매번 같은 무관 파일 30개가 걸려든다.
+- 규칙: 커밋 전 포맷은 **`uv run ruff format <이번에 실제로 만진 파일 경로만>`**으로 항상
+  경로를 한정한다. `uv run ruff format`/`ruff check --fix`를 스코프 없이(`.` 또는 인자 생략)
+  돌렸다면 실행 직후 `git status --short`로 무관 파일이 섞였는지 반드시 확인하고
+  `git checkout -- <무관 파일들>`로 되돌린다. 리포 전체를 `ruff format` 기준으로 맞추는 일은
+  **이번 작업 범위가 아니라 별도 이슈**로 다룬다 — 부수 효과로 슬쩍 끼워넣지 않는다.
+- 관련: #439, CLAUDE.md 「Git」절 커밋 워크플로 2번, `.pre-commit-config.yaml`(`ruff-format` 훅
+  스테이징 파일 한정), [2026-08-06] `ruff format`/`--fix` 는 쓰기 명령이다 항목(같은 패턴의
+  선례, 이번엔 CI/pre-commit이 왜 못 잡는지가 새로 드러남)
+
+## [2026-08-07] 남의 영역에 방어를 덧대기 전에 "이 위험을 내 변경이 만들었나"부터 묻는다
+- 증상: #386(찜 **조회** 신설)에서 "조회 발화가 해제로 오분류되면 찜이 지워진다"를 막으려고
+  `_resolve_wishlist_remove_target`(찜 **해제**, #116/#117 소유)에 가드를 덧댔다. 그 뒤 리뷰
+  세 라운드 동안 같은 자리에서 결함이 연달아 났다 — ① 표지가 띄어쓰기에 취약 ② 극성을 뒤집자
+  정상 해제(`"찜 목록에서 빼줘"`)가 막힘 ③ 표지를 짧게 쪼개자 `"찜닭 빼고 보여줘"` 가 해제
+  근거로 오인됨(`"찜"` ⊂ `찜닭`, `"빼"` ⊂ `빼고`). ③ 은 같은 파일 12줄 위 `cart_remove_markers`
+  주석이 *"`빼` 같은 짧은 조각은 오탐(빼곡·빼고·빼빼로)이 흔해 쓰지 않는다"* 고 **이미 경고한**
+  함정이었다.
+- 원인: 막으려던 위험이 **이 PR 이 만든 것이 아니었다.** 규칙 3(목록 1건 자동 선택)은 원래부터
+  `wishlist_remove` 로 온 어떤 발화든 이름이 없으면 1건을 지웠고, 조회 intent 를 **더한다고** 새
+  삭제 경로가 생기지 않는다(오히려 프롬프트에 조회 의도가 생겨 오분류 확률은 낮아진다 —
+  `evals/intent_probe` 실측에서 조회 발화 3종이 8/8 로 정확히 라우팅됐다). 선재하는 위험을,
+  그것을 만들지 않은 PR 에서, 그 영역을 소유하지 않은 채 고치려다 방어 코드 자체가 결함원이 됐다.
+- 규칙: **방어를 덧대기 전에 "이 위험을 내 변경이 만들었나 / 악화시켰나"를 먼저 답하라.** 답이
+  "아니오"면 그건 별건이다 — 이슈로 옮기고 내 PR 은 원래 범위를 지킨다. 특히 여러 라운드에
+  걸쳐 실 LLM 으로 수렴시킨 판정 로직(#116/#117 의 24라운드 같은)에 손대는 경우, 방어 하나가
+  그 수렴을 되돌릴 수 있다. 그리고 **"기존 테스트 N건 통과"를 무회귀의 증거로 쓰지 마라** —
+  그건 "내 테스트가 그 경로를 안 덮는다"는 뜻일 수 있다(실제로 `evals/combo_matrix` 의 observed
+  드리프트 가드(#424)가 대신 잡았다: `combo-0047.actionType: WISHLIST_REMOVED → None`).
+- 관련: #440(옮긴 곳), `app/agents/buyer/cart/wishlist.py::_resolve_wishlist_remove_target`,
+  `app/core/config.py` `cart_remove_markers` 주석(같은 함정을 이미 적어 둔 곳)
+
+## [2026-08-07] 커밋되는 산출물을 Python 이 쓸 때는 `newline="\n"` 을 명시한다 — 해시가 줄바꿈에 민감하다
+- 증상: #386 에서 `python -m evals.combo_matrix regenerate` 를 Windows 로 돌렸더니
+  `combo_cases.jsonl`·`manifest.json` 이 **CRLF** 로 쓰였다. 로컬 테스트는 전부 통과하는데,
+  `manifest.axesSha256`·`intent_probe` 의 `fixture_sha256` 은 `read_bytes()` 기반이라
+  **LF 로 체크아웃되는 CI 에서는 해시가 안 맞는다** — 재생성한 사람만 통과하고 CI 는 깨지는
+  형태라 로컬에서 아무리 돌려도 안 드러난다.
+- 원인: `Path.write_text(...)` 는 Windows 에서 `\n` → `\r\n` 로 변환한다. 저장소는
+  `.gitattributes` 에 `* text=auto eol=lf`("CRLF 오염 재발 방지")를 두고 있어 **커밋본은 늘
+  LF** 인데, 워킹카피만 CRLF 가 되면서 "파일 내용은 같은데 해시가 다른" 상태가 됐다.
+  `read_text()` 로 대조하는 테스트는 universal newline 변환 덕에 통과해 버려서 더 안 보인다.
+- 규칙: **커밋되는 산출물을 쓰는 코드에는 `newline="\n"` 을 붙인다.** 그리고 그 산출물을
+  해시로 검증한다면 `read_bytes()` 인지 `read_text()` 인지 확인하라 — 전자면 줄바꿈이 곧
+  계약이다. 재생성 후 `git status` 에 `CRLF will be replaced by LF` 경고가 뜨면 그게 신호다.
+- 관련: `evals/combo_matrix/__main__.py`·`report.py`·`pair_runner.py`(`newline="\n"` 추가),
+  `.gitattributes`, `evals/intent_probe/loader.py::fixture_sha256`
+
+## [2026-08-07] intent 를 하나 늘리면 eval 매트릭스 재생성이 강제된다 — 후속 이슈로 미룰 수 없다
+- 증상: #386 이 `RouteDecision.intent` Literal 에 `wishlist_view` 한 줄을 더한 순간 기본
+  `uv run pytest` 가 빨간불이 됐다. `tests/eval/test_combo_matrix_eval.py::
+  test_intent_axis_matches_route_decision_literal` 이 `axes.json` 의 intent 축과 코드 Literal 의
+  **집합 동일**을 assert 하는데, 이 파일은 `@pytest.mark.eval` 이고 `pyproject.toml` 의
+  `addopts = "-m 'not smoke and not integration'"` 는 eval 을 제외하지 않는다.
+- 원인: "eval 은 CI 밖"이라는 통념이 `intent_probe`(실 LLM, 수동)에만 맞고 `combo_matrix`
+  (결정론 오프라인)에는 안 맞는데, 계획 단계에서 둘을 같은 부류로 묶어 생각했다. 그래서 매트릭스
+  갱신을 "선택 사항·후속 이슈 후보"로 잘못 산정했다.
+- 규칙: **intent·degrade 처럼 `axes.json` 이 코드에서 끌어오는 축을 건드리는 변경은 매트릭스
+  재생성을 같은 PR 범위로 잡고 시작한다.** 그 비용은 케이스 재생성만이 아니다 — 시드 기반
+  greedy pairwise 라 pair 우주가 바뀌면 케이스가 **대거 재배치**되고(57건 중 축 조합이 유지된
+  것은 18건), `expected_behavior.jsonl` 의 손으로 쓴 행과 `pair_checks.jsonl` 의 case_id 가
+  함께 따라간다. 착수 전에 `python -m evals.combo_matrix regenerate` 를 write 없이 한 번 돌려
+  재배치 규모를 먼저 재라.
+- 관련: `evals/combo_matrix/README.md` "재생성 이력 (#386)", `pyproject.toml:56,58`
+
+## [2026-08-07] eval 산출물이 case_id 를 하드코딩하면 재생성마다 사람이 따라다녀야 한다
+- 증상: #386 재생성으로 `combo-0053`·`combo-0054` 가 다른 조합을 가리키게 되자
+  `test_combo_0053_fixture_actually_narrows`·`test_combo_0054_is_manual_with_goldenset_link` 가
+  깨졌다. 두 테스트의 docstring 에는 이미 *"#367 재생성 이후 case id — 구 combo-0054"* 라는
+  주석이 있었다 — **같은 일이 최소 두 번째**였다.
+- 원인: 테스트가 재려는 것은 "그 번호의 케이스"가 아니라 **"하드필터를 추가한 쌍"·"recall 이라
+  manual 인 쌍"** 이라는 성격인데, 그 성격을 표현할 수단이 있는데도(spec 의 `kind`·`metric`·
+  `mode`) 번호로 가리켰다.
+- 규칙: **재생성되는 산출물의 항목을 테스트에서 지목할 때는 번호가 아니라 그 항목을 그 항목이게
+  하는 속성으로 찾는다.** 번호를 쓸 수밖에 없으면 그 사실과 이유를 주석에 남기고, 두 번 밀렸다면
+  그때는 속성 기반으로 고친다.
+- 관련: `tests/eval/test_combo_matrix_pairs.py`(`kind`/`metric`/`mode` 로 조회하도록 정정)
+
+## [2026-08-07] 조회 계열 Spring 호출은 실패 주입 때만이 아니라 **늘** 스텁한다
+- 증상: `combo_matrix` 러너가 `add_wishlist`·`add_to_cart` 는 `degrade=spring_timeout` 일 때만
+  몽키패치하고 `get_wishlist`·`get_cart` 는 아예 패치하지 않았다. #386 재생성으로
+  `wishlist_remove` 가 `ci` × `degrade=none` 조합을 갖게 되자, 로컬에 Spring 이 없는 환경에서
+  **정상 케이스가 degrade 를 관측**했다(관측이 환경에 따라 뒤집힌다).
+- 원인: 담기 계열은 "실패를 주입할 때만 호출을 가로채면 된다"가 맞지만, 조회 계열은 **정상
+  경로에서도 호출된다**. 두 계열의 차이를 보지 않고 같은 패치 조건을 썼다.
+- 규칙: 하네스가 실 함수를 부르는 경계를 셀 때 **"실패를 주입할 곳"이 아니라 "호출이 나가는
+  곳"을 세라.** 정상 경로에서 나가는 호출은 정상 응답 스텁이 없으면 관측 자체가 환경 의존이 된다.
+  주입 예외 타입은 실 어댑터 규약을 그대로 따른다(조회 = `SpringUnavailableError`, 변경 =
+  `CartError`/`WishlistError` — #376 이 고친 그 실수).
+- 관련: `evals/combo_matrix/runner.py`(`_ok_get_wishlist`·`_failing_get_wishlist`)
+
+## [2026-08-06] 테스트 스위트 실행 중에 커밋하면 eval 결정론 테스트가 깨진다
+- 증상: `uv run pytest` 를 백그라운드로 돌려 둔 채 그 사이에 `git commit` 을 했더니
+  `tests/eval/test_personalization_eval.py::test_personalization_run_is_deterministic_across_environment_and_clock`
+  1건이 실패했다(4235 passed / 1 failed). 코드 변경과 무관했고, 그 테스트를 **단독으로
+  재실행하면 통과**하며, 트리를 고정한 뒤 전체 재실행도 4236 passed 로 통과했다.
+- 원인: 그 테스트는 `evals.personalization.cli.main` 을 **두 번** 돌려
+  `evals.personalization.cli.normalize_paired_artifacts` 로 산출물을 바이트 비교하는데,
+  정규화는 `run_manifest.json` 의 **`run` 키만** 제거한다
+  (`evals.metrics.report.normalize_artifacts` ·
+  `evals.personalization.cli.normalize_paired_artifacts`). 반면
+  `evals.metrics.run_manifest.build_run_manifest` 는 `commitSha`(`git rev-parse HEAD`)와
+  `dirty`(`git status --porcelain`)를 **실행 시점의 라이브 git 상태**에서 읽는다. 두 번의
+  `main()` 호출 사이에 커밋이 끼면 `commitSha` 가 바뀌고 `dirty` 가 true→false 로 뒤집혀 두
+  매니페스트가 달라진다 — 테스트가 잡아낸 것은 코드 비결정론이 아니라 **테스트 도중 바뀐 리포
+  상태**다.
+- 규칙: `uv run pytest`(특히 `tests/eval/`)가 도는 동안 **작업 트리를 바꾸지 않는다** —
+  커밋·`git add`·`checkout`·포맷터 실행을 스위트가 끝난 뒤로 미룬다. 백그라운드로 돌렸다면
+  더더욱 그렇다(끝난 줄 알기 쉽다). 반대로, eval 결정론 테스트가 **혼자 돌리면 통과하는데
+  전체 런에서만 깨진다면** 코드를 의심하기 전에 "그 런 도중 내가 리포를 건드렸는가"를 먼저
+  확인한다.
+- 관련: `evals.metrics.run_manifest.build_run_manifest`(`commitSha`·`dirty`) ·
+  `evals.metrics.report.normalize_artifacts` ·
+  `evals.personalization.cli.normalize_paired_artifacts` · #380
+
+## [2026-08-06] `ruff format`/`--fix` 는 쓰기 명령이다 — `ruff check` 와 같은 감각으로 전체 스코프에 돌리면 안 된다
+- 증상: #380 리뷰 라운드 1 작업 중 `uv run ruff format .` 을 스코프 없이 전체 리포에 돌렸다.
+  의도한 건 이번 작업이 만진 `evals/underspecified_probe/`·`tests/unit/test_underspecified_probe_*.py`
+  뿐이었는데, `app/agents/buyer/recommendation/no_condition.py`·`app/pipelines/*`·
+  `evals/ablation/*`·`evals/scoring/*`·`data-analysis/*`·`tests/unit/*`(이번 작업과 무관한
+  기존 테스트 파일들) 등 무관 파일 30개가 재포맷돼 diff 에 섞였다. `git status --short` 로
+  뒤늦게 발견해 `git checkout --` 로 전부 되돌렸다.
+- 원인: `ruff check .`(읽기 전용, 검사만 하고 파일을 안 바꾼다)를 전체 스코프로 돌리는 것과
+  같은 감각으로 `ruff format`/`ruff check --fix`(둘 다 **파일을 실제로 고쳐 쓴다**)도 전체
+  스코프(`.`)에 돌렸다. CLAUDE.md 커밋 워크플로 2항의 "`uv run ruff check --fix && uv run ruff
+  format` 로 린트 자동 정리"는 **"내가 만진 파일"을 전제로 한 문장**이지 리포 전체를 뜻하지
+  않는데, 그 전제를 놓쳤다.
+- 규칙: **`ruff check .` 은 전체 스코프로 돌려도 된다(읽기 전용)** — 반면 `ruff format`·
+  `--fix` 는 **항상 이번 작업이 실제로 만진 경로만** 인자로 준다(예:
+  `uv run ruff format evals/underspecified_probe/ tests/unit/test_underspecified_probe_*.py`).
+  실수로 전체 스코프에 쓰기 명령을 돌렸다면 커밋 전에 `git status --short` 로 무관 파일이
+  섞였는지 반드시 확인하고 `git checkout -- <무관 파일들>` 로 되돌린다 — "전체 검사 통과"와
+  "전체 포맷 실행"은 안전성이 다른 동작이다.
+- 관련: #380, `docs/specs/SPEC-UNDERSPECIFIED-336.md` §7.3, 리뷰 라운드 1 보고 §5
+
+## [2026-08-06] 카테고리 사전은 행 수가 아니라 임베딩 채워진 행 수가 실효 사전이다
+- 증상: #401 실측에서 `categories` 행이 1,007개 있어도 `embedding` 컬럼이 전부 `NULL` 이면
+  `app/pipelines/category_search.py::search_categories_pg` 가 `WHERE embedding IS NOT NULL` 로
+  걸러 매핑이 0행일 때와 똑같이 조용히 죽는다는 걸 확인했다. "행 수만 세는 가드"는 반쪽이다 —
+  시드(행 생성)와 임베딩 구축이 2단계로 분리된 설계(`db/catalog/init/02_categories.sql` 주석)
+  라서, 1단계만 끝난 상태(행 있음·임베딩 없음)를 "정상"으로 오판할 수 있다.
+- 원인: "사전이 비어 있다"를 "행 수 0" 하나로만 정의했다. 실제로는 검색 쿼리가 소비하는
+  조건(`embedding IS NOT NULL`)이 곧 실효 사전의 정의인데, 가드를 만들 때 그 쿼리 조건을
+  다시 확인하지 않고 테이블 스키마(행 존재 여부)만 봤다.
+- 규칙: **"사전이 비었다"를 판정하는 가드는 런타임 조회가 실제로 필터링하는 조건과 같은 조건을
+  세야 한다.** 테이블에 행이 있다는 사실과 그 행이 검색에 쓰인다는 사실은 다르다. 2단계로 분리된
+  파이프라인(행 생성 → 배치가 나머지 컬럼을 채움)에서는 최소 두 카운트(총 행 수, 소비 조건을
+  만족하는 행 수)를 따로 재고 각각을 구성 오류 후보로 다뤄야 한다.
+- 관련: #401, `app/pipelines/category_seed.py::DictionaryCounts`·`evaluate_dictionary_counts`·
+  `check_category_dictionary`, `app/pipelines/category_search.py::search_categories_pg`
+
+---
+
 ## [2026-08-06] 기동 검증식을 좁히면, 그 식을 사람에게 설명하는 문구도 같은 PR 에서 좁힌다
 - 증상: #383 이 기동 가드 계수를 2 → 3 으로 좁혀 `SPRING_TIMEOUT_S ∈ [3.33s, 5.0s)` 를 새로
   기동 거절 구간으로 만들었는데, 같은 규칙을 운영자에게 설명하는 문서 두 곳이 옛 상한 그대로
@@ -79,6 +245,8 @@
 - 관련: `app/core/config.py::_deferred_first_event_i1_calls`·
   `::_require_search_retry_within_stream_budget`, `.env.example` 의 `SPRING_MAX_RETRIES`
   주석 블록, `docs/specs/MEASURE-FIRST-TOKEN-363.md` §5, 이슈 #383(#363 후속), 커밋 `b700e7e`
+
+---
 
 ## [2026-08-06] fake 가 "표현 불가"를 예외로 던지면, 앱이 그걸 삼켜서 INV 비교가 "둘 다 실패"로 공허 통과할 수 있다
 - 증상: #381 에서 `RecordingFilteringSearch`(combo_matrix eval 하네스)가 keyword·color·
@@ -436,6 +604,7 @@
     별도 이슈로 넘긴다.
 - 관련: 이슈 #333 Part 3, `app/pipelines/embedding.py` `embed_texts()`(원복, 미수정),
   `evals/scoring/snapshot_embeddings.py`(청크 호출부 신설)
+
 ## [2026-08-05] 임의 순서 기준선을 두지 않으면 랭커가 개선인지 손해인지 모른다
 - 증상: #275 조사에서 student(현행 6성분 스코어러) 오라클 상한을 탐색했더니(E2) "상한
   0.738210"이 나와 teacher(0.782943)에 근접하는 듯 보였다. 재현·반증(E4)하니 이 값은
@@ -495,6 +664,7 @@
   `tests/unit/test_recommendation.py`
 
 ---
+
 ## [2026-08-05] 거리 임계는 사전에 종속된다 — taxonomy·임베딩 모델·task_type 이 바뀌면 재측정 없이는 무효
 - 증상: #222 라이브 실측(라이브 pg-catalog, leaf 1,007행)에서 `category_distance_max=0.22` 가
   협소 발화 20건 중 10건, 상품명 150건 골든셋 기준 90%를 드롭했다. `DESIGN-CATEGORY-HYBRID-59.md`
@@ -529,6 +699,7 @@
   적으면 착수 전에 `~/inte-final/_sql`(정본 시드 소스) 등에서 먼저 시드하거나, 그 사실을 실측
   보고서에 명시해 "결과가 전부 무필터 degrade 였다"는 착각을 방지한다.
 - 관련: #222, `app/agents/buyer/recommendation/category_mapping.py` canonical-or-null 불변식
+
 ## [2026-08-05] 병합 충돌 마커가 dev 에 커밋된 채 3커밋을 살아남았다 — 병합 커밋도 diff 검토 대상이다
 - 증상: `CHANGELOG.md` 의 `[Unreleased] > Added` 절에 `<<<<<<< HEAD`/`=======`/`>>>>>>> origin/dev`
   충돌 마커가 그대로 커밋돼(89e13fd, #302 로 dev 병합) 이후 dev 병합 커밋들에도 계속 남아 있었다.
@@ -858,6 +1029,7 @@
 - 관련: #288, #277(PR #287), `app/core/config.py` `_require_search_retry_within_stream_budget`
 
 ---
+
 ## [2026-08-05] 판정을 **짧은 전용 호출로 떼는 것**과 긴 프롬프트에 **필드를 하나 더 얹는 것**은 같은 "LLM 에 맡긴다"가 아니다 — 그리고 **이득 0인 프롬프트 추가도 공짜가 아니다**
 
 - 증상 ①: #84 의 "이번 발화가 직전 카테고리를 놓겠다는 말인가"를 `decompose`(133줄 `_SYSTEM`)의
@@ -1615,6 +1787,7 @@
   경로에는 첫 텍스트 토큰 기준 SLO를 그대로 적용하지 않는다.
 - 관련: #138, #151, `app/core/stream.py`(`ft_deadline`), api-spec §2.9(c),
   `app/core/config.py`(`slo_first_token_ms`), `evals/benchmark/baselines/README.md`
+
 ## [2026-08-02] 부하 측정 전에 앱 자기 레이트 리밋을 측정 경로에서 분리한다
 - 증상: 로컬 벤치마크의 measured 270건 중 120건(44%)이 429였고, 마지막 시나리오는 113건
   전량이 `RATE_LIMITED`였다. 성능 대신 앱 자기 리밋을 측정한 실행이라 기준선으로 폐기했다.
@@ -1709,6 +1882,7 @@
   - 순수 함수에 "변형되지 않았다"를 거는 단언이 보이면 **구조상 항상 참인지** 먼저 의심한다.
 - 관련: `tests/unit/test_recommendation.py` `test_price_tiering_does_not_mutate_product_or_filter_values`,
   `app/agents/buyer/recommendation/rerank.py` `_price_tier`, 이슈 #173
+
 ## [2026-08-02] 명세가 규정한 동작이 구현되지 않은 채 몇 달 지나갔다 — 이슈가 "새 요구"로 올라올 때까지
 - 증상: #133 이 *"검색 실패에 재시도가 없다"* 를 결함으로 올렸고 신규 기능처럼 읽혔다. 착수해서
   `docs/specs/SPEC-RECOMMEND-001.md` 오류 처리 표를 열어 보니 **이미** *"`search` 실패: 최대 1회
@@ -1904,6 +2078,7 @@
   3. `cancelling() > 0` 인데 `done() == False` 이고 `_fut_waiter` 가 **새 PENDING future** 면, 취소가 전달됐다가 삼켜지고 재대기에 들어갔다는 뜻이다. 라이브러리의 `except` 절이 `CancelledError` 를 포함하는지 먼저 grep 한다.
   4. 죽은 루프에 묶인 풀을 살아 있는 루프에서 닫으려 하면 실패하고 워커 코루틴만 미회수로 GC 돼 `PytestUnraisableExceptionWarning` 이 뜬다. **정리 훅은 "이 루프에 묶인 것"으로 범위를 좁힌다**(`asyncio.all_tasks()` 에 `pool-*` 태스크가 있는지로 판정).
 - 관련: #208, `tests/conftest.py::close_pg_pools_on_loop`, `tests/unit/test_pool_worker_cancellation.py`, `tests/integration/test_pg_pool_loop_teardown.py`
+
 ## [2026-07-31] 계약에 필드가 있다고 필요한 건 아니다 — "누가 만드나" 전에 "왜 있나"를 묻는다
 
 - 증상: I-22 `catalogVersion` 의 미해결 항목(C-18)을 **"값 생성 주체가 잘못됐다"** 로 읽고 Spring→AI 이관을 설계·구현·문서화·커밋까지 했다(지문 생성, Protocol 메서드 추가, 양쪽 구현체 수정, 테스트 5건, 명세 개정). 사용자가 *"이 필드가 왜 필요하냐"* 고 묻자 **명분이 하나도 안 남는다**는 게 드러나 전부 되돌렸다.
@@ -1951,6 +2126,7 @@
 - 원인: `app/core/errors.py::_resolve` 는 **5xx 에서 `detail` 을 의도적으로 무시**한다(내부 오류 메시지·PII 유출 방지). 코드·메시지는 오직 `_STATUS_CODE_MAP`·`_DEFAULT_MESSAGE` 에서 나오는데 503 이 양쪽에 없었다(504 는 있었다). 4xx 습관대로 `detail` 에 코드를 실으면 조용히 무시된다.
 - 규칙: **새 5xx 계약 코드는 `_STATUS_CODE_MAP`·`_DEFAULT_MESSAGE` 에 먼저 등재**한다. `detail` 로 코드를 넘기는 방식은 4xx 에서만 통한다. 등재 후 실제 응답 body 로 코드를 확인한다 — 핸들러가 조용히 덮어쓰므로 라우터 코드만 읽어선 알 수 없다.
 - 관련: #148, `app/core/errors.py:33`, api-spec §3.7 실패 응답표
+
 ## [2026-07-30] 주입 seam 시그니처를 바꾸면 모든 fake 를 함께 고친다 — 방어 except 가 불일치를 삼켜 "조용한 degrade"가 된다
 - 증상: `map_categories` 에 `llm`·`tier` 파라미터를 추가(#115 §4.4)한 뒤 유닛 테스트 20건이
   한꺼번에 실패했다. 실패 메시지는 `assert leg.category` → `None` — "카테고리가 안 붙는다"로만
@@ -1999,6 +2175,7 @@
     라이브 실측으로만 반증된다** — LLM·임베딩이 개입하는 규칙은 반드시 라이브로 재확인한다.
 - 관련: `docs/specs/DESIGN-CATEGORY-HYBRID-59.md` §4.3.1,
   `app/agents/buyer/recommendation/category_mapping.py`, #115 커밋 6c415f2 → c6f4f8f(재개정)
+
 ## [2026-07-31] 무작위 UUID 가 개인정보 카나리 정규식에 걸려 트레이스가 통째로 버려진다 — 그리고 그 flake 를 내 변경 탓으로 오인했다
 
 - 증상: #209 코드 전환 중 전체 스위트가 간헐적으로 1건 실패했다. 실패 테스트가 매번 달랐고(`test_all_buyer_spring_operations_trace_timeout...`, `test_buyer_spring_http_failure_...[503-5xx]`) 모두 `assert len(spring_payloads) == 1` → `0 == 1` 형태였다. 단독 실행은 항상 통과. 로그엔 `trace dropped code=TELEMETRY_REDACTION_FAILED` 가 찍혀 있었다.

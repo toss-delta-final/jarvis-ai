@@ -165,6 +165,24 @@ d1 0.2621 사이에서 nic 무강제(0/40)를 지키는 최대 컷이다. `categ
 남긴다. 거리 임계는 사전에 종속된다(`docs/lessons.md` 2026-08-05) — 사전이 재시드되면
 `dictionaryHash` 가 바뀌어 과거 런과 비교할 수 없다는 사실이 드러난다.
 
+**[이슈 #401] 무엇이어야 하는지는 이제 정본이 말해준다.** 카테고리 사전의 정본은
+`db/catalog/seed/categories.json`(leaf 1,007 문자열, repo 편입)이고, `dictionaryHash`(`rowCount`/
+`sha256`)는 여전히 **DB collation**(`ORDER BY category`, 예: en_US.utf8) 순서를 잰다 — 과거 런과의
+비교 가능성 때문에 이 두 필드는 건드리지 않는다. 대신 `dictionary_fingerprint()` 가 추가로 남기는
+필드로 정본과 대조한다:
+
+- `canonicalSha256` — 같은 DB 행을 **codepoint 정렬**(파이썬 `sorted()`, `fingerprint_rows()`)해
+  낸 sha256. DB collation 에 종속되지 않아 정본 파일의 지문과 직접 비교 가능하다.
+- `seed` — `{"path", "rowCount", "sha256"}`. 정본 파일(`db/catalog/seed/categories.json`) 자체의
+  codepoint 지문(`canonical_seed_fingerprint()`).
+- `matchesSeed` — `canonicalSha256 == seed.sha256`. **`false` 면 라이브 DB 의 categories 가 repo
+  정본과 어긋나 있다는 뜻** — 재시드 누락, 수동 INSERT, 또는 오래된 볼륨을 의심하라. `dmax` 등
+  임계 재사용 전에 먼저 이 필드를 확인한다.
+
+`rowCount`/`sha256`(DB collation 순서)와 `canonicalSha256`(codepoint 순서)이 다른 것은 버그가
+아니다 — DB collation(en_US.utf8)과 파이썬 `sorted()`는 문자열 정렬 기준이 다르다(예:
+`db81e849…`(codepoint) vs `fb9ca975…`(en_US.utf8), 같은 1,007행).
+
 ## 재현 함정
 
 1. **전역 페이서 필수** — `evals/intent_probe/pacer.py::GlobalPacer`/`PacerLimits` 를 import 해

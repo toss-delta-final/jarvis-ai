@@ -8,6 +8,7 @@ import typing
 import pytest
 
 from app.services.spring_client import CartError, WishlistError
+from evals.combo_matrix.__main__ import refresh_observed
 from evals.combo_matrix.generator import (
     FILTER_AXES,
     add_directed_cases,
@@ -33,7 +34,12 @@ from evals.combo_matrix.runner import (
     build_decompose_json,
     observe,
 )
-from evals.combo_matrix.schema import AxesDocument, ComboCase, ExpectedBehaviorRow
+from evals.combo_matrix.schema import (
+    OBSERVED_GUARDED_FIELDS,
+    AxesDocument,
+    ComboCase,
+    ExpectedBehaviorRow,
+)
 
 pytestmark = pytest.mark.eval
 
@@ -131,6 +137,63 @@ def test_context_axis_is_subset_of_intent_probe_context_ids() -> None:
     doc = load_axes()
     axes_context = set(doc.axis_by_id()["context"].value_ids()) - {"n/a"}
     assert axes_context <= set(CONTEXT_IDS)
+
+
+# ─────────── 4a. observed 드리프트 가드 (이슈 #424) ───────────
+
+
+async def test_observed_guarded_fields_match_recomputed_values_for_all_ci_rows() -> None:
+    """`expected_behavior.jsonl` 의 `observed` 는 러너 재실행 **기록**이라, 다른 레인이 SSE 이벤트를
+    바꾸면 커밋본이 조용히 낡아도 아무 테스트도 잡지 못했다(#424 — PR #420 작업 중 실측 2회, 둘 다
+    `eventTypes` 만 드리프트했고 핵심 계약 필드는 불변). 전량 byte diff 는 SSE 를 건드리는 모든
+    레인(동시 6~8개)에 이 eval 데이터 재생성을 강제해 레인 결합 비용이 크므로, `OBSERVED_
+    GUARDED_FIELDS`(schema.py, 근거 동봉)로 추린 핵심 계약 필드만 딕셔너리째(키 존재 여부 포함)
+    대조한다.
+
+    **행 범위: `status` 와 무관하게 `observed` 가 있는 모든 ci 행**(partial 인 combo-0038 포함) —
+    이건 기록 신선도 검사이지 미정의 동작의 스펙화가 아니다. `status`·`expected`·`undefined_tuple`
+    은 이 테스트가 보지 않으며, 기록이 낡는 문제는 defined/partial 을 가리지 않는다.
+    """
+    committed_rows = {r.case_id: r for r in load_expected()}
+    _, refreshed_rows = await refresh_observed(write=False)
+
+    mismatches: list[tuple[str, dict, dict]] = []
+    for refreshed in refreshed_rows:
+        committed = committed_rows[refreshed.case_id]
+        if committed.observed is None:
+            continue  # manual 행(observed 항상 null) — 대조 대상 아님
+        committed_proj = {
+            k: v for k, v in committed.observed.items() if k in OBSERVED_GUARDED_FIELDS
+        }
+        refreshed_proj = {
+            k: v for k, v in (refreshed.observed or {}).items() if k in OBSERVED_GUARDED_FIELDS
+        }
+        if committed_proj != refreshed_proj:
+            mismatches.append((refreshed.case_id, committed_proj, refreshed_proj))
+
+    if not mismatches:
+        return
+
+    lines = [
+        "observed 핵심 계약 필드 드리프트 감지 — 커밋본과 재실행 결과가 어긋난다:",
+    ]
+    for case_id, committed_proj, refreshed_proj in mismatches:
+        for key in sorted(set(committed_proj) | set(refreshed_proj)):
+            old = committed_proj.get(key, "<필드 없음>")
+            new = refreshed_proj.get(key, "<필드 없음>")
+            if old != new:
+                lines.append(f"  {case_id}.{key}: 커밋본={old!r} → 재실행={new!r}")
+    lines.append("")
+    lines.append("조치: `uv run python -m evals.combo_matrix refresh-observed` 로 갱신한 뒤")
+    lines.append(
+        "evals/combo_matrix/README.md 「관측 재생성 이력」에 무엇이 왜 바뀌었는지"
+        "(실측 개선/회귀/필드 추가) 판정을 남길 것."
+    )
+    lines.append(
+        "eventTypes·lastTokenText·notes 만 바뀐 경우엔 이 가드가 깨지지 않는다 — "
+        "이 가드가 깨졌다면 핵심 계약 필드가 실제로 바뀐 것이다(OBSERVED_GUARDED_FIELDS 참조)."
+    )
+    pytest.fail("\n".join(lines))
 
 
 # ─────────── 5. 커버리지 하한 ───────────
@@ -328,6 +391,77 @@ async def test_home_profile_unavailable_injection_actually_runs() -> None:
     assert observed["outcome"] == "PERSONALIZED", observed
 
 
+# ─────────── 6c. overspecified_zero 판정 잠금 (이슈 #425) ───────────
+
+
+async def test_overspecified_zero_has_no_relaxable_axis_so_no_relaxation_search() -> None:
+    """`constraint_strength=overspecified_zero` 는 0건이면서도 자동완화·완화칩이 돌지 않는다 —
+    갭이 아니라 **완화 가능 축이 하나도 없어서 생기는 정의된 동작**이다(#425 판정).
+
+    전제(코드 근거): `app.agents.buyer.recommendation.relaxation.FIELD_TO_ATTR` 는 `priceMax`·
+    `ratingMin`·`brand`·`color` 뿐이다(모듈 docstring "비카테고리 조건(가격 상한·평점 하한·브랜드·
+    색상)만 한 단계 푼다") — `price_min` 은 완화 축이 아니다. `app.core.config.
+    Settings._require_known_relaxation_chip_fields` 가 기동 시점에 `FIELD_TO_ATTR` 밖 이름을
+    거부하므로 config 로도 `priceMin` 을 완화 축에 넣을 수 없다. combo-0031(overspecified_zero)의
+    실현 필터는 `price_min` 하나뿐이라 `build_relaxation_candidates(filters, settings) == []` 다.
+
+    이로부터 나오는 관측(재검색 0회): `app.agents.buyer.recommendation.graph.
+    stream_recommendation` 의 `may_auto_relax` 게이트가 False, 자동완화 루프(`if not candidates
+    and not underspecified:`)는 진입해도 후보가 비어 0회 반복, 완화 칩 블록(`if not underspecified
+    and (not candidates or len(candidates) < settings.relaxation_min_results):`)도 진입해도 probe
+    후보가 비어 칩 0개 — 그래서 `searchCallCount == 1`·`finishReason == "zero_result"` 다.
+
+    이 축에 완화 가능 축이 생겼다면(예: `FIELD_TO_ATTR` 에 `price_min` 추가) #425 판정("자동완화·
+    완화칩은 돌지 않는다 — 정의된 동작")과 README 서술을 함께 재판정해야 한다.
+    """
+    from app.agents.buyer.recommendation.relaxation import build_relaxation_candidates
+    from app.core.config import get_settings
+    from app.schemas.spring import ProductSearchFilters
+
+    cases = {c.case_id: c for c in load_cases()}
+    # [#386] `degrade` 를 `none` 으로 좁힌다 — **판정을 완화한 게 아니라 적용 범위를 정확히 한
+    # 것이다.** 이 판정은 "0건 → 완화 단계에서 후보가 없어 재검색 0회 → zero_result 종료"라는
+    # 경로에 대한 것인데, `degrade=spring_timeout` 케이스는 검색 자체가 실패해(SEARCH_FAILED)
+    # 완화 단계에 **닿지도 않는다** — 거기서 "완화 후보가 없어야 한다"를 요구하면 판정과 무관한
+    # 축(필터 8축 전부 present 여도 무방한 케이스)까지 끌어들여 테스트가 엉뚱한 곳에서 깨진다.
+    #
+    # #448 시점에는 overspecified_zero ci 케이스가 `degrade=none` 하나뿐이라 이 구분이 필요
+    # 없었다. #386 재생성으로 그 자리가 `spring_timeout` 으로 바뀌면서 드러났고, 판정이 관측되던
+    # `degrade=none` 자리는 `axes.json` 의 `overspecified_zero_member_none_price_min`
+    # directedCase 로 복원했다(그 `reason` 에 경위가 있다).
+    overspecified_zero_ci_cases = [
+        c
+        for c in cases.values()
+        if c.observation_mode == "ci"
+        and c.axes.get("constraint_strength") == "overspecified_zero"
+        and c.axes.get("degrade") == "none"
+    ]
+    assert overspecified_zero_ci_cases, (
+        "overspecified_zero × degrade=none 인 ci 케이스가 하나도 없다 — #425 판정을 관측할 자리가 "
+        "사라졌다는 뜻이다(재생성이 그 조합을 지우면 directedCase 로 복원할 것)."
+    )
+
+    settings = get_settings()
+    for case in overspecified_zero_ci_cases:
+        filters = ProductSearchFilters.model_validate(build_decompose_json(case.axes)["filters"])
+        candidates = build_relaxation_candidates(filters, settings)
+        assert candidates == [], (
+            f"{case.case_id}: 완화 후보가 생겼다 — #425 판정이 전제하는 '완화 가능 축이 하나도 "
+            f"없다'가 더 이상 성립하지 않는다(candidates={candidates}). README·판정 재검토 필요."
+        )
+
+        observed = await observe(case)
+        assert observed is not None
+        assert observed["searchCallCount"] == 1, (
+            f"{case.case_id}: searchCallCount={observed['searchCallCount']} — 완화 후보가 없는데도 "
+            "재검색이 돌았다면 #425 판정과 어긋난다."
+        )
+        assert observed["finishReason"] == "zero_result", (
+            f"{case.case_id}: finishReason={observed['finishReason']!r} — 0건 zero_result 종료가 "
+            "아니라면 #425 판정의 전제가 깨진 것이다."
+        )
+
+
 # ─────────── 7. 미정의 셀 최소 보증 ───────────
 
 
@@ -380,27 +514,29 @@ def test_axes_document_is_the_single_source_of_truth() -> None:
 
 async def test_representable_filters_actually_narrow_search_results() -> None:
     """D8-1 — 표현 가능한 하드필터(category·brand·rating_min)가 present 인 ci 케이스는 결과가
-    필터 없을 때보다 실제로 줄어든다(공허 통과 방지). combo-0026(필터 8축 전부 present)의
+    필터 없을 때보다 실제로 줄어든다(공허 통과 방지). combo-0058(필터 8축 전부 present)의
+    (#386 재생성 전에는 combo-0026 이 이 자리였다 — 축 조합이 같은 케이스로 옮겼다: recommend·
+    guest·rerank_failed·case=3·normal·필터 8축 present. 관측값도 그대로다.)
     `PAIR_CATALOG`(4건) 대비 product 101 하나만 category=무선이어폰·brand=나이키·
     rating_min=4.0·price 20000~50000 을 전부 만족한다."""
     cases = {c.case_id: c for c in load_cases()}
-    observed = await observe(cases["combo-0026"])
+    observed = await observe(cases["combo-0058"])
     assert observed["searchCallCount"] > 0
     assert observed["pushProductCount"] == 1, (
-        "combo-0026 은 category·brand·rating_min·price 하드필터로 4건 중 1건(product 101)만 "
+        "combo-0058 은 category·brand·rating_min·price 하드필터로 4건 중 1건(product 101)만 "
         "남아야 한다 — 필터가 실제로 결과를 줄이지 않으면 이 값이 4에 가깝게 나온다"
     )
 
 
 async def test_search_filters_is_boundary_value_not_injected_value() -> None:
     """D8-2 — `observed.searchFilters` 는 decompose 주입값이 아니라 search 콜러블이 실제로 받은
-    경계 도달값(첫 호출)이다. combo-0026 은 decompose 산출 filters.keyword="가벼운" 을 주입하지만,
+    경계 도달값(첫 호출)이다. combo-0058 은 decompose 산출 filters.keyword="가벼운" 을 주입하지만,
     category leg 가 있으면(#381 D5) `#51` 규칙(`app/agents/buyer/recommendation/graph.py::_leg` 의
     `leg_keyword = None if drop_keyword else ...`)이 leg 검색어에서 keyword 를 비운다 — 주입값과
     경계 도달값이 실제로 갈리는 축이다. 또한 첫 호출은 자동완화 재검색(축별로 하나씩 완화)이 시작되기
     전 값이라 이후 호출(예: color 완화 재검색)과도 달라야 한다 — "첫 호출" 계약 자체를 잠근다."""
     cases = {c.case_id: c for c in load_cases()}
-    case = cases["combo-0026"]
+    case = cases["combo-0058"]
     injected = build_decompose_json(case.axes)["filters"]
     assert injected["keyword"] == "가벼운"
 
@@ -422,13 +558,15 @@ async def test_unapplied_search_filters_are_loud_for_unrepresentable_axes() -> N
     비어 있다."""
     cases = {c.case_id: c for c in load_cases()}
     with_unrepresentable = await observe(
-        cases["combo-0026"]
+        cases["combo-0058"]
     )  # keyword·color·attr_conditions 전부 present
     assert set(with_unrepresentable["unappliedSearchFilters"]) == {"color", "attrConditions"}, (
         with_unrepresentable["unappliedSearchFilters"]
     )
 
-    representable_only = await observe(cases["combo-0023"])  # price_min 만 present
+    # (#386 재생성 전에는 combo-0023 이 이 자리였다 — 표현 가능한 축만 present 인 ci 케이스로
+    # 옮겼다. 그쪽은 price_min, 이쪽은 category 가 present 인데 이 단언과는 무관하다.)
+    representable_only = await observe(cases["combo-0057"])  # category 만 present
     assert representable_only["unappliedSearchFilters"] == []
 
 

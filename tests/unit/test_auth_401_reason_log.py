@@ -114,15 +114,27 @@ def _expired_claims() -> dict:
             "wrong-scope", "TOKEN_INVALID", "missing or mismatched scope", id="scope-mismatch"
         ),
         pytest.param(
-            "both-discriminators",
+            "seller-with-guest-sub-type",
             "TOKEN_INVALID",
-            "exactly one identity discriminator is required",
-            id="both-discriminators",
+            "invalid seller role claim",
+            id="seller-with-guest-sub-type",
+        ),
+        pytest.param(
+            "seller-without-sub-type",
+            "TOKEN_INVALID",
+            "invalid sub_type claim",
+            id="seller-without-sub-type",
+        ),
+        pytest.param(
+            "sub-type-only-malformed",
+            "TOKEN_INVALID",
+            "invalid sub_type claim",
+            id="sub-type-only-malformed",
         ),
         pytest.param(
             "invalid-sub-type",
             "TOKEN_INVALID",
-            "invalid buyer sub_type claim",
+            "invalid sub_type claim",
             id="invalid-sub-type",
         ),
         pytest.param("expired", "TOKEN_EXPIRED", "ExpiredSignatureError", id="expired"),
@@ -147,8 +159,20 @@ def test_chat_401_logs_reason_by_failure_type(
         ),
         "unknown-kid": lambda: sign_ticket(rsa_key, "kid-unknown", ticket_claims()),
         "wrong-scope": lambda: sign_ticket(rsa_key, KID, ticket_claims(scope="profile:read")),
-        "both-discriminators": lambda: sign_ticket(
-            rsa_key, KID, ticket_claims(role="seller", sub_type="member")
+        # role="seller" + sub_type="guest" — 판매자는 sub_type="member"를 동반해야 한다.
+        "seller-with-guest-sub-type": lambda: sign_ticket(
+            rsa_key, KID, ticket_claims(role="seller", sub_type="guest")
+        ),
+        # role="seller"인데 sub_type 키 자체가 없다 — §2.3 v0.28.0: sub_type은 판매자 티켓도
+        # 필수라 여기서 먼저 걸린다(구 XOR 하에서는 허용이었던 형태 — 실존하지 않는 형태다).
+        "seller-without-sub-type": lambda: sign_ticket(
+            rsa_key,
+            KID,
+            {k: v for k, v in ticket_claims(role="seller").items() if k != "sub_type"},
+        ),
+        # role 없이 sub_type만 이상값 — 정본(member|guest) 밖.
+        "sub-type-only-malformed": lambda: sign_ticket(
+            rsa_key, KID, ticket_claims(sub_type="ADMIN")
         ),
         # 대문자 sub_type — §2.3 정본값(member|guest) 밖이라 fail-closed.
         "invalid-sub-type": lambda: sign_ticket(rsa_key, KID, ticket_claims(sub_type="MEMBER")),

@@ -75,6 +75,8 @@ class SpringStub:
     orders: list[dict] = field(default_factory=list)
     changes_pages: list[dict] = field(default_factory=list)
     cart_items: list[dict] = field(default_factory=list)
+    # I-28 찜 목록(§4.16, 이슈 #386). `name` 은 I-18 의 `productName` 과 필드명이 다르다.
+    wishlist_items: list[dict] = field(default_factory=list)
     # listId → productIds (경로 B: push 로 저장 → CH-5 로 조회)
     pushed_lists: dict[str, list[int]] = field(default_factory=dict)
     # 요청 감사 로그 — (method, path, query, headers, body)
@@ -88,6 +90,7 @@ class SpringStub:
     fail_purchases: bool = False
     fail_push: bool = False
     fail_cart_add_code: str | None = None  # CART_OPTION_REQUIRED 등
+    fail_wishlist: bool = False  # I-28 조회 5xx (#386 degrade 검증)
     cart_option_payload: list[dict] = field(default_factory=list)
 
     # ── 라우팅 ──
@@ -117,6 +120,8 @@ class SpringStub:
             return self._cart_add(body)
         if request.method == "GET" and path == "/internal/cart":
             return self._cart_view()
+        if request.method == "GET" and path == "/internal/wishlist":
+            return self._wishlist_view()
         # I-4 must precede the generic I-19 member route: both share the same prefix.
         if (
             request.method == "GET"
@@ -191,6 +196,14 @@ class SpringStub:
 
     def _cart_view(self) -> httpx.Response:
         return httpx.Response(200, json={"success": True, "data": {"items": self.cart_items}})
+
+    # ── I-28 찜 목록 조회 (§4.16, 이슈 #386) ──
+
+    def _wishlist_view(self) -> httpx.Response:
+        """찜 0건도 200 + `items: []` 다(404 아님) — I-28 정상 응답."""
+        if self.fail_wishlist:
+            return httpx.Response(500, json={"success": False, "error": {"code": "INTERNAL"}})
+        return httpx.Response(200, json={"success": True, "data": {"items": self.wishlist_items}})
 
     def _name_of(self, product_id: Any) -> str | None:
         for product in self.catalog:
