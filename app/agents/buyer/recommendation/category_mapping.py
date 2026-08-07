@@ -162,11 +162,16 @@ def _consensus_filter(
     남길지)은 여전히 leg 의 후보 전체를 대상으로 한다** — 좁아지는 건 "누가 승자 대분류인가"를
     세는 창일 뿐, 승자 대분류에 속한 leaf 는 순위와 무관하게 전부 살아남는다.
 
-    `_interleave_by_leg` 의 leg 형평 규약(R5-1)은 **서로 다른 니즈**(예: "캠핑용품이랑
-    낚시용품") 사이의 형평을 지키는 것이지, 한 니즈에서 전개된 형제 사이의 형평이 아니다 —
-    형제는 애초에 하나의 정답 대분류로 수렴해야 정상이므로 여기서는 그 형평을 깨고 소수 의견
-    (비승자 대분류)을 탈락시킨다. 필터 결과가 0개가 된 leg 은 그대로 탈락한다 — 형제 합의에서
-    벗어난 아이템이 곧 노이즈라는 의도된 동작이다.
+    [#428 리뷰 3차 R3-1] **필터는 leg 을 없애지 않고 후보만 좁힌다.** 승자 대분류(들)로 각 leg 을
+    걸러 본 결과 **후보가 0개가 되는 형제가 하나라도 있으면 필터를 전혀 적용하지 않고**(부분 적용
+    금지) 원본을 그대로 반환한다 — 그 형제의 후보 목록 어디에도 승자 대분류가 없다는 것은 그
+    형제가 정말로 다른 상품군이라는 뜻이지, 합의에서 벗어난 노이즈가 아니기 때문이다. 반대로
+    `#428` 과일 케이스에서 동음이의어 `"배"`는 최근접이 `여성가방 > 백팩`이어도 6위에
+    `과일 > 국산과일`을 갖고 있다 — 같은 상품군에 속한다는 증거가 후보 안에 남아 있어 가드를
+    통과한다. (리뷰어가 제안한 "형제 수 대비 과반" 임계는 `#428` 본체를 깬다 — 과일 A 회차는
+    지지 2/4로 과반이 아니다.) 초판 서술("형제 사이 형평을 깨고 소수 의견을 탈락시킨다",
+    `_interleave_by_leg` R5-1 형평 규약과 별개)은 이 가드로 더는 사실이 아니다 — leg 자체가
+    탈락하는 경로가 구조적으로 없어졌다.
 
     합의가 성립하지 않으면(기여 leg 2개 미만, 또는 최다 지지가 1개 leg 뿐) 아무것도 하지 않고
     원본을 그대로 반환한다 — "이사 갈 때 필요한 것들" → 행거·커튼·이불처럼 형제들이 애초에
@@ -197,13 +202,8 @@ def _consensus_filter(
 
     filtered: dict[int, list[tuple[str, str | None]]] = {}
     dropped_leaves = 0
-    zeroed_legs = 0
     for leg_i, leaves in expansion_by_leg.items():
-        # [#428 리뷰 2차 R2-2] 원래 비어 있던 leg 은 필터가 "0개로 걸러낸" 것이 아니므로
-        # `zeroed_legs`(필터 발동 결과 관측용)에 섞이지 않게 건너뛴다 — 섞이면 "형제 합의에서
-        # 벗어나 탈락"과 "애초에 후보가 없었다"가 같은 카운터로 뭉개져 관측이 오염된다. `kept`
-        # 계산은 빈 리스트에도 안전(자연히 빈 채로 나옴)하지만, 통계 오염을 막기 위해 아예
-        # 건너뛴다.
+        # [#428 리뷰 2차 R2-2] 원래 비어 있던 leg 은 필터가 "0개로 걸러낸" 것이 아니므로 건너뛴다.
         if not leaves:
             continue
         kept = [
@@ -211,17 +211,25 @@ def _consensus_filter(
             for canonical, query in leaves
             if canonical.split(" > ", 1)[0] in winning
         ]
+        if not kept:
+            # [#428 리뷰 3차 R3-1] 가드 — 이 leg 은 후보 목록 어디에도 승자 대분류가 없다(=
+            # 정당하게 다른 상품군). 부분 적용 금지: 지금까지 좁힌 다른 leg 도 버리고 원본
+            # expansion_by_leg 전체를 그대로 반환한다.
+            return expansion_by_leg, {
+                "skipped": True,
+                "reason": "leg_without_winning_mid",
+                "legs": len(expansion_by_leg),
+                "max_support": max_support,
+                "winning_mids": winning_mids,
+            }
         dropped_leaves += len(leaves) - len(kept)
-        if kept:
-            filtered[leg_i] = kept
-        else:
-            zeroed_legs += 1
+        filtered[leg_i] = kept
     stats = {
+        "skipped": False,
         "legs": len(expansion_by_leg),
         "max_support": max_support,
         "winning_mids": winning_mids,
         "dropped_leaves": dropped_leaves,
-        "zeroed_legs": zeroed_legs,
     }
     return filtered, stats
 
@@ -752,7 +760,16 @@ async def map_categories(
         try:
             expansion_by_leg, consensus_stats = _consensus_filter(expansion_by_leg)
             if consensus_stats is not None:
-                logger.info("category_expansion_consensus", extra=consensus_stats)
+                # [#428 리뷰 3차 R3-1] 가드 발동(형제 중 하나라도 승자 대분류 후보가 없어 미적용)과
+                # 실제 적용을 별개 이벤트로 남긴다 — 운영에서 "이 가드가 얼마나 자주 우리를
+                # 구했나"를 재는 신호가 된다.
+                skipped = consensus_stats.pop("skipped")
+                event = (
+                    "category_expansion_consensus_skipped"
+                    if skipped
+                    else "category_expansion_consensus"
+                )
+                logger.info(event, extra=consensus_stats)
         except Exception as exc:  # noqa: BLE001 - 합의 필터 실패: 원본 expansion_by_leg 를 보존한다
             logger.warning(
                 "category_expansion_consensus_failed",
