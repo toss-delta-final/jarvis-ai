@@ -141,7 +141,7 @@ def _interleave_by_leg(
 
 def _consensus_filter(
     expansion_by_leg: dict[int, list[tuple[str, str | None]]],
-) -> tuple[dict[int, list[tuple[str, str | None]]], dict[str, object] | None]:
+) -> tuple[dict[int, list[tuple[str, str | None]]], dict[str, object]]:
     """[#428] 전개 형제(sibling) leg 사이 **최근접(top-1) 대분류 합의**로 동음이의어 노이즈를
     걸러낸다.
 
@@ -176,9 +176,18 @@ def _consensus_filter(
     합의가 성립하지 않으면(기여 leg 2개 미만, 또는 최다 지지가 1개 leg 뿐) 아무것도 하지 않고
     원본을 그대로 반환한다 — "이사 갈 때 필요한 것들" → 행거·커튼·이불처럼 형제들이 애초에
     이질적인 전개는 대분류가 갈리는 것이 정상이라 합의 신호 자체가 없다.
+
+    [#428 리뷰 6차 R6-1] **미적용(None) 반환은 없다** — 적용이든 미적용이든 항상 stats dict 를
+    낸다. 미적용 사유는 `category_select_unavailable` 과 같은 규약으로 `reason` 필드 하나로
+    구분한다(`single_leg`·`no_consensus`·`leg_without_winning_mid`) — 호출부가 이 `reason` 을
+    그대로 로그에 싣는다.
     """
     if len(expansion_by_leg) < _CONSENSUS_MIN_SUPPORT_LEGS:
-        return expansion_by_leg, None
+        return expansion_by_leg, {
+            "skipped": True,
+            "reason": "single_leg",
+            "legs": len(expansion_by_leg),
+        }
 
     support: dict[str, set[int]] = {}
     for leg_i, leaves in expansion_by_leg.items():
@@ -195,7 +204,12 @@ def _consensus_filter(
 
     max_support = max((len(legs) for legs in support.values()), default=0)
     if max_support < _CONSENSUS_MIN_SUPPORT_LEGS:
-        return expansion_by_leg, None
+        return expansion_by_leg, {
+            "skipped": True,
+            "reason": "no_consensus",
+            "legs": len(expansion_by_leg),
+            "max_support": max_support,
+        }
 
     winning_mids = sorted(mid for mid, legs in support.items() if len(legs) == max_support)
     winning = set(winning_mids)
@@ -745,9 +759,18 @@ async def map_categories(
         )
 
     # [#428] 전개 후 재매핑(sibling_expansion=True)에만 대분류 합의 필터를 건다 — 원 매핑(서로
-    # 다른 니즈)에는 적용하지 않는다. 필터가 실제로 돌아 무언가 걸렀는지와 애초에 돌지 않았는지를
-    # 로그로 구분한다(둘 다 무기록이면 "합의가 돌았는데 아무것도 안 걸렀다"와 "합의를 돌리지
-    # 않았다"를 사후에 구분할 수 없다).
+    # 다른 니즈)에는 적용하지 않는다.
+    # [#428 리뷰 6차 R6-1/R6-2] 라운드 1엔 여기서 "필터가 실제로 돌아 무언가 걸렀는지와 애초에
+    # 돌지 않았는지를 로그로 구분한다"고 썼지만 사실이 아니었다(#444 Claude 리뷰 5차 지적) —
+    # `_consensus_filter` 가 미적용을 `None` 으로 냈던 시절엔 `consensus_stats is not None` 게이트
+    # 때문에 "합의가 성립하지 않아 미적용"과 "sibling_expansion=False 라 애초에 안 돌았다"가 둘 다
+    # 무기록이라 로그만으로 구분되지 않았다. 이제 `_consensus_filter` 는 미적용 사유
+    # (`single_leg`·`no_consensus`·`leg_without_winning_mid`)도 전부 stats 로 반환하므로, 적용·
+    # 미적용(사유 3종) 전부가 로그를 남기고 **`sibling_expansion=False` 만 유일한 무기록 상태**가
+    # 된다 — 로그 유무 자체가 "이 턴에 합의 필터가 실제로 돌았는가"의 신뢰 가능한 신호다. 이
+    # 구분이 있어야 아래 `source_legs`(R5-2, "발동한 턴을 운영에서 식별")가 실제로 쓸모 있다 —
+    # 무기록 상태가 여러 원인을 덮으면 "이 로그가 남았다 = 특정 상황"이라는 R5-2 의 전제가
+    # 깨진다.
     # [#428 리뷰 2차 R2-3] 이 호출도 조립 루프(위 `category_assembly_failed`)·택일 단계
     # (`category_select_stage_failed`)와 같은 이유로 자체 격리한다 — 여기서 예외가 나면
     # `map_categories` 가 통째로 던지고 `_map_or_empty`(graph.py)가 **빈 CategoryMapping**으로
@@ -759,24 +782,24 @@ async def map_categories(
     if sibling_expansion:
         try:
             expansion_by_leg, consensus_stats = _consensus_filter(expansion_by_leg)
-            if consensus_stats is not None:
-                # [#428 리뷰 3차 R3-1] 가드 발동(형제 중 하나라도 승자 대분류 후보가 없어 미적용)과
-                # 실제 적용을 별개 이벤트로 남긴다 — 운영에서 "이 가드가 얼마나 자주 우리를
-                # 구했나"를 재는 신호가 된다.
-                skipped = consensus_stats.pop("skipped")
-                event = (
-                    "category_expansion_consensus_skipped"
-                    if skipped
-                    else "category_expansion_consensus"
-                )
-                # [#428 리뷰 5차 R5-2] "원 발화의 leg 수"를 그대로 실으려면 map_categories 에
-                # 관측 전용 파라미터를 새로 뚫어야 하는데, 그건 매퍼 인터페이스를 관측 목적으로
-                # 오염시킨다. 대신 R5-1 이 게이트를 상류(graph.py)로 옮겼으므로 "이 로그가
-                # 남았다 = 원 발화 신호 leg 이 0~1개였다"가 이미 함의된다. `source_legs`(이번
-                # 매핑의 입력 leg 수 = 전개 재매핑에서는 곧 전개 아이템 수)는 그 위에 "형제 몇
-                # 개가 합의에 참여했나"를 더해, 이 상호작용이 실제로 발동한 턴을 사후 분석할 수
-                # 있게 한다.
-                logger.info(event, extra={**consensus_stats, "source_legs": len(queries)})
+            # [#428 리뷰 6차 R6-1] `_consensus_filter` 는 이제 미적용도 항상 stats 를 낸다 —
+            # `reason`(`single_leg`·`no_consensus`·`leg_without_winning_mid`)으로 사유를 가른다.
+            # 별개 이벤트를 사유마다 만들지 않고 `category_select_unavailable` 과 같은 규약으로
+            # `category_expansion_consensus_skipped` 하나에 `reason` 필드로 싣는다.
+            skipped = consensus_stats.pop("skipped")
+            event = (
+                "category_expansion_consensus_skipped"
+                if skipped
+                else "category_expansion_consensus"
+            )
+            # [#428 리뷰 5차 R5-2] "원 발화의 leg 수"를 그대로 실으려면 map_categories 에
+            # 관측 전용 파라미터를 새로 뚫어야 하는데, 그건 매퍼 인터페이스를 관측 목적으로
+            # 오염시킨다. 대신 R5-1 이 게이트를 상류(graph.py)로 옮겼으므로 "이 로그가
+            # 남았다 = 원 발화 신호 leg 이 0~1개였다"가 이미 함의된다. `source_legs`(이번
+            # 매핑의 입력 leg 수 = 전개 재매핑에서는 곧 전개 아이템 수)는 그 위에 "형제 몇
+            # 개가 합의에 참여했나"를 더해, 이 상호작용이 실제로 발동한 턴을 사후 분석할 수
+            # 있게 한다.
+            logger.info(event, extra={**consensus_stats, "source_legs": len(queries)})
         except Exception as exc:  # noqa: BLE001 - 합의 필터 실패: 원본 expansion_by_leg 를 보존한다
             logger.warning(
                 "category_expansion_consensus_failed",

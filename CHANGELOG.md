@@ -307,6 +307,9 @@
   발동한 턴을 운영에서 식별할 수 있게 했다.)
   `evals/category_probe` 에 인스턴스형 앵커 8셀(v1 38 → v2 46)을 추가해 이 실패 모드를 상시
   계측한다. 임계·계약(api-spec) 무변경.
+  (리뷰 6차: `_consensus_filter` 의 미적용 사유(`single_leg`·`no_consensus`·
+  `leg_without_winning_mid`) 를 항상 `category_expansion_consensus_skipped` 의 `reason` 필드로
+  관측해, `sibling_expansion=False` 만이 유일한 무기록 상태가 되게 했다 — 필터 동작 무변경.)
 
 ### Removed
 - **#300 — #118(PR #292)이 만든 이관 전 별도 프로브 스크립트 삭제, screen 지시어 해소 6셀을 `evals/intent_probe`로 흡수** — 그 프로브가 #260이 정본으로 고정한 하네스와 측정 대상이 겹쳐 「프로브 중복 제작 3회차」였다(`docs/lessons.md`). `AnchorSet`에 `screens`·`screenLastRecommendations`를 추가하고 `ProbeContext.includeScreen`/`screenRef`/`lastRecommendationsRef`로 화면 컨텍스트 5종을 표현했으며, 러너가 `decompose` 다음 `resolve_screen_reference`를 배포 경로(`graph.py` cart_add 분기)와 같은 조건·인자로 불러 축 4종(`screenExactPick`/`screenReask`/`screenNoHallucination`/`screenResolution`)과 진단 3종(`screenPromptLayerHitCount`/`screenResolverOverrideCount`/`screenOutOfListConfirmCount`)을 신설했다. 이관 표본이 원본과 문자 단위로 동일함을 JSON diff로 증명했고, 흡수 후 기준선(`baselines/fast-2026-08-05-300-screen/`)이 #118 채택 근거(48/48·안전 셀 8/8·오담기 0)를 47/48·8/8·오담기 0으로 재현했다. `decompose._SYSTEM` 등 프로덕션 로직·프롬프트는 한 글자도 바꾸지 않았다(픽스처 v1.2.0/v4). 계약(api-spec) 무변경.

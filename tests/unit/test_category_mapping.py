@@ -2051,11 +2051,13 @@ async def test_consensus_filter_multi_need_expansion_guard_preserves_minority_ne
     assert "조명 > 조명" in canonicals
 
 
-async def test_consensus_log_suppressed_when_filter_not_applied(caplog) -> None:
-    """[#428 리뷰 3차 R3-1 갱신] 합의 자체가 성립하지 않는 경우(단일 leg · `max_support<2` ·
-    `sibling_expansion=False`)에는 `category_expansion_consensus` 도 `category_expansion_
-    consensus_skipped` 도 나오지 않는다 — "합의가 성립 안 함"과 "합의는 성립했으나 R3-1 가드로
-    미적용"은 서로 다른 상태라 로그에서도 구분돼야 한다(§1.3 관측 로그절)."""
+async def test_consensus_skip_reasons_are_logged_and_only_disabled_is_silent(caplog) -> None:
+    """[#428 리뷰 6차 R6-1/R6-3] 라운드 3까지는 단일 leg · `max_support<2` · `sibling_
+    expansion=False` 셋 다 무기록이었다(#444 Claude 리뷰 5차 지적) — `_consensus_filter` 가
+    미적용을 `None` 으로 냈고 호출부가 `is not None` 으로 게이트를 걸었기 때문이다. 이제
+    앞 둘은 각각 `reason == "single_leg"`/`"no_consensus"` 로 `category_expansion_
+    consensus_skipped` 에 **기록되고**, `sibling_expansion=False` 만 여전히 무기록이다 —
+    이게 리뷰어가 요구한 "실제 발동 여부를 로그만으로 판별"이 성립하는 근거다."""
     hits_pair = {
         "가": [("A > a1", 0.30)],
         "나": [("B > b1", 0.30)],
@@ -2068,11 +2070,25 @@ async def test_consensus_log_suppressed_when_filter_not_applied(caplog) -> None:
             settings=_settings(expand_legs=3),
             sibling_expansion=True,
         )
+    single_leg_record = _record(caplog, "category_expansion_consensus_skipped")
+    assert single_leg_record.reason == "single_leg"
+    assert single_leg_record.source_legs == 1
+    caplog.clear()
+
+    with caplog.at_level("INFO"):
         await _FakeMapper(exact=set(), nearest={}, hits=hits_pair).run_full(
             [CategoryQuery(None, name) for name in ["가", "나"]],
             settings=_settings(expand_legs=4),
             sibling_expansion=True,
         )
+    no_consensus_record = _record(caplog, "category_expansion_consensus_skipped")
+    assert no_consensus_record.reason == "no_consensus"
+    assert no_consensus_record.max_support == 1
+    assert no_consensus_record.source_legs == 2
+    caplog.clear()
+
+    # `sibling_expansion=False` — 필터가 애초에 호출되지 않는다. 이게 이제 유일한 무기록 상태다.
+    with caplog.at_level("INFO"):
         await _FakeMapper(exact=set(), nearest={}, hits=hits_pair).run_full(
             [CategoryQuery(None, name) for name in ["가", "나"]],
             settings=_settings(expand_legs=4),
