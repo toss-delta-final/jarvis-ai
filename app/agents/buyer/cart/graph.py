@@ -161,6 +161,13 @@ def _done() -> str:
 # 이라고 답하면 사용자는 눈앞의 상품을 두고 엉뚱한 안내를 받는다 — 정본 §3.1 의 "여러 건이면
 # 되물음"은 되묻는 것만이 아니라 **무엇을 물어야 할지 알려주는 것**까지다.
 _UNRESOLVED_DEFAULT = "어떤 상품을 담을까요? 추천을 먼저 받아보시면 담아드릴게요."
+# [#435] `last_reco`(스레드 누적 추천)가 비어 있지 않은 턴의 문구 — 위 기본 문구는 **이미
+# 추천을 받은** 사용자에게 거짓으로 읽힌다. `screen_reason` 기반 문구가 있으면 그쪽이 우선한다
+# (화면 맥락이 이름 지목보다 구체적인 신호다) — 이 문구는 `screen_reason` 이 없을 때만 쓴다.
+# "방금"처럼 시점을 단정하는 표현은 쓰지 않는다 — `last_reco` 는 누적이라 직전 턴이 아닐 수 있다.
+_UNRESOLVED_WITH_RECO = (
+    "어떤 상품을 담을까요? 추천해 드린 상품 중에서 이름을 말씀해 주시면 담아드릴게요."
+)
 # 화면을 가리켰지만 **어느 것인지** 특정되지 않은 경우. 후보 다건(`ambiguous_screen_candidates`)과
 # 순번·좌표가 화면 범위를 벗어난 경우(`*_out_of_range`), 좌표를 풀 `columns` 가 없는 경우를 **한
 # 문구로 묶는다** — 사유는 다르지만 사용자가 취해야 할 다음 행동이 "위치를 다시 말한다"로 같기
@@ -184,12 +191,18 @@ _SCREEN_POSITION_REASONS = frozenset(
 )
 
 
-def _unresolved_notice(screen_reason: str | None) -> str:
-    """되물음 문구를 화면 해소 사유로 가른다. 사유가 없으면 오늘 문구 그대로."""
+def _unresolved_notice(screen_reason: str | None, has_last_reco: bool) -> str:
+    """되물음 문구를 화면 해소 사유 → `last_reco` 유무 순으로 가른다.
+
+    `screen_reason` 이 있으면 화면 문구가 **우선**한다(위 `_UNRESOLVED_WITH_RECO` 정의 참조).
+    둘 다 없으면 오늘 문구(`_UNRESOLVED_DEFAULT`) 그대로.
+    """
     if screen_reason in _SCREEN_POSITION_REASONS:
         return _UNRESOLVED_SCREEN_POSITION
     if screen_reason == "unknown_product_id_spoken":
         return _UNRESOLVED_SCREEN_NOT_FOUND
+    if has_last_reco:
+        return _UNRESOLVED_WITH_RECO
     return _UNRESOLVED_DEFAULT
 
 
@@ -203,6 +216,7 @@ async def stream_cart_add(
     message: str = "",
     allowed_product_ids: set[int] | None = None,
     screen_reason: str | None = None,
+    has_last_reco: bool = False,
     add_fn=None,
     get_cart_fn=None,
     delete_fn=None,
@@ -217,6 +231,9 @@ async def stream_cart_add(
     (#118). 되물음 문구를 상황에 맞게 가르는 데만 쓰고 판정에는 관여하지 않는다 — `None` 이면
     (= FE 가 `screen` 을 안 보냈거나 해소기가 개입하지 않은 절대다수 경로) 문구는 오늘과 같다.
 
+    `has_last_reco`(#435) 는 스레드 누적 추천(`last_reco`)이 비어 있지 않은지만 알리는 신호다 —
+    `screen_reason` 이 없을 때 미해소 문구를 가르는 데만 쓴다(`_unresolved_notice` 참조).
+
     **[라운드 14, head `0a53ffc` 리뷰]** 아래 삭제·찜 세 위임 분기(`stream_cart_remove`/
     `stream_wishlist_add`/`stream_wishlist_remove`)는 이 `screen_reason` 을 넘기지 않는다 —
     누락이 아니라 **의도적 축소**다. 그 세 흐름은 화면 해소 사유별 문구(`_UNRESOLVED_SCREEN_POSITION`·
@@ -226,6 +243,13 @@ async def stream_cart_add(
     끼워 넣지 않는다. 화면 맥락(#118)과 삭제·찜(#116·#117)의 통합은 이 레인 범위 밖(핸드오버의
     찜 해소는 "추천 목록·문맥에서 productId 해소"까지)이며, **[라운드 23]** 플래그 제거로 이제
     이 흐름은 항상 사용자에게 도달한다 — 통합은 여전히 후속 항목이다.
+
+    **`has_last_reco`(#435) 는 위 세 위임 중 `stream_wishlist_add` 로 위임할 때만 전달한다** —
+    나머지 둘(`stream_wishlist_remove`·`stream_cart_remove`)은 누락이 아니라 **불필요**다. 그
+    두 흐름의 미해소 문구는 `last_reco` 를 보지 않고 **실제 찜/장바구니 목록**에서 만들어진다
+    (`wishlist.py::_wishlist_unresolved_notice`·`remove.py`) — 이미 목록을 손에 쥐고 있어
+    "추천을 받았는지"와 무관하게 구체적인 문구가 나가므로, `last_reco` 유무가 그 문구를 가를
+    이유가 없다.
     """
     # 삭제·찜 위임(이슈 #116·#117, 패킷 §4) — 신원 도출·pending 조회보다 앞에서 판별한다. LLM 을
     # 새로 부르지 않는 결정론적 판정이라 순서가 앞이어도 비용이 없다. **[라운드 23]** 이 둘의
@@ -240,6 +264,7 @@ async def stream_cart_add(
             cart=cart,
             settings=settings,
             allowed_product_ids=allowed_product_ids,
+            has_last_reco=has_last_reco,
             add_wishlist_fn=add_wishlist_fn,
             observer=observer,
         ):
@@ -332,7 +357,9 @@ async def stream_cart_add(
     if unresolved:
         yield sse(
             "token",
-            TokenData(text=_unresolved_notice(screen_reason)).model_dump(by_alias=True),
+            TokenData(text=_unresolved_notice(screen_reason, has_last_reco)).model_dump(
+                by_alias=True
+            ),
         )
         yield _done()
         return

@@ -220,6 +220,35 @@ async def test_wishlist_add_unresolved_product_id_asks_and_skips_call() -> None:
     assert not _actions(events)
 
 
+async def test_wishlist_add_unresolved_notice_is_byte_identical_without_last_reco() -> None:
+    """[#435 W4] `has_last_reco` 기본값(False)은 오늘 문구와 바이트 동일하다."""
+    events = await _collect(
+        stream_wishlist_add(
+            identity=_member(),
+            cart=CartIntent(product_id=None, quantity=1),
+            settings=get_settings(),
+        )
+    )
+    text = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert text == "어떤 상품을 찜할까요? 추천을 먼저 받아보시면 찜해 드릴게요."
+
+
+async def test_wishlist_add_unresolved_notice_mentions_naming_when_last_reco_present() -> None:
+    """[#435 W4] `has_last_reco=True` 면 "이미 추천을 받았다"는 사실을 반영한 문구로 바뀐다."""
+    events = await _collect(
+        stream_wishlist_add(
+            identity=_member(),
+            cart=CartIntent(product_id=None, quantity=1),
+            settings=get_settings(),
+            has_last_reco=True,
+        )
+    )
+    text = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert (
+        text == "어떤 상품을 찜할까요? 추천해 드린 상품 중에서 이름을 말씀해 주시면 찜해 드릴게요."
+    )
+
+
 async def test_wishlist_add_rejects_product_outside_allowed_ids() -> None:
     """경로 B 가드 — allowed_product_ids 밖의 productId 는 internal 호출 없이 되물음(보안 성격)."""
     called = False
