@@ -22,6 +22,7 @@ import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from typing import get_args
 
 from app.agents.profile.graph_models import (
     GraphDocument,
@@ -41,6 +42,10 @@ _PREDICATE_ORDER: dict[str, int] = {
     "interestedIn": 3,
     "purchased": 4,
 }
+# 저장된 payload 의 predicate 검증 어휘. `Predicate` Literal 을 **단일 출처**로 삼는다 —
+# `_PREDICATE_ORDER` 를 재사용하면 정렬 순서와 검증 어휘가 한 자료에 묶여, 한쪽만 고칠 때
+# 다른 쪽이 조용히 따라 바뀐다.
+_PREDICATES: frozenset[str] = frozenset(get_args(Predicate))
 # 같은 노드를 두고 서로 못 서는 관계쌍. 승자만 active 로 남고 패자는 superseded 다.
 _CONFLICTING: frozenset[frozenset[str]] = frozenset({frozenset({"likes", "avoids"})})
 _ROUND = 6  # 고정 소수점 — 부동소수 꼬리가 재생 동일성을 깨지 않게(REQ-PGRAPH-015)
@@ -126,16 +131,33 @@ def _collect(facts: Sequence[FactRecord]) -> tuple[list[_Observation], int]:
 
 
 def _observation(record: FactRecord, triple: dict) -> _Observation | None:
-    """저장된 트리플 payload → 관측. 모양이 깨진 항목은 조용히 버린다(배치를 죽이지 않는다)."""
+    """저장된 트리플 payload → 관측. 모양이 깨진 항목은 조용히 버린다(배치를 죽이지 않는다).
+
+    **검증은 `node` 만이 아니라 `predicate`·`edge_key`·`edge_id` 까지다**(PR 리뷰 반영).
+    `_Observation` 은 검증 없는 dataclass 라, 여기서 통과시키면 한참 뒤 `_merge_edge` 의
+    `GraphEdge` 생성에서야 `ValidationError` 가 난다. 그 지점엔 잡는 코드가 없어 예외가
+    `finalizer` 의 최상위 `except Exception` 까지 새고, 손상 fact 는 저장소에서 지워지지 않으므로
+    session-end 마다 같은 자리에서 RETRYABLE 만 반복된다(poison record) — REQ-PGRAPH-004 가
+    마련한 "못 만든 fact 는 개수만 센다" degrade 를 우회하는 셈이다.
+
+    호출부에서 `build_graph_document` 를 감싸는 방어는 택하지 않았다. 그러면 트리플 하나 때문에
+    **그 배치 전체**가 버려진다 — 여기서 거르면 손상분만 빠지고 나머지 취향은 정상 반영된다.
+    """
     try:
         node = GraphNode.model_validate(triple["node"])
+        predicate = triple["predicate"]
+        edge_key = str(triple["edge_key"])
+        edge_id = str(triple["edge_id"])
+        # `GraphEdge` 가 나중에 강제할 제약을 여기서 미리 건다 — 늦게 터지면 배치가 죽는다.
+        if predicate not in _PREDICATES or not edge_key or not edge_id:
+            return None
         return _Observation(
             observed_at=record.created_at,
             fact_key=record.fact_key,
             node=node,
-            predicate=triple["predicate"],
-            edge_key=triple["edge_key"],
-            edge_id=triple["edge_id"],
+            predicate=predicate,
+            edge_key=edge_key,
+            edge_id=edge_id,
             salience=float(triple.get("salience") or 0.0),
             source=str(triple.get("source") or "conversation"),
         )

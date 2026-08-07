@@ -189,6 +189,38 @@ def test_unprojected_count_is_recomputed_not_accumulated(settings: Settings) -> 
     assert document.unprojected_count == 1  # 누적이 아니라 매 배치 재계산
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("predicate", "hates"),  # Predicate Literal 밖
+        ("predicate", None),
+        ("edge_key", ""),
+        ("edge_id", ""),
+    ],
+)
+def test_corrupt_triple_field_is_dropped_not_raised(
+    settings: Settings, field: str, value: object
+) -> None:
+    """손상된 트리플은 그 fact 만 unprojected 로 빠진다 — 배치를 죽이지 않는다(REQ-PGRAPH-004).
+
+    `_Observation` 은 검증 없는 dataclass 라 `_observation` 이 통과시키면 한참 뒤 `_merge_edge` 의
+    `GraphEdge` 생성에서야 `ValidationError` 가 난다. 그 지점엔 잡는 코드가 없어
+    `finalizer` 의 최상위 `except Exception` 까지 새고, 손상 fact 가 저장소에 남아 있는 한
+    session-end 마다 같은 자리에서 RETRYABLE 만 반복된다(poison record).
+    """
+    broken = _triple()
+    broken[field] = value
+    facts = [
+        _fact("f1", triples=[broken]),
+        _fact("f2", triples=[_triple("brand:애플", label="애플")]),
+    ]
+
+    document = build_graph_document(facts, existing=empty_document(NOW), settings=settings, now=NOW)
+
+    assert document.unprojected_count == 1
+    assert [e.node_id for e in document.edges] == ["brand:애플"]  # 나머지 취향은 정상 반영
+
+
 # ─────────── 감쇠·승격 히스테리시스 (REQ-PGRAPH-016) ───────────
 
 

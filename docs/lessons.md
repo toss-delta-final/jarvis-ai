@@ -13,6 +13,29 @@
 
 ---
 
+## [2026-08-07] 검증 없는 dataclass 를 경유하면 스키마 위반이 **한참 뒤에** 터져 배치를 죽인다
+- 증상: #356 `graph_merge._observation` 이 저장 payload 를 읽으면서 `node` 만
+  `GraphNode.model_validate` 로 검증하고 `predicate`·`edge_key`·`edge_id` 는 그대로 통과시켰다.
+  받는 그릇 `_Observation` 이 **검증 없는 plain dataclass** 라 아무 값이나 실린다. 그래서
+  `predicate="hates"` 같은 손상 payload 는 "모양이 깨진 항목은 조용히 버린다"는 그 함수의
+  docstring 을 통과하고, 한참 뒤 `_merge_edge` 의 `GraphEdge(...)` 생성에서야 처음으로
+  `ValidationError` 를 냈다. 그 지점엔 잡는 코드가 없어 `finalizer` 최상위 `except Exception`
+  까지 새고, 손상 fact 는 저장소에서 자동으로 안 지워지므로 **session-end 마다 같은 자리에서
+  RETRYABLE 만 반복**된다(poison record). REQ-PGRAPH-004 의 degrade("못 만든 fact 는 개수만
+  센다")를 우회한 셈이다. Claude PR 리뷰가 잡았다.
+- 원인: "검증했다"를 **필드 단위가 아니라 객체 단위**로 셌다 — payload 안에 pydantic 모델
+  필드(`node`)가 하나 있으니 검증이 걸렸다고 여겼다. 나머지 필드는 나중에 pydantic 모델로
+  들어가긴 하지만, 그 "나중"이 **degrade 경계 밖**이라는 것이 문제였다.
+- 규칙: **경계에서 들어오는 payload 는 뒤에서 강제될 제약을 그 경계에서 미리 건다.** 중간에
+  검증 없는 dataclass·`TypedDict`·`dict` 를 경유한다면, 그 지점이 곧 검증 공백이다. 특히
+  "여기서 걸러 degrade 한다"고 docstring 에 적은 함수는 **적은 만큼 실제로 거르는지** 손상값
+  파라미터라이즈 테스트로 확인한다. 방어를 호출부(배치 전체)로 올리는 선택지는 마지막이다 —
+  거기서 잡으면 손상 1건 때문에 배치 전체가 버려진다.
+- 관련: `app/agents/profile/graph_merge.py::_observation`(`_PREDICATES`),
+  `::_merge_edge`, `app/agents/profile/finalizer.py:171`, 이슈 #356 / PR #410
+
+---
+
 ## [2026-08-06] `datetime` 뺄셈은 naive-aware 혼합에서 `ValueError` 가 아니라 `TypeError` 다
 - 증상: #356 `graph_merge._elapsed_days` 가 "파싱 불가 타임스탬프로 감쇠를 추측하지 않는다"며
   `except ValueError` 로 감쌌는데, 오프셋 없는 관측 시각이 하나라도 섞이면
