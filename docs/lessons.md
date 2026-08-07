@@ -13,6 +13,128 @@
 
 ---
 
+## [2026-08-07] PR 이 리뷰 워크플로 자신을 고치면 Claude 리뷰는 그 PR 에서 돌지 않는다
+- 증상: PR #459(`.github/workflows/claude-review.yml` 을 수정하는 PR)의 review run
+  (`gh run view 31169027311`)에 `##[warning]Skipping action due to workflow validation:
+  Workflow validation failed. The workflow file must exist and have identical content to the
+  version on the repository's default branch.` 가 찍히며 액션이 통째로 건너뛰어졌다. **체크는
+  초록(success)이라 겉보기엔 리뷰가 끝난 것처럼 보이는데 실제로는 리뷰가 0줄도 돌지 않았다** —
+  "리뷰 통과"로 오독하기 쉽다. 액션이 `execution_file` 을 만들지 않으므로, 그 파일로 성공을
+  판정하는 후속 스텝(`save-state`)도 "미완료"로 본다. 대조 근거: 같은 시각 워크플로를 건드리지
+  않은 다른 PR 의 run(`31168319751`)에는 이 경고가 0건이고
+  `Log saved to /home/runner/work/_temp/claude-execution-output.json` 이 정상적으로 찍혔다.
+- 원인: `anthropics/claude-code-action@v1` 자체의 보호장치 — 워크플로 파일이 **기본 브랜치
+  버전과 바이트 단위로 동일**해야만 실행된다(PR 이 워크플로를 고쳐 시크릿을 빼돌리는 것을 막는
+  장치). 이 저장소의 기본 브랜치는 `dev` 다(`gh repo view --json defaultBranchRef` 실측).
+- 규칙: 리뷰 워크플로(`.github/workflows/claude-review.yml`)를 바꾸는 PR 은 **그 PR 자체로는
+  Claude 리뷰를 받을 수 없다** — 사람 리뷰나 별도 교차 리뷰로 대체하고, PR 본문에 그 사실을
+  적는다. 그런 PR 에서 review 체크가 초록인 것을 "리뷰 통과"로 읽지 마라. Actions 로그에서
+  `Skipping action due to workflow validation` 유무를 확인한다. 워크플로 변경의 실제 동작 검증은
+  **기본 브랜치에 병합된 다음** 첫 PR 들에서 한다.
+- 관련: #457, PR #459, `.github/workflows/claude-review.yml`, run 31169027311(경고 발생) ·
+  run 31168319751(정상 실행 대조)
+
+## [2026-08-07] `git diff` 출력을 정규식으로 파싱하면 파일이 조용히 사라진다
+- 증상: 비-ASCII(한글) 경로가 있으면 git 이 기본값(`core.quotePath=true`)으로 따옴표 인코딩해
+  `diff --git "a/app/\355\225\234..." "b/..."` 형태로 내는데, `^diff --git a/(.*) b/(.*)$` 류
+  정규식이 이 줄을 못 잡아 그 파일이 파싱 결과(지문 딕셔너리)에서 **통째로 빠졌다**(#457 프로브
+  실측: keys 에 아예 없음). 빠진 파일은 "변경 없음"으로 오판돼 리뷰 없이 통과한다. 반대 방향
+  실수도 같이 나왔다 — 바이너리 파일은 `index <sha>..<sha>` 줄이 유일한 내용 신호인데, 그 줄을
+  "잡음"으로 보고 정규화(제거)하면 서로 다른 바이너리 내용이 같은 지문이 된다(실측으로 지문
+  일치를 직접 확인).
+- 원인: git 산출물(diff·경로 목록)을 파이썬 정규식으로 파싱할 때, git 의 기본 인코딩/이스케이프
+  동작을 신뢰하지 않고 "보통은 이렇게 나온다"는 가정으로 정규식을 짰다. 또한 diff 안의 각 줄이
+  "잡음"인지 "유일한 내용 신호"인지를 그 줄이 사라졌을 때 어떤 정보가 없어지는지로 따지지 않고
+  일괄로 정규화했다.
+- 규칙: git 산출물을 파싱할 때는 (a) `-c core.quotePath=false` 로 원문 경로를 그대로 받고,
+  (b) `git diff --name-only -z` 처럼 **권위 있는 목록과 대조하는 불변식**을 걸어 파싱 결과와
+  어긋나면 조용히 넘어가지 말고 안전 방향으로 fail-safe 하며, (c) 특정 줄을 정규화(제거)하기
+  전에 "그 줄을 지우면 어떤 정보가 사라지는가"를 먼저 묻는다(바이너리의 `index` 줄처럼 유일한
+  신호일 수 있다).
+- 관련: #457, `.github/scripts/review_mode.py`(`split_patch_by_file`·
+  `_validate_fingerprint_coverage`·`_normalize_for_fingerprint`)
+
+## [2026-08-07] PUBLIC 저장소의 PR 코멘트는 신뢰 저장소가 아니다 — 작성자를 확인해야 한다
+- 증상: CI 상태(Claude 리뷰의 "마지막 성공 리뷰" 지점)를 PR 코멘트 마커에 저장하면서 작성자를
+  확인하지 않았다 — 아무 GitHub 사용자나 같은 마커가 든 코멘트를 위조해 올리면 다음 실행이 그걸
+  "마지막 성공 리뷰"로 믿어 **코드리뷰 게이트를 통째로 끌 수 있는** 경로가 생겼다(`gh repo view`
+  실측: 이 저장소는 PUBLIC 이라 아무나 코멘트를 달 수 있다).
+- 원인: "코멘트에 마커가 있으면 우리가 쓴 것"이라고 암묵적으로 가정했다 — 신원(작성자)과 형식
+  (마커 문자열)을 구분하지 않았다. 설계 단계에서 "이 상태 저장소를 외부 입력이 조작할 수 있는가"
+  를 묻지 않았다.
+- 규칙: GitHub 코멘트/이슈 본문처럼 **누구나 쓸 수 있는 곳**에 CI 가 읽는 상태를 둘 때는
+  마커/형식뿐 아니라 **작성자(`user.login`+`user.type`)를 반드시 검증**하고, 신뢰할 수 있는
+  작성자의 것이 없으면 "상태 없음"으로 취급해 안전한 방향(재검사·재실행)으로 떨어진다. 새 저장
+  메커니즘을 설계할 때는 "외부 입력만으로 이 게이트를 끌 수 있는가"를 가장 먼저 묻는다.
+- 관련: #457, `.github/scripts/review_mode.py`(`filter_trusted_state_comments`)
+
+## [2026-08-07] 카테고리 임베딩은 "소속"이 아니라 "경로 문자열과의 표면 근접"을 잰다
+- 증상: "과일 추천해줘"류 발화가 전개(#217)로 "바나나·사과·배·오렌지"를 냈는데 재매핑에서
+  "배"가 여성가방·신생아의류·실버용품·유아목욕용품 같은 무관 카테고리로 흩어졌다(#428). 거리컷
+  (`category_distance_max=0.26`)을 올려서 살리려 해봤자, 그 구간엔 이미 오답
+  `'배' → 여성가방 > 백팩`(0.3184)이 들어와 있어 오답을 통과시켜야 정답도 통과했다(임계 축은
+  #344 가 이미 캘리브레이션해 기각됨).
+- 원인: leaf 이름과 상품명이 **문자 그대로 겹치면** 임베딩 거리가 0.19~0.21 로 짧게 나와
+  거리컷을 여유 있게 통과하지만, 상품이 그 카테고리의 **인스턴스일 뿐**이면(바나나 ∈
+  과일 > 국산과일) 0.27~0.33 으로 컷 턱걸이거나 넘는다(실측: 사과 0.2732 · 바나나 0.2908 ·
+  라면 0.2676 · 배 0.3184~0.3358, `evals/category_probe/fixtures/anchors.json`
+  `instance-mft-*` 셀). 카테고리 임베딩이 "이 상품이 이 카테고리에 속하는가"를 재는 게
+  아니라 "이 텍스트가 이 카테고리 **경로 문자열**과 표면적으로 얼마나 가까운가"를 재기
+  때문이다 — `decompose`·`map_categories` 프롬프트 예시가 우연히 leaf 이름과 겹치는 발화만
+  써 왔다면(예: "청바지"↔`청바지`, "커튼"↔`커튼`) 이 실패 모드가 가려진 채 정상 동작하는
+  것처럼 보인다.
+- 규칙: **전개·매핑 프롬프트 예시가 leaf 이름과 우연히 겹치는 발화만으로 검증하지 말 것** —
+  임계·프롬프트를 튜닝할 때는 leaf 이름 리터럴 발화(대조군)와 **인스턴스형 표본**(leaf 의
+  구체 사례를 부르는 발화)을 나란히 넣어 대비를 측정한다. 카테고리별 실패를 임계 상향으로
+  고치려 하기 전에, 그 구간에 이미 들어와 있는 오답이 없는지 먼저 확인한다(임계는 만능이
+  아니다 — 여기서는 재매핑 leaf 선정 경로의 결함이었지 임계 문제가 아니었다, #428 이 도입한
+  대분류 합의 필터 참조).
+- 규칙(추가, 리뷰 1차 F-1 — 합의 필터 초판 자체의 결함): 형제 합의 같은 교차 검증 신호는
+  **각자의 최선 답**에서만 세야 한다 — 후보 꼬리까지 세면 어느 발화에나 조금씩 가까운
+  **잡동사니 대분류**가 다수결을 이겨, 정답 후보를 버리고 엉뚱한 대분류만 남긴다(실측:
+  `집들이 선물` 전개가 향수·조명·주방잡화를 버리고 `주얼리` 만 남겼다). 규칙: **한 케이스로
+  검증한 휴리스틱은 반대 성질의 케이스(이질적 전개)로 반드시 반증 시도할 것.** #428 합의
+  필터 초판은 과일 케이스 하나로만 검증됐고 그 케이스에서만 우연히 잘 들었다.
+- 관련: `app/agents/buyer/recommendation/category_mapping.py::_consensus_filter` ·
+  `evals/category_probe/fixtures/anchors.json`(`instance-mft-*`) · #344 · #428
+- 리뷰 2차(Claude PR Review, PR #444) 추가: 새 후처리 단계를 기존 격리 `try/except` **밖**에
+  붙이면 그 모듈이 지켜 온 부분 성공 보존 불변식이 조용히 깨진다 — 격리 규약이 있는 모듈에
+  단계를 추가할 때는 그 규약 안쪽에 넣었는지 먼저 확인할 것.
+- 리뷰 3차(Claude PR Review, PR #444) 추가: 교차 검증 신호(합의·다수결)를 쓸 때는 "합의에서
+  벗어난 소수"와 "정당하게 다른 항목"을 가르는 **별도 근거**가 필요하다 — 지지 개수·비율만으로는
+  둘을 구분 못 한다(리뷰어가 제안한 과반 임계도 `#428` 본체를 깨 기각). 여기서는 "그 대분류가
+  그 형제의 후보 목록에 아예 없는가"가 그 근거였다(우연히 겹친 2개가 세 번째를 지우던 실측:
+  신학기 전개에서 책가방·필통이 `여성가방`에서 겹쳐 물통을 통째로 삭제할 뻔했다).
+- 리뷰 5차(Claude PR Review, PR #444) 추가: 휴리스틱의 전제를 **실측 무재현**으로 방어하지
+  말 것 — 값싼 **구조적 게이트**가 있으면 그걸 건다. 실측은 "이 케이스에서 안 걸렸다"만
+  증명하지 "걸릴 수 없다"를 증명하지 않는다(#444 리뷰가 이 논증을 정확히 짚었다 — 직전
+  라운드에서 "정작 이 이슈가 고치려는 턴엔 그 신호가 없다"는 기각 논증이 틀렸음을 인정하고
+  번복했다: 신호 0개 = 게이트 통과 = 필터 켠 채 유지이지, 게이트 무력화가 아니었다).
+
+## [2026-08-07] "대역이 흉내 낼 수 없다"고 선언하기 전에 대역을 한 층 아래로 내려 봐라
+- 증상: `evals/combo_matrix` 하네스가 하드필터 8축 중 3축(`keyword`·`color`·`attr_conditions`)을
+  "대역이 표현할 수 없는 축"으로 선언하고 `observed.unappliedSearchFilters` 에 이름만 기록하고
+  있었다(#381 D1). 정직한 기록이었지만 그 축들은 present/absent 가 결과에 아무 차이를 만들지
+  않아, **앱 코드가 망가져도 하네스는 초록불**이었다. 실제로 대역이 재구현해 둔 `rating_min` 은
+  앱과 의미가 반대였는데(대역 `rating is not None and rating >= min` vs 앱 "반증된 것만 제거")
+  아무도 못 봤고, `attr_conditions` 판정 코드(축별 완화 재시도 포함)는 하네스에서 **한 번도
+  실행된 적이 없었다**.
+- 원인: 대역이 선 자리가 잘못됐다. `run_buyer_turn(search=...)` 주입은 `search_catalog` 를
+  **통째로** 대체해, 그 안의 dedup·`rating_min`·`attr_conditions` 사후필터 단계까지 같이
+  삼켰다. 사라진 단계를 대역이 손으로 메꾸다 보니 (a) 앱 판정을 재구현하게 되고(규약 위반)
+  (b) 재구현이 앱과 어긋나고 (c) 어긋난 사실이 드러날 경로가 없었다. "대역이 흉내 낼 수 없다"는
+  결론은 **그 자리에서만** 참이었다 — 한 층 아래 `SearchBackend`(실제 네트워크 경계)로 내리면
+  배포 코드가 그대로 돌아서 흉내 낼 필요 자체가 없어진다.
+- 규칙: 대역이 "이 축은 표현 불가"라고 선언하려 할 때, **그 선언을 문서·데이터에 적기 전에 대역이
+  선 자리(seam)를 한 층 아래로 내려서 같은 결론이 나오는지 먼저 확인한다.** 판단 기준은
+  `fakes.py` 규약 그대로 — 대역은 **네트워크를 건너가는 경계**에만 서고, 그 안쪽은 배포 코드가
+  돌아야 한다. 대역이 앱 내부 함수를 대체하고 있으면 그건 이미 자리가 잘못된 신호다.
+  덧붙여 **하네스가 "이 축을 관측한다"고 적어 둔 축은 present/absent 로 관측값이 실제로 갈리는지
+  변이 시험으로 확인한다** — 안 갈리면 그 축은 재고 있는 게 아니다.
+- 관련: 이슈 #426(#381 후속) · `evals/combo_matrix/fakes.py`(`SpringWhereCatalogBackend`) ·
+  `evals/filter_axes/probe.py:83-125`(같은 패턴의 선례가 이미 repo 에 있었는데 참조되지 않았다) ·
+  `evals/combo_matrix/README.md` "필터링 검색 대역의 성격"
+
 ## [2026-08-07] `uv run ruff check --fix && uv run ruff format` 커밋 워크플로 문구를 문자 그대로 실행하면 무관 파일 30개가 재포맷된다
 - 증상: #439 구현 검증 단계에서 CLAUDE.md 커밋 워크플로 2항을 그대로 `uv run ruff check --fix &&
   uv run ruff format`으로 실행했더니 `ruff check`는 `All checks passed!`였지만 `ruff format`은
@@ -35,6 +157,87 @@
 - 관련: #439, CLAUDE.md 「Git」절 커밋 워크플로 2번, `.pre-commit-config.yaml`(`ruff-format` 훅
   스테이징 파일 한정), [2026-08-06] `ruff format`/`--fix` 는 쓰기 명령이다 항목(같은 패턴의
   선례, 이번엔 CI/pre-commit이 왜 못 잡는지가 새로 드러남)
+
+## [2026-08-07] 남의 영역에 방어를 덧대기 전에 "이 위험을 내 변경이 만들었나"부터 묻는다
+- 증상: #386(찜 **조회** 신설)에서 "조회 발화가 해제로 오분류되면 찜이 지워진다"를 막으려고
+  `_resolve_wishlist_remove_target`(찜 **해제**, #116/#117 소유)에 가드를 덧댔다. 그 뒤 리뷰
+  세 라운드 동안 같은 자리에서 결함이 연달아 났다 — ① 표지가 띄어쓰기에 취약 ② 극성을 뒤집자
+  정상 해제(`"찜 목록에서 빼줘"`)가 막힘 ③ 표지를 짧게 쪼개자 `"찜닭 빼고 보여줘"` 가 해제
+  근거로 오인됨(`"찜"` ⊂ `찜닭`, `"빼"` ⊂ `빼고`). ③ 은 같은 파일 12줄 위 `cart_remove_markers`
+  주석이 *"`빼` 같은 짧은 조각은 오탐(빼곡·빼고·빼빼로)이 흔해 쓰지 않는다"* 고 **이미 경고한**
+  함정이었다.
+- 원인: 막으려던 위험이 **이 PR 이 만든 것이 아니었다.** 규칙 3(목록 1건 자동 선택)은 원래부터
+  `wishlist_remove` 로 온 어떤 발화든 이름이 없으면 1건을 지웠고, 조회 intent 를 **더한다고** 새
+  삭제 경로가 생기지 않는다(오히려 프롬프트에 조회 의도가 생겨 오분류 확률은 낮아진다 —
+  `evals/intent_probe` 실측에서 조회 발화 3종이 8/8 로 정확히 라우팅됐다). 선재하는 위험을,
+  그것을 만들지 않은 PR 에서, 그 영역을 소유하지 않은 채 고치려다 방어 코드 자체가 결함원이 됐다.
+- 규칙: **방어를 덧대기 전에 "이 위험을 내 변경이 만들었나 / 악화시켰나"를 먼저 답하라.** 답이
+  "아니오"면 그건 별건이다 — 이슈로 옮기고 내 PR 은 원래 범위를 지킨다. 특히 여러 라운드에
+  걸쳐 실 LLM 으로 수렴시킨 판정 로직(#116/#117 의 24라운드 같은)에 손대는 경우, 방어 하나가
+  그 수렴을 되돌릴 수 있다. 그리고 **"기존 테스트 N건 통과"를 무회귀의 증거로 쓰지 마라** —
+  그건 "내 테스트가 그 경로를 안 덮는다"는 뜻일 수 있다(실제로 `evals/combo_matrix` 의 observed
+  드리프트 가드(#424)가 대신 잡았다: `combo-0047.actionType: WISHLIST_REMOVED → None`).
+- 관련: #440(옮긴 곳), `app/agents/buyer/cart/wishlist.py::_resolve_wishlist_remove_target`,
+  `app/core/config.py` `cart_remove_markers` 주석(같은 함정을 이미 적어 둔 곳)
+
+## [2026-08-07] 커밋되는 산출물을 Python 이 쓸 때는 `newline="\n"` 을 명시한다 — 해시가 줄바꿈에 민감하다
+- 증상: #386 에서 `python -m evals.combo_matrix regenerate` 를 Windows 로 돌렸더니
+  `combo_cases.jsonl`·`manifest.json` 이 **CRLF** 로 쓰였다. 로컬 테스트는 전부 통과하는데,
+  `manifest.axesSha256`·`intent_probe` 의 `fixture_sha256` 은 `read_bytes()` 기반이라
+  **LF 로 체크아웃되는 CI 에서는 해시가 안 맞는다** — 재생성한 사람만 통과하고 CI 는 깨지는
+  형태라 로컬에서 아무리 돌려도 안 드러난다.
+- 원인: `Path.write_text(...)` 는 Windows 에서 `\n` → `\r\n` 로 변환한다. 저장소는
+  `.gitattributes` 에 `* text=auto eol=lf`("CRLF 오염 재발 방지")를 두고 있어 **커밋본은 늘
+  LF** 인데, 워킹카피만 CRLF 가 되면서 "파일 내용은 같은데 해시가 다른" 상태가 됐다.
+  `read_text()` 로 대조하는 테스트는 universal newline 변환 덕에 통과해 버려서 더 안 보인다.
+- 규칙: **커밋되는 산출물을 쓰는 코드에는 `newline="\n"` 을 붙인다.** 그리고 그 산출물을
+  해시로 검증한다면 `read_bytes()` 인지 `read_text()` 인지 확인하라 — 전자면 줄바꿈이 곧
+  계약이다. 재생성 후 `git status` 에 `CRLF will be replaced by LF` 경고가 뜨면 그게 신호다.
+- 관련: `evals/combo_matrix/__main__.py`·`report.py`·`pair_runner.py`(`newline="\n"` 추가),
+  `.gitattributes`, `evals/intent_probe/loader.py::fixture_sha256`
+
+## [2026-08-07] intent 를 하나 늘리면 eval 매트릭스 재생성이 강제된다 — 후속 이슈로 미룰 수 없다
+- 증상: #386 이 `RouteDecision.intent` Literal 에 `wishlist_view` 한 줄을 더한 순간 기본
+  `uv run pytest` 가 빨간불이 됐다. `tests/eval/test_combo_matrix_eval.py::
+  test_intent_axis_matches_route_decision_literal` 이 `axes.json` 의 intent 축과 코드 Literal 의
+  **집합 동일**을 assert 하는데, 이 파일은 `@pytest.mark.eval` 이고 `pyproject.toml` 의
+  `addopts = "-m 'not smoke and not integration'"` 는 eval 을 제외하지 않는다.
+- 원인: "eval 은 CI 밖"이라는 통념이 `intent_probe`(실 LLM, 수동)에만 맞고 `combo_matrix`
+  (결정론 오프라인)에는 안 맞는데, 계획 단계에서 둘을 같은 부류로 묶어 생각했다. 그래서 매트릭스
+  갱신을 "선택 사항·후속 이슈 후보"로 잘못 산정했다.
+- 규칙: **intent·degrade 처럼 `axes.json` 이 코드에서 끌어오는 축을 건드리는 변경은 매트릭스
+  재생성을 같은 PR 범위로 잡고 시작한다.** 그 비용은 케이스 재생성만이 아니다 — 시드 기반
+  greedy pairwise 라 pair 우주가 바뀌면 케이스가 **대거 재배치**되고(57건 중 축 조합이 유지된
+  것은 18건), `expected_behavior.jsonl` 의 손으로 쓴 행과 `pair_checks.jsonl` 의 case_id 가
+  함께 따라간다. 착수 전에 `python -m evals.combo_matrix regenerate` 를 write 없이 한 번 돌려
+  재배치 규모를 먼저 재라.
+- 관련: `evals/combo_matrix/README.md` "재생성 이력 (#386)", `pyproject.toml:56,58`
+
+## [2026-08-07] eval 산출물이 case_id 를 하드코딩하면 재생성마다 사람이 따라다녀야 한다
+- 증상: #386 재생성으로 `combo-0053`·`combo-0054` 가 다른 조합을 가리키게 되자
+  `test_combo_0053_fixture_actually_narrows`·`test_combo_0054_is_manual_with_goldenset_link` 가
+  깨졌다. 두 테스트의 docstring 에는 이미 *"#367 재생성 이후 case id — 구 combo-0054"* 라는
+  주석이 있었다 — **같은 일이 최소 두 번째**였다.
+- 원인: 테스트가 재려는 것은 "그 번호의 케이스"가 아니라 **"하드필터를 추가한 쌍"·"recall 이라
+  manual 인 쌍"** 이라는 성격인데, 그 성격을 표현할 수단이 있는데도(spec 의 `kind`·`metric`·
+  `mode`) 번호로 가리켰다.
+- 규칙: **재생성되는 산출물의 항목을 테스트에서 지목할 때는 번호가 아니라 그 항목을 그 항목이게
+  하는 속성으로 찾는다.** 번호를 쓸 수밖에 없으면 그 사실과 이유를 주석에 남기고, 두 번 밀렸다면
+  그때는 속성 기반으로 고친다.
+- 관련: `tests/eval/test_combo_matrix_pairs.py`(`kind`/`metric`/`mode` 로 조회하도록 정정)
+
+## [2026-08-07] 조회 계열 Spring 호출은 실패 주입 때만이 아니라 **늘** 스텁한다
+- 증상: `combo_matrix` 러너가 `add_wishlist`·`add_to_cart` 는 `degrade=spring_timeout` 일 때만
+  몽키패치하고 `get_wishlist`·`get_cart` 는 아예 패치하지 않았다. #386 재생성으로
+  `wishlist_remove` 가 `ci` × `degrade=none` 조합을 갖게 되자, 로컬에 Spring 이 없는 환경에서
+  **정상 케이스가 degrade 를 관측**했다(관측이 환경에 따라 뒤집힌다).
+- 원인: 담기 계열은 "실패를 주입할 때만 호출을 가로채면 된다"가 맞지만, 조회 계열은 **정상
+  경로에서도 호출된다**. 두 계열의 차이를 보지 않고 같은 패치 조건을 썼다.
+- 규칙: 하네스가 실 함수를 부르는 경계를 셀 때 **"실패를 주입할 곳"이 아니라 "호출이 나가는
+  곳"을 세라.** 정상 경로에서 나가는 호출은 정상 응답 스텁이 없으면 관측 자체가 환경 의존이 된다.
+  주입 예외 타입은 실 어댑터 규약을 그대로 따른다(조회 = `SpringUnavailableError`, 변경 =
+  `CartError`/`WishlistError` — #376 이 고친 그 실수).
+- 관련: `evals/combo_matrix/runner.py`(`_ok_get_wishlist`·`_failing_get_wishlist`)
 
 ## [2026-08-06] 테스트 스위트 실행 중에 커밋하면 eval 결정론 테스트가 깨진다
 - 증상: `uv run pytest` 를 백그라운드로 돌려 둔 채 그 사이에 `git commit` 을 했더니

@@ -27,7 +27,7 @@ class BaselineResult:
 def run_baseline(
     anchors: AnchorSet, *, embed: EmbedFn, search_top_k: SearchFn, dsn: str, k: int = 5
 ) -> list[BaselineResult]:
-    """single 슬라이스(22셀)에 대해 결정론 1회 top-5 를 낸다. 다른 슬라이스는 정의상 채점 대상이 아니다."""
+    """single 슬라이스(30셀)에 대해 결정론 1회 top-5 를 낸다. 다른 슬라이스는 정의상 채점 대상이 아니다."""
     single_cells = [cell for cell in anchors.cells if cell.slice_id == "single"]
     texts = [cell.utterance for cell in single_cells]
     if not texts:
@@ -63,7 +63,7 @@ def score_baseline(results: list[BaselineResult], anchors: AnchorSet) -> dict[st
             "ratio": (top1_num / denom) if denom else None,
             "definition": {
                 "numerator": "임베딩 최근접 top-1 ∈ accept",
-                "denominator": "single 22셀(결정론 1회)",
+                "denominator": "single 30셀(결정론 1회)",
             },
         },
         "baselineTopK": {
@@ -74,7 +74,7 @@ def score_baseline(results: list[BaselineResult], anchors: AnchorSet) -> dict[st
             "ratio": (topk_num / denom) if denom else None,
             "definition": {
                 "numerator": "accept ∈ baseline top-5",
-                "denominator": "single 22셀(결정론 1회)",
+                "denominator": "single 30셀(결정론 1회)",
             },
         },
         "note": (

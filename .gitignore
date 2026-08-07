@@ -39,3 +39,6 @@ models/
 
 # Benchmark run artifacts (immutable local/staging measurements)
 evals/benchmark/baselines/
+
+# Claude PR Review 모드 판별 CI 산출물 (이슈 #457)
+.claude-review/

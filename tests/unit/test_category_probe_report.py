@@ -97,7 +97,7 @@ def test_report_contains_banner_and_axis_definitions() -> None:
     assert BANNER in text
     assert "top1Single" in text
     assert "최종 legs 에 기대 leg 의 accept 중 하나가 존재" in text  # 분자 정의 동봉
-    assert "single(MFT+INV) 22셀 × N" in text  # 분모 정의 동봉
+    assert "single(MFT+INV) 30셀 × N" in text  # 분모 정의 동봉(#428 v2: 22 → 30셀)
     assert "이건 골든셋이 아니다" in text
 
 
