@@ -160,8 +160,8 @@ def _enrichment_inputs_unchanged(old: ProductChange, new: ProductChange) -> bool
     )
 
 
-def _enqueue_content_retry(change: ProductChange, *, retry_attempts: int = 0) -> None:
-    """콘텐츠 실패 항목을 다음 주기 재시도 큐에 (재)등재한다(#421).
+def _enqueue_content_retry(change: ProductChange, *, retry_attempts: int = 0) -> bool:
+    """콘텐츠 실패 항목을 다음 주기 재시도 큐에 (재)등재한다(#421). 반환값은 상한 축출 발생 여부.
 
     ``retry_attempts``(기본 0 — 신규 콘텐츠)는 호출부(``_drain``)가 판정해서 넘긴다 — [T1,
     PR 리뷰 라운드 2] 이전 대기 항목과 enrichment 입력이 같으면 그 예산을 이어받아(+1) 넘기고,
@@ -170,14 +170,19 @@ def _enqueue_content_retry(change: ProductChange, *, retry_attempts: int = 0) ->
     상한(``_CONTENT_RETRY_MAX_PENDING``) 도달 시 가장 오래된 항목을 축출하고 ERROR
     dead-letter 로 남긴다 — 조용한 유실 금지. ``_content_retry_enqueued_this_drain`` 에도
     함께 기록해, 이번 ``_drain`` 실행이 끝난 뒤 재시도 패스가 같은 실행분을 건너뛸 수
-    있게 한다(F1).
+    있게 한다(F1). [T6, PR 리뷰 라운드 4] 축출은 지금 등재하는 ``change`` 와 무관한
+    **다른(가장 오래된) 항목**의 격리 확정이다 — 호출부가 이를 ``BatchResult.failed`` 에
+    반영할 수 있도록 발생 여부를 bool 로 알린다(조용한 유실이 아니라 관측 카운터에도 드러나야
+    한다).
     """
+    evicted = False
     if (
         change.product_id not in _content_retry_queue
         and len(_content_retry_queue) >= _CONTENT_RETRY_MAX_PENDING
     ):
         oldest_id = next(iter(_content_retry_queue))
         _content_retry_queue.pop(oldest_id, None)
+        evicted = True
         _log.error(
             "I-17 콘텐츠 재시도 큐 상한(%d) 도달 — 최고참 항목 축출(dead-letter): product_id=%s",
             _CONTENT_RETRY_MAX_PENDING,
@@ -187,6 +192,7 @@ def _enqueue_content_retry(change: ProductChange, *, retry_attempts: int = 0) ->
         change=change, retry_attempts=retry_attempts
     )
     _content_retry_enqueued_this_drain.add(change.product_id)
+    return evicted
 
 
 @dataclass
@@ -195,8 +201,13 @@ class BatchResult:
     hidden: int
     pages: int
     cursor: str | None
-    # [#325] 격리된 단건 ON_SALE 실패 수(dead-letter 기록됨) — 관측 사각도 해소.
-    # [#421] 재시도 예산 소진 후 격리도 여기 합산된다.
+    # [#325] 격리가 **확정**된 단건 ON_SALE 실패 수(dead-letter 기록됨) — 관측 사각도 해소.
+    # [#421] 재시도 예산 소진 후 격리·재시도 큐 상한 축출도 여기 합산된다. [T6, PR 리뷰
+    # 라운드 4] 재시도 큐에 막 등재됐을 뿐 아직 격리되지 않은 건은 세지 않는다(그 건은
+    # ``retry_pending``·WARNING 으로 드러난다) — "이번 주기에 실제로 반영되지 않았다"만
+    # 세는 3선 비율 가드용 ``page_failed``(지역 변수, 이 필드와 목적이 다르다)와는 대상이
+    # 다르다: 격리 "확정" 시점에만 올려 2선(전파 단계엔 안 올리고 격리 확정 시에만 올림)과
+    # 시점을 맞췄다.
     failed: int = 0
     # [#421] cross-cycle 콘텐츠 재시도로 회복된 건수(노이즈였음이 확인된 경우).
     recovered: int = 0
@@ -431,9 +442,15 @@ async def _drain(
       입력이 동일**하면(가격·재고처럼 무관한 필드만 갱신) 그 예산을 이어받아 소진시키고,
       소진되면 이 시점에 곧바로 격리한다 — 그래야 그런 poison 상품이 매 주기
       "등재→skip→새 변경분에 0 으로 재등재"를 반복하며 예산을 영원히 소진하지 못하는 것을
-      막는다(``_enrichment_inputs_unchanged``). 어느 쪽이든 ``failed``/``page_failed`` 는
-      증가한다(3선 비율 가드 동작 불변 — 그 항목은
-      이번 주기에 실제로 반영되지 않았다).
+      막는다(``_enrichment_inputs_unchanged``). 어느 쪽이든 ``page_failed`` 는 증가한다
+      (3선 비율 가드 동작 불변 — 그 항목은 이번 주기에 실제로 반영되지 않았다는 사실 자체를
+      센다). [T6, PR 리뷰 라운드 4] ``BatchResult.failed``(관측)는 그와 달리 **격리가
+      확정된 경우에만** 증가한다 — 예산 0 즉시 격리, 예산 소진으로 이 시점에 격리(T1 경로),
+      재시도 큐 상한 축출(다른 항목의 확정 격리)뿐이고, 재시도 큐에 막 등재된 경우는 아직
+      격리가 아니므로 증가하지 않는다(``retry_pending``·WARNING 으로 드러난다) — 안 그러면
+      "재시도 큐에 방금 등재됐을 뿐"인 건도 ``failed`` 로 잡혀 dead-letter ERROR 로그가
+      하나도 없는데 알람만 뜬다(2선이 이미 지키는 "전파 단계엔 안 올리고 격리 확정 시에만
+      올린다"는 원칙과 시점을 맞춘 것).
     - **2선(시간 유계) — 그 외 모든 단건 실패**: enrich 재시도 소진 후에도
       ``_is_enrichment_content_failure`` 가 False 인 실패(429·연결 오류·5xx·타임아웃·모르는
       예외 포함 — "모르면 2선"이 기본값), 또는 ``_finish_change``(embed()·store.upsert())의
@@ -506,11 +523,15 @@ async def _drain(
                 # 증명된 콘텐츠 실패(#325 R6 화이트리스트) — 정의상 항목 고유 실패이므로
                 # 스트릭 판정 없이 처리한다(1선).
                 failure_store.clear_failure_streak(FAILURE_STREAK_KIND_ITEM, str(change.product_id))
-                failed += 1
+                # [T6, PR 리뷰 라운드 4] page_failed(3선 비율 가드용)는 이 항목이 이번
+                # 주기에 반영되지 않았다는 사실 자체를 세므로 재시도 큐 등재 여부와 무관하게
+                # 여기서 바로 늘린다(동작 불변). failed(관측)는 격리가 "확정"된 경우에만
+                # 늘려야 하므로 여기서는 미루고 아래 각 분기에서 실제로 확정될 때만 늘린다.
                 page_failed += 1
                 retry_budget = settings.artifacts_batch_content_retry_cycles
                 if retry_budget <= 0:
                     # [#421] 회귀 탈출구 — 예산 0 이면 종전대로 즉시 영구 격리.
+                    failed += 1
                     _log.error(
                         "I-17 항목 실패 — 격리 기록 후 계속: product_id=%s attempts=%d",
                         change.product_id,
@@ -531,6 +552,7 @@ async def _drain(
                     ):
                         retry_attempts = previous_retry.retry_attempts + 1
                     if retry_attempts >= retry_budget:
+                        failed += 1
                         _log.error(
                             "I-17 콘텐츠 재시도 예산 소진(내용 불변 반복 실패) — 격리 기록 "
                             "후 계속: product_id=%s retry_attempts=%d/%d",
@@ -542,7 +564,10 @@ async def _drain(
                     else:
                         # [#421] JSON 파싱 실패는 LLM 샘플링 노이즈로도 나므로, 즉시 영구
                         # 격리 대신 다음 주기 재시도 기회를 준다 — 첫 주기 오격리를 막는다.
-                        _enqueue_content_retry(change, retry_attempts=retry_attempts)
+                        # [T6] 상한 축출은 지금 등재하는 change 와 무관한 다른(가장 오래된)
+                        # 항목의 확정 격리다 — 조용한 유실이 아니라 failed 에도 드러난다.
+                        if _enqueue_content_retry(change, retry_attempts=retry_attempts):
+                            failed += 1
                         _log.warning(
                             "I-17 콘텐츠 실패 — 다음 주기 재시도 예약: product_id=%s "
                             "retry_attempts=%d/%d",

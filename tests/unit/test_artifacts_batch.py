@@ -976,6 +976,11 @@ async def test_drain_dead_letters_after_attempts_exhausted():
     페이지 표본(3)이 artifacts_batch_failure_min_sample(5) 미만이라 비율 가드는 애초에
     평가되지 않는다 — 이 테스트는 단건 격리(retry exhaustion) 만 검증하고, 임계 가드는 별도
     테스트가 담당한다. 성공 항목 2건은 processed 카운트도 함께 확인하기 위한 것이다.
+
+    [T6, PR 리뷰 라운드 4] ``artifacts_batch_content_retry_cycles=0`` 을 명시해 즉시 격리를
+    강제한다 — 기본값(1)에서는 콘텐츠 실패가 이 시점엔 재시도 큐에 등재될 뿐 격리가 확정되지
+    않아(``failed`` 는 이제 격리 확정 시에만 증가) 이 테스트의 "dead-letter(격리)" 라는 이름과
+    어긋난다.
     """
     store = CatalogArtifactStore()
     changes = [_change(1, name="영구실패"), _change(2, name="성공A"), _change(3, name="성공B")]
@@ -984,7 +989,9 @@ async def test_drain_dead_letters_after_attempts_exhausted():
         return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
 
     llm = _FlakyLLM(always_fail=["영구실패"])
-    settings = get_settings().model_copy(update={"enrichment_item_attempts": 3})
+    settings = get_settings().model_copy(
+        update={"enrichment_item_attempts": 3, "artifacts_batch_content_retry_cycles": 0}
+    )
     result = await run_artifacts_batch(
         fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
     )
@@ -1024,7 +1031,13 @@ async def test_drain_page_failure_threshold_blocks_cursor_advance():
     ],
 )
 async def test_drain_page_failure_threshold_boundary(fail_names, expect_advance):
-    """표본(8) ≥ min_sample(5) 이라 비율 가드 경계(0.5)가 그대로 유효하다."""
+    """표본(8) ≥ min_sample(5) 이라 비율 가드 경계(0.5)가 그대로 유효하다.
+
+    [T6, PR 리뷰 라운드 4] ``content_retry_cycles=0`` 을 명시해 1선 실패가 재시도 큐로 새지
+    않고 즉시 격리되도록 고정한다 — 기본값(1)이면 이 테스트가 검증하려는 ``failed`` 값이
+    "이번 주기에 실제로 격리된 건수"가 아니라 "이번 주기에 재시도 큐로 넘어간 건수(아직
+    미확정)"가 돼 3선 경계 검증(비율 가드)과 무관한 잡음이 섞인다.
+    """
     store = CatalogArtifactStore()
     store.set_cursor("checkpoint")
     changes = [
@@ -1042,17 +1055,18 @@ async def test_drain_page_failure_threshold_boundary(fail_names, expect_advance)
         return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
 
     llm = _FlakyLLM(always_fail=fail_names)
+    settings = get_settings().model_copy(update={"artifacts_batch_content_retry_cycles": 0})
 
     if expect_advance:
         result = await run_artifacts_batch(
-            fetch=fetch, llm=llm, embed=_embed, store=store, settings=get_settings()
+            fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
         )
         assert result.failed == len(fail_names)
         assert store.get_cursor() == "c1"
     else:
         with pytest.raises(_batch.PageFailureThresholdExceeded):
             await run_artifacts_batch(
-                fetch=fetch, llm=llm, embed=_embed, store=store, settings=get_settings()
+                fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
             )
         assert store.get_cursor() == "checkpoint"
 
@@ -1064,7 +1078,12 @@ async def test_drain_single_item_page_isolates_and_advances_default_settings(cap
     수정 전에는 표본=1, ratio=1/1=1.0 ≥ artifacts_batch_failure_ratio_threshold(0.5) 로
     PageFailureThresholdExceeded 가 던져져 커서가 막혔다 — #325 가 보고한 "문제 상품 1건이
     매 주기 실패" 그 상황이다. 수정 후에는 표본(1) < artifacts_batch_failure_min_sample(5)
-    이라 비율 가드를 건너뛰고 격리+전진한다.
+    이라 비율 가드를 건너뛰고 전진한다.
+
+    [T6, PR 리뷰 라운드 4] 기본 예산(``artifacts_batch_content_retry_cycles=1``)에서는 이
+    시점에 "격리"가 아니라 "재시도 큐 등재"가 확정된다 — ``failed``(격리 확정 카운터)는 0,
+    ``retry_pending`` 이 1이 되어 대기 중임을 드러낸다. 예전엔 등재도 ``failed`` 를 올려
+    "즉시 격리"처럼 보였을 뿐이다(dead-letter ERROR 로그는 실제로 뜨지 않았다 — WARNING 만).
     """
     store = CatalogArtifactStore()
     store.set_cursor("checkpoint")
@@ -1079,13 +1098,14 @@ async def test_drain_single_item_page_isolates_and_advances_default_settings(cap
             fetch=fetch, llm=llm, embed=_embed, store=store, settings=get_settings()
         )
 
-    assert result.failed == 1
+    assert result.failed == 0
+    assert result.retry_pending == 1
     assert result.processed == 0
     assert store.get(1) is None
     assert store.get_cursor() == "c1"
-    assert "product_id=1" in caplog.text  # dead-letter ERROR 로그
+    assert "product_id=1" in caplog.text  # 다음 주기 재시도 예약 WARNING 로그
     assert "표본 부족" in caplog.text  # min_sample 미달 WARNING 로그
-    assert "failed=1" in caplog.text
+    assert "failed=1" in caplog.text  # 이 페이지 로그의 page_failed(3선용, 무관 필드 아님)
     assert "min_sample=5" in caplog.text
 
 
@@ -1116,6 +1136,10 @@ async def test_drain_isolation_applies_under_full_rebuild_with_atomic_replace():
 
     페이지 표본(3)이 min_sample(5) 미만이라 비율 가드는 평가되지 않는다 — 이 테스트는 격리가
     full_rebuild 임시 스토어·원자 교체 경로에서도 동작함을 검증한다.
+
+    [T6, PR 리뷰 라운드 4] ``content_retry_cycles=0`` 을 명시해 즉시 격리를 강제한다 —
+    기본값(1)이면 이 시점엔 재시도 큐 등재일 뿐이라(``failed`` 는 격리 확정 시에만 증가)
+    "격리가 동작함"을 검증하려는 이 테스트의 의도와 어긋난다.
     """
     store = CatalogArtifactStore()
     stale = CatalogArtifact(product_id=99, search_doc="stale", embedding=[0.0, 1.0])
@@ -1126,12 +1150,13 @@ async def test_drain_isolation_applies_under_full_rebuild_with_atomic_replace():
         return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
 
     llm = _FlakyLLM(always_fail=["B-실패"])
+    settings = get_settings().model_copy(update={"artifacts_batch_content_retry_cycles": 0})
     result = await run_artifacts_batch(
         fetch=fetch,
         llm=llm,
         embed=_embed,
         store=store,
-        settings=get_settings(),
+        settings=settings,
         full_rebuild=True,
     )
 
@@ -1149,6 +1174,10 @@ async def test_default_settings_batch_isolation_smoke():
     lessons: 과거 모든 테스트가 기본값을 덮어써 기본 조합 결함이 출하된 전례가 있다. 페이지
     표본(3)이 기본 min_sample(5) 미만이라 비율 가드는 평가되지 않는다 — 1건짜리 페이지 회귀는
     test_drain_single_item_page_isolates_and_advances_default_settings 가 전담한다.
+
+    [T6, PR 리뷰 라운드 4] 기본 예산(``artifacts_batch_content_retry_cycles=1``)에서 1선
+    콘텐츠 실패는 이 시점에 격리가 아니라 재시도 큐 등재로 확정된다 — ``failed``==0,
+    ``retry_pending``==1 이 기본 조합의 실제 결과다.
     """
     store = CatalogArtifactStore()
     changes = [
@@ -1164,7 +1193,8 @@ async def test_default_settings_batch_isolation_smoke():
     result = await run_artifacts_batch(fetch=fetch, llm=llm, embed=_embed, store=store)
 
     assert result.processed == 2
-    assert result.failed == 1
+    assert result.failed == 0
+    assert result.retry_pending == 1
     assert store.get(1) is not None
     assert store.get(2) is None
     assert store.get(3) is not None
@@ -1839,7 +1869,11 @@ async def test_drain_connection_error_not_isolated_immediately():
 
 async def test_drain_json_parse_failure_isolates_immediately():
     """extract_json 의 실제 json.loads 실패(원인 ValueError/JSONDecodeError) — 화이트리스트
-    1선, 1주기째에 격리+커서 전진(#325 R6)."""
+    1선, 1주기째에 격리+커서 전진(#325 R6).
+
+    [T6, PR 리뷰 라운드 4] ``content_retry_cycles=0`` 을 명시해 즉시 격리를 강제한다 —
+    기본값(1)이면 이 시점엔 재시도 큐 등재일 뿐이라 이 테스트 이름의 "즉시"와 어긋난다.
+    """
     store = CatalogArtifactStore()
     changes = [_change(1, name="깨진JSON")]
 
@@ -1847,8 +1881,9 @@ async def test_drain_json_parse_failure_isolates_immediately():
         return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
 
     llm = _TextLLM("{이건 유효한 JSON 이 아님}")
+    settings = get_settings().model_copy(update={"artifacts_batch_content_retry_cycles": 0})
     result = await run_artifacts_batch(
-        fetch=fetch, llm=llm, embed=_embed, store=store, settings=get_settings()
+        fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
     )
 
     assert result.failed == 1
@@ -1860,7 +1895,11 @@ async def test_drain_json_parse_failure_isolates_immediately():
 async def test_drain_bare_llm_error_isolates_immediately():
     """extract_json 이 "JSON 을 찾지 못함"으로 내는 원인 없는 LLMError — 화이트리스트 1선,
     1주기째에 격리+커서 전진(#325 R6). 가짜 예외가 아니라 실제 extract_json 경로를 그대로
-    통과시킨다(LLM 이 JSON 이 아닌 평문을 반환)."""
+    통과시킨다(LLM 이 JSON 이 아닌 평문을 반환).
+
+    [T6, PR 리뷰 라운드 4] ``content_retry_cycles=0`` 을 명시해 즉시 격리를 강제한다(위와
+    같은 이유).
+    """
     store = CatalogArtifactStore()
     changes = [_change(1, name="평문응답")]
 
@@ -1868,8 +1907,9 @@ async def test_drain_bare_llm_error_isolates_immediately():
         return ProductChangesPage(items=changes, next_cursor="c1", has_more=False)
 
     llm = _TextLLM("죄송합니다, JSON 을 만들 수 없어요.")
+    settings = get_settings().model_copy(update={"artifacts_batch_content_retry_cycles": 0})
     result = await run_artifacts_batch(
-        fetch=fetch, llm=llm, embed=_embed, store=store, settings=get_settings()
+        fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
     )
 
     assert result.failed == 1
@@ -1882,6 +1922,9 @@ async def test_drain_output_length_error_isolates_immediately():
     """[#325 원 사례] openai.LengthFinishReasonError(출력 예산 소진) — 화이트리스트 1선,
     1주기째에 격리+커서 전진. OpenAILLM.complete 이 SDK 예외를
     ``raise LLMError(str(exc)) from exc`` 로 감싸는 실제 규약을 재현한다.
+
+    [T6, PR 리뷰 라운드 4] ``content_retry_cycles=0`` 을 명시해 즉시 격리를 강제한다(위와
+    같은 이유).
     """
     openai = pytest.importorskip("openai")
     from types import SimpleNamespace
@@ -1899,8 +1942,9 @@ async def test_drain_output_length_error_isolates_immediately():
         raise LLMError(str(inner)) from inner
 
     llm = _RaisingLLM(factory)
+    settings = get_settings().model_copy(update={"artifacts_batch_content_retry_cycles": 0})
     result = await run_artifacts_batch(
-        fetch=fetch, llm=llm, embed=_embed, store=store, settings=get_settings()
+        fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
     )
 
     assert result.failed == 1
@@ -1988,7 +2032,11 @@ async def test_content_retry_recovers_on_next_cycle(caplog):
             fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
         )
 
-    assert result1.failed == 1
+    # [T6, PR 리뷰 라운드 4] failed==1 이 아니라 0 이 맞다 — 이 주기엔 격리가 "확정"되지
+    # 않고 재시도 큐에 등재됐을 뿐이다(retry_pending==1·WARNING 으로 이미 드러난다).
+    # 수정 전엔 재시도 큐 등재도 failed 를 올려, 아직 dead-letter ERROR 가 하나도 없는데
+    # scheduler.py 가 "부분 실패 — dead-letter 로그 확인" ERROR 알람을 거짓으로 띄웠다.
+    assert result1.failed == 0
     assert result1.processed == 0
     assert store.get(1) is None
     assert store.get_cursor() == "c1"
@@ -2029,7 +2077,9 @@ async def test_content_retry_converges_deterministically_after_budget_exhausted(
     result1 = await run_artifacts_batch(
         fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
     )
-    assert result1.failed == 1
+    # [T6, PR 리뷰 라운드 4] 이 주기엔 재시도 큐 등재만 있고 격리는 아직 확정되지 않았으므로
+    # failed==0 이 맞다(예산 소진 격리는 다음 주기 재시도 패스에서 일어난다).
+    assert result1.failed == 0
     assert 1 in _batch._content_retry_queue
     calls_after_cycle1 = llm.calls_by_name["영구노이즈"]
     assert calls_after_cycle1 == settings.enrichment_item_attempts
@@ -2038,7 +2088,7 @@ async def test_content_retry_converges_deterministically_after_budget_exhausted(
         result2 = await run_artifacts_batch(
             fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
         )
-    assert result2.failed == 1
+    assert result2.failed == 1  # 재시도 패스가 예산을 소진해 이 주기에 격리가 확정된다
     assert result2.recovered == 0
     assert 1 not in _batch._content_retry_queue
     assert "재시도 예산 소진" in caplog.text
@@ -2108,7 +2158,8 @@ async def test_content_retry_queue_dropped_when_product_goes_hidden():
     result1 = await run_artifacts_batch(
         fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
     )
-    assert result1.failed == 1
+    # [T6, PR 리뷰 라운드 4] 재시도 큐 등재만 있고 격리는 아직 확정되지 않았다.
+    assert result1.failed == 0
     assert 1 in _batch._content_retry_queue
 
     result2 = await run_artifacts_batch(
@@ -2149,7 +2200,8 @@ async def test_content_retry_pass_only_runs_after_drain_completes_successfully(c
     result1 = await run_artifacts_batch(
         fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
     )
-    assert result1.failed == 1
+    # [T6, PR 리뷰 라운드 4] 재시도 큐 등재만 있고 격리는 아직 확정되지 않았다.
+    assert result1.failed == 0
     assert 1 in _batch._content_retry_queue
     calls_after_cycle1 = llm.calls_by_name["포이즌"]
 
@@ -2458,7 +2510,12 @@ async def test_content_retry_default_settings_no_amplification_at_page_failure_l
 
     # 매 주기 정확히 "5건 × attempts" 만큼만 호출된다 — 재시도 패스가 겹쳐 배가되지 않는다.
     assert per_cycle_calls == [expected_calls_per_cycle] * 3
-    assert result.failed == 5
+    # [T6, PR 리뷰 라운드 4] 3선이 이 마지막 주기에 페이지를 강제로 격리·전진시키지만, 각
+    # 항목은 이번 주기에 처음 콘텐츠 실패를 겪은 것이라(직전 주기의 T1 즉시 격리로 큐에서
+    # 빠졌었다) 개별 항목의 격리는 아직 확정되지 않았다 — failed==0, retry_pending==5.
+    # (api-spec §4.8 "1선인 경우 재시도 큐로 넘어갔다"가 바로 이 경우다.)
+    assert result.failed == 0
+    assert result.retry_pending == 5
     assert store.get_cursor() == "c1"
 
 
@@ -2544,7 +2601,8 @@ async def test_content_retry_cycles_two_retries_exactly_twice():
     result1 = await run_artifacts_batch(
         fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
     )
-    assert result1.failed == 1
+    # [T6, PR 리뷰 라운드 4] 재시도 큐 등재만 있고 격리는 아직 확정되지 않았다.
+    assert result1.failed == 0
     assert 1 in _batch._content_retry_queue
     calls_after_1 = llm.calls_by_name["영구노이즈"]
 
@@ -2612,7 +2670,8 @@ async def test_content_retry_budget_carries_over_when_enrichment_inputs_unchange
     result1 = await run_artifacts_batch(
         fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
     )
-    assert result1.failed == 1
+    # [T6, PR 리뷰 라운드 4] 재시도 큐 등재만 있고 격리는 아직 확정되지 않았다.
+    assert result1.failed == 0
     assert 1 in _batch._content_retry_queue
     assert _batch._content_retry_queue[1].retry_attempts == 0
 
@@ -2649,13 +2708,14 @@ async def test_content_retry_budget_resets_when_enrichment_inputs_change(caplog)
     result1 = await run_artifacts_batch(
         fetch=fetch_cycle1, llm=llm, embed=_embed, store=store, settings=settings
     )
-    assert result1.failed == 1
+    # [T6, PR 리뷰 라운드 4] 재시도 큐 등재만 있고 격리는 아직 확정되지 않았다(두 주기 모두).
+    assert result1.failed == 0
     assert _batch._content_retry_queue[1].retry_attempts == 0
 
     result2 = await run_artifacts_batch(
         fetch=fetch_cycle2, llm=llm, embed=_embed, store=store, settings=settings
     )
-    assert result2.failed == 1
+    assert result2.failed == 0
     assert 1 in _batch._content_retry_queue  # 새 내용 — 아직 격리되지 않는다
     assert _batch._content_retry_queue[1].retry_attempts == 0  # 예산이 리셋됐다
     assert _batch._content_retry_queue[1].change.name == "콘텐츠B"
@@ -2693,7 +2753,8 @@ async def test_content_retry_pass_finish_failure_does_not_burn_content_budget(ca
     result1 = await run_artifacts_batch(
         fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
     )
-    assert result1.failed == 1
+    # [T6, PR 리뷰 라운드 4] 재시도 큐 등재만 있고 격리는 아직 확정되지 않았다.
+    assert result1.failed == 0
     assert 1 in _batch._content_retry_queue
     assert _batch._content_retry_queue[1].retry_attempts == 0
 
@@ -2736,13 +2797,14 @@ async def test_content_retry_pass_content_failure_still_burns_budget():
     result1 = await run_artifacts_batch(
         fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
     )
-    assert result1.failed == 1
+    # [T6, PR 리뷰 라운드 4] 재시도 큐 등재만 있고 격리는 아직 확정되지 않았다.
+    assert result1.failed == 0
     assert 1 in _batch._content_retry_queue
 
     result2 = await run_artifacts_batch(
         fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
     )
-    assert result2.failed == 1  # 콘텐츠 실패 — 예산(1) 소진, 곧바로 격리
+    assert result2.failed == 1  # 재시도 패스가 콘텐츠 실패로 예산(1) 소진 — 이 주기에 격리 확정
     assert 1 not in _batch._content_retry_queue
 
 
@@ -2813,7 +2875,8 @@ async def test_content_retry_streak_resets_on_content_failure_between_infra_fail
     result1 = await run_artifacts_batch(
         fetch=fetch, llm=llm, embed=embed, store=store, settings=settings
     )
-    assert result1.failed == 1
+    # [T6, PR 리뷰 라운드 4] 재시도 큐 등재만 있고 격리는 아직 확정되지 않았다.
+    assert result1.failed == 0
     assert 1 in _batch._content_retry_queue
 
     # cycle2: 재시도 패스 — enrich 성공, finish(embed) 인프라 실패 → streak=1, 큐 유지.
@@ -2845,6 +2908,48 @@ async def test_content_retry_streak_resets_on_content_failure_between_infra_fail
     assert 1 in _batch._content_retry_queue
     assert "streak=1/3" in caplog.text
     assert "streak=2/3" not in caplog.text
+
+
+# ── PR 리뷰 라운드 4 — T6: BatchResult.failed 는 "격리 확정" 시에만 늘어난다 ──
+
+
+async def test_batch_result_failed_only_counts_confirmed_isolation_not_retry_enqueue():
+    """[T6] 콘텐츠 실패가 재시도 큐로 넘어간 주기에는 ``failed == 0`` 이고, 예산 소진으로
+    실제 격리된 주기에만 ``failed == 1`` 이다 — 3선 비율 가드용 ``page_failed``(비공개 지역
+    변수)와 달리, 관측 카운터 ``BatchResult.failed`` 는 "이번 주기에 반영되지 않았다"가
+    아니라 "격리가 확정됐다"만 센다. 수정 전에는 재시도 큐 등재 시점에도 ``failed`` 를
+    올려, ``scheduler.py`` 가 dead-letter ERROR 로그가 하나도 없는 주기에도
+    "증분 배치 부분 실패 — dead-letter 로그 확인" ERROR 알람을 거짓으로 띄웠다."""
+    store = CatalogArtifactStore()
+    change = _change(1, name="영구노이즈")
+    call_count = 0
+
+    async def fetch(cursor, limit):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return ProductChangesPage(items=[change], next_cursor="c1", has_more=False)
+        return ProductChangesPage(items=[], next_cursor="c1", has_more=False)
+
+    settings = get_settings()
+    assert settings.artifacts_batch_content_retry_cycles == 1  # 기본값 전제 명시
+    llm = _FlakyLLM(always_fail=["영구노이즈"])
+
+    # cycle1: 콘텐츠 실패 → 재시도 큐 등재 — 아직 격리가 아니다.
+    result1 = await run_artifacts_batch(
+        fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+    )
+    assert result1.failed == 0
+    assert result1.retry_pending == 1
+    assert 1 in _batch._content_retry_queue
+
+    # cycle2: 재시도 패스가 예산(1)을 소진 — 이 주기에 격리가 확정된다.
+    result2 = await run_artifacts_batch(
+        fetch=fetch, llm=llm, embed=_embed, store=store, settings=settings
+    )
+    assert result2.failed == 1
+    assert result2.retry_pending == 0
+    assert 1 not in _batch._content_retry_queue
 
 
 # ── PR 리뷰 라운드 1 — F5: pg 폴백 clear 는 DB 성공 여부와 무관하게 항상 적용 ──
