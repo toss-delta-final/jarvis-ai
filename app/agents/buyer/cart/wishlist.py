@@ -1,4 +1,9 @@
-"""찜 추가·해제·조회 서브그래프 (이슈 #117 · #386, I-26/I-27/I-28 — 확정 2026-08-05, Spring 구현 진행 중).
+"""찜 추가·해제·조회 서브그래프 (이슈 #117 · #386, I-26/I-27/I-28 — 확정 2026-08-05).
+
+**[#436] Spring 은 이미 구현했다** — BE main `InternalWishlistController` 실측(2026-08-07).
+이 파일에 있던 "Spring 구현 진행 중" 표기는 그래서 지웠다. 같은 문구가 `remove.py`·
+`config.py`·`spring_client.py`·`schemas/spring.py` 등에도 남아 있는데, 그 일괄 점검과
+api-spec §4.14~4.16 헤더 갱신은 **#436 소유**라 여기서 건드리지 않는다.
 
 `stream_cart_add` 가 `classify_cart_utterance` 로 "wishlist_add"/"wishlist_remove" 로 판정하면
 항상 위임받는다(패킷 §5.4, 라운드 23 — 온/오프를 가리던 설정 필드 제거). 게스트 찜은 없다(I-26)

@@ -1,8 +1,14 @@
 """찜 추가·해제 흐름 (이슈 #117, 패킷 §5.4) — `stream_wishlist_add`/`stream_wishlist_remove`
 대상 해소·오류 매핑·경로 B 가드·배선.
 
-Spring 이 아직 I-26/I-27/I-28 을 구현하지 않아 실호출 통합 테스트는 하지 않는다(상대가 없다).
-주입 fn 으로 단위 테스트한다(`test_cart_remove.py` 와 같은 패턴).
+주입 fn 으로 단위 테스트한다(`test_cart_remove.py` 와 같은 패턴) — 스트림 한 갈래를 그 갈래만
+태워 보는 데는 이게 가장 싸다.
+
+**[#386]** "Spring 이 아직 구현하지 않아 통합 테스트를 못 한다"는 이 파일의 옛 전제는 이제
+사실이 아니다(#436 실측 — BE main 에 I-26/I-27/I-28 구현됨). 찜 조회는
+`tests/integration/_stubs.py` 의 `GET /internal/wishlist` 라우트로 **실 HTTP 경계 e2e 도**
+갖췄다(`test_degrade_e2e.py`) — 여기 단위 테스트와 역할이 갈린다: 이 파일은 갈래별 판정을,
+저쪽은 어댑터·스트림·라우팅을 관통하는 경로를 잰다.
 """
 
 from __future__ import annotations
