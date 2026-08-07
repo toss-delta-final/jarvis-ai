@@ -2952,6 +2952,112 @@ async def test_batch_result_failed_only_counts_confirmed_isolation_not_retry_enq
     assert 1 not in _batch._content_retry_queue
 
 
+# ── PR 리뷰 라운드 5 — T7: 2선 중단이 콘텐츠 재시도 예산을 삼키면 안 된다 ──
+
+
+async def test_content_retry_budget_survives_second_line_interruption(caplog):
+    """[T7] 콘텐츠 실패로 쌓인 재시도 예산은, 그 다음 주기가 2선 실패로 ``_drain`` 을
+    전파(raise)로 중단시켜도 사라지지 않고 이어진다 — 수정 전에는 항목 루프 맨 앞의
+    무조건 pop 이 큐 항목을 즉시 지워버려, 중단된 다음 주기에 같은 상품이 다시 와도
+    예산이 0 부터 재시작했다(``artifacts_batch_content_retry_cycles=1`` 이 "정확히 1회
+    재시도 후 격리"를 보장하지 못하고 관대한 쪽으로 깨짐). 이 테스트는 수정 전 코드에서
+    반드시 실패한다(2선 중단 뒤 큐 항목이 사라져 있다)."""
+    store = CatalogArtifactStore()
+    mode = {"enrich": "fail", "finish": "ok"}
+    llm = _PhasedLLM(mode)
+    embed = _PhasedEmbed(mode)
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(
+            items=[_change(1, name="시나리오상품")], next_cursor="c1", has_more=False
+        )
+
+    settings = get_settings().model_copy(
+        update={
+            "artifacts_batch_content_retry_cycles": 1,
+            "artifacts_batch_item_dead_letter_cycles": 3,
+        }
+    )
+
+    # cycle1: 콘텐츠 실패 → 큐 등재(retry_attempts=0), 아직 격리 아님.
+    result1 = await run_artifacts_batch(
+        fetch=fetch, llm=llm, embed=embed, store=store, settings=settings
+    )
+    assert result1.failed == 0
+    assert 1 in _batch._content_retry_queue
+    assert _batch._content_retry_queue[1].retry_attempts == 0
+
+    # cycle2: enrich 성공·finish(embed) 인프라 실패 → 2선, streak(1) < 상한(3) → 전파(중단).
+    mode["enrich"] = "ok"
+    mode["finish"] = "fail"
+    with pytest.raises(RuntimeError, match="embed API down"):
+        await run_artifacts_batch(fetch=fetch, llm=llm, embed=embed, store=store, settings=settings)
+    # [T7 핵심] 중단됐어도 콘텐츠 재시도 큐 항목·예산 진행분은 그대로 남아 있어야 한다.
+    assert 1 in _batch._content_retry_queue
+    assert _batch._content_retry_queue[1].retry_attempts == 0
+
+    # cycle3: 다시 콘텐츠 실패(같은 내용) — 이어받은 예산을 소진(0+1=1 ≥ 1) → 격리 확정.
+    mode["enrich"] = "fail"
+    with caplog.at_level("ERROR"):
+        result3 = await run_artifacts_batch(
+            fetch=fetch, llm=llm, embed=embed, store=store, settings=settings
+        )
+    assert result3.failed == 1
+    assert 1 not in _batch._content_retry_queue
+    assert "예산 소진" in caplog.text
+
+
+async def test_content_retry_converges_despite_repeated_second_line_interruption():
+    """[T7] "콘텐츠 실패 → 2선 중단"이 반복돼도 유계 주기 안에 격리된다(무한 회피 없음) —
+    2선 중단이 몇 번 끼어들어도 콘텐츠 예산은 매번 보존되므로, 예산(N)만큼 콘텐츠 실패가
+    실제로 누적되면 결국 격리된다. 수정 전에는 2선 중단마다 예산이 0 으로 리셋돼 이
+    패턴이 무한히 반복될 수 있었다(콘텐츠 예산도 2선 스트릭도 영영 상한에 도달하지 못함)."""
+    store = CatalogArtifactStore()
+    mode = {"enrich": "fail", "finish": "ok"}
+    llm = _PhasedLLM(mode)
+    embed = _PhasedEmbed(mode)
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(
+            items=[_change(1, name="반복상품")], next_cursor="c1", has_more=False
+        )
+
+    settings = get_settings().model_copy(
+        update={
+            "artifacts_batch_content_retry_cycles": 2,
+            "artifacts_batch_item_dead_letter_cycles": 10,  # 2선 상한은 절대 안 닿게 넉넉히
+        }
+    )
+
+    async def content_failure_cycle():
+        mode["enrich"] = "fail"
+        return await run_artifacts_batch(
+            fetch=fetch, llm=llm, embed=embed, store=store, settings=settings
+        )
+
+    async def second_line_interrupt_cycle():
+        mode["enrich"] = "ok"
+        mode["finish"] = "fail"
+        with pytest.raises(RuntimeError, match="embed API down"):
+            await run_artifacts_batch(
+                fetch=fetch, llm=llm, embed=embed, store=store, settings=settings
+            )
+
+    result1 = await content_failure_cycle()  # retry_attempts=0(신규 등재)
+    assert result1.failed == 0
+    await second_line_interrupt_cycle()  # 중단 — 예산(0) 보존
+    assert _batch._content_retry_queue[1].retry_attempts == 0
+
+    result2 = await content_failure_cycle()  # retry_attempts=0+1=1 < budget(2) → 큐 유지
+    assert result2.failed == 0
+    await second_line_interrupt_cycle()  # 다시 중단 — 예산(1) 보존
+    assert _batch._content_retry_queue[1].retry_attempts == 1
+
+    result3 = await content_failure_cycle()  # retry_attempts=1+1=2 ≥ budget(2) → 격리 확정
+    assert result3.failed == 1
+    assert 1 not in _batch._content_retry_queue
+
+
 # ── PR 리뷰 라운드 1 — F5: pg 폴백 clear 는 DB 성공 여부와 무관하게 항상 적용 ──
 
 

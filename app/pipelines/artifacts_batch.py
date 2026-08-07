@@ -490,19 +490,36 @@ async def _drain(
         page_failed = page_succeeded = 0
         for change in page.items:
             # [#421] 이 페이지가 이 product 에 대한 새 변경분을 들고 왔다 — HIDDEN·ON_SALE
-            # 불문 낡은 대기 페이로드를 먼저 뗀다. 재시도 패스가 HIDDEN 상품을 되살려 유령
-            # 상품을 만드는 것을 막는다(큐 정합성). [T1, PR 리뷰 라운드 2] ON_SALE 이면 뗀
-            # 항목을 잠시 들고 있는다 — 아래 콘텐츠 실패 분기에서 enrichment 입력이 실제로
-            # 같은지 판정할 근거로 쓰고, 쓰이지 않으면(성공·2선 실패) 그냥 버려진다.
-            previous_retry = _content_retry_queue.pop(change.product_id, None)
+            # 불문 낡은 대기 페이로드는 결국 버려지거나 재등재로 갈아끼워진다. [T1, PR 리뷰
+            # 라운드 2] ON_SALE 이면 조회 결과를 잠시 들고 있는다 — 아래 콘텐츠 실패 분기에서
+            # enrichment 입력이 실제로 같은지 판정할 근거로 쓴다.
+            #
+            # [T7, PR 리뷰 라운드 5] 여기서는 **peek 만 하고 pop 하지 않는다** — 이 항목의
+            # 운명이 이번 주기에 실제로 "확정"되는 지점(HIDDEN 삭제 성공·처리 성공·콘텐츠
+            # 예산 소진 격리·2선 스트릭 상한 격리)에서만 아래 개별 분기가 큐를 건드린다.
+            # pop 은 되돌릴 수 없는 상태 변경인데, 바로 아래 2선 분기는 스트릭이 아직 상한
+            # 미만이면 `raise stage_exc` 로 `_drain` 전체를 중단시킨다 — 여기서 무조건
+            # pop 해버리면 그 사이 쌓아온 cross-cycle 재시도 진행분(`retry_attempts`)이
+            # 중단과 함께 통째로 사라지고, 다음 주기엔 같은 change 가 다시 와도 예산이 0 부터
+            # 다시 시작한다("콘텐츠 실패(예산+1) → 2선 중단(예산 유실)"을 반복하면 콘텐츠
+            # 예산·2선 스트릭 둘 다 상한에 영영 도달하지 못하는 회귀 — #421/#416 이 없애려던
+            # "poison 상품이 상한에 도달 못 한다"와 같은 계열). 2선이 전파(raise)하는 경로는
+            # 큐를 전혀 건드리지 않아 다음 주기가 정확히 같은 상태에서 재개된다. 유령 상품
+            # 불변식은 그대로 유지된다 — 재시도 패스는 `_drain` 이 **정상 완료**했을 때만
+            # 돌고(F1), 정상 완료한 실행에서는 모든 항목이 아래 분기 중 하나로 확정 처리됐기
+            # 때문이다(중단된 실행은 애초에 재시도 패스까지 도달하지 않는다).
+            previous_retry = _content_retry_queue.get(change.product_id)
             if change.status == _HIDDEN:
                 target.delete(change.product_id)
+                # delete() 가 실패하면 이 줄에 도달하지 않아 fail-closed 무기한 전파(스트릭·
+                # 재시도 큐 모두 불변)가 그대로 유지된다 — 삭제 성공 시에만 큐 항목을 뗀다
+                # (재시도 패스가 HIDDEN 상품을 되살려 유령 상품을 만드는 것을 막는다).
+                _content_retry_queue.pop(change.product_id, None)
                 # [F3, #416 후속] 삭제 성공은 그 항목의 정상 처리이므로 스트릭도 성공과
                 # 동일하게 clear 한다 — 안 그러면 영속화(TTL 최대 1시간) 이후로 "ON_SALE 에서
                 # 인프라 실패 2회 → HIDDEN → 1시간 안에 재판매 → 재판매 후 첫 일시 실패가 과거
                 # 2와 합쳐져 3/3 으로 즉시 오격리"가 가능해진다(상품 생명주기가 스트릭을
-                # 넘나들면 안 된다). delete() 가 실패하면 이 줄에 도달하지 않아 fail-closed
-                # 무기한 전파(스트릭 불변)가 그대로 유지된다.
+                # 넘나들면 안 된다).
                 failure_store.clear_failure_streak(FAILURE_STREAK_KIND_ITEM, str(change.product_id))
                 hidden += 1
                 continue
@@ -531,6 +548,8 @@ async def _drain(
                 retry_budget = settings.artifacts_batch_content_retry_cycles
                 if retry_budget <= 0:
                     # [#421] 회귀 탈출구 — 예산 0 이면 종전대로 즉시 영구 격리.
+                    # [T7] 격리 확정 — 대기 중이던 항목(있었다면)을 뗀다.
+                    _content_retry_queue.pop(change.product_id, None)
                     failed += 1
                     _log.error(
                         "I-17 항목 실패 — 격리 기록 후 계속: product_id=%s attempts=%d",
@@ -552,6 +571,9 @@ async def _drain(
                     ):
                         retry_attempts = previous_retry.retry_attempts + 1
                     if retry_attempts >= retry_budget:
+                        # [T7] 격리 확정 — 대기 중이던 항목을 뗀다(이번 실패로 예산을 다
+                        # 썼으니 재등재하지 않는다).
+                        _content_retry_queue.pop(change.product_id, None)
                         failed += 1
                         _log.error(
                             "I-17 콘텐츠 재시도 예산 소진(내용 불변 반복 실패) — 격리 기록 "
@@ -564,8 +586,11 @@ async def _drain(
                     else:
                         # [#421] JSON 파싱 실패는 LLM 샘플링 노이즈로도 나므로, 즉시 영구
                         # 격리 대신 다음 주기 재시도 기회를 준다 — 첫 주기 오격리를 막는다.
-                        # [T6] 상한 축출은 지금 등재하는 change 와 무관한 다른(가장 오래된)
-                        # 항목의 확정 격리다 — 조용한 유실이 아니라 failed 에도 드러난다.
+                        # [T7] previous_retry 를 pop 하지 않고 peek 만 했으므로 이미 있던
+                        # 항목이면 그 키에 그대로 덮어써 재등재한다(_enqueue_content_retry 의
+                        # 상한 축출 판정은 "이미 있는 키"를 정확히 skip 한다). [T6] 상한
+                        # 축출은 지금 등재하는 change 와 무관한 다른(가장 오래된) 항목의
+                        # 확정 격리다 — 조용한 유실이 아니라 failed 에도 드러난다.
                         if _enqueue_content_retry(change, retry_attempts=retry_attempts):
                             failed += 1
                         _log.warning(
@@ -594,6 +619,9 @@ async def _drain(
                     stage = "finish"
 
             if stage_exc is None:
+                # [T7] 처리 성공 — 대기 중이던 항목(있었다면)을 뗀다. 방금 새 페이로드로
+                # 성공했으니 낡은 대기분은 더 이상 의미가 없다.
+                _content_retry_queue.pop(change.product_id, None)
                 failure_store.clear_failure_streak(FAILURE_STREAK_KIND_ITEM, str(change.product_id))
                 processed += 1
                 page_succeeded += 1
@@ -606,6 +634,12 @@ async def _drain(
             )
             cycles_limit = settings.artifacts_batch_item_dead_letter_cycles
             if streak < cycles_limit:
+                # [T7, PR 리뷰 라운드 5] 여기서 raise 하면 _drain 전체가 중단된다 — 큐를
+                # 절대 건드리지 않는다(peek 만 했으므로 이미 건드리지 않은 상태). 그래야
+                # previous_retry 의 cross-cycle 예산이 이 중단에 삼켜지지 않고, 다음 주기가
+                # 정확히 같은 상태(같은 retry_attempts)에서 재개된다 — 안 그러면 "콘텐츠
+                # 실패(예산 소진 진행 중) → 2선 중단"이 반복될 때 예산이 매번 사라져 콘텐츠
+                # 예산·2선 스트릭 어느 쪽 상한에도 영영 도달하지 못할 수 있었다.
                 _log.warning(
                     "I-17 항목 연속 실패 — 전파(자연 복구): product_id=%s stage=%s streak=%d/%d",
                     change.product_id,
@@ -614,6 +648,8 @@ async def _drain(
                     cycles_limit,
                 )
                 raise stage_exc
+            # [T7] 격리 확정 — 대기 중이던 항목(있었다면, 낡은 콘텐츠 실패 이력)을 뗀다.
+            _content_retry_queue.pop(change.product_id, None)
             failure_store.clear_failure_streak(FAILURE_STREAK_KIND_ITEM, str(change.product_id))
             failed += 1
             page_failed += 1
