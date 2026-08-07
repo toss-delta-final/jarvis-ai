@@ -13,6 +13,27 @@
 
 ---
 
+## [2026-08-07] PR 이 리뷰 워크플로 자신을 고치면 Claude 리뷰는 그 PR 에서 돌지 않는다
+- 증상: PR #459(`.github/workflows/claude-review.yml` 을 수정하는 PR)의 review run
+  (`gh run view 31169027311`)에 `##[warning]Skipping action due to workflow validation:
+  Workflow validation failed. The workflow file must exist and have identical content to the
+  version on the repository's default branch.` 가 찍히며 액션이 통째로 건너뛰어졌다. **체크는
+  초록(success)이라 겉보기엔 리뷰가 끝난 것처럼 보이는데 실제로는 리뷰가 0줄도 돌지 않았다** —
+  "리뷰 통과"로 오독하기 쉽다. 액션이 `execution_file` 을 만들지 않으므로, 그 파일로 성공을
+  판정하는 후속 스텝(`save-state`)도 "미완료"로 본다. 대조 근거: 같은 시각 워크플로를 건드리지
+  않은 다른 PR 의 run(`31168319751`)에는 이 경고가 0건이고
+  `Log saved to /home/runner/work/_temp/claude-execution-output.json` 이 정상적으로 찍혔다.
+- 원인: `anthropics/claude-code-action@v1` 자체의 보호장치 — 워크플로 파일이 **기본 브랜치
+  버전과 바이트 단위로 동일**해야만 실행된다(PR 이 워크플로를 고쳐 시크릿을 빼돌리는 것을 막는
+  장치). 이 저장소의 기본 브랜치는 `dev` 다(`gh repo view --json defaultBranchRef` 실측).
+- 규칙: 리뷰 워크플로(`.github/workflows/claude-review.yml`)를 바꾸는 PR 은 **그 PR 자체로는
+  Claude 리뷰를 받을 수 없다** — 사람 리뷰나 별도 교차 리뷰로 대체하고, PR 본문에 그 사실을
+  적는다. 그런 PR 에서 review 체크가 초록인 것을 "리뷰 통과"로 읽지 마라. Actions 로그에서
+  `Skipping action due to workflow validation` 유무를 확인한다. 워크플로 변경의 실제 동작 검증은
+  **기본 브랜치에 병합된 다음** 첫 PR 들에서 한다.
+- 관련: #457, PR #459, `.github/workflows/claude-review.yml`, run 31169027311(경고 발생) ·
+  run 31168319751(정상 실행 대조)
+
 ## [2026-08-07] `git diff` 출력을 정규식으로 파싱하면 파일이 조용히 사라진다
 - 증상: 비-ASCII(한글) 경로가 있으면 git 이 기본값(`core.quotePath=true`)으로 따옴표 인코딩해
   `diff --git "a/app/\355\225\234..." "b/..."` 형태로 내는데, `^diff --git a/(.*) b/(.*)$` 류
