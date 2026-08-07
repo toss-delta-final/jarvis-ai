@@ -46,8 +46,15 @@ _PREDICATE_ORDER: dict[str, int] = {
 # `_PREDICATE_ORDER` 를 재사용하면 정렬 순서와 검증 어휘가 한 자료에 묶여, 한쪽만 고칠 때
 # 다른 쪽이 조용히 따라 바뀐다.
 _PREDICATES: frozenset[str] = frozenset(get_args(Predicate))
-# 같은 노드를 두고 서로 못 서는 관계쌍. 승자만 active 로 남고 패자는 superseded 다.
-_CONFLICTING: frozenset[frozenset[str]] = frozenset({frozenset({"likes", "avoids"})})
+# 같은 노드를 두고 서로 못 서는 관계. **쌍 목록이 아니라 의미로 판정한다** — 부정 하나 vs
+# 임의의 긍정이다(REQ-PGRAPH-018). `{likes, avoids}` 쌍만 등록했더니 resolver 가 kind 별로 다른
+# 긍정을 만드는 탓에(priceBand·ratingBand·attribute → prefers, situation → interestedIn)
+# 7개 kind 중 4개가 판정 밖에 남아 모순된 두 취향이 둘 다 active 로 공존했다(PR #410 리뷰).
+# 쌍을 늘리는 대신 규칙을 바꾼 이유는, 긍정 predicate 가 하나 더 생길 때 등록을 또 빠뜨리기 때문이다.
+_NEGATIVE_PREDICATE = "avoids"
+# `purchased` 는 긍정에 넣지 않는다 — 구매 사실과 회피는 모순이 아니고(사고 나서 싫어질 수 있다),
+# 원천도 대화가 아니라 질의 시점 구매 이력(I-19)이라 회피 발언이 이력을 덮어서는 안 된다.
+_POSITIVE_PREDICATES: frozenset[str] = frozenset({"prefers", "likes", "interestedIn"})
 _ROUND = 6  # 고정 소수점 — 부동소수 꼬리가 재생 동일성을 깨지 않게(REQ-PGRAPH-015)
 _SECONDS_PER_DAY = 86400.0
 
@@ -307,8 +314,13 @@ def _carried_tombstones(existing: GraphDocument, *, seen: set[str]) -> list[Grap
 def _resolve_conflicts(edges: list[GraphEdge]) -> list[GraphEdge]:
     """같은 node 를 두고 상충하는 관계는 패자를 `superseded` 로 (REQ-PGRAPH-018) — **삭제하지 않는다**.
 
+    상충은 **부정(`avoids`) vs 임의의 긍정**이다. 쌍을 열거하지 않는 이유는 `_NEGATIVE_PREDICATE`
+    주석에 있다 — 열거하면 kind 가 늘 때 등록을 빠뜨리고, 그 결과는 "선호한다 + 싫어한다"가
+    **둘 다 active 로 살아남아 요약 LLM 에 함께 들어가는** 것이다.
+
     승자 선정은 recency-wins 다(REQ-PROF-033): `(last_observed_at, confidence, edge_id)` 최댓값.
-    마지막 키까지 가야 동률에서도 전순서가 성립한다.
+    마지막 키까지 가야 동률에서도 전순서가 성립한다. 진 **쪽만** 표시한다 — 승자가 긍정이면
+    부정들만, 부정이면 긍정들만 `superseded` 다. 같은 편끼리는 모순이 아니라서 건드리지 않는다.
     """
     by_node: dict[str, list[GraphEdge]] = {}
     for edge in edges:
@@ -317,20 +329,22 @@ def _resolve_conflicts(edges: list[GraphEdge]) -> list[GraphEdge]:
     resolved: dict[str, GraphEdge] = {e.edge_key: e for e in edges}
     for node_edges in by_node.values():
         candidates = [e for e in node_edges if e.status in ("active", "superseded")]
-        for pair in _CONFLICTING:
-            clashing = [e for e in candidates if e.predicate in pair]
-            if len(clashing) < 2:
-                continue
-            winner = max(clashing, key=lambda e: (e.last_observed_at, e.confidence, e.edge_id))
-            for edge in clashing:
-                if edge.edge_key == winner.edge_key:
-                    resolved[edge.edge_key] = edge.model_copy(
-                        update={"status": "active", "superseded_by": None}
-                    )
-                else:
-                    resolved[edge.edge_key] = edge.model_copy(
-                        update={"status": "superseded", "superseded_by": winner.edge_id}
-                    )
+        negatives = [e for e in candidates if e.predicate == _NEGATIVE_PREDICATE]
+        positives = [e for e in candidates if e.predicate in _POSITIVE_PREDICATES]
+        if not negatives or not positives:
+            continue
+
+        winner = max(
+            negatives + positives, key=lambda e: (e.last_observed_at, e.confidence, e.edge_id)
+        )
+        losers = negatives if winner.predicate in _POSITIVE_PREDICATES else positives
+        resolved[winner.edge_key] = winner.model_copy(
+            update={"status": "active", "superseded_by": None}
+        )
+        for edge in losers:
+            resolved[edge.edge_key] = edge.model_copy(
+                update={"status": "superseded", "superseded_by": winner.edge_id}
+            )
     return list(resolved.values())
 
 

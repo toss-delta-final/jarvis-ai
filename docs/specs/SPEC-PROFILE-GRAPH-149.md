@@ -1,6 +1,6 @@
 ---
 id: SPEC-PROFILE-GRAPH-149
-version: 0.2.2
+version: 0.2.3
 status: draft
 created: 2026-08-05
 updated: 2026-08-06
@@ -28,6 +28,13 @@ issue_number: 149
 
 ## HISTORY
 
+- **v0.2.3 (2026-08-07, 이슈 #356 / PR #410 리뷰)** — **REQ-PGRAPH-018 상충 범위 명확화**(계약 변경
+  없음, 와이어 무변경). "`likes` vs `avoids`"를 **예시가 아니라 규칙으로 읽은 구현**이 나와,
+  `avoids` vs 임의의 긍정(`prefers`·`likes`·`interestedIn`)임을 못박는다. §6.2 resolver가 kind별로
+  다른 긍정을 만들기 때문에(`priceBand`·`ratingBand`·`attribute` → `prefers`, `situation` →
+  `interestedIn`) 예시 쌍만 등록하면 **7개 kind 중 4개가 판정 밖**에 남고, 모순된 두 취향이 둘 다
+  `active`로 공존해 요약 입력에 "선호한다"와 "싫어한다"가 함께 들어간다(실측 재현). `purchased`가
+  긍정에서 빠지는 근거도 함께 적었다 — 구매 후 회피는 모순이 아니고 그 원천은 I-19다.
 - **v0.2.2 (2026-08-06, 이슈 #356 / PR #410 리뷰)** — **REQ-PGRAPH-005 절단 우선순위 명시**(계약
   변경 없음, 와이어 무변경). v0.2.1 까지는 "상한을 넘으면 절단한다"만 있고 **무엇을 먼저 자르는지**가
   없어, tombstone 이 상한을 넘긴 계정에서 `suppressed` 자체가 잘릴 수 있었다. 그러면
@@ -353,6 +360,15 @@ class GraphAuditRecord(BaseModel):
   잃으므로 도입하지 않는다(`SPEC-PROFILE-001` 저장 계층의 기존 경계 유지).
 - **REQ-PGRAPH-018** 상충하는 관계(`likes` vs `avoids` 같은 node 대상)가 생기면 패자를
   `status: "superseded"` + `superseded_by`로 표시해야 하며 **삭제하지 않는다**.
+  - **[명확화 v0.2.3]** 상충은 **`avoids` vs 임의의 긍정 predicate**(`prefers`·`likes`·`interestedIn`)이며,
+    `likes` vs `avoids`는 그중 한 예시일 뿐이다. §6.2 resolver가 kind별로 다른 긍정을 만들기 때문이다
+    (`priceBand`·`ratingBand`·`attribute` → `prefers`, `brand`·`category`·`product` → `likes`,
+    `situation` → `interestedIn`). 구현이 예시 쌍만 등록하면 7개 kind 중 4개가 판정 밖에 남아
+    **모순된 두 취향이 둘 다 `active`로 공존**하고, 요약 입력(REQ-PGRAPH-022)에 "선호한다"와
+    "싫어한다"가 함께 들어간다.
+  - `purchased`는 긍정에 포함하지 **않는다** — 구매 사실과 회피는 모순이 아니며(구매 후 회피는
+    정상 상태), 그 원천은 대화가 아니라 질의 시점 구매 이력(api-spec §4.7 I-19)이라 회피 발언이
+    이력을 덮어서는 안 된다.
 
 ### 6.3 상태 기계
 

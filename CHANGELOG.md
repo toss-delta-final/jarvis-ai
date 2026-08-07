@@ -26,8 +26,13 @@
   kind는 `verified:false`로 남기고(C-28 미해결 상태에서도 동작) 어휘가 있는데 못 붙으면 드롭한다.
   병합은 감쇠 가중 EMA·승격/강등 히스테리시스·충돌 supersede(삭제 금지)·tombstone 보존이며,
   edge 상한 절단에서도 **사용자 삭제(`suppressed`·pin)는 상한보다 우선**한다 — 잘리면 다음
-  배치에 `active`로 부활해 복구 경로가 없다. 밀리는 순서는 `superseded`(재파생으로 자기복구) →
-  `active`이고, 사용자 삭제만으로 상한을 넘으면 넘긴 채 보존하고 경고 로그를 남긴다.
+  배치에 `active`로 부활해 복구 경로가 없다. **먼저 밀려나는 순서는 `active` → `superseded` →
+  (자르지 않음) `suppressed`·pin**이다. 직관과 반대로 보이지만 잃는 것이 다르다 — `active`가
+  잘려도 그 fact는 요약 입력에 남지만(문서에 없는 `edge_key`는 `active`로 간주된다), `superseded`가
+  잘리면 같은 규칙 때문에 **진 취향이 요약에 되살아난다**. 사용자 삭제만으로 상한을 넘으면
+  넘긴 채 보존하고 경고 로그를 남긴다. 상충 판정은 쌍 열거가 아니라 **`avoids` vs 임의의 긍정**
+  (`prefers`·`likes`·`interestedIn`)이다 — `{likes, avoids}`만 등록하면 resolver가 kind별로 다른
+  긍정을 만드는 탓에 7개 kind 중 4개가 판정 밖에 남아 모순된 두 취향이 둘 다 `active`로 공존한다.
   요약 입력은 살아 있는 edge + 트리플 없는 fact이고 `suppressed`/`superseded`와 그 근거 fact
   원문은 제외한다 — 입력이 비면 기존 요약을 **보존**하고 `NO_WORK`(빈 문자열로 덮으면 요약은
   사라지는데 홈 랭킹은 캐리오버된 옛 벡터로 계속 개인화한다). LLM은 그래프 락 밖에서 부른다
@@ -38,7 +43,7 @@
   동봉했다(OPEN-G8). 발표·수동 검증용 시드 스크립트 신설.
   **비범위**: 그래프 API 표면(#150) · 저널·revision CAS·멱등 원장(#358) · pin 규약 ·
   브랜드 어휘 수집(C-28). `purchased` edge는 대화에서 만들지 않는다(원천은 질의 시점 I-19).
-  (SPEC-PROFILE-GRAPH-149 v0.2.2, SPEC-PROFILE-001 v0.8.1 — api-spec 무개정)
+  (SPEC-PROFILE-GRAPH-149 v0.2.3, SPEC-PROFILE-001 v0.8.1 — api-spec 무개정)
 - **#380 — 과소지정 판정 축 실 LLM 실측 하네스 신설(`evals/underspecified_probe`)** — SPEC-
   UNDERSPECIFIED-336 §7.3 이 남긴 게이트 잔여 항목("실 LLM 이 판정 축을 실제 발화에서 얼마나
   정확히 산출하는지 실측하지 않았다")을 채운다. 30 앵커(cases.json 승계 7 + 신규 23) × N=8 =

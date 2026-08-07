@@ -13,6 +13,28 @@
 
 ---
 
+## [2026-08-07] 명세의 "예: A vs B"를 목록으로 옮기면, 예시가 규칙이 되어 나머지가 조용히 빠진다
+- 증상: #356 `_resolve_conflicts` 가 상충 쌍을 `_CONFLICTING = {{"likes", "avoids"}}` 하나로
+  하드코딩했다. 그런데 `resolver._POSITIVE_PREDICATE` 는 kind 마다 다른 긍정을 만든다
+  (`priceBand`·`ratingBand`·`attribute` → `prefers`, `situation` → `interestedIn`). 그래서
+  "3만원대를 선호한다" + "3만원대는 싫다" 가 **둘 다 `active` 로 공존**하고, `_summary_input` 은
+  non-active 만 거르므로 모순된 두 fact 가 요약 LLM 입력에 **함께** 들어갔다(실측 재현:
+  `['30000-50000 를 선호한다', '30000-50000 를 싫어한다']`). 7개 kind 중 4개가 구멍이었다.
+  Claude PR 리뷰가 잡았다.
+- 원인: SPEC REQ-PGRAPH-018 이 "상충하는 관계(`likes` vs `avoids` 같은 node 대상)"라고 **예시**로
+  적은 것을, 구현이 **열거해야 할 목록**으로 읽었다. 예시를 자료구조로 옮기는 순간 그 예시가
+  규칙이 되고, 예시에 없던 경우는 "빠뜨렸다"가 아니라 "원래 대상이 아니다"처럼 보인다.
+- 규칙: 명세가 "예: A" 로 쓴 것을 코드에 옮길 때는 **A 를 등록하지 말고 A 를 만들어내는 성질을
+  구현한다.** 여기서는 쌍 3개를 등록하는 대신 "부정 vs 임의의 긍정"으로 판정을 바꿨다 —
+  긍정 predicate 가 하나 더 생겨도 자동으로 따라온다. 옮긴 뒤에는 **명세 쪽에 그 성질을 명시**해
+  다음 사람이 같은 오독을 하지 않게 한다(v0.2.3 명확화). 열거가 불가피하면 열거 대상을 만드는
+  원본(여기서는 `resolver._POSITIVE_PREDICATE`)과 **한 테스트에서 대조**한다.
+- 관련: `app/agents/profile/graph_merge.py::_resolve_conflicts`(`_NEGATIVE_PREDICATE`·
+  `_POSITIVE_PREDICATES`), `app/agents/profile/resolver.py::_POSITIVE_PREDICATE`,
+  SPEC-PROFILE-GRAPH-149 REQ-PGRAPH-018(v0.2.3), 이슈 #356 / PR #410
+
+---
+
 ## [2026-08-07] 직관과 반대인 설계는 **근거**를 테스트로 잠근다 — 안 그러면 다음 사람이 버그로 읽고 뒤집는다
 - 증상: #356 `_truncate` 는 절단 시 `active`(살아 있는 취향)를 `superseded`(충돌에서 진 취향)보다
   **먼저** 버린다. 리뷰가 이를 "정렬 방향이 뒤집혔다"는 버그로 읽고 부등호를 뒤집으라고 제안했다.

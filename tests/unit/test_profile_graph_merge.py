@@ -398,6 +398,71 @@ def test_conflicting_relations_supersede_loser_without_deleting(settings: Settin
     assert loser.superseded_by == winner.edge_id
 
 
+@pytest.mark.parametrize(
+    ("positive", "node_id", "node_type", "label"),
+    [
+        ("prefers", "priceBand:30000-50000", "priceBand", "30000-50000"),  # priceBand·ratingBand
+        ("prefers", "attribute:방수", "attribute", "방수"),  # attribute
+        ("interestedIn", "situation:캠핑", "situation", "캠핑"),  # situation
+    ],
+)
+def test_any_positive_predicate_conflicts_with_avoids(
+    settings: Settings, positive: str, node_id: str, node_type: str, label: str
+) -> None:
+    """상충은 `likes` vs `avoids` 만이 아니다 — **부정 vs 임의의 긍정**이다(REQ-PGRAPH-018).
+
+    `resolver._POSITIVE_PREDICATE` 는 kind 마다 다른 긍정을 만든다(priceBand·ratingBand·
+    attribute → `prefers`, situation → `interestedIn`). 충돌 쌍을 `{likes, avoids}` 로
+    하드코딩하면 7개 kind 중 4개가 판정 밖에 남아, 모순된 두 취향이 **둘 다 active** 로 공존하고
+    요약 LLM 이 "선호한다 + 싫어한다"를 함께 받는다(PR #410 리뷰).
+    """
+    facts = [
+        _fact(
+            "f1",
+            created_at="2026-08-01T00:00:00+00:00",
+            triples=[_triple(node_id, positive, label=label, node_type=node_type)],
+        ),
+        _fact(
+            "f2",
+            created_at="2026-08-05T00:00:00+00:00",
+            triples=[_triple(node_id, "avoids", label=label, node_type=node_type)],
+        ),
+    ]
+
+    document = build_graph_document(facts, existing=empty_document(NOW), settings=settings, now=NOW)
+
+    winner = _edge_by_key(document, f"avoids|{node_id}")  # recency-wins
+    loser = _edge_by_key(document, f"{positive}|{node_id}")
+    assert winner is not None and loser is not None
+    assert winner.status == "active"
+    assert loser.status == "superseded"
+    assert loser.superseded_by == winner.edge_id
+
+
+def test_purchased_does_not_conflict_with_avoids(settings: Settings) -> None:
+    """구매 사실과 회피는 모순이 아니다 — 사고 나서 싫어질 수 있다.
+
+    `purchased` 의 원천은 질의 시점 구매 이력(I-19)이지 발화가 아니라서, 회피 발언이 구매
+    기록을 덮으면 이력이 취향 판정에 지워진다.
+    """
+    facts = [
+        _fact(
+            "f1",
+            created_at="2026-08-01T00:00:00+00:00",
+            triples=[_triple("product:12345", "purchased", label="12345", node_type="product")],
+        ),
+        _fact(
+            "f2",
+            created_at="2026-08-05T00:00:00+00:00",
+            triples=[_triple("product:12345", "avoids", label="12345", node_type="product")],
+        ),
+    ]
+
+    document = build_graph_document(facts, existing=empty_document(NOW), settings=settings, now=NOW)
+
+    assert {e.status for e in document.edges} == {"active"}
+
+
 def test_supersede_does_not_touch_unrelated_nodes(settings: Settings) -> None:
     facts = [
         _fact("f1", triples=[_triple(predicate="likes")]),
