@@ -13,6 +13,27 @@
 
 ---
 
+## [2026-08-07] 두 정상 설계의 이음매는 어느 쪽 코드를 봐도 결함으로 안 보인다 — 적용 범위를 문서에 적어라
+- 증상: #435 "추천 카드를 이름으로 지목한 찜/담기가 실패한다"가 여러 라운드 동안 "미확정"
+  으로 남아 있었다. `screen_reference.py`(화면 지시어 결정적 해소기)를 보면 정상 설계고,
+  `no_condition.rank_by_profile`(프로필 벡터 추천)를 봐도 정상 설계다 — 어느 쪽도 단독으로는
+  결함이 아니다.
+- 원인: FE 위조방지 설계(추천 카드는 서버가 `listId` 로 이미 알아 `screen` 에서 의도적으로
+  제외)와 AI 상품명 공백(AI 카탈로그 인덱스에는 원본 컬럼이 없어 프로필 경로가 상품명을
+  모른다)이 **서로 다른 시점에 각자 옳게 결정된 설계**인데, 그 둘이 만나는 지점(추천 카드
+  턴의 이름 지목)에 아무도 적어두지 않았다. `screen_reference.py` 를 진단하는 사람은 "이
+  모듈은 `screen.products` 가 있을 때만 돈다"만 보고 추천 카드 턴이 왜 안 되는지 모르고,
+  `no_condition.py` 를 진단하는 사람은 "이름을 모른다"만 보고 그게 이음매 반대편에서 되물음
+  문구·찜 실패로 이어지는 줄 모른다. 각 모듈 안에서는 완결된 근거가, 모듈을 넘어서는 인과를
+  가리지 못했다.
+- 규칙: 두 설계가 서로의 전제를 깨는 지점(A 가 의도적으로 비운 것을 B 가 의도적으로 요구하는
+  경우)을 발견하면, 그 교차점을 **양쪽 모듈 docstring 모두에** 적어라(한쪽에만 적으면 반대편
+  진단자가 여전히 못 찾는다). "이 결함처럼 보이는 동작은 설계의 귀결이다"라고 명시적으로
+  적어야 다음 추적 라운드가 같은 두 모듈을 또 오가며 낭비되지 않는다.
+- 관련: `app/agents/buyer/screen_reference.py`(모듈 docstring) ·
+  `app/agents/buyer/recommendation/no_condition.py::rank_by_profile` ·
+  `docs/api-spec.md` §3.1 v0.28.1 · #435
+
 ## [2026-08-06] 테스트 스위트 실행 중에 커밋하면 eval 결정론 테스트가 깨진다
 - 증상: `uv run pytest` 를 백그라운드로 돌려 둔 채 그 사이에 `git commit` 을 했더니
   `tests/eval/test_personalization_eval.py::test_personalization_run_is_deterministic_across_environment_and_clock`

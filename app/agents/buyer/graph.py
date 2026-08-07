@@ -985,6 +985,18 @@ async def run_buyer_turn(
         else set()
     )
     allowed = {pid for pid, _ in last_reco} | screen_product_ids
+    # [#435] last_reco 이름 커버리지 관측 — 이 이슈가 "미확정"으로 넘어온 이유는 그 턴의
+    # LAST_RECOMMENDATIONS 에 이름이 있었는지 운영 로그에서 알 수 없었기 때문이다(패킷 §3).
+    # 담기·찜 계열 턴에 한해 개수만 남긴다 — 상품명·발화 원문은 판매자 입력·PII 라 싣지 않는다.
+    has_last_reco = bool(last_reco)
+    if decision.intent in ("cart_add", "wishlist_add", "wishlist_remove"):
+        logger.info(
+            "last_reco_name_coverage",
+            extra={
+                "total": len(last_reco),
+                "named": sum(1 for _, name in last_reco if name),
+            },
+        )
 
     if decision.intent == "order_status":
         if trace := current_request_trace():
@@ -1093,6 +1105,7 @@ async def run_buyer_turn(
                 message=request.message,
                 allowed_product_ids=allowed,
                 screen_reason=screen_reason,
+                has_last_reco=has_last_reco,
                 observer=observer,
             ):
                 yield frame
@@ -1130,6 +1143,7 @@ async def run_buyer_turn(
                 cart=cart_intent,
                 settings=settings,
                 allowed_product_ids=allowed,
+                has_last_reco=has_last_reco,
                 observer=observer,
             ):
                 yield frame
