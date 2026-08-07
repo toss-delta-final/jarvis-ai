@@ -1739,6 +1739,23 @@ async def test_consensus_filter_keeps_majority_mid_drops_homonym_noise() -> None
     assert mids == {"과일"}
 
 
+async def test_consensus_log_carries_source_legs_when_applied(caplog) -> None:
+    """[#428 리뷰 5차 R5-2] 합의가 **적용**된 케이스에서 `category_expansion_consensus` 로그에
+    `source_legs`(이번 매핑의 입력 leg 수 = 전개 아이템 수)가 실린다 — R5-1 이 게이트를
+    상류(`graph.py`)로 옮겼으므로 이 로그가 남았다는 것 자체가 "원 발화 신호 leg 이 0~1개"를
+    함의하지만, `source_legs` 는 그 위에 "형제 몇 개가 합의에 참여했나"를 더해 이 상호작용이
+    실제로 발동한 턴을 운영에서 식별할 수 있게 한다."""
+    m = _FakeMapper(exact=set(), nearest={}, hits=_FRUIT_HITS)
+    with caplog.at_level("INFO"):
+        await m.run_full(
+            [CategoryQuery(None, name) for name in ["바나나", "사과", "배", "오렌지"]],
+            settings=_settings(expand_legs=8),
+            sibling_expansion=True,
+        )
+    record = _record(caplog, "category_expansion_consensus")
+    assert record.source_legs == 4
+
+
 async def test_consensus_filter_disabled_keeps_legacy_noise() -> None:
     """[#428 미적용 대조] `sibling_expansion=False`(기본값)면 같은 입력에서 종전처럼 노이즈가
     섞인 8개가 그대로 나온다 — 이 대조가 있어야 위 회귀가 "합의 필터가 실제로 일했다"는 증거다."""
@@ -1893,6 +1910,26 @@ async def test_consensus_filter_skipped_when_a_sibling_lacks_winning_mid(caplog)
     assert "잡화 > 소품" in canonicals
     assert "과일 > 국산과일" in canonicals
     assert "과일 > 수입과일" in canonicals
+
+
+async def test_consensus_skipped_log_carries_source_legs(caplog) -> None:
+    """[#428 리뷰 5차 R5-2] 가드 **스킵** 케이스에서도 `category_expansion_consensus_skipped`
+    로그에 `source_legs` 가 실린다 — 적용·스킵 양쪽 다 관측 가능해야 이 상호작용의 발동 빈도를
+    운영에서 온전히 잴 수 있다."""
+    hits = {
+        "가": [("과일 > 국산과일", 0.30)],
+        "나": [("과일 > 수입과일", 0.30)],
+        "다": [("잡화 > 소품", 0.30)],
+    }
+    m = _FakeMapper(exact=set(), nearest={}, hits=hits)
+    with caplog.at_level("INFO"):
+        await m.run_full(
+            [CategoryQuery(None, name) for name in ["가", "나", "다"]],
+            settings=_settings(expand_legs=4),
+            sibling_expansion=True,
+        )
+    record = _record(caplog, "category_expansion_consensus_skipped")
+    assert record.source_legs == 3
 
 
 # [#428 리뷰 3차 회귀] "신학기 준비물" 전개 중 거리컷에 드롭된 3형제. 로컬 pg-catalog 실측

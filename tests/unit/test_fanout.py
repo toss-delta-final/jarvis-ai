@@ -3920,11 +3920,19 @@ async def test_default_settings_combination_splits_and_groups_case3_turn() -> No
 # 매핑(원 발화, 서로 다른 니즈들일 수 있음)은 그 필터를 켜면 안 된다("캠핑용품이랑
 # 낚시용품"처럼 대분류가 갈리는 것이 정상인 턴을 오염시킨다). 그래프가 두 호출에 각각 옳은
 # 값을 넘기는지 배선을 고정한다.
+#
+# [#428 리뷰 5차 R5-1] 전개 재매핑 호출도 **무조건 True 가 아니다** — 원 발화가 이미 서로 다른
+# 니즈를 2개 이상 명시했으면(`case=3` 은 다중 상품도 포함, `"이어폰이랑 노트북"`) 전개 산출도
+# 그 니즈들에 걸쳐 섞일 수 있어(Claude PR Review, PR #444) 형제 전제가 깨진다 — 그때는 False 로
+# 끈다. 아래 세 테스트가 니즈 개수(0·1·2)로 게이트가 갈리는 것을 함께 고정한다.
 
 
 async def test_sibling_expansion_flag_wired_false_first_true_second() -> None:
-    """[#428 배선 고정] 전개가 트리거되는 턴에서, 매퍼가 받은 `sibling_expansion` 이 첫 호출은
-    False, 전개 후 재매핑(두 번째) 호출은 True 다."""
+    """[#428 배선 고정 / 리뷰 5차 R5-1] 원 발화 니즈 **0개**(`categoryQueries: []`) 턴에서,
+    매퍼가 받은 `sibling_expansion` 이 첫 호출은 False, 전개 후 재매핑(두 번째) 호출은 True 다
+    — 니즈가 없으면(=멀티 니즈가 아니면) R5-1 게이트를 통과해 필터가 켜진다.
+    `test_sibling_expansion_flag_gated_off_when_two_needs_signaled`(니즈 2개 → 전개도 False)와
+    짝을 이룬다 — 니즈 개수가 게이트를 가른다는 것을 두 테스트가 함께 고정한다."""
     seen: list[bool] = []
 
     async def _map(*, category_queries, utterance, settings, llm=None, tier="fast", **kw):
@@ -3963,6 +3971,94 @@ async def test_sibling_expansion_flag_wired_false_first_true_second() -> None:
         )
     )
     assert seen == [False, True]  # 첫 호출 False / 전개 재매핑 True
+
+
+async def test_sibling_expansion_flag_gated_off_when_two_needs_signaled() -> None:
+    """[#428 리뷰 5차 R5-1 배선 고정] 원 발화가 서로 다른 니즈를 **2개** 명시했으면
+    (`categoryQueries` 신호 leg 2개, `"이어폰이랑 노트북 추천해줘"`) 그 중 하나 이상이 매핑
+    실패해 전개가 트리거되는 턴에서도, 매퍼가 받은 `sibling_expansion` 이 **첫 호출 False /
+    전개 재매핑 호출도 False** 다 — 니즈가 2개면 전개 산출이 그 니즈들에 걸쳐 섞일 수 있어
+    합의 필터를 끈다. `test_sibling_expansion_flag_wired_false_first_true_second`(니즈 0개 →
+    전개 True)와 짝을 이룬다."""
+    seen: list[bool] = []
+
+    async def _map(*, category_queries, utterance, settings, llm=None, tier="fast", **kw):
+        seen.append(kw.get("sibling_expansion"))
+        if len(category_queries) == 2:
+            # 첫 호출(원 발화) — 이어폰은 매핑되고 노트북은 실패해 전개를 트리거한다.
+            return CategoryMapping(legs=[("가전 > 이어폰/헤드폰", "이어폰")], unresolved=["노트북"])
+        return CategoryMapping(legs=[(q.query, q.query) for q in category_queries])
+
+    async def _expand(utterance, **_):
+        return ["디퓨저", "식기 세트"]
+
+    async def _search(filters, exclude_product_ids=None):
+        return _res(101)
+
+    await _collect(
+        run_buyer_turn(
+            _req(message="이어폰이랑 노트북 추천해줘"),
+            _member(),
+            llm=FakeLLM(
+                decompose={
+                    "intent": "recommend",
+                    "reply": "",
+                    "case": 3,
+                    "filters": {},
+                    "categoryQueries": [
+                        {"category": None, "query": "이어폰"},
+                        {"category": None, "query": "노트북"},
+                    ],
+                }
+            ),
+            search=_search,
+            push_fn=_RecordingPush(),
+            map_categories=_map,
+            expand_needs=_expand,
+        )
+    )
+    assert seen == [False, False]  # 니즈 2개 → 전개 재매핑도 False
+
+
+async def test_sibling_expansion_flag_gated_on_when_one_need_signaled() -> None:
+    """[#428 리뷰 5차 R5-1 배선 고정] 원 발화가 니즈 **1개**만 명시했으면(`categoryQueries` 신호
+    leg 1개) 그 leg 이 매핑 실패해 전개가 트리거돼도 형제 전제가 성립하므로 합의 필터를 켠다 —
+    전개 재매핑(두 번째) 호출의 `sibling_expansion` 이 True 다(단일 니즈는 R5-1 게이트를
+    통과한다)."""
+    seen: list[bool] = []
+
+    async def _map(*, category_queries, utterance, settings, llm=None, tier="fast", **kw):
+        seen.append(kw.get("sibling_expansion"))
+        if len(category_queries) == 1:
+            return CategoryMapping(legs=[], unresolved=["집들이 선물"])
+        return CategoryMapping(legs=[(q.query, q.query) for q in category_queries])
+
+    async def _expand(utterance, **_):
+        return ["디퓨저", "식기 세트"]
+
+    async def _search(filters, exclude_product_ids=None):
+        return _res(101)
+
+    await _collect(
+        run_buyer_turn(
+            _req(message="집들이 선물로 뭐 사갈까"),
+            _member(),
+            llm=FakeLLM(
+                decompose={
+                    "intent": "recommend",
+                    "reply": "",
+                    "case": 3,
+                    "filters": {},
+                    "categoryQueries": [{"category": None, "query": "집들이 선물"}],
+                }
+            ),
+            search=_search,
+            push_fn=_RecordingPush(),
+            map_categories=_map,
+            expand_needs=_expand,
+        )
+    )
+    assert seen == [False, True]  # 니즈 1개 → 전개 재매핑은 True(형제 전제 성립)
 
 
 # #428 로컬 pg-catalog 실측(2026-08-07, 사전 1,007행 / 임베딩 결측 0) — 4형제 전개의 top-8 히트.

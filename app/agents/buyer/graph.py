@@ -42,6 +42,7 @@ from app.agents.buyer.recommendation.decompose import (
     prior_echo_tokens,
     resolve_category_action,
 )
+from app.agents.buyer.recommendation.needs_expansion import count_signal_legs
 from app.agents.buyer.recommendation.needs_expansion import detect_expansion_need
 from app.agents.buyer.recommendation.needs_expansion import expand_needs as _expand_needs
 from app.agents.buyer.recommendation.no_condition import is_no_condition_turn
@@ -480,7 +481,17 @@ async def _prepare_recommendation(
                         # 넘긴다(리뷰 1차 F-1 — 후보 꼬리까지 세면 잡동사니 대분류가 승자가 된다).
                         # 첫 매핑은 기본값 False 그대로 둔다(예: "캠핑용품이랑 낚시용품"은 대분류가
                         # 갈리는 것이 정상이라 합의 필터를 적용하면 안 된다).
-                        sibling_expansion=True,
+                        # [#428 리뷰 5차 R5-1] 단, 원 발화가 이미 서로 다른 니즈를 2개 이상 명시했으면
+                        # ("이어폰이랑 노트북 추천해줘" — case=3 은 다중 상품도 포함한다,
+                        # decompose.py case 정의) `expand_needs` 는 발화 전체를 한 번에 전개하므로
+                        # 전개 산출도 그 니즈들에 걸쳐 섞인다. 그때는 동률 보존·R3-1 가드가 대개
+                        # 막지만, 니즈별 leg 수가 불균등하고 소수 니즈의 후보 tail 에 다수 니즈의
+                        # 승자 대분류가 우연히 끼어 있으면 뚫린다(Claude PR Review, PR #444 —
+                        # 실측 무재현은 "구조적으로 막혔다"를 증명하지 않는다). 값싼 구조적 게이트가
+                        # 있으므로 상류에서 끈다. `count_signal_legs` 는 `detect_expansion_need`
+                        # 의 D1 판정과 **같은 식**(규칙 한 벌, PR #203 리뷰 규약)이다. `#428` 턴은
+                        # `categoryQueries: []` 라 니즈 0개 → 게이트를 통과해 필터가 그대로 동작한다.
+                        sibling_expansion=count_signal_legs(decision.category_queries) < 2,
                     )
                     # **합집합**(§6) — 원 leg 을 **앞에** 둬 fanout_max 절단에서 사용자가 명시한
                     # 카테고리가 먼저 살아남게 한다. 종전 교체 배선은 전개가 트리거되면 성공한 leg

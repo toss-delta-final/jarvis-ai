@@ -269,6 +269,16 @@
   필통·물통] 재현 사례를 못 잡아 기각하고, 대신 승자 대분류가 형제 전원의 후보에 있을 때만
   좁히고 한 형제라도 후보가 없으면 필터 전체를 미적용하는 가드를 채택했다 — 이제 leg 자체가
   탈락하는 경로가 구조적으로 사라진다.)
+  (리뷰 5차 R5-1: `case=3` 이 서로 다른 상품 2개 이상도 포함하고 전개는 발화 전체를 한 번에
+  묶어 처리하므로, 원 발화가 이미 니즈 2개 이상을 명시했으면 전개 산출도 그 니즈들에 걸쳐
+  섞일 수 있다는 Claude PR Review 지적을 채택 — 니즈별 leg 수가 불균등하면 동률 보존·R3-1
+  가드도 뚫릴 수 있고, 실측 무재현은 "구조적으로 막혔다"는 증명이 아니라는 리뷰어 메타 지적을
+  받아들여 직전 라운드의 기각 판단을 번복했다. `graph.py` 의 전개 재매핑 호출부에
+  `sibling_expansion=count_signal_legs(decision.category_queries) < 2` 게이트를 걸어 다중
+  니즈 턴에만 합의 필터를 끈다(신호 판정식은 `needs_expansion.count_signal_legs` 로 통일해
+  `detect_expansion_need` 와 규칙을 한 벌로 유지). `category_expansion_consensus`·
+  `_skipped` 로그에 `source_legs`(이번 매핑의 입력 leg 수)를 추가해 이 상호작용이 실제로
+  발동한 턴을 운영에서 식별할 수 있게 했다.)
   `evals/category_probe` 에 인스턴스형 앵커 8셀(v1 38 → v2 46)을 추가해 이 실패 모드를 상시
   계측한다. 임계·계약(api-spec) 무변경.
 

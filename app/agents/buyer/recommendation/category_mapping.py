@@ -769,7 +769,14 @@ async def map_categories(
                     if skipped
                     else "category_expansion_consensus"
                 )
-                logger.info(event, extra=consensus_stats)
+                # [#428 리뷰 5차 R5-2] "원 발화의 leg 수"를 그대로 실으려면 map_categories 에
+                # 관측 전용 파라미터를 새로 뚫어야 하는데, 그건 매퍼 인터페이스를 관측 목적으로
+                # 오염시킨다. 대신 R5-1 이 게이트를 상류(graph.py)로 옮겼으므로 "이 로그가
+                # 남았다 = 원 발화 신호 leg 이 0~1개였다"가 이미 함의된다. `source_legs`(이번
+                # 매핑의 입력 leg 수 = 전개 재매핑에서는 곧 전개 아이템 수)는 그 위에 "형제 몇
+                # 개가 합의에 참여했나"를 더해, 이 상호작용이 실제로 발동한 턴을 사후 분석할 수
+                # 있게 한다.
+                logger.info(event, extra={**consensus_stats, "source_legs": len(queries)})
         except Exception as exc:  # noqa: BLE001 - 합의 필터 실패: 원본 expansion_by_leg 를 보존한다
             logger.warning(
                 "category_expansion_consensus_failed",
