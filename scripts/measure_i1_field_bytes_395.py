@@ -31,9 +31,11 @@ import re
 # LLM 미소비 원문)·_source_pid·_domain·_category(전달 통로가 아니라 AI 사전 매핑에만 쓰는 부산물).
 DEFAULT_DIET_ATTR_KEYS = ("_extra", "_source_pid", "_domain", "_category")
 
-# [§5 2층] AI 가 소비하지 않는 최상위 필드(#395 §2 표) — summary(#101 소비 미착수)·options·
-# optionCount(파싱만 하고 아무 곳도 안 읽음). 픽스처/덤프에 없는 필드는 표에서 자동으로 빠진다.
-DEFAULT_DIET_TOP_FIELDS = ("summary", "options", "optionCount")
+# 최상위 필드는 제외 요청 대상이 아니다(#395 라운드 5 확정) — `summary` 는 AI 에 사본이 없고
+# (라운드 4 결정), `options`·`optionCount` 는 파싱만 하고 안 읽지만 소비 계획이 살아 있다(#455,
+# #278 후속 — 옵션 되물음 단축). 최종 요청 대상은 attributes 내부 4키뿐이다(`DEFAULT_DIET_ATTR_
+# KEYS`). 궁금하면 `--diet-fields summary,options,optionCount` 로 확인할 수 있다.
+DEFAULT_DIET_TOP_FIELDS = ()
 
 # §3 "후보 N건일 때 예상 바디 크기"에 쓰는 규모 — 30(embedding_rerank_limit 기본값)·300·1,000·전량.
 CANDIDATE_SIZES = (30, 300, 1_000, "ALL")
