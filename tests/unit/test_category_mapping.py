@@ -1955,6 +1955,65 @@ async def test_consensus_filter_skipped_for_school_supplies_keeps_water_bottle(c
     assert "커피/생수/음료 > 생수" in canonicals
 
 
+# ── #428 리뷰 4차(Claude PR Review, PR #444) — 멀티 니즈(case=3) 전개가 합의 필터에 실제로
+# 섞이는 상호작용. `case=3`("이어폰이랑 노트북 추천해줘")은 서로 다른 상품 2개 이상도 포함하고
+# (decompose.py case 정의) `expand_needs` 는 발화 전체를 한 번에 전개하므로, 전개 산출에 서로
+# 다른 니즈가 섞일 수 있다. 아래 두 테스트는 그때 합의 필터가 소수 니즈를 죽이지 않는다는 것을
+# 실물 `map_categories` + 실물 `_consensus_filter` 조합(스텁 아님)으로 동률 승자·R3-1 가드
+# 두 경로에 고정한다.
+
+
+async def test_consensus_filter_multi_need_expansion_keeps_both_mids_on_tie(caplog) -> None:
+    """[#428 리뷰 4차 R4-1] `case=3` 은 서로 다른 상품 2개 이상도 포함하고(`decompose.py` case
+    정의) `expand_needs` 는 발화 전체를 한 번에 전개하므로, 전개 산출에 서로 다른 니즈가 섞일
+    수 있다(#444 Claude 리뷰). 그때 합의 필터가 소수 니즈를 죽이지 않는다는 것을 동률 승자
+    경로로 고정한다: 책가방·필통(니즈 A)과 사과·바나나(니즈 B)가 섞인 전개에서 각 니즈가 형제
+    2개씩 대분류에 합의하면 `max_support` 가 동률이라 `여성가방`·`과일` 둘 다 승자가 되고, 네
+    아이템 모두 후보를 유지한다 — 실물 `map_categories`+`_consensus_filter` 조합을 태워
+    검증한다(종전 테스트는 이 상호작용을 스텁으로 가려 왔다)."""
+    m = _FakeMapper(exact=set(), nearest={}, hits={**_SCHOOL_HITS, **_FRUIT_HITS})
+    with caplog.at_level("INFO"):
+        out = await m.run_full(
+            [CategoryQuery(None, name) for name in ["책가방", "필통", "사과", "바나나"]],
+            settings=_settings(expand_legs=8),
+            sibling_expansion=True,
+        )
+    # 동률 승자가 **둘 다** 남아야 한다 — 승자를 1개로 좁히면(예: 사전순 첫 번째만) 소수 니즈가
+    # 죽는다. queries 단언만으로는 가드 스킵(원본 보존)과 구분이 안 되므로 winning_mids 로
+    # "필터가 실제로 적용됐고 두 대분류 다 승자였다"를 명시적으로 고정한다.
+    record = _record(caplog, "category_expansion_consensus")
+    assert record.max_support == 2
+    assert record.winning_mids == ["과일", "여성가방"]
+    queries = {q for _, q in out.expansion_leaves}
+    assert queries == {"책가방", "필통", "사과", "바나나"}
+
+
+async def test_consensus_filter_multi_need_expansion_guard_preserves_minority_need(
+    caplog,
+) -> None:
+    """[#428 리뷰 4차 R4-1] `case=3` 은 서로 다른 상품 2개 이상도 포함하고(`decompose.py` case
+    정의) `expand_needs` 는 발화 전체를 한 번에 전개하므로, 전개 산출에 서로 다른 니즈가 섞일
+    수 있다(#444 Claude 리뷰). 그때 합의 필터가 소수 니즈를 죽이지 않는다는 것을 R3-1 가드
+    경로로 고정한다: 디퓨저·캔들(니즈 A, 최근접이 향수·조명으로 서로 다름)과 사과·바나나
+    (니즈 B, 과일로 합의)가 섞인 전개에서 `winning={과일}` 이지만 디퓨저·캔들에는 과일 후보가
+    아예 없어 R3-1 가드가 발동하고 원본 8개가 그대로 보존된다 — 실물 `map_categories`+
+    `_consensus_filter` 조합을 태워 검증한다."""
+    m = _FakeMapper(exact=set(), nearest={}, hits={**_HOUSEWARMING_HITS, **_FRUIT_HITS})
+    with caplog.at_level("INFO"):
+        out = await m.run_full(
+            [CategoryQuery(None, name) for name in ["디퓨저", "캔들", "사과", "바나나"]],
+            settings=_settings(expand_legs=8),
+            sibling_expansion=True,
+        )
+    record = _record(caplog, "category_expansion_consensus_skipped")
+    assert record.reason == "leg_without_winning_mid"
+    assert record.max_support == 2
+    assert record.winning_mids == ["과일"]
+    canonicals = {c for c, _ in out.expansion_leaves}
+    assert "향수 > 남녀공용향수" in canonicals
+    assert "조명 > 조명" in canonicals
+
+
 async def test_consensus_log_suppressed_when_filter_not_applied(caplog) -> None:
     """[#428 리뷰 3차 R3-1 갱신] 합의 자체가 성립하지 않는 경우(단일 leg · `max_support<2` ·
     `sibling_expansion=False`)에는 `category_expansion_consensus` 도 `category_expansion_
