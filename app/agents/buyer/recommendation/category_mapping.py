@@ -32,6 +32,12 @@ SearchFn = Callable[..., list[tuple[str, float]]]  # (category, distance) 오름
 ExactFn = Callable[[Sequence[str], str], set[str]]
 SelectFn = Callable[..., Awaitable[str | None]]  # top-k 택일(§4.4 #115) — 후보 밖이면 None
 
+# #428 대분류 합의 필터의 최소 지지 leg 수 — 튜너블이 아니라 **합의의 정의상 최소값**이다(1개
+# leg 만의 지목은 "형제간 합의"가 아니라 그 leg 단독의 의견이라 노이즈와 구분할 신호가 없다).
+# `CLAUDE.md` "튜너블 하드코딩 금지"는 실측으로 캘리브레이션하는 값(거리컷 등)에 대한 규율이고,
+# 이 값은 실측과 무관한 개념 정의라 config 로 뺄 대상이 아니다.
+_CONSENSUS_MIN_SUPPORT_LEGS = 2
+
 # 채택 후보 = (canonical, 채택 거리, 마진) — 마진은 히트 1건이면 None(§11 #115)
 _Picked = tuple[str, float, float | None]
 # leg 최종 승자 = 후보 + 이긴 앵커 종류("raw"|"query", §4.3 #115)
@@ -133,6 +139,79 @@ def _interleave_by_leg(
     return out
 
 
+def _consensus_filter(
+    expansion_by_leg: dict[int, list[tuple[str, str | None]]],
+) -> tuple[dict[int, list[tuple[str, str | None]]], dict[str, object] | None]:
+    """[#428] 전개 형제(sibling) leg 사이 **최근접(top-1) 대분류 합의**로 동음이의어 노이즈를
+    걸러낸다.
+
+    전개 아이템(#217)은 하나의 니즈에서 나온 형제들이라 서로의 카테고리를 검증할 수 있다 —
+    **두 형제 이상의 최근접 대분류가 서로 일치하면** 그 대분류(동률이면 전부)가 사용자가 말한
+    상품군이고, 후보 전체를 거기로 좁힌다. 최근접이 갈리면(= 최다 지지가 1개 leg 뿐) 형제간
+    합의가 없다는 뜻이라 아무것도 하지 않는다.
+
+    [#428 리뷰 1차 F-1] 지지 집계는 **각 leg 의 top-1 하나만** 본다 — leg 의 top-k 전체(최대
+    `category_expand_legs`개)에서 셌던 초판은 "어느 발화에나 조금씩 가까운 잡동사니 대분류"가
+    꼬리 순위에서 여러 leg 에 걸쳐 우연히 겹쳐 승자가 되는 결함이 있었다. 실측: "집들이 선물"
+    전개(디퓨저·캔들·와인잔·식기 세트)에서 향수·조명·주방잡화라는 정답급 후보를 전부 버리고
+    `주얼리`(전 leg 의 5~7위에 조금씩 걸침)만 남겼다. 형제가 서로를 검증한다는 신호는 **각자가
+    자기 최선의 답으로 같은 곳을 가리킬 때** 성립하지, 꼬리에서 우연히 겹칠 때 성립하지 않는다
+    — 이건 "몇 개까지 셀까"라는 튜너블이 아니라 합의라는 개념 자체의 정의다(집계 창을 2~5 로
+    넓혀가며 실측했고 4 이상부터 잡동사니 대분류가 다시 승자가 된다. 1~3 은 실측 시나리오
+    전부에서 결과가 동일해 임의 상수가 필요 없는 top-1 을 정본으로 한다). **필터링(무엇을
+    남길지)은 여전히 leg 의 후보 전체를 대상으로 한다** — 좁아지는 건 "누가 승자 대분류인가"를
+    세는 창일 뿐, 승자 대분류에 속한 leaf 는 순위와 무관하게 전부 살아남는다.
+
+    `_interleave_by_leg` 의 leg 형평 규약(R5-1)은 **서로 다른 니즈**(예: "캠핑용품이랑
+    낚시용품") 사이의 형평을 지키는 것이지, 한 니즈에서 전개된 형제 사이의 형평이 아니다 —
+    형제는 애초에 하나의 정답 대분류로 수렴해야 정상이므로 여기서는 그 형평을 깨고 소수 의견
+    (비승자 대분류)을 탈락시킨다. 필터 결과가 0개가 된 leg 은 그대로 탈락한다 — 형제 합의에서
+    벗어난 아이템이 곧 노이즈라는 의도된 동작이다.
+
+    합의가 성립하지 않으면(기여 leg 2개 미만, 또는 최다 지지가 1개 leg 뿐) 아무것도 하지 않고
+    원본을 그대로 반환한다 — "이사 갈 때 필요한 것들" → 행거·커튼·이불처럼 형제들이 애초에
+    이질적인 전개는 대분류가 갈리는 것이 정상이라 합의 신호 자체가 없다.
+    """
+    if len(expansion_by_leg) < _CONSENSUS_MIN_SUPPORT_LEGS:
+        return expansion_by_leg, None
+
+    support: dict[str, set[int]] = {}
+    for leg_i, leaves in expansion_by_leg.items():
+        # [F-1] top-1 만 — leg 의 최선의 답만 지지로 센다(위 docstring 근거).
+        top1_mid = leaves[0][0].split(" > ", 1)[0]
+        support.setdefault(top1_mid, set()).add(leg_i)
+
+    max_support = max((len(legs) for legs in support.values()), default=0)
+    if max_support < _CONSENSUS_MIN_SUPPORT_LEGS:
+        return expansion_by_leg, None
+
+    winning_mids = sorted(mid for mid, legs in support.items() if len(legs) == max_support)
+    winning = set(winning_mids)
+
+    filtered: dict[int, list[tuple[str, str | None]]] = {}
+    dropped_leaves = 0
+    zeroed_legs = 0
+    for leg_i, leaves in expansion_by_leg.items():
+        kept = [
+            (canonical, query)
+            for canonical, query in leaves
+            if canonical.split(" > ", 1)[0] in winning
+        ]
+        dropped_leaves += len(leaves) - len(kept)
+        if kept:
+            filtered[leg_i] = kept
+        else:
+            zeroed_legs += 1
+    stats = {
+        "legs": len(expansion_by_leg),
+        "max_support": max_support,
+        "winning_mids": winning_mids,
+        "dropped_leaves": dropped_leaves,
+        "zeroed_legs": zeroed_legs,
+    }
+    return filtered, stats
+
+
 async def map_categories(
     *,
     category_queries: Sequence[CategoryQuery],
@@ -146,8 +225,15 @@ async def map_categories(
     select_category: SelectFn = _select_category,
     select_max_calls: int | None = None,
     observer=None,
+    sibling_expansion: bool = False,
 ) -> CategoryMapping:
     """decompose 추측들을 canonical (category, query) leg 리스트로 보정한다.
+
+    `sibling_expansion` — 입력 leg 들이 **하나의 니즈에서 전개된 형제 아이템**임을 호출부가
+    보증한다(#217 전개 후 재매핑). 참이면 `expansion_leaves` 조립에 대분류 합의 필터
+    (`_consensus_filter`, #428) — **두 형제 이상의 최근접(top-1) 대분류가 일치**하면 그
+    대분류로 후보를 좁히는 필터 — 를 건다. 원 매핑(서로 다른 니즈)에는 적용하지 않는다 — 그쪽은
+    대분류가 갈리는 것이 정상이다.
 
     각 leg 의 query 는 그 카테고리 전용 검색 키워드(fan-out leg keyword, §6·§9) — 매핑 전
     추측(raw)이 어디로 보정되든 원 추측의 query 를 그대로 이어 붙인다.
@@ -626,6 +712,16 @@ async def map_categories(
             "category_assembly_failed",
             extra={"reason": str(exc), "error_type": type(exc).__name__},
         )
+
+    # [#428] 전개 후 재매핑(sibling_expansion=True)에만 대분류 합의 필터를 건다 — 원 매핑(서로
+    # 다른 니즈)에는 적용하지 않는다. 필터가 실제로 돌아 무언가 걸렀는지와 애초에 돌지 않았는지를
+    # 로그로 구분한다(둘 다 무기록이면 "합의가 돌았는데 아무것도 안 걸렀다"와 "합의를 돌리지
+    # 않았다"를 사후에 구분할 수 없다).
+    if sibling_expansion:
+        expansion_by_leg, consensus_stats = _consensus_filter(expansion_by_leg)
+        if consensus_stats is not None:
+            logger.info("category_expansion_consensus", extra=consensus_stats)
+
     return CategoryMapping(
         legs=dedup_truncate(result, fanout_max),
         unresolved=unresolved,
