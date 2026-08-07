@@ -173,14 +173,60 @@ def test_seller_subject_must_be_positive_bigint_string(
         _decode(token)
 
 
-@pytest.mark.parametrize("sub_type", ["member", "guest", "admin"])
-def test_seller_role_rejects_any_buyer_sub_type(rsa_key, jwks_calls, sub_type: str) -> None:
-    """판매자 discriminator와 buyer discriminator가 함께 있으면 값과 무관하게 거부한다."""
-    claims = ticket_claims(sub="9", sub_type=sub_type)
-    claims.update({"role": auth.ROLE_SELLER, "brandId": "77"})
+def test_seller_role_without_sub_type_key_is_rejected(rsa_key, jwks_calls) -> None:
+    """§2.3 v0.28.0(#439) 4행: role="seller"인데 `sub_type` 키 자체가 없다.
 
-    with pytest.raises(AuthError):
+    XOR 규약 하에서는 허용이었다 → v0.28.0 에서 `401 invalid sub_type claim` 으로 강화.
+    CH-6 정본상 실존하지 않는 형식이라 와이어 영향 0 이지만, 이 개정에서 **유일하게 종전
+    허용 → 거부로 강화된 행**이라 decode 레벨에서 직접 단언해 둔다(리뷰 라운드 1 F2).
+    brandId 는 유효값(int)으로 둔다 — 그렇지 않으면 brandId 검증으로 우연히 통과하는
+    공허한 테스트가 된다.
+    """
+    claims = seller_ticket_claims(sub="9", brandId=77)
+    del claims["sub_type"]
+
+    with pytest.raises(AuthError, match="invalid sub_type claim"):
         _decode(sign_ticket(rsa_key, KID, claims))
+
+
+def test_seller_role_rejects_guest_sub_type(rsa_key, jwks_calls) -> None:
+    """§2.3 v0.28.0(#439) 5행: role="seller"+sub_type="guest" → 판매자는 회원이어야 한다.
+
+    brandId 검증에 닿기 전에 role 교차 검증에서 걸려야 하므로 brandId를 유효값(int)으로
+    둔다 — 그렇지 않으면 다른 이유(brandId 형식)로 우연히 통과하는 공허한 테스트가 된다.
+    """
+    claims = ticket_claims(sub="9", sub_type="guest")
+    claims.update({"role": auth.ROLE_SELLER, "brandId": 77})
+
+    with pytest.raises(AuthError, match="invalid seller role claim"):
+        _decode(sign_ticket(rsa_key, KID, claims))
+
+
+def test_seller_role_rejects_unknown_sub_type(rsa_key, jwks_calls) -> None:
+    """§2.3 v0.28.0(#439) 6행: role="seller"+sub_type 이상값 → sub_type 검사가 먼저 걸린다."""
+    claims = ticket_claims(sub="9", sub_type="admin")
+    claims.update({"role": auth.ROLE_SELLER, "brandId": 77})
+
+    with pytest.raises(AuthError, match="invalid sub_type claim"):
+        _decode(sign_ticket(rsa_key, KID, claims))
+
+
+def test_seller_role_with_member_sub_type_is_accepted(rsa_key, jwks_calls) -> None:
+    """§2.3 v0.28.0(#439, CH-6 정본): role="seller"+sub_type="member" — 판매자 both-claims 수용.
+
+    XOR 폐지 전에는 무조건 401 이었다. brandId 는 정수로 보존돼야 한다(문자열 아님).
+    """
+    claims = ticket_claims(sub="9", sub_type="member")
+    claims.update({"role": auth.ROLE_SELLER, "brandId": 77})
+
+    identity = _decode(sign_ticket(rsa_key, KID, claims))
+
+    assert identity.seller_id == "9"
+    assert identity.brand_id == 77
+    assert isinstance(identity.brand_id, int)
+    assert identity.is_guest is False
+    assert identity.user_id == "9"
+    assert identity.subject == "9"
 
 
 @pytest.mark.parametrize("sub_type", ["member", "guest"])
@@ -262,6 +308,63 @@ def test_jwks_unrecognized_role_is_rejected(rsa_key, jwks_calls) -> None:
     del claims["sub_type"]
     claims["role"] = "MEMBER"
     with pytest.raises(AuthError):
+        _decode(sign_ticket(rsa_key, KID, claims))
+
+
+# ── §2-2 매트릭스 전수 회귀 (v0.28.0, #439 — XOR 폐지, sub_type 필수 + role 교차 검증) ──
+
+_NON_SELLER_ROLES = ["", "   ", "USER", "GUEST", "buyer", "Seller", "SELLER", None, 1, True, [], {}]
+_MALFORMED_SUB_TYPES = ["", "   ", "MEMBER", "admin", None, 1, True, [], {}]
+
+
+@pytest.mark.parametrize("role", _NON_SELLER_ROLES)
+@pytest.mark.parametrize(
+    ("sub_type_present", "sub_type"), [(False, None), (True, "member"), (True, "guest")]
+)
+def test_matrix_row7_non_seller_role_is_always_rejected(
+    rsa_key,
+    jwks_calls,
+    role: object,
+    sub_type_present: bool,
+    sub_type: str | None,
+) -> None:
+    """§2-2 매트릭스 7행: `seller` 아닌 role 값(무엇이든) × sub_type(무엇이든) → 전부 401.
+
+    sub_type 이 먼저 깨지면(없음) `invalid sub_type claim`, sub_type 이 유효(member|guest)
+    하면 role 교차 검증에서 `invalid seller role claim` — 사유까지 단언해 다른 이유로
+    우연히 거부되는 공허한 통과를 막는다.
+    """
+    claims = ticket_claims(sub="9")
+    claims.pop("sub_type", None)
+    claims["role"] = role
+    if sub_type_present:
+        claims["sub_type"] = sub_type
+    expected_reason = (
+        "invalid sub_type claim" if not sub_type_present else "invalid seller role claim"
+    )
+
+    with pytest.raises(AuthError, match=expected_reason):
+        _decode(sign_ticket(rsa_key, KID, claims))
+
+
+@pytest.mark.parametrize("sub_type", _MALFORMED_SUB_TYPES)
+@pytest.mark.parametrize("role_present", [False, True])
+def test_matrix_row6_row8_malformed_sub_type_is_always_rejected(
+    rsa_key,
+    jwks_calls,
+    role_present: bool,
+    sub_type: object,
+) -> None:
+    """§2-2 매트릭스 6·8행: sub_type 이 정본(member|guest) 밖이면 role 유무와 무관하게
+    항상 `invalid sub_type claim` 으로 거부한다 — sub_type 검사가 role 교차 검증보다 먼저다.
+    """
+    claims = ticket_claims(sub="9")
+    claims["sub_type"] = sub_type
+    if role_present:
+        claims["role"] = auth.ROLE_SELLER
+        claims["brandId"] = 77
+
+    with pytest.raises(AuthError, match="invalid sub_type claim"):
         _decode(sign_ticket(rsa_key, KID, claims))
 
 
