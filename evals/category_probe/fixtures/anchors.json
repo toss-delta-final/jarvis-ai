@@ -1,6 +1,6 @@
 {
   "schemaVersion": "1.0.0",
-  "fixtureVersion": "category-probe-anchors-v1",
+  "fixtureVersion": "category-probe-anchors-v2",
   "cells": [
     {
       "cellId": "single-mft-001",
@@ -562,6 +562,132 @@
       "boundaryNote": "라이브 categories 사전에 '수예'는 홈패브릭/수예 > 방석·쿠션 뿐이라 공예 재료 의미의 잎이 없다(goldenset buy-cmap-0005 노트: 실검색 0건이며 문자열 근접으로 알콜스왑 침/바늘이 노출되면 실패하는 지목 케이스) — legs 빈 배열이 정답이다.",
       "caseId": "buy-cmap-0005",
       "absentKeyword": "수예"
+    },
+    {
+      "cellId": "instance-mft-001",
+      "utterance": "사과 좀 사줄래",
+      "sliceId": "single",
+      "testType": "MFT",
+      "expectedLegs": [
+        {
+          "accept": [
+            "과일 > 국산과일",
+            "과일 > 수입과일",
+            "과일 > 과일선물세트",
+            "과일 > 냉동/간편과일"
+          ]
+        }
+      ],
+      "boundaryNote": "현재 `category_distance_max=0.26` 초과로 드롭되는 것이 알려진 상태다(#428 코멘트 ④⑤ — 임베딩이 소속이 아니라 경로 문자열 표면 근접을 잰다). 이 셀은 그 실패 모드를 계측하기 위한 것이지 회귀 감시가 아니다. 처방은 앵커 보강 축(별도 이슈)이다."
+    },
+    {
+      "cellId": "instance-mft-002",
+      "utterance": "바나나 추천해줘",
+      "sliceId": "single",
+      "testType": "MFT",
+      "expectedLegs": [
+        {
+          "accept": [
+            "과일 > 국산과일",
+            "과일 > 수입과일",
+            "과일 > 과일선물세트",
+            "과일 > 냉동/간편과일"
+          ]
+        }
+      ],
+      "boundaryNote": "현재 `category_distance_max=0.26` 초과로 드롭되는 것이 알려진 상태다(#428 코멘트 ④⑤ — 임베딩이 소속이 아니라 경로 문자열 표면 근접을 잰다). 이 셀은 그 실패 모드를 계측하기 위한 것이지 회귀 감시가 아니다. 처방은 앵커 보강 축(별도 이슈)이다."
+    },
+    {
+      "cellId": "instance-mft-003",
+      "utterance": "오렌지 사고 싶어",
+      "sliceId": "single",
+      "testType": "MFT",
+      "expectedLegs": [
+        {
+          "accept": [
+            "과일 > 국산과일",
+            "과일 > 수입과일",
+            "과일 > 과일선물세트",
+            "과일 > 냉동/간편과일"
+          ]
+        }
+      ],
+      "boundaryNote": "현재 `category_distance_max=0.26` 초과로 드롭되는 것이 알려진 상태다(#428 코멘트 ④⑤ — 임베딩이 소속이 아니라 경로 문자열 표면 근접을 잰다). 이 셀은 그 실패 모드를 계측하기 위한 것이지 회귀 감시가 아니다. 처방은 앵커 보강 축(별도 이슈)이다."
+    },
+    {
+      "cellId": "instance-mft-004",
+      "utterance": "달달한 배 하나 먹고 싶어",
+      "sliceId": "single",
+      "testType": "MFT",
+      "expectedLegs": [
+        {
+          "accept": [
+            "과일 > 국산과일",
+            "과일 > 수입과일",
+            "과일 > 과일선물세트",
+            "과일 > 냉동/간편과일"
+          ]
+        }
+      ],
+      "boundaryNote": "동음이의어 경계 셀(#428 이슈 본문) — '배'는 과일/가방/배냇저고리/배변용품으로 흩어지는 최근접을 낸다. 현재 `category_distance_max=0.26` 초과로 드롭되는 것이 알려진 상태이고, 전개 재매핑에서는 형제 합의 필터(#428)가 이 동음이의어 노이즈를 걸러낸다. 이 셀은 실패 모드를 계측하기 위한 것이지 회귀 감시가 아니다."
+    },
+    {
+      "cellId": "instance-mft-005",
+      "utterance": "라면 추천해줘",
+      "sliceId": "single",
+      "testType": "MFT",
+      "expectedLegs": [
+        {
+          "accept": [
+            "가공식품 > 면류/국수",
+            "가공식품 > 컵라면",
+            "가공식품 > 수입라면"
+          ]
+        }
+      ],
+      "boundaryNote": "현재 `category_distance_max=0.26` 초과로 드롭되는 것이 알려진 상태다(#428 코멘트 ④⑤ — 임베딩이 소속이 아니라 경로 문자열 표면 근접을 잰다). 이 셀은 그 실패 모드를 계측하기 위한 것이지 회귀 감시가 아니다. 처방은 앵커 보강 축(별도 이슈)이다."
+    },
+    {
+      "cellId": "instance-mft-006",
+      "utterance": "계란 좀 사줄래",
+      "sliceId": "single",
+      "testType": "MFT",
+      "expectedLegs": [
+        {
+          "accept": [
+            "축산 > 달걀"
+          ]
+        }
+      ],
+      "boundaryNote": "leaf 이름과 문자 그대로 일치하지 않는 **동의어** 축이다(leaf 이름은 '달걀', 발화는 '계란') — 이슈 코멘트 ④가 '계란 0.2423 축산 > 달걀 ← 동의어'로 리터럴 일치(← 동일, 커튼·이불)와 구분해 적었다. 동의어는 리터럴 일치보다 멀지만 인스턴스형(사과·바나나 등)보다는 가까운 중간 지점이라 여전히 거리컷을 통과한다 — 리터럴 일치 축과 혼동하지 말 것(#428)."
+    },
+    {
+      "cellId": "instance-mft-007",
+      "utterance": "커튼 추천해줘",
+      "sliceId": "single",
+      "testType": "MFT",
+      "expectedLegs": [
+        {
+          "accept": [
+            "커튼/블라인드 > 커튼"
+          ]
+        }
+      ],
+      "boundaryNote": "leaf 이름과 상품명이 문자 그대로 일치하는 축 — 인스턴스형 셀과의 대비가 이 셀의 목적이다(#428)."
+    },
+    {
+      "cellId": "instance-mft-008",
+      "utterance": "이불 사고 싶어",
+      "sliceId": "single",
+      "testType": "MFT",
+      "expectedLegs": [
+        {
+          "accept": [
+            "침구 > 이불"
+          ]
+        }
+      ],
+      "boundaryNote": "leaf 이름과 상품명이 문자 그대로 일치하는 축 — 인스턴스형 셀과의 대비가 이 셀의 목적이다(#428)."
     }
   ]
 }

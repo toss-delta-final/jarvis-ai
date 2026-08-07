@@ -99,6 +99,7 @@ class _FakeMapper:
         llm=None,
         observer=None,
         select_max_calls=None,
+        sibling_expansion=False,
     ):
         kwargs = {}
         if select is not None:  # §4.4 택일 주입(미지정이면 프로덕션 기본값 — llm=None 이면 미호출)
@@ -114,6 +115,7 @@ class _FakeMapper:
             exact_lookup=self.exact_lookup,
             llm=llm,
             observer=observer,
+            sibling_expansion=sibling_expansion,  # [#428] 형제 전개 합의 필터 게이트
             **kwargs,
         )
 
@@ -1651,3 +1653,531 @@ async def test_expansion_leaves_log_carries_anchor_kind_count_and_mids(caplog) -
     assert record.anchor_kind == "query"
     assert record.count == 3
     assert record.mids == ["메이크업", "스킨케어"]  # 중복 제거(순서 보존)
+
+
+# ── #428 전개 후 재매핑 전용 대분류 합의(consensus) 필터 ──────────────────────────
+#
+# 전개 아이템(#217)은 하나의 니즈에서 나온 형제들이라 서로의 카테고리를 검증할 수 있다 — 여러
+# 형제가 공통 지목한 대분류가 사용자가 말한 상품군이고, 한 형제만 지목한 대분류는 동음이의어·
+# 표면 근접이 만든 노이즈다. `sibling_expansion=True` 로 이 필터가 켜진다(원 매핑에는 안 켠다 —
+# "캠핑용품이랑 낚시용품"처럼 서로 다른 니즈는 대분류가 갈리는 것이 정상).
+
+# #428 로컬 pg-catalog 실측 (2026-08-07, 사전 1,007행 / 임베딩 결측 0)
+_FRUIT_HITS = {
+    "바나나": [
+        ("과일 > 수입과일", 0.2908),
+        ("과일 > 국산과일", 0.3220),
+        ("과일 > 냉동/간편과일", 0.3278),
+        ("과자/간식 > 원물간식", 0.3287),
+        ("과일 > 과일선물세트", 0.3307),
+        ("꽃/원예 > 꽃/식물", 0.3332),
+        ("유아동식/영양제 > 유아동 간식", 0.3367),
+        ("과자/간식 > 빵/베이커리", 0.3467),
+    ],
+    "사과": [
+        ("과일 > 국산과일", 0.2732),
+        ("과일 > 수입과일", 0.2812),
+        ("과일 > 과일선물세트", 0.2960),
+        ("과일 > 냉동/간편과일", 0.3232),
+        ("과자/간식 > 원물간식", 0.3249),
+        ("꽃/원예 > 꽃/식물", 0.3323),
+        ("커피/생수/음료 > 주스/과즙음료", 0.3348),
+        ("건과/견과 > 견과류", 0.3433),
+    ],
+    "배": [
+        ("여성가방 > 백팩", 0.3184),
+        ("신생아의류 (0~24개월) > 배냇저고리", 0.3248),
+        ("여성가방 > 스포츠가방", 0.3292),
+        ("실버용품 > 환자용 배변용품", 0.3297),
+        ("유아목욕/스킨케어 > 유아목욕용품", 0.3323),
+        ("과일 > 국산과일", 0.3330),
+        ("과자/간식 > 빵/베이커리", 0.3354),
+        ("구기/라켓/스포츠 > 야구", 0.3358),
+    ],
+    "오렌지": [
+        ("커피/생수/음료 > 주스/과즙음료", 0.3164),
+        ("과일 > 수입과일", 0.3216),
+        ("과일 > 과일선물세트", 0.3244),
+        ("과일 > 국산과일", 0.3287),
+        ("꽃/원예 > 꽃/식물", 0.3417),
+        ("과자/간식 > 원물간식", 0.3419),
+        ("가공식품 > 잼", 0.3455),
+        ("과일 > 냉동/간편과일", 0.3461),
+    ],
+}
+
+
+async def test_consensus_filter_keeps_majority_mid_drops_homonym_noise() -> None:
+    """[#428 핵심 회귀, 리뷰 1차 F-1 갱신] 과일 4형제 전개에서 동음이의어 노이즈(여성가방·
+    신생아의류·실버용품·유아목욕·구기라켓스포츠)가 전부 사라지고 **과일 4종만 정확히** 남는다.
+
+    "배"가 동음이의어(과일/가방/배냇저고리/배변용품)라 top-8이 무관 카테고리로 흩어지는데,
+    형제의 **최근접(top-1)** 지지를 세면(리뷰 1차 F-1) 바나나→과일(수입과일)·사과→과일
+    (국산과일)로 과일이 2/4 지지를 얻어 최다이고(배→여성가방, 오렌지→커피/생수/음료는 각 1
+    지지), 그 합의로 "배"의 노이즈만 걸러낸다(#428 이슈 코멘트 ④⑤). top-1 만으로 세므로
+    "과자/간식"은 꼬리 순위에서만 등장해(초판의 결함) 승자가 되지 않는다 — 이슈 마지막
+    코멘트가 적은 목표("8개가 아니라 과일 계열 4개로 깔끔하게")와 정확히 일치한다.
+
+    [#428 리뷰 3차 R3-1] 이 케이스가 R3-1 가드(승자 대분류가 형제 전원의 후보에 있어야
+    함)를 통과하는 이유: "배"의 후보 6위에 `과일 > 국산과일`이 있어 "배" leg 의 `kept`
+    가 비지 않는다 — 가드가 들어가도 `#428` 본체는 약해지지 않는다.
+    """
+    m = _FakeMapper(exact=set(), nearest={}, hits=_FRUIT_HITS)
+    out = await m.run_full(
+        [CategoryQuery(None, name) for name in ["바나나", "사과", "배", "오렌지"]],
+        settings=_settings(expand_legs=8),
+        sibling_expansion=True,
+    )
+    canonicals = {c for c, _ in out.expansion_leaves}
+    assert canonicals == {
+        "과일 > 국산과일",
+        "과일 > 수입과일",
+        "과일 > 냉동/간편과일",
+        "과일 > 과일선물세트",
+    }
+    mids = {c.split(" > ", 1)[0] for c in canonicals}
+    assert mids == {"과일"}
+
+
+async def test_consensus_log_carries_source_legs_when_applied(caplog) -> None:
+    """[#428 리뷰 5차 R5-2] 합의가 **적용**된 케이스에서 `category_expansion_consensus` 로그에
+    `source_legs`(이번 매핑의 입력 leg 수 = 전개 아이템 수)가 실린다 — R5-1 이 게이트를
+    상류(`graph.py`)로 옮겼으므로 이 로그가 남았다는 것 자체가 "원 발화 신호 leg 이 0~1개"를
+    함의하지만, `source_legs` 는 그 위에 "형제 몇 개가 합의에 참여했나"를 더해 이 상호작용이
+    실제로 발동한 턴을 운영에서 식별할 수 있게 한다."""
+    m = _FakeMapper(exact=set(), nearest={}, hits=_FRUIT_HITS)
+    with caplog.at_level("INFO"):
+        await m.run_full(
+            [CategoryQuery(None, name) for name in ["바나나", "사과", "배", "오렌지"]],
+            settings=_settings(expand_legs=8),
+            sibling_expansion=True,
+        )
+    record = _record(caplog, "category_expansion_consensus")
+    assert record.source_legs == 4
+
+
+async def test_consensus_filter_disabled_keeps_legacy_noise() -> None:
+    """[#428 미적용 대조] `sibling_expansion=False`(기본값)면 같은 입력에서 종전처럼 노이즈가
+    섞인 8개가 그대로 나온다 — 이 대조가 있어야 위 회귀가 "합의 필터가 실제로 일했다"는 증거다."""
+    m = _FakeMapper(exact=set(), nearest={}, hits=_FRUIT_HITS)
+    out = await m.run_full(
+        [CategoryQuery(None, name) for name in ["바나나", "사과", "배", "오렌지"]],
+        settings=_settings(expand_legs=8),
+    )
+    canonicals = [c for c, _ in out.expansion_leaves]
+    assert canonicals == [
+        "과일 > 수입과일",
+        "과일 > 국산과일",
+        "여성가방 > 백팩",
+        "커피/생수/음료 > 주스/과즙음료",
+        "신생아의류 (0~24개월) > 배냇저고리",
+        "과일 > 냉동/간편과일",
+        "과일 > 과일선물세트",
+        "여성가방 > 스포츠가방",
+    ]
+
+
+async def test_consensus_filter_skips_when_no_majority_mid() -> None:
+    """[#428] 형제 전개가 애초에 이질적이면(대분류가 leg 마다 전부 다름) 필터가 적용되지 않고
+    종전과 동일하다 — `max_support == 1` 이라 합의 신호 자체가 없다(예: "이사 갈 때 필요한
+    것들" → 행거·커튼·이불). 기존 R5-1 형평 규약이 이 경우에도 깨지지 않는다는 고정이다."""
+    hits = {
+        "행거": [("수납정리용품 > 행거", 0.30), ("수납정리용품 > 선반", 0.31)],
+        "커튼": [("커튼/블라인드 > 커튼", 0.30), ("커튼/블라인드 > 블라인드", 0.31)],
+        "이불": [("침구 > 이불", 0.30), ("침구 > 베개", 0.31)],
+    }
+    queries = [CategoryQuery(None, name) for name in ["행거", "커튼", "이불"]]
+    out_with = await _FakeMapper(exact=set(), nearest={}, hits=hits).run_full(
+        queries, settings=_settings(expand_legs=6), sibling_expansion=True
+    )
+    out_without = await _FakeMapper(exact=set(), nearest={}, hits=hits).run_full(
+        queries, settings=_settings(expand_legs=6)
+    )
+    assert out_with.expansion_leaves == out_without.expansion_leaves
+
+
+# [#428 리뷰 1차 F-1 회귀] "집들이 선물" 전개(디퓨저·캔들·와인잔·식기 세트) 로컬 pg-catalog
+# 실측(2026-08-07, embed_texts(RETRIEVAL_QUERY) → search_categories_pg(k=8), 사전 1,007행).
+# 각 leg 의 top-1 대분류는 향수·조명·스포츠 잡화·주방잡화로 전부 다르지만, "주얼리"가 캔들·
+# 와인잔·식기 세트 3개 leg 의 **꼬리 순위**에 걸쳐 등장한다 — top-k 전체로 지지를 셌던 초판은
+# 이 "주얼리"를 승자로 잘못 뽑아 디퓨저(향수)·캔들(조명)·식기 세트(주방잡화)의 정답급 후보를
+# 전부 버렸다(#428 리뷰 1차 F-1). 이 셀은 그 실패를 재현·고정한다.
+_HOUSEWARMING_HITS = {
+    "디퓨저": [
+        ("향수 > 남녀공용향수", 0.3173),
+        ("향수 > 드레스퍼퓸", 0.3207),
+        ("향수 > 여성향수", 0.3246),
+        ("향수 > 향수세트", 0.3302),
+        ("향수 > 남성향수", 0.3349),
+        ("조명 > 조명", 0.3365),
+        ("바디케어 > 바디미스트", 0.3388),
+        ("전기/산업자재 > 전기생활용품", 0.3400),
+    ],
+    "캔들": [
+        ("조명 > 조명", 0.3188),
+        ("바디케어 > 제모/왁싱", 0.3407),
+        ("조명 > 전구", 0.3436),
+        ("패션잡화 > 파티용 소품", 0.3477),
+        ("화방용품 > 캔버스/판넬", 0.3478),
+        ("주얼리 > 주얼리 소품", 0.3504),
+        ("꽃/원예 > 꽃/식물", 0.3528),
+        ("자동차용품 > 램프", 0.3537),
+    ],
+    "와인잔": [
+        ("스포츠 잡화 > 스포츠 글라스", 0.3394),
+        ("주얼리 > 주얼리 소품", 0.3402),
+        ("패션잡화 > 파티용 소품", 0.3417),
+        ("주방잡화 > 냄비/컵/수저받침", 0.3452),
+        ("여행가방/소품 > 여행소품", 0.3467),
+        ("이유용품 > 아동용컵", 0.3513),
+        ("브랜드 잡화/소품 > 기타 액세서리", 0.3560),
+        ("수입명품 > 럭셔리 라이프", 0.3611),
+    ],
+    "식기 세트": [
+        ("주방잡화 > 일회용식기/도시락", 0.2869),
+        ("주방잡화 > 냄비/컵/수저받침", 0.3160),
+        ("조류용품 > 모이통/식기", 0.3243),
+        ("주얼리 > 주얼리세트", 0.3338),
+        ("스킨케어 > 스킨케어 세트", 0.3392),
+        ("임부복/소품 > 잡화", 0.3433),
+        ("주방용품 > 냄비", 0.3433),
+        ("도서/음반 > 유아동 기획세트", 0.3450),
+    ],
+}
+
+
+async def test_consensus_filter_skips_when_top1_mids_all_differ() -> None:
+    """[#428 리뷰 1차 F-1 회귀·필수] top-1 대분류가 leg 마다 전부 달라 합의가 성립하지 않으면,
+    꼬리 순위에 공통 대분류("주얼리")가 있어도 필터가 발동하지 않고 종전(top-k 전체 집계)이
+    잘못 골랐던 결과와 달리 8개 후보가 그대로 보존된다.
+
+    top-k 전체로 지지를 세면 `주얼리`(캔들·와인잔·식기 세트 3개 leg 의 꼬리)가 승자가 돼
+    향수·조명·주방잡화라는 정답급 후보를 전부 버렸다 — 이것이 F-1 이 고친 결함이다. top-1 만
+    세면 향수(디퓨저)·조명(캔들)·스포츠 잡화(와인잔)·주방잡화(식기 세트)로 4개 leg 의 최근접이
+    전부 달라 `max_support == 1`이라 필터가 적용되지 않는다.
+    """
+    m = _FakeMapper(exact=set(), nearest={}, hits=_HOUSEWARMING_HITS)
+    queries = [CategoryQuery(None, name) for name in ["디퓨저", "캔들", "와인잔", "식기 세트"]]
+    out_with = await m.run_full(queries, settings=_settings(expand_legs=8), sibling_expansion=True)
+    out_without = await _FakeMapper(exact=set(), nearest={}, hits=_HOUSEWARMING_HITS).run_full(
+        queries, settings=_settings(expand_legs=8)
+    )
+    assert out_with.expansion_leaves == out_without.expansion_leaves
+    canonicals = {c for c, _ in out_with.expansion_leaves}
+    # 정답급 후보(향수·조명·주방잡화)가 살아 있어야 한다 — 잡동사니 대분류(주얼리)에 밀려
+    # 사라지면 이 테스트가 재현하려는 결함이 되돌아온 것이다.
+    assert any(c.startswith("향수") for c in canonicals)
+    assert any(c.startswith("조명") for c in canonicals)
+    assert any(c.startswith("주방잡화") for c in canonicals)
+
+
+async def test_consensus_filter_single_leg_untouched() -> None:
+    """[#428] leg 1개면 `sibling_expansion=True` 여도 종전과 완전히 동일 — 기여 leg 이 2개
+    미만이면 합의 자체가 성립하지 않는다(§1.3-1)."""
+    hits = [(f"카테고리{i} > 소분류{i}", 0.30 + i * 0.001) for i in range(8)]
+    m = _FakeMapper(exact=set(), nearest={}, hits={"애매한 발화": hits})
+    out = await m.run_full(
+        [CategoryQuery(None, "애매한 발화")],
+        settings=_settings(expand_legs=3),
+        sibling_expansion=True,
+    )
+    assert out.expansion_leaves == [(c, "애매한 발화") for c, _ in hits[:3]]
+
+
+async def test_consensus_filter_skipped_when_a_sibling_lacks_winning_mid(caplog) -> None:
+    """[#428 리뷰 3차 R3-1] 승자 대분류(과일)가 형제 "다"의 후보 목록 어디에도 없으면 — "다"는
+    잡화라는 정당하게 다른 상품군이지 합의에서 벗어난 노이즈가 아니다 — 필터를 통째로
+    미적용하고(부분 적용 금지) 원본을 그대로 보존한다. 가드 발동은 `category_expansion_consensus`
+    가 아니라 `category_expansion_consensus_skipped` 로 관측된다."""
+    hits = {
+        "가": [("과일 > 국산과일", 0.30)],
+        "나": [("과일 > 수입과일", 0.30)],
+        "다": [("잡화 > 소품", 0.30)],
+    }
+    m = _FakeMapper(exact=set(), nearest={}, hits=hits)
+    with caplog.at_level("INFO"):
+        out = await m.run_full(
+            [CategoryQuery(None, name) for name in ["가", "나", "다"]],
+            settings=_settings(expand_legs=4),
+            sibling_expansion=True,
+        )
+    record = _record(caplog, "category_expansion_consensus_skipped")
+    assert record.reason == "leg_without_winning_mid"
+    assert record.max_support == 2
+    assert record.winning_mids == ["과일"]
+    assert not [r for r in caplog.records if r.msg == "category_expansion_consensus"]
+    canonicals = {c for c, _ in out.expansion_leaves}
+    assert "잡화 > 소품" in canonicals
+    assert "과일 > 국산과일" in canonicals
+    assert "과일 > 수입과일" in canonicals
+
+
+async def test_consensus_skipped_log_carries_source_legs(caplog) -> None:
+    """[#428 리뷰 5차 R5-2] 가드 **스킵** 케이스에서도 `category_expansion_consensus_skipped`
+    로그에 `source_legs` 가 실린다 — 적용·스킵 양쪽 다 관측 가능해야 이 상호작용의 발동 빈도를
+    운영에서 온전히 잴 수 있다."""
+    hits = {
+        "가": [("과일 > 국산과일", 0.30)],
+        "나": [("과일 > 수입과일", 0.30)],
+        "다": [("잡화 > 소품", 0.30)],
+    }
+    m = _FakeMapper(exact=set(), nearest={}, hits=hits)
+    with caplog.at_level("INFO"):
+        await m.run_full(
+            [CategoryQuery(None, name) for name in ["가", "나", "다"]],
+            settings=_settings(expand_legs=4),
+            sibling_expansion=True,
+        )
+    record = _record(caplog, "category_expansion_consensus_skipped")
+    assert record.source_legs == 3
+
+
+# [#428 리뷰 3차 회귀] "신학기 준비물" 전개 중 거리컷에 드롭된 3형제. 로컬 pg-catalog 실측
+# (2026-08-07, 사전 1,007행). 책가방·필통이 우연히 '여성가방'에서 겹치지만 물통에는 그 대분류
+# 후보가 아예 없다 — 정당하게 다른 상품군이라는 뜻이므로 합의를 적용하면 안 된다.
+_SCHOOL_HITS = {
+    "책가방": [
+        ("여성가방 > 백팩", 0.2648),
+        ("여성가방 > 노트북가방", 0.2767),
+        ("여성가방 > 스포츠가방", 0.2778),
+        ("브랜드 여성가방 > 백팩", 0.2818),
+        ("여행가방/소품 > 이민/유학용가방", 0.2829),
+        ("남성가방 > 백팩", 0.2833),
+        ("여행가방/소품 > 보조가방", 0.2874),
+        ("브랜드 여성가방 > 노트북가방", 0.2920),
+    ],
+    "필통": [
+        ("여성가방 > 파우치", 0.2926),
+        ("문구/사무용품 > 문구용품", 0.2989),
+        ("뷰티소품 > 화장품파우치", 0.3064),
+        ("여행가방/소품 > 여행소품", 0.3073),
+        ("수납가구 > 기타 수납소품", 0.3093),
+        ("뷰티소품 > 메이크업정리함", 0.3096),
+        ("여행가방/소품 > 여행파우치", 0.3128),
+        ("수납가구 > 소품 수납정리함", 0.3138),
+    ],
+    "물통": [
+        ("이유용품 > 아동용물병", 0.2819),
+        ("커피/생수/음료 > 생수", 0.2830),
+        ("조류용품 > 모이통/식기", 0.2890),
+        ("물티슈 > 물티슈", 0.3096),
+        ("물티슈 > 물티슈액세서리", 0.3155),
+        ("뷰티소품 > 화장품용기", 0.3190),
+        ("여행가방/소품 > 여행소품", 0.3258),
+        ("이유용품 > 아동용컵", 0.3266),
+    ],
+}
+
+
+async def test_consensus_filter_skipped_for_school_supplies_keeps_water_bottle(caplog) -> None:
+    """[#428 리뷰 3차 R3-1 회귀·실측 기반] "신학기 준비물"(책가방·필통·물통) 전개 — 책가방·필통이
+    우연히 "여성가방"에서 겹쳐(`max_support=2`) 물통이 통째로 드롭될 뻔했던 실제 재현 사례다.
+    R3-1 가드가 "물통"의 후보 어디에도 "여성가방"이 없음을 감지해 필터를 통째로 미적용하고,
+    `문구/사무용품 > 문구용품`(필통의 진짜 정답)·`이유용품 > 아동용물병`·`커피/생수/음료 > 생수`
+    (물통의 정답급 후보)가 전부 살아남는다."""
+    m = _FakeMapper(exact=set(), nearest={}, hits=_SCHOOL_HITS)
+    with caplog.at_level("INFO"):
+        out = await m.run_full(
+            [CategoryQuery(None, name) for name in ["책가방", "필통", "물통"]],
+            settings=_settings(expand_legs=8),
+            sibling_expansion=True,
+        )
+    record = _record(caplog, "category_expansion_consensus_skipped")
+    assert record.reason == "leg_without_winning_mid"
+    assert record.max_support == 2
+    assert record.winning_mids == ["여성가방"]
+    canonicals = {c for c, _ in out.expansion_leaves}
+    assert "문구/사무용품 > 문구용품" in canonicals
+    assert "이유용품 > 아동용물병" in canonicals
+    assert "커피/생수/음료 > 생수" in canonicals
+
+
+# ── #428 리뷰 4차(Claude PR Review, PR #444) — 멀티 니즈(case=3) 전개가 합의 필터에 실제로
+# 섞이는 상호작용. `case=3`("이어폰이랑 노트북 추천해줘")은 서로 다른 상품 2개 이상도 포함하고
+# (decompose.py case 정의) `expand_needs` 는 발화 전체를 한 번에 전개하므로, 전개 산출에 서로
+# 다른 니즈가 섞일 수 있다. 아래 두 테스트는 그때 합의 필터가 소수 니즈를 죽이지 않는다는 것을
+# 실물 `map_categories` + 실물 `_consensus_filter` 조합(스텁 아님)으로 동률 승자·R3-1 가드
+# 두 경로에 고정한다.
+
+
+async def test_consensus_filter_multi_need_expansion_keeps_both_mids_on_tie(caplog) -> None:
+    """[#428 리뷰 4차 R4-1] `case=3` 은 서로 다른 상품 2개 이상도 포함하고(`decompose.py` case
+    정의) `expand_needs` 는 발화 전체를 한 번에 전개하므로, 전개 산출에 서로 다른 니즈가 섞일
+    수 있다(#444 Claude 리뷰). 그때 합의 필터가 소수 니즈를 죽이지 않는다는 것을 동률 승자
+    경로로 고정한다: 책가방·필통(니즈 A)과 사과·바나나(니즈 B)가 섞인 전개에서 각 니즈가 형제
+    2개씩 대분류에 합의하면 `max_support` 가 동률이라 `여성가방`·`과일` 둘 다 승자가 되고, 네
+    아이템 모두 후보를 유지한다 — 실물 `map_categories`+`_consensus_filter` 조합을 태워
+    검증한다(종전 테스트는 이 상호작용을 스텁으로 가려 왔다)."""
+    m = _FakeMapper(exact=set(), nearest={}, hits={**_SCHOOL_HITS, **_FRUIT_HITS})
+    with caplog.at_level("INFO"):
+        out = await m.run_full(
+            [CategoryQuery(None, name) for name in ["책가방", "필통", "사과", "바나나"]],
+            settings=_settings(expand_legs=8),
+            sibling_expansion=True,
+        )
+    # 동률 승자가 **둘 다** 남아야 한다 — 승자를 1개로 좁히면(예: 사전순 첫 번째만) 소수 니즈가
+    # 죽는다. queries 단언만으로는 가드 스킵(원본 보존)과 구분이 안 되므로 winning_mids 로
+    # "필터가 실제로 적용됐고 두 대분류 다 승자였다"를 명시적으로 고정한다.
+    record = _record(caplog, "category_expansion_consensus")
+    assert record.max_support == 2
+    assert record.winning_mids == ["과일", "여성가방"]
+    queries = {q for _, q in out.expansion_leaves}
+    assert queries == {"책가방", "필통", "사과", "바나나"}
+
+
+async def test_consensus_filter_multi_need_expansion_guard_preserves_minority_need(
+    caplog,
+) -> None:
+    """[#428 리뷰 4차 R4-1] `case=3` 은 서로 다른 상품 2개 이상도 포함하고(`decompose.py` case
+    정의) `expand_needs` 는 발화 전체를 한 번에 전개하므로, 전개 산출에 서로 다른 니즈가 섞일
+    수 있다(#444 Claude 리뷰). 그때 합의 필터가 소수 니즈를 죽이지 않는다는 것을 R3-1 가드
+    경로로 고정한다: 디퓨저·캔들(니즈 A, 최근접이 향수·조명으로 서로 다름)과 사과·바나나
+    (니즈 B, 과일로 합의)가 섞인 전개에서 `winning={과일}` 이지만 디퓨저·캔들에는 과일 후보가
+    아예 없어 R3-1 가드가 발동하고 원본 8개가 그대로 보존된다 — 실물 `map_categories`+
+    `_consensus_filter` 조합을 태워 검증한다."""
+    m = _FakeMapper(exact=set(), nearest={}, hits={**_HOUSEWARMING_HITS, **_FRUIT_HITS})
+    with caplog.at_level("INFO"):
+        out = await m.run_full(
+            [CategoryQuery(None, name) for name in ["디퓨저", "캔들", "사과", "바나나"]],
+            settings=_settings(expand_legs=8),
+            sibling_expansion=True,
+        )
+    record = _record(caplog, "category_expansion_consensus_skipped")
+    assert record.reason == "leg_without_winning_mid"
+    assert record.max_support == 2
+    assert record.winning_mids == ["과일"]
+    canonicals = {c for c, _ in out.expansion_leaves}
+    assert "향수 > 남녀공용향수" in canonicals
+    assert "조명 > 조명" in canonicals
+
+
+async def test_consensus_skip_reasons_are_logged_and_only_disabled_is_silent(caplog) -> None:
+    """[#428 리뷰 6차 R6-1/R6-3] 라운드 3까지는 단일 leg · `max_support<2` · `sibling_
+    expansion=False` 셋 다 무기록이었다(#444 Claude 리뷰 5차 지적) — `_consensus_filter` 가
+    미적용을 `None` 으로 냈고 호출부가 `is not None` 으로 게이트를 걸었기 때문이다. 이제
+    앞 둘은 각각 `reason == "single_leg"`/`"no_consensus"` 로 `category_expansion_
+    consensus_skipped` 에 **기록되고**, `sibling_expansion=False` 만 여전히 무기록이다 —
+    이게 리뷰어가 요구한 "실제 발동 여부를 로그만으로 판별"이 성립하는 근거다."""
+    hits_pair = {
+        "가": [("A > a1", 0.30)],
+        "나": [("B > b1", 0.30)],
+    }
+    single_hits = [(f"카테고리{i} > 소분류{i}", 0.30 + i * 0.001) for i in range(3)]
+
+    with caplog.at_level("INFO"):
+        await _FakeMapper(exact=set(), nearest={}, hits={"애매한 발화": single_hits}).run_full(
+            [CategoryQuery(None, "애매한 발화")],
+            settings=_settings(expand_legs=3),
+            sibling_expansion=True,
+        )
+    single_leg_record = _record(caplog, "category_expansion_consensus_skipped")
+    assert single_leg_record.reason == "single_leg"
+    assert single_leg_record.source_legs == 1
+    caplog.clear()
+
+    with caplog.at_level("INFO"):
+        await _FakeMapper(exact=set(), nearest={}, hits=hits_pair).run_full(
+            [CategoryQuery(None, name) for name in ["가", "나"]],
+            settings=_settings(expand_legs=4),
+            sibling_expansion=True,
+        )
+    no_consensus_record = _record(caplog, "category_expansion_consensus_skipped")
+    assert no_consensus_record.reason == "no_consensus"
+    assert no_consensus_record.max_support == 1
+    assert no_consensus_record.source_legs == 2
+    caplog.clear()
+
+    # `sibling_expansion=False` — 필터가 애초에 호출되지 않는다. 이게 이제 유일한 무기록 상태다.
+    with caplog.at_level("INFO"):
+        await _FakeMapper(exact=set(), nearest={}, hits=hits_pair).run_full(
+            [CategoryQuery(None, name) for name in ["가", "나"]],
+            settings=_settings(expand_legs=4),
+        )
+    assert not [
+        r
+        for r in caplog.records
+        if r.msg in ("category_expansion_consensus", "category_expansion_consensus_skipped")
+    ]
+
+
+# ── #428 리뷰 2차(PR #444 Claude Review) — `category_expand_legs=0` IndexError 회귀 ──────
+#
+# `category_expand_legs` 는 `ge=0` 필드(`app/core/config.py:879`)라 0 은 합법값이다. 0이면
+# `_collect_expansion_leaves` 의 `hits[: 0]` 슬라이스가 빈 리스트를 내고, 그 빈 리스트가
+# `expansion_by_leg[i]` 에 그대로 담기면 `_consensus_filter` 의 `leaves[0]`(top-1) 인덱싱이
+# IndexError 를 낸다. 더 심각한 건 원래 호출 위치가 조립 루프의 격리 try/except **밖**이라,
+# 이 예외가 `map_categories` 전체를 던져 이미 채택된 canonical 까지 버렸다(리뷰 2차 R2-3).
+
+
+async def test_expand_legs_zero_does_not_crash_and_yields_no_expansion_leaves() -> None:
+    """[#428 리뷰 2차 R2-1/R2-2 회귀·필수] `category_expand_legs=0` + unresolved leg 2개 이상 +
+    `sibling_expansion=True` 에서 예외 없이 정상 반환하고 `expansion_leaves == []` 다."""
+    hits = {
+        "김밥 재료": [("채소 > 파/마늘/양념채소", 0.30), ("수산 > 어묵/맛살", 0.31)],
+        "떡볶이 재료": [("채소 > 파/마늘/양념채소", 0.29), ("냉장식품 > 밥류", 0.32)],
+    }
+    m = _FakeMapper(exact=set(), nearest={}, hits=hits)
+    out = await m.run_full(
+        [CategoryQuery(None, "김밥 재료"), CategoryQuery(None, "떡볶이 재료")],
+        settings=_settings(expand_legs=0, expand_enabled=True),
+        sibling_expansion=True,
+    )
+    assert out.expansion_leaves == []
+    assert out.unresolved == ["김밥 재료", "떡볶이 재료"]  # #217 전개 트리거는 그대로 살아있다
+
+
+async def test_expand_legs_zero_suppresses_expansion_leaves_log(caplog) -> None:
+    """[#428 리뷰 2차 R2-1 회귀] `category_expand_legs=0` 이면 `category_expansion_leaves`
+    로그가 나오지 않는다 — 종전엔 빈 leg 도 담겨 `count: 0` 으로 무의미하게 찍혔다."""
+    hits = {
+        "김밥 재료": [("채소 > 파/마늘/양념채소", 0.30), ("수산 > 어묵/맛살", 0.31)],
+        "떡볶이 재료": [("채소 > 파/마늘/양념채소", 0.29), ("냉장식품 > 밥류", 0.32)],
+    }
+    m = _FakeMapper(exact=set(), nearest={}, hits=hits)
+    with caplog.at_level("INFO"):
+        await m.run_full(
+            [CategoryQuery(None, "김밥 재료"), CategoryQuery(None, "떡볶이 재료")],
+            settings=_settings(expand_legs=0, expand_enabled=True),
+            sibling_expansion=True,
+        )
+    assert not [r for r in caplog.records if r.msg == "category_expansion_leaves"]
+
+
+async def test_consensus_filter_failure_preserves_accepted_legs(monkeypatch, caplog) -> None:
+    """[#428 리뷰 2차 R2-3 회귀·핵심] `_consensus_filter` 가 예외를 던져도 `map_categories` 는
+    던지지 않는다 — ① 원본 `expansion_leaves` 를 그대로 내고 ② `category_expansion_consensus_
+    failed` 로그를 남기며 ③ **이미 채택된 canonical(`legs`)이 보존**된다.
+
+    ③ 이 핵심이다 — 이 호출이 조립 루프의 try/except 밖에 있어 예외가 `map_categories` 전체를
+    던지면 `_map_or_empty`(graph.py)가 빈 `CategoryMapping` 으로 degrade 해, 이미 DB 검증된
+    exact 매치까지 버린다(Claude PR Review, PR #444). 거리컷 통과 leg 하나(exact match)와
+    드롭된 leg 둘을 섞어야 이 보존을 실제로 잰다.
+    """
+    import app.agents.buyer.recommendation.category_mapping as cm
+
+    def _raise(_expansion_by_leg):
+        raise RuntimeError("consensus filter boom")
+
+    monkeypatch.setattr(cm, "_consensus_filter", _raise)
+
+    hits = {
+        "김밥 재료": [("채소 > 파/마늘/양념채소", 0.30), ("수산 > 어묵/맛살", 0.31)],
+        "떡볶이 재료": [("채소 > 파/마늘/양념채소", 0.29), ("냉장식품 > 밥류", 0.32)],
+    }
+    m = _FakeMapper(exact={"PC부품 > CPU"}, nearest={}, hits=hits)
+    with caplog.at_level("WARNING"):
+        out = await m.run_full(
+            [
+                CategoryQuery("PC부품 > CPU", "cpu"),  # exact match — 거리컷 무관하게 채택
+                CategoryQuery(None, "김밥 재료"),  # 거리컷 드롭 → expansion_leaves 후보
+                CategoryQuery(None, "떡볶이 재료"),  # 거리컷 드롭 → expansion_leaves 후보
+            ],
+            settings=_settings(expand_legs=8),
+            sibling_expansion=True,
+        )
+    assert out.legs == [("PC부품 > CPU", "cpu")]  # ③ 이미 채택된 canonical 이 보존된다
+    # ① 필터 미적용 원본(인터리브·dedup_truncate 는 정상 통과) — 노이즈 걸러내기 전 8종 이하 원본
+    assert out.expansion_leaves  # 원본 후보가 그대로 살아있다(빈 리스트로 날아가지 않음)
+    record = _record(caplog, "category_expansion_consensus_failed")
+    assert record.reason == "consensus filter boom"
+    assert record.error_type == "RuntimeError"
