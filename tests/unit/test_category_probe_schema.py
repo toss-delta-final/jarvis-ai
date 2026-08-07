@@ -28,7 +28,7 @@ def _cell(**overrides) -> dict:
 
 def test_committed_fixture_loads_and_matches_manifest() -> None:
     anchors = load_anchor_set("default")
-    assert len(anchors.cells) == 38
+    assert len(anchors.cells) == 46  # #428 — 인스턴스형 앵커 8셀 추가(v1 38 → v2 46)
 
 
 def test_accept_requires_exactly_one_arrow() -> None:

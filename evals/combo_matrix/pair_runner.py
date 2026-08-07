@@ -50,6 +50,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from app.core.config import get_settings  # noqa: E402
+from app.services import search_service  # noqa: E402
 from evals.combo_matrix.fakes import (  # noqa: E402
     RecordingPush,
     make_exact_match_category_mapping,
@@ -160,10 +161,13 @@ class Projection:
     product_ids_multiset: list[int] = field(default_factory=list)
     push_product_count: int = 0
     # D1(이슈 #381) — `search_filters` 에 값이 실려 있어도 그 축이 실제로 대역에 **적용됐다**는
-    # 뜻은 아니다(keyword·color·attr_conditions 는 흉내 낼 수 없어 present 로 들어와도 미적용
-    # 기록만 한다). 이 필드 없이는 예를 들어 combo-0055 프로젝션이 "색상·방수 조건이 적용돼
-    # 결과가 줄었다"로 잘못 읽힌다 — D1 이 없애려던 "적용된 것처럼 보이는 데이터"와 같은 부류.
+    # 뜻은 아니다. [#426] 대역이 `SearchBackend` 자리로 내려가 8축이 전부 적용되면서 이 목록은
+    # 비었지만, 미래에 표현 불가 축이 생기면 다시 채워지는 자리라 프로젝션에 남겨 둔다.
     unapplied_search_filters: list[str] = field(default_factory=list)
+    # [#426] `attr_conditions` 는 Spring 에 안 나가는 AI 사후필터라 `search_filters` 로는 적용
+    # 여부를 알 수 없다 — 사후필터 호출 자체를 계측해 "실제로 평가된 축인가"를 프로젝션에 싣는다
+    # (runner.py::_observe_chat 와 같은 규약·같은 스파이). 값 모양: {invoked, inputCount, outputCount}.
+    attr_conditions_post_filter: dict | None = None
 
     def as_dict(self) -> dict:
         return {
@@ -172,6 +176,7 @@ class Projection:
             "errorCode": self.error_code,
             "searchFilters": self.search_filters,
             "unappliedSearchFilters": self.unapplied_search_filters,
+            "attrConditionsPostFilter": self.attr_conditions_post_filter,
             "legs": self.legs,
             "listType": self.list_type,
             "listsCount": self.lists_count,
@@ -212,6 +217,18 @@ async def _execute(case: ComboCase) -> Projection:
     settings = get_settings()
     guard_was_enabled = settings.search_filter_guard_enabled
     settings.search_filter_guard_enabled = False
+    # [#426] attr_conditions 사후필터 계측 — runner.py::_observe_chat 와 같은 스파이·같은 근거
+    # (`_apply_attr_conditions` 는 그 축이 truthy 일 때만 호출되고, 정의 모듈 전역 조회라 인기
+    # 폴백 경로까지 한 번에 잡힌다).
+    attr_post_filter_calls: list[tuple[int, int]] = []
+    original_apply_attr_conditions = search_service._apply_attr_conditions
+
+    def _apply_attr_conditions_spy(products, conditions):
+        result = original_apply_attr_conditions(products, conditions)
+        attr_post_filter_calls.append((len(products), len(result)))
+        return result
+
+    search_service._apply_attr_conditions = _apply_attr_conditions_spy
     try:
         events = await _collect(
             run_buyer_turn(
@@ -227,6 +244,7 @@ async def _execute(case: ComboCase) -> Projection:
         )
     finally:
         settings.search_filter_guard_enabled = guard_was_enabled
+        search_service._apply_attr_conditions = original_apply_attr_conditions
     if not search.calls:
         raise UnsupportedPairAxes(
             f"{case.case_id}: search 콜러블이 호출되지 않았다 — v1 pair_runner 는 단일 검색 "
@@ -259,6 +277,15 @@ async def _execute(case: ComboCase) -> Projection:
         ),
         search_filters=search_filters,
         unapplied_search_filters=unapplied_search_filters,
+        attr_conditions_post_filter=(
+            {
+                "invoked": bool(attr_post_filter_calls),
+                "inputCount": attr_post_filter_calls[0][0] if attr_post_filter_calls else 0,
+                "outputCount": attr_post_filter_calls[0][1] if attr_post_filter_calls else 0,
+            }
+            if axes.get("attr_conditions") == "present"
+            else None
+        ),
         legs=legs,
         list_type=push.pushes[0].list_type if push.pushes else None,
         lists_count=len(lists),
