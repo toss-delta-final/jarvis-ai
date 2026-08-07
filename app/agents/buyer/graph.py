@@ -28,7 +28,11 @@ from app.agents.buyer._frames import sse
 from app.agents.buyer.cart.graph import stream_cart_add, stream_cart_view
 from app.agents.buyer.cart.remove import stream_cart_remove
 from app.agents.buyer.cart.state import get_cart_store
-from app.agents.buyer.cart.wishlist import stream_wishlist_add, stream_wishlist_remove
+from app.agents.buyer.cart.wishlist import (
+    stream_wishlist_add,
+    stream_wishlist_remove,
+    stream_wishlist_view,
+)
 from app.agents.buyer.fallback import stream_fallback
 from app.agents.buyer.order_status import stream_order_status
 from app.agents.buyer.recommendation.category_mapping import CategoryMapping, dedup_truncate
@@ -772,7 +776,8 @@ async def run_buyer_turn(
         # 장애 시 504 재현 가능). 상세·협의 선택지는 scratchpad/draft-progress-contract.md §4.
         if settings.progress_events_enabled:
             yield progress_frame("analyzing", settings.progress_analyzing_message)
-        # decompose — fast tier 1회 (intent 5-way 라우팅 + 필터 + 장바구니 의도)
+        # decompose — fast tier 1회 (intent 9-way 라우팅 + 필터 + 장바구니 의도)
+        # 정본은 `RouteDecision.intent` Literal 이다 — 여기 숫자는 설명용이라 늘 낡을 수 있다.
         if observer is not None:
             observer.record_model_call(resolve_model_id(settings, "fast"))
         reco_state = await cart_store.get_last_reco_state(thread_key)
@@ -1045,6 +1050,17 @@ async def run_buyer_turn(
             trace.set_lane("cart")
         with trace_span("buyer.graph.cart", "chain"):
             async for frame in stream_cart_view(identity=identity, observer=observer):
+                yield frame
+        return
+
+    # [#386] 찜 목록 조회 — cart_view 와 같은 성격이라 바로 옆에 둔다. 조회는 지목 대상이 없어
+    # 아래 화면 지시어 해소를 타지 않는다(cart_view 도 마찬가지). lane 은 기존 "cart" 를 재사용
+    # 한다 — 새 lane 을 만들면 OBSERVABILITY_LANES 밖이라 set_lane 이 경고를 낸다.
+    if decision.intent == "wishlist_view":
+        if trace := current_request_trace():
+            trace.set_lane("cart")
+        with trace_span("buyer.graph.cart", "chain"):
+            async for frame in stream_wishlist_view(identity=identity, observer=observer):
                 yield frame
         return
 

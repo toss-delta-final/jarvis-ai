@@ -79,6 +79,87 @@
   스테이징 파일 한정), [2026-08-06] `ruff format`/`--fix` 는 쓰기 명령이다 항목(같은 패턴의
   선례, 이번엔 CI/pre-commit이 왜 못 잡는지가 새로 드러남)
 
+## [2026-08-07] 남의 영역에 방어를 덧대기 전에 "이 위험을 내 변경이 만들었나"부터 묻는다
+- 증상: #386(찜 **조회** 신설)에서 "조회 발화가 해제로 오분류되면 찜이 지워진다"를 막으려고
+  `_resolve_wishlist_remove_target`(찜 **해제**, #116/#117 소유)에 가드를 덧댔다. 그 뒤 리뷰
+  세 라운드 동안 같은 자리에서 결함이 연달아 났다 — ① 표지가 띄어쓰기에 취약 ② 극성을 뒤집자
+  정상 해제(`"찜 목록에서 빼줘"`)가 막힘 ③ 표지를 짧게 쪼개자 `"찜닭 빼고 보여줘"` 가 해제
+  근거로 오인됨(`"찜"` ⊂ `찜닭`, `"빼"` ⊂ `빼고`). ③ 은 같은 파일 12줄 위 `cart_remove_markers`
+  주석이 *"`빼` 같은 짧은 조각은 오탐(빼곡·빼고·빼빼로)이 흔해 쓰지 않는다"* 고 **이미 경고한**
+  함정이었다.
+- 원인: 막으려던 위험이 **이 PR 이 만든 것이 아니었다.** 규칙 3(목록 1건 자동 선택)은 원래부터
+  `wishlist_remove` 로 온 어떤 발화든 이름이 없으면 1건을 지웠고, 조회 intent 를 **더한다고** 새
+  삭제 경로가 생기지 않는다(오히려 프롬프트에 조회 의도가 생겨 오분류 확률은 낮아진다 —
+  `evals/intent_probe` 실측에서 조회 발화 3종이 8/8 로 정확히 라우팅됐다). 선재하는 위험을,
+  그것을 만들지 않은 PR 에서, 그 영역을 소유하지 않은 채 고치려다 방어 코드 자체가 결함원이 됐다.
+- 규칙: **방어를 덧대기 전에 "이 위험을 내 변경이 만들었나 / 악화시켰나"를 먼저 답하라.** 답이
+  "아니오"면 그건 별건이다 — 이슈로 옮기고 내 PR 은 원래 범위를 지킨다. 특히 여러 라운드에
+  걸쳐 실 LLM 으로 수렴시킨 판정 로직(#116/#117 의 24라운드 같은)에 손대는 경우, 방어 하나가
+  그 수렴을 되돌릴 수 있다. 그리고 **"기존 테스트 N건 통과"를 무회귀의 증거로 쓰지 마라** —
+  그건 "내 테스트가 그 경로를 안 덮는다"는 뜻일 수 있다(실제로 `evals/combo_matrix` 의 observed
+  드리프트 가드(#424)가 대신 잡았다: `combo-0047.actionType: WISHLIST_REMOVED → None`).
+- 관련: #440(옮긴 곳), `app/agents/buyer/cart/wishlist.py::_resolve_wishlist_remove_target`,
+  `app/core/config.py` `cart_remove_markers` 주석(같은 함정을 이미 적어 둔 곳)
+
+## [2026-08-07] 커밋되는 산출물을 Python 이 쓸 때는 `newline="\n"` 을 명시한다 — 해시가 줄바꿈에 민감하다
+- 증상: #386 에서 `python -m evals.combo_matrix regenerate` 를 Windows 로 돌렸더니
+  `combo_cases.jsonl`·`manifest.json` 이 **CRLF** 로 쓰였다. 로컬 테스트는 전부 통과하는데,
+  `manifest.axesSha256`·`intent_probe` 의 `fixture_sha256` 은 `read_bytes()` 기반이라
+  **LF 로 체크아웃되는 CI 에서는 해시가 안 맞는다** — 재생성한 사람만 통과하고 CI 는 깨지는
+  형태라 로컬에서 아무리 돌려도 안 드러난다.
+- 원인: `Path.write_text(...)` 는 Windows 에서 `\n` → `\r\n` 로 변환한다. 저장소는
+  `.gitattributes` 에 `* text=auto eol=lf`("CRLF 오염 재발 방지")를 두고 있어 **커밋본은 늘
+  LF** 인데, 워킹카피만 CRLF 가 되면서 "파일 내용은 같은데 해시가 다른" 상태가 됐다.
+  `read_text()` 로 대조하는 테스트는 universal newline 변환 덕에 통과해 버려서 더 안 보인다.
+- 규칙: **커밋되는 산출물을 쓰는 코드에는 `newline="\n"` 을 붙인다.** 그리고 그 산출물을
+  해시로 검증한다면 `read_bytes()` 인지 `read_text()` 인지 확인하라 — 전자면 줄바꿈이 곧
+  계약이다. 재생성 후 `git status` 에 `CRLF will be replaced by LF` 경고가 뜨면 그게 신호다.
+- 관련: `evals/combo_matrix/__main__.py`·`report.py`·`pair_runner.py`(`newline="\n"` 추가),
+  `.gitattributes`, `evals/intent_probe/loader.py::fixture_sha256`
+
+## [2026-08-07] intent 를 하나 늘리면 eval 매트릭스 재생성이 강제된다 — 후속 이슈로 미룰 수 없다
+- 증상: #386 이 `RouteDecision.intent` Literal 에 `wishlist_view` 한 줄을 더한 순간 기본
+  `uv run pytest` 가 빨간불이 됐다. `tests/eval/test_combo_matrix_eval.py::
+  test_intent_axis_matches_route_decision_literal` 이 `axes.json` 의 intent 축과 코드 Literal 의
+  **집합 동일**을 assert 하는데, 이 파일은 `@pytest.mark.eval` 이고 `pyproject.toml` 의
+  `addopts = "-m 'not smoke and not integration'"` 는 eval 을 제외하지 않는다.
+- 원인: "eval 은 CI 밖"이라는 통념이 `intent_probe`(실 LLM, 수동)에만 맞고 `combo_matrix`
+  (결정론 오프라인)에는 안 맞는데, 계획 단계에서 둘을 같은 부류로 묶어 생각했다. 그래서 매트릭스
+  갱신을 "선택 사항·후속 이슈 후보"로 잘못 산정했다.
+- 규칙: **intent·degrade 처럼 `axes.json` 이 코드에서 끌어오는 축을 건드리는 변경은 매트릭스
+  재생성을 같은 PR 범위로 잡고 시작한다.** 그 비용은 케이스 재생성만이 아니다 — 시드 기반
+  greedy pairwise 라 pair 우주가 바뀌면 케이스가 **대거 재배치**되고(57건 중 축 조합이 유지된
+  것은 18건), `expected_behavior.jsonl` 의 손으로 쓴 행과 `pair_checks.jsonl` 의 case_id 가
+  함께 따라간다. 착수 전에 `python -m evals.combo_matrix regenerate` 를 write 없이 한 번 돌려
+  재배치 규모를 먼저 재라.
+- 관련: `evals/combo_matrix/README.md` "재생성 이력 (#386)", `pyproject.toml:56,58`
+
+## [2026-08-07] eval 산출물이 case_id 를 하드코딩하면 재생성마다 사람이 따라다녀야 한다
+- 증상: #386 재생성으로 `combo-0053`·`combo-0054` 가 다른 조합을 가리키게 되자
+  `test_combo_0053_fixture_actually_narrows`·`test_combo_0054_is_manual_with_goldenset_link` 가
+  깨졌다. 두 테스트의 docstring 에는 이미 *"#367 재생성 이후 case id — 구 combo-0054"* 라는
+  주석이 있었다 — **같은 일이 최소 두 번째**였다.
+- 원인: 테스트가 재려는 것은 "그 번호의 케이스"가 아니라 **"하드필터를 추가한 쌍"·"recall 이라
+  manual 인 쌍"** 이라는 성격인데, 그 성격을 표현할 수단이 있는데도(spec 의 `kind`·`metric`·
+  `mode`) 번호로 가리켰다.
+- 규칙: **재생성되는 산출물의 항목을 테스트에서 지목할 때는 번호가 아니라 그 항목을 그 항목이게
+  하는 속성으로 찾는다.** 번호를 쓸 수밖에 없으면 그 사실과 이유를 주석에 남기고, 두 번 밀렸다면
+  그때는 속성 기반으로 고친다.
+- 관련: `tests/eval/test_combo_matrix_pairs.py`(`kind`/`metric`/`mode` 로 조회하도록 정정)
+
+## [2026-08-07] 조회 계열 Spring 호출은 실패 주입 때만이 아니라 **늘** 스텁한다
+- 증상: `combo_matrix` 러너가 `add_wishlist`·`add_to_cart` 는 `degrade=spring_timeout` 일 때만
+  몽키패치하고 `get_wishlist`·`get_cart` 는 아예 패치하지 않았다. #386 재생성으로
+  `wishlist_remove` 가 `ci` × `degrade=none` 조합을 갖게 되자, 로컬에 Spring 이 없는 환경에서
+  **정상 케이스가 degrade 를 관측**했다(관측이 환경에 따라 뒤집힌다).
+- 원인: 담기 계열은 "실패를 주입할 때만 호출을 가로채면 된다"가 맞지만, 조회 계열은 **정상
+  경로에서도 호출된다**. 두 계열의 차이를 보지 않고 같은 패치 조건을 썼다.
+- 규칙: 하네스가 실 함수를 부르는 경계를 셀 때 **"실패를 주입할 곳"이 아니라 "호출이 나가는
+  곳"을 세라.** 정상 경로에서 나가는 호출은 정상 응답 스텁이 없으면 관측 자체가 환경 의존이 된다.
+  주입 예외 타입은 실 어댑터 규약을 그대로 따른다(조회 = `SpringUnavailableError`, 변경 =
+  `CartError`/`WishlistError` — #376 이 고친 그 실수).
+- 관련: `evals/combo_matrix/runner.py`(`_ok_get_wishlist`·`_failing_get_wishlist`)
+
 ## [2026-08-06] 테스트 스위트 실행 중에 커밋하면 eval 결정론 테스트가 깨진다
 - 증상: `uv run pytest` 를 백그라운드로 돌려 둔 채 그 사이에 `git commit` 을 했더니
   `tests/eval/test_personalization_eval.py::test_personalization_run_is_deterministic_across_environment_and_clock`

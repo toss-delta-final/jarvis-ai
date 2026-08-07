@@ -25,6 +25,20 @@
   ci 행(partial 인 combo-0038 포함)을 본다 — 기록 신선도 검사이지 미정의 동작의 스펙화가
   아니다. 변이 시험으로 경계를 확인했다: `finishReason` 변경은 가드를 깨뜨리고 `eventTypes`
   변경은 통과시킨다(둘 다 원복). 계약(api-spec) 무변경.
+- **#386 — 채팅으로 찜 목록 조회(`wishlist_view` intent 신설)** — "내가 뭐 찜했지?"가
+  `recommend`/`general` 로 새던 것을 고쳤다. 장바구니에는 `cart_view` 가 있는데 찜에만 조회가
+  없던 비대칭을 메운다. 배관(`spring_client.get_wishlist`(I-28)·`WishlistItem` 스키마)은 이미
+  있었고 **라우팅 의도와 응답 핸들러만 없었다** — api-spec §4.16 이 이 동작을 이미 규정하고
+  있었으므로 계약 개정은 없다(구현이 명세를 따라잡은 것, `docs/lessons.md` "명세가 규정한
+  동작이 구현되지 않은 채 지나갔다"의 재현). `stream_wishlist_view` 는 목록을 `token` 텍스트로만
+  답하고 상품 카드도 `action` 도 내지 않으며(경로 B), 항목별 구매 가능 상태 라벨은
+  `state_suffix` 를 재사용한다(#310). 신원 게이트는 `stream_cart_view`(게스트 허용)가 아니라
+  **형제 찜 핸들러**(`user_id is None` 하나로 게스트·익명 차단)를 따른다 — 찜은 회원 전용
+  (I-26/27/28, M-4)이라 cart 게이트를 베끼면 계약을 위반한다. 조회 실패는 `token` 안내 +
+  정상 `done` 이다(`action.type` 유니온에 조회 실패 어휘가 없다) — 변경 턴의 선행 조회라
+  `action(WISHLIST_REMOVE_FAILED)` 를 내는 `stream_wishlist_remove` 와 처분이 갈리는 지점이며,
+  개별 `except SpringUnavailableError` 는 형제 4개와 같은 규약이다(#368).
+  (api-spec §4.16 — 계약 불변, 구현 상태만 갱신)
 - **#380 — 과소지정 판정 축 실 LLM 실측 하네스 신설(`evals/underspecified_probe`)** — SPEC-
   UNDERSPECIFIED-336 §7.3 이 남긴 게이트 잔여 항목("실 LLM 이 판정 축을 실제 발화에서 얼마나
   정확히 산출하는지 실측하지 않았다")을 채운다. 30 앵커(cases.json 승계 7 + 신규 23) × N=8 =
@@ -207,6 +221,18 @@
   - **아직 안 되는 것 3가지 — 릴리스 노트만 보고 "이제 다 된다"로 읽지 말 것.** (1) **Spring 이 I-24~I-28 을 아직 구현 진행 중**이라 배포 전에는 이 발화들이 호출은 나가도 응답을 못 받아 실패 안내로 끝난다. (2) **FE `ChatAction` 유니온에 신규 8종이 아직 없다** — FE 수신부가 붙기 전에는 성공해도 화면에 반영되지 않는다. (3) **수량 변경(I-25)은 계약만 등재됐고 AI 는 미구현**이다(대응 이슈 없음, §4.13) — "3개로 바꿔줘"류 발화는 아직 아무 동작도 하지 않는다.
 
 ### Changed
+- **#386 — `evals/combo_matrix` 재생성(`datasetVersion` 2.0.0 → 3.0.0, 케이스 57 → 61)** —
+  `RouteDecision.intent` Literal 확장이 `test_intent_axis_matches_route_decision_literal` 을
+  깨뜨리므로(그러라고 있는 가드다) 매트릭스를 함께 갱신했다. greedy pairwise 가 pair 우주를
+  다시 보므로 케이스가 대거 재배치됐다(축 조합이 유지된 것은 18건). `wishlist_view` 는
+  `directedCase`(회원 × spring_timeout)를 포함해 ci 케이스 3건을 갖는다 — 조회 degrade 가
+  `action` 이 아니라 `token` 이라는 계약이 이 매트릭스에서 직접 관측된다. 번호에 의존하던
+  테스트 2개는 spec 의 성격(`kind`·`metric`·`mode`)으로 찾도록 고쳐, 재생성마다 번호를
+  따라다니는 일을 끝냈다.
+- **#386 — `evals/intent_probe` 에 찜 조회 축 신설(fixture v5 → v6, 79 → 85셀)** — 양성 3발화 +
+  음성 대조 3발화. **기존 축과 격리한 신규 축**(`wishlistViewPositive`·`wishlistViewNoSteal`·
+  `wishlistViewRouting`)으로 둬 legacy 축의 분모를 건드리지 않는다 — 그래야 커밋된 기준선과
+  "기존 라우팅이 안 깨졌는가"를 비교할 수 있고, 그 비교가 이 프로브를 돌리는 이유다.
 - **#394 — I-1 검색 재시도를 한시적으로 끈다(`spring_max_retries` 기본 1→0)** — 운영 실측
   (2026-08-06): I-1 이 `SEARCH_FAILED` 로 떨어진 요청은 Spring 이 실패한 게 아니라 200 인데
   3s 예산을 넘긴 지연이었다. 그 상태에서 재시도는 backoff 없이 성공했을 쿼리를 즉시 한 번 더
@@ -353,6 +379,14 @@
 
 ### Fixed
 - **#439 — 스트림 티켓 신원 discriminator XOR 규약이 운영에서 실제 발급되는 판매자 티켓을 전부 거부하던 문제(api-spec §2.3, v0.28.0)** — 종전 `_claims_to_identity`(jwks 레인)는 `role`과 `sub_type`이 함께 있으면 값과 무관하게 `401 TOKEN_INVALID`(`exactly one identity discriminator is required`)였다. BE `StreamTicketProvider` 실측과 CH-6 정본(2026-07-18 확정)을 확인한 결과 실제 발급 형식은 "`sub_type`은 모든 티켓 공통, 판매자만 `role="seller"`·`brandId` 추가"이며 판매자 티켓은 `sub_type="member"`를 항상 동반한다 — 즉 XOR 규약이 BE가 실제로 발급하는 판매자 티켓을 전부 거부하고 있었고, 이것이 운영 `/seller/chat 401`(#408이 사유 로깅을 넣은 바로 그 401)의 원인이었다. `sub_type`을 모든 티켓의 필수 클레임으로, `role`을 선택적 권한 클레임(있으면 exact `"seller"` + `sub_type="member"` 요구)으로 재정의해 XOR을 폐지했다 — `role="seller"`+`sub_type="member"` both-claims 티켓을 신규 수용하고, `sub_type` 없는 판매자 티켓만 종전 허용에서 `401`로 강화했다(CH-6 정본상 실존하지 않는 형식이라 와이어 영향 0). BE 확답에 따라 구매자 티켓에는 `role`을 싣지 않으므로 buyer role 값(`"buyer"` 등 추측 상수)은 신설하지 않았다. 401 사유 문자열은 `invalid sub_type claim`/`invalid seller role claim` 2종으로 정리했고 #408 로그 경로에 그대로 반영됨을 테스트로 확인했다. dev 레인(`AUTH_MODE=dev`)은 이번 개정 대상이 아니며 무변경이다.
+- **#386 — `evals/combo_matrix` 러너가 찜 조회(I-28)를 스텁하지 않아 정상 케이스도 실패를
+  관측하던 문제** — 담기 계열과 달리 `get_wishlist` 는 `degrade=none` 에서도 호출되는데 패치가
+  없어, 로컬에 Spring 이 없으면 실 네트워크 호출이 실패해 관측이 환경에 따라 뒤집혔다. 조회
+  계열은 늘 패치하고 실패 주입 예외는 실 어댑터 규약대로 `SpringUnavailableError` 를 쓴다(#376).
+- **#386 — DIR 쌍(하드필터 추가 → 결과 비증가)이 공허하게 통과하던 문제** — 재생성으로 흔드는
+  축이 `category` → `price_min` 으로 바뀌었는데 `PAIR_CATALOG` 4건 가격이 전부 3만원 이상이라
+  필터를 태워도 `base=3 · perturbed=3` 이었다. #371 이 `category` 대조군을 넣은 것과 같은
+  방식으로 3만원 미만 상품 1건을 더해 해소했다.
 - **#391 — `embed_texts` 총 소요가 청크 수만큼 무제한 누적될 수 있던 문제(#353 후속)** — `embedding_timeout_s` 는 청크(HTTP 요청) 1건당 상한이라, 100건을 넘는 입력이 여러 청크로 나뉘면 `embed_texts` 한 번의 총 소요가 `청크 수 × embedding_timeout_s` 까지 누적될 수 있었다. 방식2(`embedding_rerank`)가 hot path 기본이라 이 누적은 SSE first-token 예산을 잠식하는데도, 종전엔 함수 단위 총 시간 상한이 코드로 강제되지 않고 docstring 주의문에만 의존했다. 신규 `embedding_total_timeout_s`(기본 3.0s, `embedding_timeout_s` 절 안)로 `embed_texts` 호출 1회 전체의 벽시계 예산을 두고, 첫 청크는 예산과 무관하게 항상 시도하되 두 번째 이후 청크는 내기 전에 `경과 + embedding_timeout_s > 예산` 이면 청크를 내지 않고 `EmbeddingError` 를 던진다(부분 결과 금지 — 호출부가 `zip(..., strict=True)` 등 위치 기반으로 인덱싱해 짧은 결과는 조용한 오정렬을 낳는다) — 기존 degrade 경로(`EmbeddingRerankBackend` → Spring 순서, #101/#7)로 자연히 이어진다. 오프라인 1회 빌드(`category_seed.seed_from_file`, 카테고리 leaf 2056건 → 21청크)는 `embed_texts(..., total_timeout_s=math.inf)` 로 이 예산을 명시 제외한다. 계약(api-spec) 무변경.
 - **#383 — 기동 가드 `_deferred_first_event_i1_calls` 가 구제 폴백 한 단을 과소계상하던 문제(#363 followup)** — #363 이 실측으로 고정해 둔 불일치(가드 모델 2 ≠ 실측 구제 체인 단 수 3, `test_fanout.py` `test_worst_case_rescue_chain_sequential_stages_before_first_sse`)를 §5 가 제안한 보정식으로 해소했다. `1 + (1 if category_expand_enabled else 0) + min(relaxation_max_rounds, |relaxation_auto_fields ∩ relaxation_chip_fields|)` — F-1(#222)에는 별도 kill-switch가 없어 `category_expand_enabled`(기본 `True`)가 F-1·#343 둘의 공통 전제를 잠그고, 둘은 `category_expand_notice_suppressed` 로 상호배타라 한 턴 최대 1회이므로 항이 아니라 존재 여부만 더한다(`search_filter_guard_enabled`(#393)는 무필터 축 0개 턴만 스킵하므로 이 항을 없애지 않는다 — 항에 넣지 않았다). 기본 설정 값은 2 → **3**이 되고(`3 × 3.0 = 9.0 < 10.0`, 기동 통과), 오류 메시지 `recovery` 문구에 새 손잡이 `CATEGORY_EXPAND_ENABLED=false`를 추가했다. 배포 영향은 실측으로 배제했다 — `.github/workflows/deploy.yml`이 운영 env 파일을 매 배포마다 고정 키 목록으로 전면 재작성하는데 그 목록에 `SPRING_TIMEOUT_S`·`CATEGORY_EXPAND_ENABLED`·`RELAXATION_*`는 없어 운영은 코드 기본값으로 돈다. 런타임 동작(`graph.py`)·기본값·계약(api-spec) 무변경 — 기동 시점 검증식만 고쳤다. **PR #414 Claude 리뷰 대응**: 세 항을 균질하게 `spring_timeout_s` 로 값 매기면 구제 폴백 항을 과소평가한다는 지적을 코드로 재현·확인했다 — `graph.py::stream_recommendation` 에서 `spring_client.suppress_search_retry()` 로 재시도를 끄는 `with` 블록은 본 검색(`asyncio.gather` 호출)과 자동완화 probe(`_probe(cand)`) 를 감싼 두 곳뿐이고, F-1/#343 구제 재검색(같은 함수의 `_run_search_unfiltered()` 호출 두 곳 — F-1 폴백·억제-후 재판정)은 그 블록 밖이라 `spring_client.py::search` 의 `attempts = 1 if _search_retry_suppressed.get() else settings.spring_max_retries + 1` 를 그대로 받아 항상 재시도한다(`SPRING_MAX_RETRIES=1` + 기본 타임아웃이면 가드 계산 9.0<10.0 이 통과시키지만 실제 최악은 3.0+3.0+3.0×2=12.0>10.0). 가드 OFF(기본) 분기를 `suppressed_calls × spring_timeout_s + rescue_calls × budget`(신설 순수 함수 `_deferred_first_event_rescue_i1_calls` 가 구제 항만 뗀다, `rescue ≤ total`·`total==0→rescue==0` 불변식 보장)로 항별로 나눠 값을 매기도록 고쳤다. `.env.example` 의 `SPRING_MAX_RETRIES` 예시값도 1 → **0**으로 정정했다(코드 기본값이 이미 0, #394) — 예시 그대로 부팅하면 새 식에서 기동이 거절되던 상태였다. 오늘 기본값(`spring_max_retries=0`)에서는 `budget == spring_timeout_s` 라 항별 값 매김이 갈리지 않아 영향 없음(9.0 그대로).
 - **#325 — I-17 증분 배치가 enrichment 토큰 예산 소진(`openai.LengthFinishReasonError`)으로 운영 정지되던 문제** — 운영 fast tier(gpt-5-nano, reasoning 모델)에서 하드코딩 `max_tokens=600` 전량이 `reasoning_tokens`로 소진돼 본문 0자로 매 5분 주기 정지했다. `enrichment_max_tokens`(기본 2048)·`enrichment_reasoning_effort`(기본 minimal, 배포 변수 `OPENAI_FAST_REASONING_EFFORT` 와 무관하게 고정) 를 config 로 주입하고 `LLMClient.complete` 에 keyword-only `reasoning_effort` 파라미터를 추가했다(OpenAI 캐시 키에 override 포함해 캐시 오염 방지, Anthropic 은 무시). 함께 `artifacts_batch._drain` 의 head-of-line blocking 도 고쳤다 — ON_SALE 단건 실패는 `enrichment_item_attempts`(기본 2) 회 재시도 후 dead-letter 기록으로 격리하고 다음 항목으로 계속하며, 페이지 실패 비율이 `artifacts_batch_failure_ratio_threshold`(기본 0.5) 이상이면(광역 장애로 간주) `PageFailureThresholdExceeded` 를 던져 그 페이지 커서만 미전진(자연 복구)한다. 단, 운영 증분 페이지는 대개 1~3건이라 표본이 `artifacts_batch_failure_min_sample`(기본 5) 미만이면 비율 판정을 생략하고 격리+전진한다 — poison 단건과 광역 장애를 소량 표본만으로 구별할 수 없기 때문이며, 이 가드가 없으면 운영에서 가장 흔한 "문제 상품 1건" 상황에서 ratio=1.0 으로 여전히 head-of-line blocking 이 재현됐다. HIDDEN 삭제 실패는 격리하지 않고 그대로 전파(fail-closed 유지). `BatchResult.failed` 신설, scheduler·run_batch 요약 로그·failed>0 시 별도 ERROR 로그로 관측 사각을 없앴다. **PR #399 리뷰 대응(정밀화)**: 소량 표본에서는 비율 가드가 사실상 죽은 코드가 돼 광역 장애(임베딩 API 다운 등)까지 매번 poison 단건으로 오분류될 수 있음이 지적됐다 — 격리 후보를 enrichment(LLM 호출+파싱) 단계의 내용 실패로 구조적으로 한정하고, 임베딩·스토어 실패와 재시도 소진 후 타임아웃 계열(`app.core.llm.is_timeout_error`)로 판정된 enrichment 실패는 격리하지 않고 그대로 전파하도록 고쳐, 페이지 크기와 무관하게 광역 장애를 자연 복구 경로로 보낸다. 비율 가드는 이제 2선 방어. **PR #399 리뷰 2차 대응(시간 유계)**: 위 "종류로 가른다" 규칙의 대칭적 구멍 2건이 지적됐다 — (1) 특정 상품에서만 결정적으로 재현되는 poison 타임아웃은 재시도를 다 써도 격리되지 않아 매 주기 같은 자리에서 영원히 실패했고, (2) `_finish_change`(embed·upsert) 실패를 무조건 인프라로 규정해 실제로는 그 상품 하나의 콘텐츠 문제(예: enrichment 산출 `extras`가 `embedding_meta_complete` CHECK 위반)일 수 있는 결정적 실패도 영구히 막혔다. 광역 장애와 항목 고유 결정적 실패는 단일 주기 관측만으로는 원리적으로 구별 불가하다는 것이 진단이었다 — 실제로 갈리는 신호는 시간(연속 주기 수)이다. 상품별 연속 실패 스트릭(모듈 메모리, 주기 간 유지, 성공 시 리셋)을 신설해 `artifacts_batch_item_dead_letter_cycles`(기본 3주기 ≈ 15분) 미만이면 종전대로 전파(자연 복구)하고, 도달하면 항목 고유 실패로 확정해 dead-letter 격리한다. enrich 내용 실패(1선)는 정의상 항목 고유이므로 스트릭 판정 없이 즉시 격리하는 종전 동작을 유지한다. 스트릭은 프로세스 재시작 시 리셋되는 인메모리 카운터(영속화는 범위 밖)이며, 스케줄러 잡의 `max_instances=1`·단일 프로세스 전제로 충분하다. 비율 가드는 이제 3선 방어. **PR #399 리뷰 3차 대응(3선도 시간 유계)**: 위 시간 유계가 2선에만 걸려 있어, 1선이 특정 카테고리 상품들의 프롬프트 회귀로 다건을 매 주기 즉시 격리하면(스트릭을 쌓지 않고 pop) 2선 상한이 걸리지 않고, 페이지 실패율은 매 주기 똑같이 임계를 넘어 `PageFailureThresholdExceeded` 가 반복돼 커서가 영원히 전진하지 않는 구멍이 지적됐다 — 3선이 원래 잡으려던 바로 그 케이스(대량 내용 파손)에서 #325 증상이 재현되는 셈이다. 같은 커서(그 페이지를 가져온 fetch 값)에서 비율 가드가 연속 발동한 횟수를 세는 모듈 카운터(프로세스 메모리, 주기 간 유지, 페이지 정상 종료 시 리셋)를 신설해 `artifacts_batch_page_failure_max_cycles`(기본 3주기 ≈ 15분) 미만이면 종전대로 전파(자연 복구)하고, 도달하면 대량 파손이 자연 회복되지 않는 것으로 확정해 그 페이지를 격리(항목들은 이미 1·2선에서 dead-letter 기록됨) 후 커서를 전진시킨다. `HIDDEN` 삭제 실패·`status` 계약 위반은 항목별 ack/DLQ 계약이 없어 이 시간 유계의 대상에서 제외되며 종전대로 무기한 fail-closed 다(api-spec §4.8 명시). **PR #399 리뷰 4차 대응(콘텐츠 실패 화이트리스트)**: 1선 판정("타임아웃이면 2선, 아니면 1선")이 블랙리스트라 `is_timeout_error` 가 모르는 예외(`openai.RateLimitError` 429·`APIConnectionError`·`InternalServerError` 5xx 등 흔한 일시적 인프라 장애)가 전부 콘텐츠 실패로 오분류돼 첫 주기에 곧바로 영구 격리됨이 지적됐다 — R4·R5 가 만든 시간 유계 보호를 흔한 장애가 통째로 우회하는 구멍이었다. `app.core.llm.is_output_length_error`(출력 토큰 예산 소진 전용, `is_timeout_error` 판정 범위는 불변)와 `artifacts_batch._is_enrichment_content_failure` 화이트리스트를 신설해 판정 방향을 뒤집었다 — **1선(즉시 격리)은 증명된 콘텐츠 실패(출력 예산 소진, 원인 없는/ValueError·TypeError 원인의 LLMError)에만 적용하고, 그 외 전부(모르는 실패 포함)는 2선(시간 유계 스트릭)으로 보낸다.** `LLMNotConfigured` 는 `LLMError` 하위타입이지만 항목과 무관한 구성 오류라 화이트리스트에서 명시적으로 제외했다. 복구 규약 변경을 반영해 계약(api-spec §4.8, v0.27.1 — 새 버전 행 없이 같은 개정 정밀화) 갱신.
