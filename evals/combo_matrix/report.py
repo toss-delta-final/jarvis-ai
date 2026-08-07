@@ -159,7 +159,9 @@ def generate_undefined_cells_md(write: bool = True) -> str:
     cases_by_id = {c.case_id: c for c in load_cases()}
     text = render_undefined_cells(rows, cases_by_id)
     if write:
-        UNDEFINED_CELLS_PATH.write_text(text, encoding="utf-8")
+        # LF 고정 — 저장소 표준(`.gitattributes`)이자, CRLF 로 쓰면 재생성한 사람의 워킹카피만
+        # 커밋본과 달라진다(`evals/combo_matrix/__main__.py::regenerate` 주석 참조).
+        UNDEFINED_CELLS_PATH.write_text(text, encoding="utf-8", newline="\n")
     return text
 
 
