@@ -1230,6 +1230,89 @@ def test_load_seed_rows_accepts_term_and_canonical_without_whitespace(tmp_path) 
     assert rows == [seed.SeedColorTermRow("블랙", "블랙", "approved", "human", 1)]
 
 
+def test_load_seed_rows_rejects_norm_collision_between_distinct_terms(tmp_path) -> None:
+    """casefold 만 다른 두 원문 term(예: Walnut/WALNUT)이 둘 다 self-canonical approved 로
+    통과하면 build_synonym_map 이 `mapping[_norm(term)]` 키를 나중 term 으로 조용히 덮어써
+    먼저 term 의 동의어 목록이 사라진다(PR #447 리뷰 R6) — 원문 완전일치(seen_terms)와는
+    별개 불변식이라 둘 다 검사해야 한다."""
+    path = _write_seed_json(
+        tmp_path,
+        [
+            {
+                "term": "Walnut",
+                "canonical": "Walnut",
+                "status": "approved",
+                "provenance": "human",
+                "doc_count": 5,
+            },
+            {
+                "term": "WALNUT",
+                "canonical": "WALNUT",
+                "status": "approved",
+                "provenance": "human",
+                "doc_count": 3,
+            },
+        ],
+    )
+
+    with pytest.raises(ValueError, match="_norm 기준 term 충돌"):
+        seed.load_seed_rows(path)
+
+
+def test_load_seed_rows_accepts_terms_with_distinct_norm_values(tmp_path) -> None:
+    """정상 회귀 — `_norm` 이 서로 다른 term 들은 통과해야 한다."""
+    path = _write_seed_json(
+        tmp_path,
+        [
+            {
+                "term": "블랙",
+                "canonical": "블랙",
+                "status": "approved",
+                "provenance": "human",
+                "doc_count": 100,
+            },
+            {
+                "term": "Walnut",
+                "canonical": "Walnut",
+                "status": "approved",
+                "provenance": "human",
+                "doc_count": 5,
+            },
+        ],
+    )
+
+    rows = seed.load_seed_rows(path)
+
+    assert {row.term for row in rows} == {"블랙", "Walnut"}
+
+
+def test_load_seed_rows_exact_duplicate_term_still_raises_seen_terms_message(tmp_path) -> None:
+    """원문 완전 중복은 여전히 기존 "term 중복" 메시지로 잡혀야 한다(R2 회귀 방지) —
+    _norm 충돌 검사를 추가해도 seen_terms 검사가 먼저 발화한다."""
+    path = _write_seed_json(
+        tmp_path,
+        [
+            {
+                "term": "블랙",
+                "canonical": "블랙",
+                "status": "approved",
+                "provenance": "human",
+                "doc_count": 100,
+            },
+            {
+                "term": "블랙",
+                "canonical": None,
+                "status": "pending_review",
+                "provenance": "seed_llm_assignment",
+                "doc_count": 1,
+            },
+        ],
+    )
+
+    with pytest.raises(ValueError, match="term 중복"):
+        seed.load_seed_rows(path)
+
+
 def test_upsert_seed_sql_is_authoritative_not_review_protected() -> None:
     """검수 보호 CASE 가드(UPSERT_COLOR_TERM_SQL)와 달리, 시드 upsert는 파일 값을 그대로 반영한다."""
     sql = seed.UPSERT_SEED_COLOR_TERM_SQL

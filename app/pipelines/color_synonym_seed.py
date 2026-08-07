@@ -1167,6 +1167,23 @@ def load_seed_rows(path: str | Path) -> list[SeedColorTermRow]:
                 f"{target.canonical!r}"
             )
 
+    # DB UNIQUE(term)(위 seen_terms)은 원문 기준이고, 이건 다른 불변식이다 —
+    # app.pipelines.color_synonyms.build_synonym_map 이 `mapping[_norm(term)] = ordered.copy()`
+    # 로 키를 만들므로, 서로 다른 원문 term 두 개가 같은 _norm 이면 나중 그룹이 먼저 그룹을
+    # 조용히 덮어써 먼저 term 의 동의어 목록이 사라진다(예외·로그 없음, PR #447 리뷰 R6).
+    # 두 검사는 대체가 아니라 공존해야 한다. scripts/derive_color_synonym_seed.py::apply_overlay
+    # 가 수확 집합 기준으로 같은 _norm 충돌 검사를 한다 — 여기는 시드 파일 기준의 대응물이다.
+    # 정규화는 런타임 build_synonym_map 의 키와 절대 갈라지면 안 되므로 복사하지 않고
+    # color_synonyms._norm 을 그대로 가져다 쓴다.
+    norm_seen: dict[str, str] = {}
+    for row in rows:
+        key = color_synonyms._norm(row.term)
+        if key in norm_seen and norm_seen[key] != row.term:
+            raise ValueError(
+                f"색상 동의어 정본 시드 _norm 기준 term 충돌: {norm_seen[key]!r} vs {row.term!r}"
+            )
+        norm_seen[key] = row.term
+
     return rows
 
 
