@@ -347,12 +347,6 @@
 
 ### Fixed
 - **#439 — 스트림 티켓 신원 discriminator XOR 규약이 운영에서 실제 발급되는 판매자 티켓을 전부 거부하던 문제(api-spec §2.3, v0.28.0)** — 종전 `_claims_to_identity`(jwks 레인)는 `role`과 `sub_type`이 함께 있으면 값과 무관하게 `401 TOKEN_INVALID`(`exactly one identity discriminator is required`)였다. BE `StreamTicketProvider` 실측과 CH-6 정본(2026-07-18 확정)을 확인한 결과 실제 발급 형식은 "`sub_type`은 모든 티켓 공통, 판매자만 `role="seller"`·`brandId` 추가"이며 판매자 티켓은 `sub_type="member"`를 항상 동반한다 — 즉 XOR 규약이 BE가 실제로 발급하는 판매자 티켓을 전부 거부하고 있었고, 이것이 운영 `/seller/chat 401`(#408이 사유 로깅을 넣은 바로 그 401)의 원인이었다. `sub_type`을 모든 티켓의 필수 클레임으로, `role`을 선택적 권한 클레임(있으면 exact `"seller"` + `sub_type="member"` 요구)으로 재정의해 XOR을 폐지했다 — `role="seller"`+`sub_type="member"` both-claims 티켓을 신규 수용하고, `sub_type` 없는 판매자 티켓만 종전 허용에서 `401`로 강화했다(CH-6 정본상 실존하지 않는 형식이라 와이어 영향 0). BE 확답에 따라 구매자 티켓에는 `role`을 싣지 않으므로 buyer role 값(`"buyer"` 등 추측 상수)은 신설하지 않았다. 401 사유 문자열은 `invalid sub_type claim`/`invalid seller role claim` 2종으로 정리했고 #408 로그 경로에 그대로 반영됨을 테스트로 확인했다. dev 레인(`AUTH_MODE=dev`)은 이번 개정 대상이 아니며 무변경이다.
-- **#386 — 찜 조회 발화가 `wishlist_remove` 로 오분류되면 찜이 실제로 삭제되던 결함** —
-  `_resolve_wishlist_remove_target` 의 규칙 2·3(문맥 id·목록 1건 자동 선택)은 사용자가 이름을
-  대지 않은 대상을 코드가 고르는 규칙이라, "찜 목록 보여줘"가 해제로 라우팅되고 찜이 1건이면
-  **요청하지 않은 항목이 해제**됐다(가드 제거 상태로 재현 확인). 오분류의 대가가 비대칭이므로
-  (반대 방향은 목록만 보여주고 끝) 조회 표지(`wishlist_view_markers`, 어미까지 갖춘 동사구만)가
-  있고 해제 표지가 없으면 자동 선택하지 않고 되물음으로 내린다.
 - **#386 — `evals/combo_matrix` 러너가 찜 조회(I-28)를 스텁하지 않아 정상 케이스도 실패를
   관측하던 문제** — 담기 계열과 달리 `get_wishlist` 는 `degrade=none` 에서도 호출되는데 패치가
   없어, 로컬에 Spring 이 없으면 실 네트워크 호출이 실패해 관측이 환경에 따라 뒤집혔다. 조회
