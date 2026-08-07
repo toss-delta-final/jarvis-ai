@@ -672,9 +672,44 @@ async def run_buyer_turn(
     thread_store = await get_thread_store()
     prior = await thread_store.get(thread_key)
     condition_actions = getattr(request, "condition_actions", None) or []
+    # [#442] buyer_chat_turn metadata(`SAFE_METADATA_KEYS`)에는 축 이름을 얹지 않는다 — 아래
+    # 결정 로그 한 줄로 이미 관측되고, 화이트리스트 개정은 트레이스 metadata 계약 표면을 넓힌다
+    # (관측 값어치 < 계약 표면 증가). 판단 재검토가 필요하면 이 코드가 아니라 이슈에서 다시 논의.
+    if condition_actions and prior is None:
+        # 칩이 떠 있었다면 prior 가 있어야 정상이라 이 조합 자체가 신호다(#442) — 스레드 만료·
+        # 첫 턴일 수 있어 동작은 바꾸지 않는다(지울 대상이 없으니 무시가 맞다). 레벨은 info
+        # (정상 경로일 수 있다).
+        logger.info(
+            "condition_actions_skipped_no_prior",
+            extra={
+                "requested_fields": [action.field for action in condition_actions],
+                "request_id": resolved_request_id,
+            },
+        )
     if prior is not None and condition_actions:
+        # 값(가격·브랜드·카테고리 문자열)은 싣지 않는다 — 이 파일의 기존 규약(#119 PII), 축은
+        # 계약상 6종으로 닫힌 열거값이라 이름만 실어도 안전하다.
+        # "실제로 비워진 축"은 요청 필드에서 예측하지 않는다(#442) — 호출 전/후 값을 비교해서
+        # 낸다. 예측식으로 짜면 _remove_condition_actions 가 통째로 죽어도 로그가 똑같이 나온다.
+        requested_fields = [action.field for action in condition_actions]
+        before = prior
         # conditionActions 반영 — 제거된 축을 prior 에서 실제로 비운다(§3.1).
         prior = _remove_condition_actions(prior, condition_actions)
+        cleared_fields = [
+            action.field
+            for action in condition_actions
+            if getattr(before, CONDITION_FIELD_TO_FILTER[action.field]) is not None
+            and getattr(prior, CONDITION_FIELD_TO_FILTER[action.field]) is None
+        ]
+        logger.info(
+            "condition_actions_applied",
+            extra={
+                "requested_fields": requested_fields,
+                "cleared_fields": cleared_fields,
+                "no_op": not cleared_fields,
+                "request_id": resolved_request_id,
+            },
+        )
         # 추천 외 intent 로 라우팅돼도 다음 턴에 제거한 칩이 되살아나지 않게 즉시 영속한다.
         await thread_store.put(thread_key, prior)
 
