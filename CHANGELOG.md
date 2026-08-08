@@ -10,6 +10,20 @@
 ## [Unreleased]
 
 ### Added
+- **#462 — 취향 추출 골든셋 하네스(`evals/taste_probe/`) 신설, 미탐율·오탐율·trivial baseline
+  최초 산출** — #356 이 만든 구조화 트리플 추출 경로(`generate_session_delta` → `should_promote`
+  → `resolve_triple`)가 재는 대상인데, `scripts/probe_delta_prompt_356.py` 는 정답 라벨 없이
+  잴 수 있는 것(승격률·kind 분포)만 쟀다 — "몇 개 뽑았나"는 알아도 "맞게 뽑았나"는 몰랐다. 30세션
+  골든셋(kind 7종 커버리지·polarity 쌍·반복·선호→회피 전환·잡담 오탐 슬라이스, v2026-08-08.2)에
+  세션당 N회 실 LLM 반복으로 `recall`(primary)·`noiseFalsePositiveRate`·`nodeIdAgreement`(사전
+  등록 2차)·`missRate`·`falsePositiveRate`·`sessionExactSet`(exploratory)를 매기고,
+  `resolverDroppedByKind`·`legacySchemaNoKind`·`factDedupCollapsed`·kind/predicate 오분류
+  행렬로 미탐 원인(프롬프트/게이트/resolver 중 어디)을 가른다. 판정(게이트·resolver·정규화·
+  식별자 산출)은 전부 프로덕션 함수를 import 해 그대로 부른다(판정 복제 0, #380 규약). CI 는
+  가짜 LLM·가짜 카탈로그로 실 LLM/pg 콜 0(`tests/unit/test_taste_probe_{schema,runner,metrics,
+  cli}.py`). **이 개발 환경에는 유효한 LLM provider 가 없어(OpenAI 크레딧 소진·Anthropic 키
+  무효, 둘 다 실측 확인) 실 LLM 기준선 산출물은 아직 커밋되지 않았다** — 재현 오류 문면과
+  생성 절차는 `evals/taste_probe/baselines/README.md` 참조. 계약(api-spec) 무변경.
 - **#432 — 과소지정 프로브에 union 측정 모드를 넣어 전개 후 판정까지 잰다** — 기존
   `evals/underspecified_probe` 는 decompose 직후·판정 직전 형상만 쟀다. `--union`(기본 off)을
   켜면 `app.agents.buyer.graph._prepare_recommendation`(카테고리 매핑 + `needs_expansion`
