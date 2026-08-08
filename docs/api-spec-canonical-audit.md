@@ -35,7 +35,7 @@
 | 18 | I-19 GET /internal/orders | §4.7 | 2026-07-31 | 정합 | 주문 조회 형상 정합 | — | 유지 |
 | 19 | I-20 POST /events/session-end | §3.5 | 2026-07-31 | 드리프트 | reason 알려진 값이 logout/inactivityTimeout이며 newConversation은 API 사유가 아님 | ① 사본이 낡음(동기화) + ② 코드 변경까지 필요 | §3.5 반영, SessionEndEvent 후속 |
 | 20 | I-21 POST /internal/recommendations | §4.2 | 2026-08-07 | 드리프트 | 400 필수값 표에 listType·recommendationRequestId 누락 | ① 사본이 낡음(동기화) | §4.2 반영 |
-| 21 | I-22 POST /internal/recommendations/home | §3.7 | 2026-08-07 | 정합 | catalogVersion 관대 수신과 한도 정합 | — | 유지 |
+| 21 | I-22 POST /internal/recommendations/home | §3.7 | 2026-08-07 | 정합 | catalogVersion 관대 수신과 한도는 정합; 정본 DB 메모에는 P-5 구현 시 `recentlyViewedProductIds` 최신순 보장 관찰 항목이 남아 있음 | ③ 정본이 우리에게 물어본 미해결(우리가 답할 것) | P-5 구현 시 최신순 보장을 Spring과 확인(순서가 뒤집히면 recency decay가 역전됨) |
 | 22 | I-23 POST /events/session-claim | §3.5 | 2026-07-31 | 정합 | 세션 귀속 계약 정합 | — | 유지 |
 | 23 | I-24 DELETE /internal/cart/items/{cartItemId} | §4.12 | 2026-08-07 | 드리프트 | 성공 삭제의 remove_from_cart server-side 적재 미기록 | ① 사본이 낡음(동기화) | §4.12 반영 |
 | 24 | I-25 PATCH /internal/cart/items/{cartItemId} | §4.13 | 2026-08-07 | 정합 | 수량 변경 계약 정합 | — | 유지 |
@@ -67,6 +67,19 @@
 | 정본 인용/요지 | 사본 당시 상태 | 이번 조치 |
 |---|---|---|
 | I-21: 400 필수 필드는 sessionId, recommendationRequestId, listId, listType, productIds | §4.2가 sessionId/listId/productIds만 열거 | 누락 두 필드를 §4.2 표에 추가 |
+| I-1: 리뷰 0건은 `rating: 0.0`, `reviewCount: 0`; 실패 응답과 실패가 아닌 경우를 구분 | §4.6에 리뷰 0건 규약·실패 응답표·실패 아님 표가 없음 | §4.6 응답/실패 표와 규약을 정본대로 보완 |
+| I-1: `brandName` 다중 값은 하나라도 일치하면 후보에 포함; 부분일치만 정본의 질문 | §4.6에 다중 `brandName`의 확정 의미와 부분일치 질문의 경계가 불명확 | §4.6에 BE `WHERE brand IN (...)` OR 매칭을 반영하고, 부분일치만 ③ 답변으로 분리 |
+| I-6: `salesCount`는 판매 수량(`SUM(oi.quantity)`) | §4.4 응답에 `salesCount`가 없음 | §4.4 응답표에 필드를 추가 |
+| I-8: 브랜드 스코프 경로, `suspiciousMemberCount`·`scope=brand` 신설; `isSuspicious`·`failCount`·`nullMemberRatio` 제거 | §4.4가 전역 경로와 구 필드를 노출 | 브랜드 스코프/신규 필드를 반영하고 구 필드 3종을 제거 |
+| I-13: `remove_from_cart`, `salesQuantity`, dwell 4필드와 rows 합산 규칙 | §4.4에 eventType 1종·판매 수량·체류시간 필드가 없음 | 5종 eventType, `salesQuantity`, dwell 4필드와 합산 규칙을 추가 |
+| I-14: `customerLabel` HMAC 문자열, `orderItemId`, 브랜드 스코프 | §4.4가 구 식별자와 스코프를 유지 | `customerLabel`·`orderItemId`를 반영하고 브랜드 스코프로 축소 |
+| I-16: `customerLabel`, `lastLoginAt` 제거, 빈 cohort의 `churnRate=null` | §4.4가 제거된 로그인 필드와 구 cohort 의미를 노출 | 제거·null 의미를 정본대로 정리 |
+| I-17: 숫자 `brandId` 추가 | §4.8 응답에 `brandId`가 없음 | §4.8 응답표에 `brandId`를 추가 |
+| I-20: `reason`의 알려진 값은 `logout`·`inactivityTimeout` | §3.5가 `newConversation`을 API 사유로 서술 | §3.5 어휘를 정본 값으로 교체 |
+| I-9~I-12: 삭제 상태는 `DELETED`, 삭제는 HIDDEN→DELETED 전환 | §4.5가 구 HIDDEN 삭제 상태를 사용 | 목록·등록·수정·삭제 규약을 `DELETED`로 정렬 |
+| P-5: `source`는 `PERSONALIZED`/`NOT_PERSONALIZED`; 후자는 추천 컴포넌트를 렌더하지 않음 | §3.7·§4.11에 구 source 값과 fallback 렌더 규칙이 남음 | 구 값을 제거하고 명명·미렌더 규칙을 반영 |
+| E-1: FE 11종+server 3종=14종, add/remove producer와 `pageType` 변경 | §3.1/§5.1에 이벤트 집합·생산자 요지가 낡음 | 정본 요지를 노트에 반영하고 생산자 구현은 ② 후속으로 분리 |
+| CH-2: `budget`은 v0.15.26에서 정본 제외된 미구현 post-MVP 예시 | §3.1 예시와 §6.1 dispatch 목록이 서로 모순 | §3.1에 제외 단서를 붙이고 §6.1 dispatch 목록에서 제거 |
 | I-24: 삭제 성공 뒤 Spring이 remove_from_cart를 server-side 적재 | §4.12에 producer가 없음 | §4.12 성공 규약에 적재 주체 추가 |
 | I-26~I-28: internal 호출은 403을 반환하지 않음 | §4.14~4.16에 AUTH_FORBIDDEN 행/설명 존재 | 세 403 표기를 제거 |
 | I-29~I-31: confirmed and implemented | §4.18~4.20이 초안·BE 협의 전 | 각 제목과 안내문을 확정·구현 완료로 갱신 |
@@ -92,7 +105,7 @@
 
 ### I-1 brandName 부분일치
 
-답변 초안: 부분일치는 BE가 정규화·이스케이프한 뒤 명시적으로 허용할 때만 적용하고, 배열의 각 brandName은 AND로 해석한다. unknown 값은 무시하되 전부 unknown이면 0건으로 하며, AI는 동의어를 임의 확장하지 않는다.
+답변 초안: 부분일치만 BE가 정규화·이스케이프한 뒤 명시적으로 허용할지 확인 부탁드립니다. 정본 확정분으로 `brandName` 배열은 OR로 해석하고 unknown 값은 무시하며, 전부 unknown일 때만 0건입니다.
 
 ### I-32~I-37 개인화 그래프
 
