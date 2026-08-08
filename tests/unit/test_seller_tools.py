@@ -1286,8 +1286,139 @@ async def test_behavior_tool_caps_product_rows_with_tail_totals() -> None:
 
     assert "상품별 10건" in result  # 상한 = seller_summary_max_products
     assert "[209] 상품9" in result and "[210]" not in result  # 11번째부터 접힘
-    # 꼬리 = 11·12번째 행 합계: 조회 20+10, 담기 2+1, 결제시작 2+2, 구매 0.
-    assert "외 2건(저활동) 합계: 조회 30 담기 3 결제시작 4 구매 0" in result
+    # 꼬리 = 11·12번째 행 합계: 조회 20+10, 담기 2+1, 삭제 0, 결제시작 2+2, 구매 0.
+    # [#489] removeFromCart 편입으로 4종 → 5종 — 키 목록은 _BEHAVIOR_COUNT_KEYS 단일 출처.
+    assert "외 2건(저활동) 합계: 조회 30 담기 3 삭제 0 결제시작 4 구매 0" in result
+    # 전 행 salesQuantity=None(미조회) 이면 수량 꼬리 합계는 아예 붙지 않는다 —
+    # null 을 0 으로 섞어 "0개 팔림"으로 오독시키지 않는다.
+    assert "판매 0개(" not in result
+
+
+async def test_behavior_tool_shows_new_row_fields() -> None:
+    """[#489] 상품 행에 removeFromCart·salesQuantity·체류시간이 함께 실린다.
+
+    개정 전에는 AI 가 판매 수량에 도달할 경로가 하나도 없었다 — 수신만 하고 표기하지
+    않으면 데드 필드라 이슈 목적이 절반만 달성된다.
+    """
+    fake = FakeSpringClient()
+    fake.behavior_result = BehaviorEventsResult(
+        group_by="product",
+        rows=[
+            BehaviorProductRow(
+                product_id=101,
+                product_name="에어 러너 2",
+                counts={
+                    "productView": 1820,
+                    "addToCart": 240,
+                    "removeFromCart": 35,
+                    "checkoutStart": 96,
+                    "purchaseComplete": 61,
+                },
+                sales_quantity=74,
+                median_dwell_seconds=42.0,
+                avg_dwell_seconds=71.3,
+                dwell_sample_count=1180,
+                dwell_source="next_event",
+                view_to_cart_rate=0.132,
+                unique_visitors=1503,
+            )
+        ],
+        total=1,
+    )
+
+    result = await _call_runtime_tool(
+        get_behavior_events, {"from_date": "2026-07-01", "to_date": "2026-07-14"}, fake
+    )
+
+    assert "삭제 35" in result  # 4종 → 5종 편입분
+    assert "판매 74개" in result  # 수량 — 구매 61건과 단위가 다르다
+    assert "체류 중앙 42초·평균 71초(n=1180)" in result  # median 이 주 지표라 앞
+    # dwellSource 한계는 행마다 반복하지 않고 요약 말미에 1회 각주로.
+    assert result.count("세션의 마지막 조회가 표본에서 빠진다") == 1
+    # 수량 권위 문구 — purchaseComplete 경고가 신설 지표까지 싸잡아 불신시키지 않게.
+    assert "판매 **수량**의 권위는 같은 행의 salesQuantity" in result
+
+
+async def test_behavior_tool_distinguishes_zero_and_null_sales_quantity() -> None:
+    """[#489] salesQuantity 0("안 팔림")과 null("미조회")을 절대 뭉개지 않는다.
+
+    `x or '-'` 같은 falsy 축약을 쓰면 0 이 '-' 로 뭉개져 churn_rate 에서 잡았던
+    silent-mismatch(#197)를 그대로 재도입한다. 이 테스트가 그 회귀를 잡는다.
+    """
+    fake = FakeSpringClient()
+    fake.behavior_result = BehaviorEventsResult(
+        group_by="product",
+        rows=[
+            BehaviorProductRow(product_id=101, product_name="안팔린상품", sales_quantity=0),
+            BehaviorProductRow(product_id=102, product_name="미조회상품", sales_quantity=None),
+        ],
+        total=2,
+    )
+
+    result = await _call_runtime_tool(
+        get_behavior_events, {"from_date": "2026-07-01", "to_date": "2026-07-14"}, fake
+    )
+
+    sold_none, unmeasured = result.split("[102]")[0], result.split("[102]")[1]
+    assert "판매 0개" in sold_none  # 조회했고 값이 0 = 안 팔림
+    assert "판매수량 -(미조회)" in unmeasured  # BE 가 계산조차 안 함
+    assert "판매수량 -(미조회)" not in sold_none
+
+
+async def test_behavior_tool_hides_dwell_without_sample_count() -> None:
+    """[#489] dwellSampleCount 없이 평균·중앙값만 내보내지 않는다.
+
+    명세: 표본 없이 해석 금지(conversion 워커 유의성 판정 원칙과 동일). 표본이 0/None
+    이면 수치가 실려 와도 감추고 사유만 남겨 LLM 이 표본 1건짜리 중앙값을 근거로
+    쓰지 않게 한다.
+    """
+    fake = FakeSpringClient()
+    fake.behavior_result = BehaviorEventsResult(
+        group_by="product",
+        rows=[
+            BehaviorProductRow(
+                product_id=101,
+                product_name="표본없음",
+                median_dwell_seconds=42.0,
+                avg_dwell_seconds=71.3,
+                dwell_sample_count=0,
+            )
+        ],
+        total=1,
+    )
+
+    result = await _call_runtime_tool(
+        get_behavior_events, {"from_date": "2026-07-01", "to_date": "2026-07-14"}, fake
+    )
+
+    assert "체류 -(표본 없음)" in result
+    assert "42초" not in result and "71초" not in result
+
+
+async def test_behavior_tool_tail_totals_sum_measured_sales_quantity_only() -> None:
+    """[#489] 꼬리 수량 합계는 null(미조회) 행을 0 으로 섞지 않고 집계 건수를 밝힌다."""
+    fake = FakeSpringClient()
+    fake.behavior_result = BehaviorEventsResult(
+        group_by="product",
+        rows=[
+            BehaviorProductRow(
+                product_id=200 + i,
+                product_name=f"상품{i}",
+                counts={"productView": 120 - i * 10, "removeFromCart": 1},
+                # 11번째만 수량이 있고 12번째는 미조회 — 합계는 5, 표기는 1/2건.
+                sales_quantity=5 if i == 10 else None,
+            )
+            for i in range(12)
+        ],
+        total=12,
+    )
+
+    result = await _call_runtime_tool(
+        get_behavior_events, {"from_date": "2026-07-01", "to_date": "2026-07-14"}, fake
+    )
+
+    assert "삭제 2" in result.split("외 2건(저활동) 합계:")[1]  # 꼬리 5종 합계
+    assert "판매 5개(1/2건 집계)" in result
 
 
 async def test_behavior_tool_summarizes_event_type_counts() -> None:
