@@ -950,10 +950,48 @@ def test_color_synonym_expansion_and_array_contract_must_be_enabled_together() -
 
 
 def test_color_synonym_contract_gate_defaults_both_off() -> None:
+    """선행 조건(BE 배포 2026-08-04·api-spec §4.6 동기화 v0.28.4·운영 시드 적재 2026-08-08)은
+    충족됐지만 코드 기본값은 off 로 둔다(#258 CI hang 회귀, 2026-08-08) — 이 기능은
+    pg-catalog 에 의존하는데 CI·로컬처럼 DB 가 없는 환경에서 기본 on 이면 색상 검색마다
+    실패하는 연결을 재시도해 테스트가 사실상 멈춘다. 운영은 `deploy.yml` env 로 켠다."""
     settings = Settings(_env_file=None)
 
     assert settings.color_synonym_expansion_enabled is False
     assert settings.color_synonym_array_contract_ready is False
+
+
+def test_color_synonym_gate_tolerates_empty_string_from_unregistered_deploy_vars() -> None:
+    """[PR #447 리뷰] deploy.yml 이 두 값을 무조건 주입하므로 저장소 변수 미등록 시 빈
+    문자열이 온다 — bool 파싱 실패로 기동이 죽지 않고 필드 기본값(off)으로 폴백해야 한다
+    (`langsmith_trace_content` 폴백과 같은 관례)."""
+    assert (
+        Settings(_env_file=None, color_synonym_expansion_enabled="").color_synonym_expansion_enabled
+        is False
+    )
+    assert (
+        Settings(
+            _env_file=None, color_synonym_array_contract_ready=""
+        ).color_synonym_array_contract_ready
+        is False
+    )
+    assert (
+        Settings(
+            _env_file=None, color_synonym_expansion_enabled=" "
+        ).color_synonym_expansion_enabled
+        is False
+    )
+
+
+def test_color_synonym_gate_empty_string_fallback_does_not_swallow_real_values() -> None:
+    """폴백은 빈 문자열만 가로챈다 — "true" 문자열은 정상적으로 True 로 파싱돼야 한다."""
+    settings = Settings(
+        _env_file=None,
+        color_synonym_expansion_enabled="true",
+        color_synonym_array_contract_ready="true",
+    )
+
+    assert settings.color_synonym_expansion_enabled is True
+    assert settings.color_synonym_array_contract_ready is True
 
 
 def test_color_synonym_pool_reserves_runtime_search_slot_only_when_harvest_enabled() -> None:
