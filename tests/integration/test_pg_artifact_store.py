@@ -264,6 +264,85 @@ def test_check_rejects_missing_provenance():
                 )
 
 
+# ── 이슈 #416: batch_failure_state 영속화(실 pg-catalog) ──
+
+
+@pytest.fixture
+def failure_streak_store(store):
+    """store 픽스처와 같은 dsn 을 쓰되, 스트릭 상태를 테스트 전후로 정리한다."""
+    store.clear_failure_streak("item", "int-test-item")
+    store.clear_failure_streak("page", "int-test-page")
+    yield store
+    store.clear_failure_streak("item", "int-test-item")
+    store.clear_failure_streak("page", "int-test-page")
+
+
+def test_batch_failure_state_table_self_creates(failure_streak_store):
+    """첫 사용 시 idempotent DDL 로 batch_failure_state 테이블이 자가 생성된다(#416)."""
+    assert failure_streak_store.bump_failure_streak("item", "int-test-item", ttl_s=3600.0) == 1
+
+
+def test_batch_failure_state_bump_accumulates_across_store_instances(failure_streak_store):
+    """서로 다른 두 스토어 인스턴스(=두 프로세스 모사)에서 bump 가 누적된다(#416)."""
+    assert failure_streak_store.bump_failure_streak("item", "int-test-item", ttl_s=3600.0) == 1
+
+    other = PgCatalogArtifactStore(get_settings().catalog_db_url)
+    try:
+        assert other.bump_failure_streak("item", "int-test-item", ttl_s=3600.0) == 2
+        assert other.bump_failure_streak("item", "int-test-item", ttl_s=3600.0) == 3
+    finally:
+        other.close()
+
+
+def test_batch_failure_state_bump_absorbs_fallback_progress(failure_streak_store):
+    """[T8, PR 리뷰 라운드 6] 간헐적 DB 실패로 인메모리 폴백에 쌓인 진행분을, 다음 DB 성공
+    bump 이 실 pg-catalog 행에 흡수 반영한다 — 인메모리 fake 가 아니라 실 UPDATE 문이
+    실제로 실행돼 다른 인스턴스에서 읽어도 이어짐을 확인한다."""
+    store = failure_streak_store
+    # DB 쪽은 아직 0에서 시작 — 폴백에 3을 미리 쌓아 "간헐적 DB 실패로 폴백에 쌓인 진행분"을
+    # 재현한다(실제로는 이 몫이 여러 번의 실패한 bump_failure_streak 호출에서 쌓였을 것).
+    store._failure_streak_fallback.bump("item", "int-test-item", ttl_s=3600.0)
+    store._failure_streak_fallback.bump("item", "int-test-item", ttl_s=3600.0)
+    store._failure_streak_fallback.bump("item", "int-test-item", ttl_s=3600.0)
+    assert store._failure_streak_fallback.peek("item", "int-test-item", ttl_s=3600.0) == 3
+
+    # DB 는 정상이라 이 bump 자체는 DB 값만으로 1이 되지만, 폴백(3)+1=4 가 더 커 흡수된다
+    # (실 UPDATE 문이 batch_failure_state 행을 4로 맞춘다).
+    result = store.bump_failure_streak("item", "int-test-item", ttl_s=3600.0)
+    assert result == 4
+    # 흡수 후 폴백은 비워진다(이중 계수 방지).
+    assert store._failure_streak_fallback.peek("item", "int-test-item", ttl_s=3600.0) == 0
+
+    # 다른 인스턴스(=다른 프로세스 모사)에서 읽어도 흡수된 4에서 이어진다 — 실 pg 행 반영 확인.
+    other = PgCatalogArtifactStore(get_settings().catalog_db_url)
+    try:
+        assert other.bump_failure_streak("item", "int-test-item", ttl_s=3600.0) == 5
+    finally:
+        other.close()
+
+
+def test_batch_failure_state_ttl_resets(failure_streak_store):
+    """마지막 갱신이 ttl_s 보다 오래되면 다음 bump 는 1 로 리셋된다(#416)."""
+    import time
+
+    assert failure_streak_store.bump_failure_streak("item", "int-test-item", ttl_s=3600.0) == 1
+    assert failure_streak_store.bump_failure_streak("item", "int-test-item", ttl_s=3600.0) == 2
+    time.sleep(1.1)
+    # ttl_s=1 보다 오래(1.1s) 지났으니 "연속"이 끊겨 다음 bump 는 1 로 리셋된다.
+    assert failure_streak_store.bump_failure_streak("item", "int-test-item", ttl_s=1.0) == 1
+
+
+def test_batch_failure_state_clear_and_purge_stale(failure_streak_store):
+    """clear·purge_stale_failure_streaks 가 실제로 행을 지운다(#416)."""
+    failure_streak_store.bump_failure_streak("item", "int-test-item", ttl_s=3600.0)
+    failure_streak_store.clear_failure_streak("item", "int-test-item")
+    assert failure_streak_store.bump_failure_streak("item", "int-test-item", ttl_s=3600.0) == 1
+
+    failure_streak_store.bump_failure_streak("page", "int-test-page", ttl_s=3600.0)
+    purged = failure_streak_store.purge_stale_failure_streaks(ttl_s=0.000001)
+    assert purged >= 1
+
+
 @pytest.mark.integration
 def test_loader_persists_provenance(tmp_path):
     import json

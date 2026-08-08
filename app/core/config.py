@@ -272,6 +272,23 @@ class Settings(BaseSettings):
     # 상한이다 — 이 상한이 없으면 3선이 잡으려던 바로 그 케이스(대량 내용 파손)에서 #325 증상이
     # 그대로 재현된다. 상한 도달은 dead-letter ERROR 로 드러나며 복구는 run_batch --full.
     artifacts_batch_page_failure_max_cycles: int = Field(default=3, ge=1)
+    # [이슈 #416] 2선·3선 연속 실패 스트릭을 pg-catalog(batch_failure_state)에 영속화하며 새로
+    # 도입한 "연속"의 시간 정의 — 스트릭 영속화 전에는 프로세스 메모리라 재시작 한 번이면 자연히
+    # 끊겼지만, 영속화하면 그 경계가 사라져 한 주 전 실패 2회가 오늘 실패 1회와 그대로 합쳐져
+    # 실제로는 연속이 아닌데도 상한에 즉시 닿는 오격리가 생긴다. 기본 3600s(1시간)는 수렴 창
+    # (artifacts_batch_item_dead_letter_cycles 등 3 × catalog_batch_interval_s(300s) ≈ 15분)보다
+    # 넉넉히 길어 정상 재시작 빈도에서는 "연속"판정을 방해하지 않으면서도, 하루 전·1주 전처럼
+    # 무관한 과거 실패는 확실히 끊을 만큼 짧다.
+    artifacts_batch_failure_streak_ttl_s: float = Field(default=3600.0, gt=0)
+    # [이슈 #421] 1선(enrich 콘텐츠 실패) 화이트리스트 판정에 부여하는 cross-cycle 재시도
+    # 예산(주기 수). JSON 파싱 실패는 LLM 샘플링 노이즈(코드펜스 혼입 등)로도 나므로, 우연히
+    # enrichment_item_attempts 회 연속 실패한 정상 상품이 2선·3선과 달리 시간 유계 보호 없이
+    # 첫 주기에 영구 격리되는 것을 막는다. 기본 1(다음 주기 1회 재시도)이 결함 수정의 기본값
+    # 방향이다(하방이 유계인 수정은 기본 on — CLAUDE.md/lessons). **0 이면 종전대로 즉시 영구
+    # 격리**(회귀 탈출구) — 재시도 큐 페이로드는 상품 원본 필드를 담으므로 AI DB 에 저장하지
+    # 않고 프로세스 메모리에만 둔다(원본 컬럼 사본 금지, CLAUDE.md). 재시작에 유실돼도 동작은
+    # 현행(즉시 격리)과 같아 하한이 현행이다.
+    artifacts_batch_content_retry_cycles: int = Field(default=1, ge=0)
     catalog_vector_overfetch: int = 4  # 방식1 hydrate 후 필터·품절 제거 대비 벡터 여유조회 배수
     # 방식2 DB 재정렬 1회 반환 행 가드. 현 카탈로그 7,220건 전량도 p50 49ms라 기본값은
     # 실사용에서 걸리지 않는다. 카탈로그 성장 시 응답 행 수만 제한하며, 실질 지연 상한은
