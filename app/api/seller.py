@@ -1116,7 +1116,9 @@ async def seller_chat(
     return await open_stream(
         http_request,
         registry_key(identity, request.thread_id),
-        lambda: _seller_stream(request, identity, request_id=request_id),
+        # [#427] 판매자 레인은 구제 체인 공유 예산을 쓰지 않는다 — 받아서 무시한다(시그니처만
+        # open_stream 의 새 계약에 맞춘다).
+        lambda _turn_started_at: _seller_stream(request, identity, request_id=request_id),
         observer=observation,
         role="seller",
     )

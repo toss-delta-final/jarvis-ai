@@ -119,11 +119,12 @@ async def chat(
     return await open_stream(
         http_request,
         registry_key(identity, request.thread_id),
-        lambda: run_buyer_turn(
+        lambda turn_started_at: run_buyer_turn(
             request,
             identity,
             observer=observation,
             request_id=request_id,
+            turn_started_at=turn_started_at,
         ),
         observer=observation,
         role="buyer",

@@ -108,7 +108,7 @@ async def test_partial_text_preserved_on_cancel(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(get_settings(), "stream_disconnect_poll_s", 0.02)
     obs = await _obs("cx")
 
-    async def token_then_idle():
+    async def token_then_idle(_turn_started_at=None):
         yield 'data: {"type":"token","data":{"text":"부분응답"}}\n\n'
         await asyncio.sleep(2.0)
         yield "data: never\n\n"
@@ -128,7 +128,7 @@ async def test_partial_text_preserved_on_error() -> None:
     """스트림 중 상류 오류 시 상태 FAILED + 부분 텍스트를 보존한다(§6.3 a)."""
     obs = await _obs("ce")
 
-    async def token_then_boom():
+    async def token_then_boom(_turn_started_at=None):
         yield 'data: {"type":"token","data":{"text":"조금"}}\n\n'
         raise RuntimeError("mid-stream boom")
 
@@ -160,7 +160,7 @@ async def test_stream_completes_when_finalize_assistant_fails(
 
     obs.store.finalize_assistant = fail_finalize
 
-    async def token_then_done():
+    async def token_then_done(_turn_started_at=None):
         yield 'data: {"type":"token","data":{"text":"응답"}}\n\n'
 
     with caplog.at_level(logging.INFO, logger="observability"):
@@ -198,7 +198,7 @@ async def test_buyer_logs_use_fingerprints_without_raw_identifiers(
         buyer_session=BuyerSessionInput(session, thread, "member", owner),
     )
 
-    async def done():
+    async def done(_turn_started_at=None):
         yield 'data: {"type":"done","data":{"finishReason":"stop"}}\n\n'
 
     with caplog.at_level(logging.INFO):
@@ -243,7 +243,7 @@ async def test_slot_released_when_commit_user_message_cancelled() -> None:
     obs.commit_user_message = cancel_commit
     registry = get_registry()
 
-    async def gen():
+    async def gen(_turn_started_at=None):
         yield 'data: {"type":"token","data":{"text":"x"}}\n\n'
 
     with pytest.raises(asyncio.CancelledError):
@@ -536,7 +536,7 @@ async def test_tokenless_terminal_frame_records_reason_without_text_ttft(
     exporter = FakeTraceExporter()
     obs = await _obs(f"tokenless-{case}", trace=_trace(exporter))
 
-    async def terminal_only():
+    async def terminal_only(_turn_started_at=None):
         for frame in frames:
             yield frame
 
@@ -563,7 +563,7 @@ async def test_tokenless_timeout_records_reason_without_text_ttft(
     exporter = FakeTraceExporter()
     obs = await _obs("tokenless-timeout", trace=_trace(exporter))
 
-    async def no_first_event():
+    async def no_first_event(_turn_started_at=None):
         await asyncio.sleep(1)
         yield "data: never\n\n"
 
@@ -589,7 +589,7 @@ async def test_tokenless_cancellation_records_reason_without_text_ttft(
     exporter = FakeTraceExporter()
     obs = await _obs("tokenless-cancel", trace=_trace(exporter))
 
-    async def conditions_then_idle():
+    async def conditions_then_idle(_turn_started_at=None):
         yield 'data: {"type":"conditions","data":{"chips":[]}}\n\n'
         await asyncio.sleep(1)
         yield "data: never\n\n"
@@ -612,7 +612,7 @@ async def test_terminal_done_stops_before_later_token_and_keeps_text_ttft_empty(
     exporter = FakeTraceExporter()
     obs = await _obs("terminal-done", trace=_trace(exporter))
 
-    async def done_then_token():
+    async def done_then_token(_turn_started_at=None):
         yield 'data: {"type":"done","data":{"finishReason":"stop"}}\n\n'
         yield 'data: {"type":"token","data":{"text":"MUST_NOT_ESCAPE"}}\n\n'
 
@@ -640,7 +640,7 @@ async def test_terminal_error_commits_failure_before_consumer_closes_iterator() 
     exporter = FakeTraceExporter()
     obs = await _obs("terminal-error-close", trace=_trace(exporter))
 
-    async def error_then_token():
+    async def error_then_token(_turn_started_at=None):
         yield 'data: {"type":"error","data":{"code":"LLM_UNAVAILABLE"}}\n\n'
         yield 'data: {"type":"token","data":{"text":"MUST_NOT_PULL"}}\n\n'
 
@@ -670,7 +670,7 @@ async def test_closing_body_before_first_pull_cleans_prefetched_stream() -> None
     obs = await _obs("close-before-first-pull", trace=_trace(exporter))
     closed = asyncio.Event()
 
-    async def prefetched_then_idle():
+    async def prefetched_then_idle(_turn_started_at=None):
         try:
             yield 'data: {"type":"meta","data":{"lane":"test"}}\n\n'
             await asyncio.Event().wait()
@@ -702,7 +702,7 @@ async def test_asgi_cancellation_after_headers_before_first_pull_cleans_stream()
     closed = asyncio.Event()
     headers_sent = asyncio.Event()
 
-    async def prefetched_then_idle():
+    async def prefetched_then_idle(_turn_started_at=None):
         try:
             yield 'data: {"type":"meta","data":{"lane":"test"}}\n\n'
             await asyncio.Event().wait()
@@ -755,7 +755,7 @@ async def test_asgi_cancellation_during_body_send_cleans_started_stream(
     closed = asyncio.Event()
     body_send_started = asyncio.Event()
 
-    async def prefetched_then_idle():
+    async def prefetched_then_idle(_turn_started_at=None):
         try:
             yield 'data: {"type":"meta","data":{"lane":"test"}}\n\n'
             yield 'data: {"type":"token","data":{"text":"hello"}}\n\n'
@@ -991,7 +991,7 @@ async def test_graph_error_frame_marks_failed() -> None:
     """그래프가 자체 in-stream error 프레임을 emit하면 저장/로그가 FAILED 로 마감된다(§6.3)."""
     obs = await _obs("ge")
 
-    async def token_then_error():
+    async def token_then_error(_turn_started_at=None):
         yield 'data: {"type":"token","data":{"text":"부분"}}\n\n'
         yield 'data: {"type":"error","data":{"code":"LLM_UNAVAILABLE","message":"x"}}\n\n'
 
@@ -1024,7 +1024,7 @@ async def test_inner_factory_sync_error_releases_and_marks_failed() -> None:
     """inner_factory 동기 예외 시 슬롯 해제 + 턴 FAILED 마감(PENDING 영구 잔존 방지)."""
     obs = await _obs("if1")
 
-    def bad_factory():
+    def bad_factory(_turn_started_at=None):
         raise RuntimeError("factory boom")
 
     with pytest.raises(RuntimeError):
@@ -1059,7 +1059,7 @@ async def test_commit_user_message_failure_releases_slot() -> None:
 
     obs.store = _FailingStore()
 
-    async def unreachable():
+    async def unreachable(_turn_started_at=None):
         yield "data: never\n\n"
 
     with pytest.raises(RuntimeError):
@@ -1086,7 +1086,7 @@ async def test_commit_user_message_any_failure_releases_slot(error: Exception) -
 
     obs.store = _FailingStore()
 
-    async def unreachable():
+    async def unreachable(_turn_started_at=None):
         yield "data: never\n\n"
 
     with pytest.raises(type(error)):
@@ -1442,7 +1442,7 @@ async def test_error_frame_terminates_stream() -> None:
     """in-stream error 후 스트림을 종결 — 이후 이벤트가 응답·저장소를 오염시키지 않는다."""
     obs = await _obs("et")
 
-    async def token_error_token():
+    async def token_error_token(_turn_started_at=None):
         yield 'data: {"type":"token","data":{"text":"before"}}\n\n'
         yield 'data: {"type":"error","data":{"code":"LLM_UNAVAILABLE","message":"x"}}\n\n'
         yield 'data: {"type":"token","data":{"text":"AFTER"}}\n\n'
@@ -1557,7 +1557,7 @@ async def test_open_stream_exports_one_root_for_each_terminal_lifecycle(
     exporter = FakeTraceExporter()
     obs = await _obs(f"matrix-{scenario}", trace=_trace(exporter))
 
-    async def stream():
+    async def stream(_turn_started_at=None):
         with trace_span(f"{scenario}_first_pull", "chain"):
             pass
         if scenario == "first_event_timeout":
@@ -1652,7 +1652,7 @@ async def test_outer_cancellation_during_first_pull_owns_prestream_cleanup() -> 
     closed = asyncio.Event()
     inner_task: asyncio.Task | None = None
 
-    async def sleeping_first_pull():
+    async def sleeping_first_pull(_turn_started_at=None):
         nonlocal inner_task
         inner_task = asyncio.current_task()
         try:
@@ -1699,7 +1699,7 @@ async def test_close_failure_after_first_frame_preserves_cancel_outcome(
     obs = await _obs("close-failure-stream", trace=_trace(exporter))
 
     class CloseFailIterator:
-        def __init__(self) -> None:
+        def __init__(self, _turn_started_at=None) -> None:
             self.pulls = 0
 
         def __aiter__(self):
@@ -1744,6 +1744,9 @@ async def test_close_failure_during_prestream_abort_preserves_timeout(
     obs = await _obs("close-failure-prestream", trace=_trace(exporter))
 
     class CloseFailIterator:
+        def __init__(self, _turn_started_at=None) -> None:
+            pass
+
         def __aiter__(self):
             return self
 
@@ -1779,7 +1782,7 @@ async def test_cancellation_during_terminal_close_propagates_after_finalization(
     close_started = asyncio.Event()
 
     class BlockingCloseIterator:
-        def __init__(self) -> None:
+        def __init__(self, _turn_started_at=None) -> None:
             self.pulled = False
 
         def __aiter__(self):
@@ -1831,7 +1834,7 @@ async def test_trace_spans_across_yields_keep_parentage_without_clobbering_host_
     host_exporter = FakeTraceExporter()
     host_trace = _trace(host_exporter)
 
-    async def stream():
+    async def stream(_turn_started_at=None):
         with trace_span("stream.outer", "chain"):
             yield 'data: {"type":"meta","data":{"lane":"test"}}\n\n'
             with trace_span("stream.inner", "tool"):
@@ -1861,7 +1864,7 @@ async def test_open_stream_uses_one_task_for_every_pull_and_close() -> None:
     tasks: list[asyncio.Task | None] = []
 
     class RecordingIterator:
-        def __init__(self) -> None:
+        def __init__(self, _turn_started_at=None) -> None:
             self.pulls = 0
 
         def __aiter__(self):
@@ -1899,7 +1902,7 @@ async def test_total_timeout_cancels_and_awaits_same_task_pump_without_leaks(
     closed = asyncio.Event()
 
     class BlockingIterator:
-        def __init__(self) -> None:
+        def __init__(self, _turn_started_at=None) -> None:
             self.pulls = 0
 
         def __aiter__(self):
@@ -1953,7 +1956,7 @@ async def test_cancelled_finish_keeps_one_cleanup_until_turn_log_and_trace_compl
     obs.store.finalize_assistant = blocking_finalize
     stream_key = "member:cancel-safe-finish"
 
-    async def done():
+    async def done(_turn_started_at=None):
         yield 'data: {"type":"done","data":{"finishReason":"stop"}}\n\n'
 
     with caplog.at_level(logging.INFO, logger="observability"):
