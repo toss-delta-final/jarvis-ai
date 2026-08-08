@@ -61,3 +61,16 @@ def test_color_synonym_expansion_ab_channel_is_not_vacuous() -> None:
     assert all(row["recallAt10"]["on"] > row["recallAt10"]["off"] for row in native)
     assert all(set(row["offProductIds"]).isdisjoint(row["relevantProductIds"]) for row in native)
     assert all(row["onProductIds"] == row["offProductIds"] for row in canonical)
+
+
+@pytest.mark.eval
+def test_color_synonym_on_arm_sends_expanded_repeated_color_params() -> None:
+    """#474: recall 회복은 color가 사라진 우연이 아니라 배열 확장의 결과여야 한다."""
+    from evals.metrics.harness import OfflineBuyerAdapter
+    from evals.metrics.runner import load_evaluation_fixtures
+
+    case = next(case for case in load_cases("dev") if case.case_id == "buy-colr-0001")
+    adapter = OfflineBuyerAdapter(color_expansion=True)
+    adapter(case, load_evaluation_fixtures())
+    request = next(item for item in adapter.last_requests if item["path"] == "/internal/products/search")
+    assert request["query"]["color"] == ["네이비", "남색"]
