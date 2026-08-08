@@ -143,8 +143,9 @@ class FakeSpringClient:
         self._maybe_fail("get_churn")
         return self.churn_result
 
-    async def get_account_events(self, from_, to, event_type=None, group_by=None):
-        self.recorded_account_args = (from_, to, event_type, group_by)
+    async def get_account_events(self, brand_id, from_, to, event_type=None, group_by=None):
+        # [#481] 브랜드 스코프 전환 — brand_id 가 첫 인자로 필수다(자사 코호트 경로).
+        self.recorded_account_args = (brand_id, from_, to, event_type, group_by)
         self._maybe_fail("get_account_events")
         return self.account_events_result
 
@@ -1192,10 +1193,9 @@ def test_abuse_prompt_mandates_date_group_by_for_point_track() -> None:
     assert "Point 트랙" in ABUSE_PROMPT
 
 
-async def test_account_events_hour_group_reports_night_share(monkeypatch) -> None:
+async def test_account_events_hour_group_reports_night_share() -> None:
     """[#290 abuse Collective 트랙] hour-groupBy 는 심야(0~6시) 활동 비중을 계산해
     붙인다 — 심야 편중은 봇 신호(Tan & Kumar)다."""
-    _enable_account_events(monkeypatch)
     fake = FakeSpringClient()
     fake.account_events_result = AccountEventsResult(
         group_by="hour",
@@ -1209,16 +1209,17 @@ async def test_account_events_hour_group_reports_night_share(monkeypatch) -> Non
     assert "심야(0~6시) 활동 비중 50.0%(500/1000건)" in result
 
 
-async def test_account_events_ip_group_sorts_by_fail_count(monkeypatch) -> None:
-    """[#290 abuse Collective 트랙] ip-groupBy 는 failCount 내림차순으로 정렬해 무차별
-    대입 신호를 상단에 노출하고 isSuspicious 건수를 요약한다."""
-    _enable_account_events(monkeypatch)
+async def test_account_events_ip_group_sorts_by_suspicious_member_count() -> None:
+    """[#290 abuse Collective 트랙, #481 개정] ip-groupBy 는 suspiciousMemberCount
+    내림차순으로 정렬해 다계정 정황을 상단에 노출하고 합계를 요약한다 —
+    구 failCount·isSuspicious 는 2026-08-06 개정으로 응답에서 제거됐다."""
     fake = FakeSpringClient()
     fake.account_events_result = AccountEventsResult(
         group_by="ip",
+        scope="brand",
         rows=[
-            {"ipMasked": "1.2.3.*", "failCount": 2, "isSuspicious": False},
-            {"ipMasked": "9.9.9.*", "failCount": 42, "isSuspicious": True},
+            {"ipMasked": "1.2.3.*", "suspiciousMemberCount": 0, "distinctMembers": 2},
+            {"ipMasked": "9.9.9.*", "suspiciousMemberCount": 5, "distinctMembers": 7},
         ],
     )
 
@@ -1226,8 +1227,9 @@ async def test_account_events_ip_group_sorts_by_fail_count(monkeypatch) -> None:
         {"from_date": "2026-07-01", "to_date": "2026-07-31", "group_by": "ip"}, fake
     )
 
-    assert result.index("9.9.9.*") < result.index("1.2.3.*")  # failCount 상위 우선
-    assert "isSuspicious(코드 판정) 1건" in result
+    assert result.index("9.9.9.*") < result.index("1.2.3.*")  # suspiciousMemberCount 상위 우선
+    assert "교차 회원 합계 5명" in result
+    assert "특정 회원 지목 불가" in result
 
 
 async def test_behavior_tool_shows_all_seed_products_within_cap() -> None:
@@ -1340,10 +1342,20 @@ async def test_behavior_tool_empty_result() -> None:
 
 
 async def test_order_events_output_includes_log_rules_note() -> None:
-    """전이가 있으면 기록 규칙 주의(완료만 기록·주문 단위 1행)가 함께 나간다."""
+    """전이가 있으면 기록 규칙 주의(완료만 기록·아이템 단위 행·customerLabel
+    사례번호 규약, #481 개정)가 함께 나간다."""
     fake = FakeSpringClient()
     fake.order_events_result = OrderEventsResult(
-        rows=[{"orderId": 5001, "toStatus": "CANCELLED", "actorType": "USER"}], total=1
+        rows=[
+            {
+                "orderId": 5001,
+                "orderItemId": 5551,
+                "toStatus": "CANCELLED",
+                "actorType": "USER",
+                "customerLabel": "A3F29C",
+            }
+        ],
+        total=1,
     )
 
     result = await _call_runtime_tool(
@@ -1351,7 +1363,9 @@ async def test_order_events_output_includes_log_rules_note() -> None:
     )
 
     assert "구매확정·클레임 신청은 로그에 없음" in result
-    assert "아이템 수로 해석 금지" in result
+    assert "같은 orderId 행 복수는 아이템별 전이(중복 아님)" in result
+    assert "customerLabel은 개인정보 보호용 사례번호" in result
+    assert "사례번호 XXXXXX로 관리자 문의" in result
 
 
 async def test_product_change_logs_output_includes_log_rules_note() -> None:
@@ -1573,34 +1587,26 @@ async def test_churn_tool_degrades_on_spring_failure() -> None:
 
 
 async def _call_account_events(args: dict, fake) -> str:
-    """runtime 없는 전역 도구 호출 헬퍼 — 싱글턴 교체 후 반드시 원복."""
-    spring_client_module.set_spring_client(fake)
-    try:
-        return await get_account_events.coroutine(**args)
-    finally:
-        spring_client_module.set_spring_client(None)
+    """[#481] 브랜드 스코프 전환 — runtime(brand_id=42) 주입 호출 헬퍼."""
+    return await _call_runtime_tool(get_account_events, args, fake)
 
 
-def _enable_account_events(monkeypatch) -> None:
-    """[#197 PR 리뷰] I-8 노출 보류 플래그를 테스트에서만 켠다.
-
-    admin 소유 협의 미완(🔴, api-spec §4.4 v0.19.1)으로 기본 false — 활성 상태의
-    요약/전달 로직은 협의 종결 후에도 그대로 쓰이므로 플래그만 켜서 검증한다.
-    """
+def _disable_account_events(monkeypatch) -> None:
+    """[#481] 운영 킬스위치 검증용 — 기본 활성 플래그를 테스트에서만 끈다."""
     from app.agents.seller import tools as tools_module
     from app.core.config import get_settings
 
-    enabled = get_settings().model_copy(update={"seller_account_events_enabled": True})
-    monkeypatch.setattr(tools_module, "get_settings", lambda: enabled)
+    disabled = get_settings().model_copy(update={"seller_account_events_enabled": False})
+    monkeypatch.setattr(tools_module, "get_settings", lambda: disabled)
 
 
-async def test_account_events_tool_disabled_by_default() -> None:
-    """[#197 PR 리뷰] I-8 은 admin 소유 협의(🔴) 전까지 기본 비활성 — 도구가
-    Spring 호출 없이 "Error:" 문자열을 반환한다(전역 데이터 노출 보류).
+async def test_account_events_tool_kill_switch_blocks_call(monkeypatch) -> None:
+    """[#481] 플래그를 끄면 Spring 호출 없이 "Error:" 로 차단된다(운영 킬스위치).
 
-    구 코드에선 쿼리 400·스키마 미스매치가 사실상 차단막이었는데 #197 정합이
-    그 차단막을 제거했으므로, 의도된 보류를 플래그로 명시해 회귀를 방지한다.
+    기본값은 활성(브랜드 스코프 전환으로 #197 보류 사유 해소)이지만, 되돌릴
+    스위치는 유지한다 — 끈 상태의 차단 경로가 살아 있는지 검증한다.
     """
+    _disable_account_events(monkeypatch)
     fake = FakeSpringClient()
 
     result = await _call_account_events({"from_date": "2026-07-01", "to_date": "2026-07-31"}, fake)
@@ -1610,11 +1616,10 @@ async def test_account_events_tool_disabled_by_default() -> None:
     assert fake.recorded_account_args is None  # Spring 호출 자체가 차단된다
 
 
-async def test_account_events_tool_rejects_unknown_group_by_locally(monkeypatch) -> None:
+async def test_account_events_tool_rejects_unknown_group_by_locally() -> None:
     """[#197 PR 리뷰 2] groupBy 화이트리스트(eventType|hour|ip) 밖 값은 Spring 왕복
     없이 즉시 "Error:" 로 거른다 — BE 400 INVALID_GROUP_BY 까지 가는 타임아웃 예산
     낭비 방지. 오류 문구에 유효값을 실어 LLM 재시도를 유도한다."""
-    _enable_account_events(monkeypatch)
     fake = FakeSpringClient()
 
     result = await _call_account_events(
@@ -1632,16 +1637,18 @@ async def test_account_events_tool_rejects_unknown_group_by_locally(monkeypatch)
             {"from_date": "2026-07-01", "to_date": "2026-07-31", "group_by": valid}, fake2
         )
         assert not ok.startswith("Error:"), valid
-        assert fake2.recorded_account_args == ("2026-07-01", "2026-07-31", None, valid)
+        assert fake2.recorded_account_args == (42, "2026-07-01", "2026-07-31", None, valid)
 
 
-async def test_account_events_tool_passes_period_and_summarizes_rows(monkeypatch) -> None:
-    """[#197 회귀] from/to 가 필수 전달되고, rows(구 events 아님) 내용이 노출된다.
+async def test_account_events_tool_passes_brand_period_and_summarizes_rows() -> None:
+    """[#197 회귀 + #481] runtime 의 brand_id 와 from/to 가 전달되고, rows 내용이
+    노출된다.
 
     구 스키마는 events 필드를 기대해 Spring rows 응답이 extra="allow" 로 조용히
-    버려져 항상 "0건 집계됨"이었다(I-14/I-15 #194 와 동일 패턴).
+    버려져 항상 "0건 집계됨"이었다(I-14/I-15 #194 와 동일 패턴). brand_id 는
+    #481 브랜드 스코프 전환으로 필수가 됐다 — LLM 인자가 아니라 신원 컨텍스트에서
+    온다(IDOR 방지).
     """
-    _enable_account_events(monkeypatch)
     fake = FakeSpringClient()
     fake.account_events_result = AccountEventsResult(
         group_by="eventType",
@@ -1653,29 +1660,31 @@ async def test_account_events_tool_passes_period_and_summarizes_rows(monkeypatch
         fake,
     )
 
-    assert fake.recorded_account_args == ("2026-07-01", "2026-07-31", "LOGIN_FAIL", None)
-    assert "계정/보안 이벤트 2건" in result
+    assert fake.recorded_account_args == (42, "2026-07-01", "2026-07-31", "LOGIN_FAIL", None)
+    assert "계정 이벤트 2건" in result
+    assert "자사 코호트" in result
     assert "groupBy=eventType" in result
     assert "key=LOGIN_FAIL" in result and "count=7" in result
     assert "2026-07-01~2026-07-31" in result
 
 
-async def test_account_events_tool_empty_rows_says_zero_with_group_by(monkeypatch) -> None:
-    """빈 rows 는 0건 + 적용 groupBy 를 함께 고지한다(정상 0건 표기)."""
-    _enable_account_events(monkeypatch)
+async def test_account_events_tool_empty_rows_says_zero_with_group_by() -> None:
+    """빈 rows 는 0건 + 적용 groupBy 를 함께 고지한다(정상 0건 표기 — 코호트 없음도
+    정상 결과다, #481)."""
     fake = FakeSpringClient()
 
     result = await _call_account_events(
         {"from_date": "2026-07-01", "to_date": "2026-07-31", "group_by": "ip"}, fake
     )
 
-    assert "계정/보안 이벤트 0건" in result
+    assert "계정 이벤트 0건" in result
+    assert "자사 코호트" in result
     assert "groupBy=ip" in result
 
 
-async def test_account_events_tool_degrades_on_spring_failure(monkeypatch) -> None:
-    """get_account_events 실패 시 "Error:" 문자열로 degrade 한다(보조 소스 규약)."""
-    _enable_account_events(monkeypatch)
+async def test_account_events_tool_degrades_on_spring_failure() -> None:
+    """get_account_events 실패 시 "Error:" 문자열로 degrade 한다(보조 소스 규약 —
+    #481 이후 BE 신경로 미배포 구간의 404 도 이 경로로 흡수된다)."""
     fake = FakeSpringClient(fail={"get_account_events"})
 
     result = await _call_account_events({"from_date": "2026-07-01", "to_date": "2026-07-31"}, fake)

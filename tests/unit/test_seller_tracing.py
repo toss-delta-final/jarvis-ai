@@ -1466,7 +1466,7 @@ async def test_all_seller_spring_operations_trace_timeout_without_changing_mappi
             "spring.get_account_events",
             "GET",
             lambda: client.get_account_events(
-                "2026-06-01", "2026-07-31", event_type="private-event"
+                71727374757677, "2026-06-01", "2026-07-31", event_type="private-event"
             ),
         ),
         (

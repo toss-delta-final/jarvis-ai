@@ -668,7 +668,13 @@ async def _point_spike_note(brand_id: int, from_date: str, to_date: str, series:
 # 도구 출력에 상시 부착해 워커가 로그 부재를 '데이터 이상'으로 오해석하는 것을 막는다.
 _ORDER_LOG_RULES_NOTE = (
     "※ 기록 규칙: 구매확정·클레임 신청은 로그에 없음(취소/반품은 완료 시점만). "
-    "배치 전이(배송 등)는 주문 단위 1행 — 건수를 아이템 수로 해석 금지."
+    "아이템 전이(SHIPPING/DELIVERED/CANCELLED/RETURNED)는 아이템 단위 1행"
+    "(orderItemId 값 있음) — 같은 orderId 행 복수는 아이템별 전이(중복 아님). "
+    "주문 전이(PENDING/PAID/PAYMENT_FAILED)는 orderItemId null이며 "
+    "개정(2026-08-06) 이전 로그도 null일 수 있음. "
+    "※ customerLabel은 개인정보 보호용 사례번호(회원 키 아님) — 실명·연락처 추정, "
+    "orderId 대조 유도, IP와 개별 고객 직접 연결 금지. 조치가 필요하면 "
+    "'사례번호 XXXXXX로 관리자 문의'로 안내."
 )
 _PRODUCT_LOG_RULES_NOTE = (
     "※ 기록 규칙: 주문에 의한 재고 차감은 미기록(수동 조정·품절/재입고 전환만). "
@@ -693,6 +699,17 @@ async def get_order_events(
     기록 규칙(07/17 D32/D34 확정): 구매확정(CONFIRMED)·클레임 신청(*_REQUESTED)·
     ORDERED 는 기록되지 않는다 — 취소/반품은 '완료' 시점만 남는다. 교환 어휘 없음.
 
+    [개정 2026-08-06 해석 규칙, #481]
+    - 회원 노출은 customerLabel(사례번호, 문자열)뿐 — 같은 회원=같은 라벨.
+      실명·연락처 추정, orderId 대조 유도 금지. 조치 안내는 "사례번호 X로 관리자 문의".
+    - rows 의 orderItemId: 아이템 전이만 값이 있고 주문 전이는 null. 같은 orderId
+      행 복수 = 아이템별 전이(중복 아님).
+    - 자사 스코프 축소 — 타사 아이템 발송 행이 더는 안 보인다. 과거 동일 기간보다
+      행 수·byStatus 가 줄 수 있으며 회귀가 아니다.
+    - 단위: byStatus 는 SHIPPING·DELIVERED=아이템 수 / PAID·PAYMENT_FAILED=주문 수
+      (층위 상이 — 합산 금지). cancelReasonsTop 의 count 는 아이템 수.
+    - 발송(ORDERED→SHIPPING)은 판매자 행위 — actorType "SELLER" 가 정상 값이다.
+
     Args:
         from_date: 조회 시작일(YYYY-MM-DD).
         to_date: 조회 종료일(YYYY-MM-DD).
@@ -701,7 +718,7 @@ async def get_order_events(
         actor_type: 전이 주체(선택) — USER/SELLER/ADMIN/SYSTEM.
             memberId 집계 시에는 무시된다(아래 group_by 참조).
         group_by: "memberId" 하나뿐(선택) — 회원별 어뷰징 집계로 전환된다.
-            rows 가 buyerMemberId/orderCount/cancelCount/cancelRatio/
+            rows 가 customerLabel/orderCount/cancelCount/cancelRatio/
             maxOrdersPerHour/isSuspicious(코드 판정)로 바뀐다.
             ※ to_status·actor_type 이 함께 오면 무시한다(코드 강제) —
             분모(orderCount)까지 필터돼 cancelRatio 가 왜곡되기 때문
@@ -921,6 +938,11 @@ async def get_churn_cohort(
     코호트 = from~to 기간에 자사 상품과 상호작용한 회원. 이탈 = 그중 최근
     inactive_days 동안 무활동인 회원.
 
+    [단위 주의, 2026-08-06 I-14 개정 파급] 이탈 전 신호의 반품 사유
+    (returnReasonsTop) count 는 취소·반품 완료 **아이템 수** 기준이다(구 주문 수 —
+    로그가 아이템 단위가 되며 숫자가 커질 수 있고 순위는 대체로 유지).
+    cancelCount 는 DISTINCT 주문 수 그대로라 두 신호의 단위가 다르다 — 합산 금지.
+
     Args:
         from_date: 코호트 기간 시작일(YYYY-MM-DD, 필수).
         to_date: 코호트 기간 종료일(YYYY-MM-DD, 필수).
@@ -1053,30 +1075,34 @@ _ACCOUNT_EVENTS_GROUP_BY = ("eventType", "hour", "ip")
 @tool
 @_traced_tool("tool.get_account_events")
 async def get_account_events(
+    runtime: ToolRuntime[SellerContext],
     from_date: str,
     to_date: str,
     event_type: str | None = None,
     group_by: str | None = None,
 ) -> str:
-    """계정/보안 이벤트 집계를 조회해 요약한다.
+    """자사 코호트 계정 이벤트 집계를 조회해 요약한다(I-8, api-spec §4.4).
 
-    [주의] I-8 은 brandId path 가 없는 전역(admin 소유 🔴) 계약이다(api-spec §4.4) —
-    신원 컨텍스트가 필요 없어 runtime 파라미터도 없다.
+    [개정 2026-08-06, #481] 전역 → 자사 코호트(브랜드 스코프) 전환 — 기간 내 자사
+    상품과 상호작용한 회원의 계정 이벤트만 집계된다(I-16 churn 과 동일 조인).
+    groupBy=ip 의 suspiciousMemberCount(해당 IP 코호트 회원 중 I-14 어뷰징 기준
+    해당 **회원 수** — 코드 판정)가 다계정 정황의 재료다. 개수만 제공되므로
+    특정 회원을 지목·추정하지 않는다. 전부 0도 정상 결과다.
 
     Args:
         from_date: 조회 시작일(YYYY-MM-DD, 필수).
         to_date: 조회 종료일(YYYY-MM-DD, 필수).
-        event_type: 이벤트 종류 필터(선택).
+        event_type: 이벤트 종류 필터(선택) — SIGNUP/LOGIN_SUCCESS/LOGIN_FAIL/
+            LOGOUT/WITHDRAW.
         group_by: eventType(기본, 유형별 합계) | hour(시간대별) | ip(IP별 —
-            무차별 대입 신호: failCount·isSuspicious 등). 이 3종 외 값은 오류다.
+            suspiciousMemberCount·distinctMembers 등). 이 3종 외 값은 오류다.
     """
-    # [#197 PR 리뷰] I-8 은 전역 데이터·admin 소유 협의 미완(🔴, api-spec §4.4
-    # v0.19.1) — 협의 완료 전까지 판매자 표면에 켜지 않는다(기본 비활성).
-    # 워커 프롬프트의 "보조 소스 Error 관용" 규약에 얹혀 churn/abuse 는 계속 진행한다.
+    # [#481] 브랜드 스코프 전환으로 #197 보류 사유(전역 데이터·admin 소유 협의
+    # 미완 🔴)가 해소돼 기본 활성이다 — 플래그는 운영 킬스위치로만 유지한다.
     if not get_settings().seller_account_events_enabled:
         return (
-            "Error: 계정/보안 이벤트 집계(I-8)는 전역 데이터 소유 협의 완료 전까지 "
-            "비활성입니다(admin 소유 🔴 — api-spec §4.4)."
+            "Error: 계정 이벤트 집계(I-8)가 설정(seller_account_events_enabled)으로 "
+            "비활성 상태입니다."
         )
     # [#197 PR 리뷰 2] groupBy 화이트리스트 선검증 — BE 도 400 INVALID_GROUP_BY 로
     # 거부하지만(api-spec §4.4), LLM 오타·환각 값 때문에 왕복 1회(3s 타임아웃 예산)를
@@ -1086,9 +1112,10 @@ async def get_account_events(
             f"Error: group_by '{group_by}' 는 지원되지 않습니다 — "
             f"{'/'.join(_ACCOUNT_EVENTS_GROUP_BY)} 중 하나를 사용하세요."
         )
+    brand_id = runtime.context.brand_id
     try:
         result = await get_spring_client().get_account_events(
-            from_date, to_date, event_type, group_by
+            brand_id, from_date, to_date, event_type, group_by
         )
     except SpringUnavailableError as exc:
         return f"Error: 계정 이벤트 데이터를 불러오지 못했습니다({exc})."
@@ -1097,10 +1124,11 @@ async def get_account_events(
     applied = result.group_by or group_by or "eventType"
     if not result.rows:
         return (
-            f"계정/보안 이벤트 0건(전역, groupBy={applied}). {_reference_note(from_date, to_date)}"
+            f"계정 이벤트 0건(자사 코호트, groupBy={applied}) — 코호트 없음도 정상 결과. "
+            f"{_reference_note(from_date, to_date)}"
         )
-    # [#290] abuse Collective 트랙 — hour: 심야 활동 비중 / ip: failCount 내림차순
-    # 정렬 + isSuspicious(코드 판정 — 번복 금지 규칙은 프롬프트 소관) 건수 요약.
+    # [#290] abuse Collective 트랙 — hour: 심야 활동 비중 / ip: suspiciousMemberCount
+    # 내림차순 정렬 + 합계 요약(#481 개정 — 구 failCount·isSuspicious 는 응답에서 제거됨).
     rows = result.rows
     collective_note = ""
     settings = get_settings()
@@ -1117,16 +1145,22 @@ async def get_account_events(
             else " 심야 활동 비중 판정 보류(유효 집계 없음)."
         )
     elif applied == "ip":
+        # [#481] 2026-08-06 개정 — failCount·isSuspicious 는 응답에서 제거됐다
+        # (브랜드 스코프에선 상시 0/false 오보 위험). suspiciousMemberCount(I-14
+        # 어뷰징 기준 SQL 교차, 코드 판정) 내림차순으로 다계정 정황을 상단 노출한다.
 
-        def _fail_count(row: dict) -> int:
-            count = row.get("failCount", 0)
+        def _suspicious_members(row: dict) -> int:
+            count = row.get("suspiciousMemberCount", 0)
             return count if isinstance(count, int) else 0
 
-        rows = sorted(rows, key=_fail_count, reverse=True)  # 무차별 대입 신호 우선 노출
-        suspicious = sum(1 for row in rows if row.get("isSuspicious") is True)
-        collective_note = f" failCount 내림차순 정렬 — isSuspicious(코드 판정) {suspicious}건."
+        rows = sorted(rows, key=_suspicious_members, reverse=True)
+        total_suspicious = sum(_suspicious_members(row) for row in rows)
+        collective_note = (
+            f" suspiciousMemberCount 내림차순 정렬 — I-14 어뷰징 기준 교차 회원 합계 "
+            f"{total_suspicious}명(코드 판정·개수만 제공, 특정 회원 지목 불가)."
+        )
     return (
-        f"계정/보안 이벤트 {len(rows)}건(전역, groupBy={applied}): "
+        f"계정 이벤트 {len(rows)}건(자사 코호트, groupBy={applied}): "
         f"{_summarize_events(rows)}.{collective_note} {_reference_note(from_date, to_date)}"
     )
 

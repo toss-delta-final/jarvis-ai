@@ -1601,12 +1601,20 @@ class SpringClient:
 
     async def get_account_events(
         self,
+        brand_id: int,
         from_: str,
         to: str,
         event_type: str | None = None,
         group_by: str | None = None,
     ) -> AccountEventsResult:
-        """I-8 계정/보안 이벤트 집계 조회 (§4.4). ⚠️ brandId path 없음 — 전역·admin 소유 🔴.
+        """I-8 계정 이벤트 집계 조회 (§4.4) — 자사 코호트 스코프.
+
+        [#481, 노션 2026-08-06 개정] 전역 `/internal/account-events` →
+        `/internal/seller/{brandId}/account-events` 전환. admin 부재로 판매자
+        워커가 자사와 무관한 플랫폼 전체 신호를 소비하던 문제를 자사 코호트
+        (I-16 churn 과 동일 조인)로 해소했다 — 전역 구경로는 admin 용으로 BE 존치.
+        미존재 brandId 는 404 BRAND_NOT_FOUND(다른 판매자 집계 API 와 동일) —
+        전용 매핑 없이 SpringUnavailableError 로 degrade 한다(I-6·I-16 과 동일 취급).
 
         [#197] from/to 는 필수다(AnalysisPeriod.of — 누락 시 400 INVALID_PERIOD).
         groupBy 는 BE 화이트리스트 eventType(기본)|hour|ip 만 허용 — 그 외 400
@@ -1619,7 +1627,7 @@ class SpringClient:
             params["groupBy"] = group_by
         data = await self._request(
             "GET",
-            "/internal/account-events",
+            f"/internal/seller/{brand_id}/account-events",
             operation="get_account_events",
             params=params,
         )
