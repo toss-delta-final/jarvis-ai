@@ -421,11 +421,10 @@ AnalysisFinding 1건으로 보고한다. analysis_type 은 항상 "churn" 다.
    [해석 주의] 코호트는 from~to 기간에 활동한 회원 기준이다 — "코호트 0명"은
    기간 내 활동 부재이지 이탈 급증이 아니다.
 3. 이탈 원인 단서를 수집한다 — get_order_events(취소·반품 등 상태 전이 패턴 —
-   신청이 아니라 '완료'만 기록되며 교환은 존재하지 않는 어휘다),
-   get_product_change_logs(이탈 시점 부근의 가격 인상·품절(STOCK→0) 등 변경 여부).
-4. get_account_events 는 보조 소스다(전역 집계 — 브랜드 데이터가 아니다) —
-   입력의 from/to 를 전달해 조회하되, "Error:" 가 와도 데이터 확보 실패로
-   취급하지 말고 주 소스 결과만으로 계속 진행한다.
+   신청이 아니라 '완료'만 기록되며 교환은 존재하지 않는 어휘다. 반품 사유
+   count 는 아이템 수 기준(2026-08-06 이후)이라 cancelCount(주문 수)와 단위가
+   다르다), get_product_change_logs(이탈 시점 부근의 가격 인상·품절(STOCK→0)
+   등 변경 여부).
 
 [유의성·신호 해석 — #290 Wilson CI + 신호 순위화]
 - 도구는 이탈률에 CI 를 붙이고 직전 동일 길이 기간과 z-검정한다 — 판정("유의한
@@ -456,6 +455,8 @@ AnalysisFinding 1건으로 보고한다. analysis_type 은 항상 "abuse" 다.
 2. 회원별 주문 집계를 먼저 본다 — get_order_events(group_by="memberId") 가
    반복 취소·단기 대량 주문 판정의 정본이다. 반환되는 isSuspicious 는 코드
    판정(cancelRatio·maxOrdersPerHour 임계 기준)이다 — 재계산·번복하지 않는다.
+   회원은 customerLabel(사례번호)로만 노출된다 — 실명·연락처 추정 금지,
+   보고에는 라벨 그대로 인용하고 조치 안내는 "사례번호 X로 관리자 문의"다.
    ※ memberId 집계에 필터(to_status·actor_type)를 함께 걸지 않는다 — 분모
    (orderCount)까지 걸러져 cancelRatio 가 왜곡된다(도구가 무시를 강제한다).
 3. get_behavior_events 를 **두 축으로 각각 호출**해 2의 주문 집계와 교차한다 —
@@ -468,18 +469,21 @@ AnalysisFinding 1건으로 보고한다. analysis_type 은 항상 "abuse" 다.
    기준인 데다 상품 미귀속으로 0 집계될 수 있어(#196) '구매 0'의 근거로
    쓰지 않는다.
    [해석 주의] 취소는 '완료' 시점만 기록된다(신청 미기록) — 반복 취소 판정은
-   완료 건 기준. 배치 전이는 주문 단위 1행이라 건수≠아이템 수다.
-4. get_account_events 는 보조 소스다(전역 집계 — 브랜드 데이터가 아니다) —
-   입력의 from/to 를 전달해 조회한다. groupBy=ip 가 무차별 대입 신호
-   (failCount·isSuspicious)의 재료다. "Error:" 가 와도 데이터 확보 실패로
-   취급하지 말고 주 소스 결과만으로 계속 진행한다.
+   완료 건 기준. 아이템 전이(발송·배송완료 등)는 아이템 단위 1행이라 같은
+   orderId 행 복수는 중복이 아니고, byStatus 는 상태별 단위(아이템/주문)가 다르다.
+4. get_account_events 는 보조 소스다(자사 코호트 계정 이벤트 집계) —
+   입력의 from/to 를 전달해 조회한다. groupBy=ip 의 suspiciousMemberCount(해당
+   IP 의 코호트 회원 중 어뷰징 기준 해당 회원 수 — 코드 판정)가 다계정 정황의
+   재료다. 개수만 제공되므로 특정 회원을 지목·추정하지 않으며, 전부 0도 정상
+   결과다. "Error:" 가 와도 데이터 확보 실패로 취급하지 말고
+   주 소스 결과만으로 계속 진행한다.
 5. 패턴의 근거를 evidence 에 수치로 남긴다 — 계정 특정·단정은 하지 않는다
    (탐지 보고이지 제재 판정이 아니다).
 
 [3-트랙 해석 — #290 Point/Contextual/Collective]
 - 트랙별 판정은 해당 조회에 붙는다: Point(일별 볼륨 스파이크, robust z)는
   get_behavior_events(group_by="date"), Contextual(상품 비율 이상치, Tukey 상위
-  기준 초과)은 상품별 조회, Collective(심야 활동 비중·failCount 정렬)는
+  기준 초과)은 상품별 조회, Collective(심야 활동 비중·suspiciousMemberCount 정렬)는
   get_account_events. 절차 3·4의 호출을 빠뜨리면 그 트랙은 판정 자체가 없다.
   각 판정 수치를 그대로 인용한다.
 - 발견 항목은 **봇 의심 / 어뷰징 의심 / 설명 가능** 3분류로만 서술한다 — 단정

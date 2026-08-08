@@ -155,8 +155,9 @@ async def test_get_funnel_flattens_stages_response() -> None:
     assert (result.view, result.cart, result.checkout, result.purchase) == (5000, 800, 0, 120)
 
 
-async def test_account_events_has_no_brand_in_path_and_sends_period() -> None:
-    """I-8은 /internal/account-events (brandId 없음) + from/to 필수 전송(#197).
+async def test_account_events_uses_brand_scoped_path_and_sends_period() -> None:
+    """[#481] I-8은 브랜드 스코프 /internal/seller/{brandId}/account-events 를 탄다
+    (2026-08-06 자사 코호트 전환 — 구 전역 /internal/account-events 는 admin 존치분).
 
     from/to 는 Spring AnalysisPeriod.of 필수 — 종전 optional 미전달 호출은 400 이었다.
     """
@@ -168,10 +169,9 @@ async def test_account_events_has_no_brand_in_path_and_sends_period() -> None:
         return httpx.Response(200, json={"groupBy": "eventType", "rows": []})
 
     client = _client(handler)
-    await client.get_account_events("2026-07-01", "2026-07-31", event_type="LOGIN_FAIL")
+    await client.get_account_events(93, "2026-07-01", "2026-07-31", event_type="LOGIN_FAIL")
 
-    assert captured["url"].startswith(f"{BASE_URL}/internal/account-events")
-    assert "brand" not in captured["url"].lower().split("?")[0]
+    assert captured["url"].startswith(f"{BASE_URL}/internal/seller/93/account-events")
     assert captured["params"]["from"] == "2026-07-01"
     assert captured["params"]["to"] == "2026-07-31"
     assert captured["params"]["eventType"] == "LOGIN_FAIL"
@@ -180,7 +180,8 @@ async def test_account_events_has_no_brand_in_path_and_sends_period() -> None:
 async def test_account_events_parses_rows_and_group_by_echo() -> None:
     """I-8 실측 응답(rows — groupBy 별 이형) 파싱(#197 — 구 events 스키마는 상시 0건).
 
-    groupBy=ip 의 IpRow(무차별 대입 신호)도 dict 로 보존돼 요약에 쓸 수 있어야 한다.
+    [#481] 2026-08-06 개정 응답 — ip IpRow 는 suspiciousMemberCount·eventCount
+    (failCount·isSuspicious·nullMemberRatio 제거), scope="brand" 에코가 실린다.
     """
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -190,16 +191,16 @@ async def test_account_events_parses_rows_and_group_by_echo() -> None:
                 "success": True,
                 "data": {
                     "groupBy": "ip",
+                    "scope": "brand",
                     "eventType": "LOGIN_FAIL",
                     "from": "2026-07-01",
                     "to": "2026-07-31",
                     "rows": [
                         {
-                            "ipMasked": "121.140.xxx.xxx",
-                            "failCount": 42,
-                            "distinctMembers": 3,
-                            "nullMemberRatio": 0.5,
-                            "isSuspicious": True,
+                            "ipMasked": "121.140.xx.xx",
+                            "distinctMembers": 7,
+                            "suspiciousMemberCount": 5,
+                            "eventCount": 87,
                             "firstSeen": "2026-07-30T01:00:00+09:00",
                             "lastSeen": "2026-07-30T02:00:00+09:00",
                         }
@@ -209,12 +210,14 @@ async def test_account_events_parses_rows_and_group_by_echo() -> None:
         )
 
     client = _client(handler)
-    result = await client.get_account_events("2026-07-01", "2026-07-31", group_by="ip")
+    result = await client.get_account_events(93, "2026-07-01", "2026-07-31", group_by="ip")
 
     assert result.group_by == "ip"
+    assert result.scope == "brand"  # 구버전(전역) 응답 오독 차단 에코
     assert len(result.rows) == 1
-    assert result.rows[0]["failCount"] == 42
-    assert result.rows[0]["isSuspicious"] is True
+    assert result.rows[0]["suspiciousMemberCount"] == 5
+    assert "failCount" not in result.rows[0]  # 2026-08-06 개정으로 제거된 필드
+    assert "isSuspicious" not in result.rows[0]
 
 
 async def test_get_churn_sends_period_and_inactive_days() -> None:
@@ -596,11 +599,12 @@ async def test_get_order_events_parses_rows_total_and_stats_shape() -> None:
                 "rows": [
                     {
                         "orderId": 5001,
+                        "orderItemId": None,  # 주문 상태 전이는 null(2026-08-06 개정)
                         "fromStatus": "PAID",
                         "toStatus": "CANCELLED",
                         "actorType": "USER",
                         "reason": "단순변심",
-                        "buyerMemberId": 7,
+                        "customerLabel": "A3F29C",  # 구 buyerMemberId(Long) 대체
                         "createdAt": "2026-07-10T09:00:00+09:00",
                     }
                 ],
