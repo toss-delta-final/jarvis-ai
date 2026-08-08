@@ -529,6 +529,140 @@
 - **#285 — 챗봇 장바구니 삭제·수량 변경·찜 추가·해제·목록 internal 계약 초안을 정본에 등재** — Notion 「📡 API 명세서」에 I-24~I-28로 등재했다. 발명이 아니라 FE↔BE 정본 실측(C-4 삭제·C-3 수량 변경·M-5 찜 추가·M-6 찜 해제·M-4 찜 목록)의 의미론과 I-2/I-18의 internal 규약(`X-Internal-Token`, AI가 검증한 JWT `sub` 유래 신원, 3초 타임아웃, 응답 envelope)을 이식한 제안이며, I-25 수량 변경은 이슈 본문에 없던 신규 편입이다. 아직 BE 협의 전으로 각 정본 페이지에 초안 배너가 있고 잔여 안건은 이슈 #285 코멘트에 남겼으며, 사본 `docs/api-spec.md` 동기화와 CH-2 `action` 8종 확장은 협의 후 진행한다.
 
 ### Fixed
+- **#421 — I-17 1선(enrich 콘텐츠 실패)이 재시도 예산 없이 첫 주기에 즉시 영구 격리돼 LLM
+  샘플링 노이즈(JSON 파싱 실패)로도 정상 상품이 오격리되던 문제(#325 후속)** — 2선·3선(연속
+  실패 스트릭)과 달리 1선은 시간 유계 보호가 없어, `enrichment_item_attempts`(기본 2)회
+  재시도가 모두 우연히 실패하면 그 자리에서 영구 격리되고 커서가 전진해 Spring 이 그 상품을
+  다시 변경분으로 실을 때까지 재처리되지 않았다. 신규 `artifacts_batch_content_retry_cycles`
+  (기본 1주기, 0 이면 종전대로 즉시 격리)로 cross-cycle 재시도 예산을 준다 — 1주기 안에서는
+  즉시 격리하는 대신 재시도 대기 큐에 등재하고, 다음 주기 재시도 패스(`_run_content_retry_pass`)가
+  같은 페이로드로 다시 시도해 성공하면 회복(`BatchResult.recovered`), 예산 소진 시에만
+  dead-letter 격리한다. **PR 리뷰 라운드 2 T1 대응**: 새 페이지 항목이 도착할 때마다 대기
+  항목을 무조건 버리고 예산을 0 으로 재등재하던 것을 — enrichment 가 실제로 쓰는 필드
+  (`name`·`description`·`category`·`brand`·`attributes`)가 이전 대기 항목과 같으면 그 예산을
+  이어받아(`_enrichment_inputs_unchanged`) 소진시키도록 고쳤다 — 가격·재고처럼 그 입력에 들지
+  않는 필드만 매 주기 갱신되는 poison 상품은, 재시도 패스가 손도 대기 전에 다음 주기 새
+  변경분이 도착해 매번 리셋되는 바람에 예산이 영원히 소진되지 않고(dead-letter ERROR 가 안
+  뜨고 WARNING 만 반복) 있었다. 내용이 실제로 바뀌면 종전대로 0 부터 새 예산을 준다(#421
+  원래 취지 유지). **PR 리뷰 라운드 2 T2 대응**: 재시도 패스가 재시도 시점 실패를 종류
+  불문 예산 소진으로 단순화했던 것도 고쳤다 — 재시도에서 enrich 는 살아났는데
+  `_finish_change`(embed·store)만 일시 장애로 실패하면, 그 한 번의 불운이 기본 예산(1)을
+  대신 태워 정상 상품을 영구 격리하고 있었다(#421 이 없애려던 오격리를 재시도 패스 안에서
+  재현). 이제 재시도 시점 실패도 `_is_enrichment_content_failure` 로 다시 갈라 콘텐츠
+  실패만 예산을 소진시키고, 그 외(재시도 시점 enrich 비콘텐츠 실패·finish 실패)는 예산을
+  건드리지 않고 `_drain` 2선과 같은 `bump_failure_streak` 시간 유계 스트릭으로 판정한다
+  (`artifacts_batch_item_dead_letter_cycles` 도달 시에만 격리). **재시도 패스는 그 주기 `_drain`
+  이 hasMore 를 소진해 정상 완료한 뒤에만 돈다**(PR 리뷰 라운드 1 F1 대응) — 정상 완료는
+  Spring 이 지금까지 발행한 변경분을 전부 소비했다는 뜻이라 그 시점 큐 잔여 항목이 그 사이
+  `HIDDEN` 이 된 적이 없음을 보장하고(유령 상품 금지), `_drain` 이 중단된 주기(2선 전파·
+  `PageFailureThresholdExceeded`·fetch 실패·`InvalidCursorError` → rebuild)에는 재시도 패스를
+  아예 돌리지 않아 낡은 페이로드로 이미 삭제된 상품을 되살리는 것을 막는다. 재시도 대기 큐
+  (`ProductChange` 페이로드)는 상품 원본 필드를 담으므로 AI Postgres 에 저장하지 않고 프로세스
+  메모리에만 둔다(CLAUDE.md 원본 컬럼 사본 금지 원칙) — 재시작에 유실돼도 동작은 종전(즉시
+  격리)과 같아 하한이 종전이다. 같은 product 의 새 변경분(HIDDEN 포함)이 도착하면 큐 항목을
+  먼저 제거해 재시도 패스가 HIDDEN 상품을 되살리는 유령 상품을 막는다. 큐 상한(1,000, 튜너블
+  아님) 도달 시 가장 오래된 항목을 축출하고 ERROR dead-letter 로 남긴다. **재시도 예산 카운터는
+  `retry_attempts < budget` 로 판정해**(PR 리뷰 라운드 1 F4 대응) `artifacts_batch_content_retry_cycles=N`
+  이 "cross-cycle 재시도가 정확히 N 회 일어난 뒤 격리"를 뜻하도록 경계값을 고정했다(off-by-one
+  방지). `BatchResult`에 `recovered`·`retry_pending` 신설, scheduler·run_batch 요약 로그에
+  반영. **PR 리뷰 라운드 4 T6 대응**: 1선이 콘텐츠 실패를 "감지"한 즉시(재시도 큐 등재
+  여부 판정 **이전**) `BatchResult.failed` 를 올리던 것도 고쳤다 — 바로 아래 2선은 실제
+  격리가 확정된 시점에만 `failed` 를 올리는데(전파 단계엔 안 올림) 같은 함수 안에서 1선·
+  2선의 카운팅 시점이 비대칭이었다. `failed` 문서는 "격리된 단건 실패 수(dead-letter
+  기록됨)"인데 실제로는 재시도 큐에 방금 등재됐을 뿐 아직 격리 안 된 건도 셌고, 그 결과
+  `scheduler.py` 의 `if result.failed > 0: "증분 배치 부분 실패 — dead-letter 로그 확인"`
+  ERROR 알람이 이번 주기엔 WARNING(다음 주기 재시도 예약)만 있고 dead-letter ERROR 가
+  하나도 없는데도 떠서 온콜에게 없는 로그를 찾게 만들었다. 두 카운터를 목적별로 분리했다
+  — `page_failed`(3선 비율 가드, 지역 변수)는 "이번 주기에 실제로 반영되지 않았다"만
+  세므로 재시도 등재 여부와 무관하게 종전대로 증가시키고(3선 동작 불변), `failed`(관측)는
+  격리가 **확정**된 경우(예산 0 즉시 격리·`_drain` 예산 소진 격리(T1 경로)·2선 스트릭 상한
+  격리·재시도 패스의 콘텐츠 예산 소진 격리·재시도 패스의 스트릭 상한 격리·재시도 큐 상한
+  축출)에만 증가시킨다 — `_enqueue_content_retry` 가 상한 축출 발생 여부를 bool 로 반환해,
+  지금 등재하는 항목과 무관한(가장 오래된) 다른 항목의 확정 격리도 조용히 묻히지 않고
+  `failed` 에 반영되게 했다. `scheduler.py` 코드는 무변경 — `failed` 의미가 바로잡히면서
+  그 ERROR 알람 문구가 그제서야 사실이 된다. **PR 리뷰 라운드 5 T7 대응**: 항목 루프 맨
+  앞에서 재시도 큐 항목을 무조건 pop 하던 것도 고쳤다 — 콘텐츠 실패로 예산이 쌓인 항목이
+  다음 주기에 (콘텐츠 실패가 아니라) 2선 실패로 판정되고 스트릭이 상한 미만이면
+  `raise stage_exc` 로 `_drain` 전체가 중단되는데, 이때 무조건 pop 이 이미 그 항목의
+  cross-cycle 진행분(`retry_attempts`)을 되돌릴 수 없이 지워버려 커서는 안 전진해도
+  다음 주기엔 예산이 0 부터 다시 시작했다 — `artifacts_batch_content_retry_cycles=N`
+  이 보장하려던 "정확히 N 회 재시도 후 격리"가 관대한 쪽으로 깨지고, "콘텐츠 실패(예산
+  누적) → 2선 중단(예산 유실)"이 반복되면 콘텐츠 예산도 2선 스트릭도 영영 상한에
+  도달하지 못한 채 무기한 재시도만 반복할 수 있었다(#421/#416 이 없애려던 "poison
+  상품이 상한에 영영 도달하지 못한다"와 같은 계열의 결함). 무조건 pop 을 peek(조회만)
+  으로 바꾸고, 이 항목의 운명이 실제로 확정되는 지점(HIDDEN 삭제 성공·처리 성공·콘텐츠
+  예산 소진 격리·2선 스트릭 상한 격리·콘텐츠 실패 재등재)에서만 개별적으로 pop 하도록
+  고쳤다 — **2선이 전파(raise, 중단)하는 경로만은 큐를 전혀 건드리지 않는다**, 이번
+  수정의 핵심이다. 유령 상품 불변식은 그대로 유지된다(재시도 패스는 `_drain` 이 정상
+  완료했을 때만 돌고, 정상 완료한 실행은 모든 항목이 확정 분기 중 하나를 반드시
+  거치므로 중단된 실행은 애초에 재시도 패스에 도달하지 않는다). (api-spec §4.8, v0.28.2)
+- **#416 — I-17 2선·3선 연속 실패 스트릭이 프로세스 메모리에만 있어, 스케줄러가 수렴 창
+  (기본 3주기 ≈ 15분)보다 자주 재시작되면(연속 배포·크래시 루프) poison 상품이 dead-letter
+  상한에 영영 도달하지 못하던 문제** — 2선은 상한 전까지 예외를 전파(커서 미전진)하므로
+  재시작이 스트릭을 매번 0으로 리셋하면 배치가 같은 자리에 무기한 갇힌다(#325 가 없애려던
+  stuck-batch 의 재발). 스트릭 저장을 `ArtifactStore` 공유 계약으로 옮겨(신규
+  `FailureStreakTable`, `bump_failure_streak`/`clear_failure_streak`/
+  `purge_stale_failure_streaks`) `PgCatalogArtifactStore`가 pg-catalog `batch_failure_state`
+  테이블(신규, `db/catalog/init/00_products.sql`·
+  `db/catalog/migrations/20260807_batch_failure_state.sql`)에 영속한다 — 단일 원자 UPSERT
+  (`ON CONFLICT ... DO UPDATE`)로 다중 인스턴스에서도 정확하고, DB 오류 시 3개 메서드 모두
+  예외를 삼키고 인메모리 폴백으로 위임해(종전 동작과 같은 하한) 테이블 부재·pg 순단에도
+  배치가 죽지 않는다. `clear_failure_streak` 은 DB DELETE 를 시도하되(PR 리뷰 라운드 1 F5
+  대응) **성공 여부와 무관하게 인메모리 폴백 표도 항상 clear** 한다 — 폴백을 프로세스 수명
+  latch 로 승격하면 #416 이 고치려던 "잦은 재시작에도 유계 수렴" 목표가 무력화되므로, DB
+  DELETE 만 실패해도(dict pop 이라 비용 0인) 인메모리 clear 는 그대로 적용해 드리프트의
+  절반을 없앤다(남는 드리프트 창은 같은 TTL 로 유계). 신규 `artifacts_batch_failure_streak_ttl_s`
+  (기본 3600s)로 "연속"의 정의를 시간으로 못박아, 영속화가 무관한 과거 실패를 오늘 실패와
+  합쳐 즉시 상한에 닿는 오격리를 막는다. 배치 1회 시작 시 만료 스트릭을 청소한다
+  (`purge_stale_failure_streaks`, 실패 시 무시). HIDDEN 삭제가 성공하면 그 상품의 스트릭을
+  clear 한다(PR 리뷰 라운드 1 F3 대응 — 스트릭이 실패 종류가 아니라 상품에 묶여 있어, 삭제
+  실패로 쌓인 스트릭이 다음 성공까지 남아 있으면 이후 무관한 재입고
+  실패와 합산돼 상한에 조기 도달할 수 있었다). 예산 카운터는 "N 이면 정확히 N 회"
+  불변식(경계값 off-by-one 방지)으로 확정했다. `reset_batch_failure_state()`는 이제 #421
+  재시도 큐만 비운다(스트릭은 스토어 수명과 함께 간다). **PR 리뷰 라운드 2 T3 대응**:
+  `PgCatalogArtifactStore` 의 폴백 WARNING 플래그(`_failure_streak_fallback_warned`)가
+  latch 였던 것도 고쳤다 — 한 번 True 가 되면 인스턴스 수명 동안 리셋되지 않아, pg 순단
+  1회로 latch 된 뒤 DB 가 복구돼도 그 뒤 더 심각한 장애가 나면 조용히 넘어갔다(F5 가
+  "폴백을 프로세스 수명 latch 로 승격하면 안 된다"고 정한 원칙이 이 플래그에는 지켜지지
+  않고 있었다). 3개 DB 경로(`bump_failure_streak`·`clear_failure_streak`·
+  `purge_stale_failure_streaks`)가 정상 종료할 때마다 플래그를 False 로 되돌려
+  (`_mark_failure_streak_healthy`), 다음 장애가 다시 WARNING 을 낼 수 있게 했다. **PR 리뷰
+  라운드 2 T4 대응**: `FailureStreakTable` 의 방어적 메모리 상한(`_FAILURE_STREAK_MAX_ENTRIES`
+  =10,000)이 item·page 를 한 dict 에 합쳐 "합산 10,000"으로 적용되고 있던 것도 고쳤다 —
+  구 동작(item 10,000·page 10,000, 총량 20,000)의 절반으로 줄어 있었을 뿐 아니라, 상한
+  초과 시 `clear()` 가 item·page 를 한꺼번에 날려 대량 실패 상황(카탈로그 전량 동시 실패
+  등)에서 스트릭이 통째로 리셋되면 이 이슈가 고치려던 "상한에 영영 도달하지 못한다"가
+  그대로 재현될 수 있었다. `FailureStreakTable` 내부 저장소를 kind 별 독립 하위 dict 로
+  나눠 상한과 방어적 비움을 kind 단위로 적용하도록 고쳤다(item 10,000·page 10,000 이
+  독립). **PR 리뷰 라운드 3 T5 대응**: `_run_content_retry_pass` 의 콘텐츠 실패 분기가
+  item 스트릭을 clear 하지 않던 것도 고쳤다 — `_drain` 의 대응 분기는 콘텐츠 실패 시 큐
+  유지·즉시 격리 결과와 무관하게 **항상** clear 하는데(콘텐츠 실패는 정의상 항목 고유라
+  2선 스트릭의 "연속"을 끊는다, #325 R6 의도), T2(라운드 2)가 재시도 패스에 2선 스트릭
+  경로를 새로 넣으며 이 clear 를 빠뜨려 비대칭이 생겼다 — "재시도 중 인프라 실패(streak
+  bump) → 재시도 중 콘텐츠 실패(clear 없이 retry_attempts 만 +1) → 재시도 중 다시 인프라
+  실패(streak 가 안 끊기고 이어짐)" 순서에서 연속이 아닌 인프라 실패가 연속으로 오판돼
+  실제보다 이르게 격리될 수 있었다(F3 — HIDDEN 삭제 성공이 스트릭을 끊지 않던 것 — 와
+  같은 계열의 결함). 콘텐츠 실패 분기 양쪽 경로 모두에서 `clear_failure_streak` 를
+  호출하도록 고쳐 `_drain` 과 동일한 불변식을 맞췄다. **PR 리뷰 라운드 6 T8 대응(부분
+  수용)**: 리뷰어는 "DB 가 간헐적으로 실패/성공을 오가면 어느 쪽 카운터도 상한에 도달하지
+  못한다"고 지적했는데, SQL 을 확인하니 그건 과장이었다 — DB 행은 지워지지 않고 성공한
+  bump 마다 단조 증가하므로 DB 성공률 p 면 대략 1/p 배 느리게라도 상한엔 **도달은 한다**
+  (정지가 아니라 지연). 그래도 지연은 실재하고 고칠 값이 싸서 고쳤다 —
+  `bump_failure_streak` 의 DB 성공 경로가 같은 (kind, key) 로 인메모리 폴백에 남은
+  진행분을 `peek` 하고, "이번 호출 자체가 그 진행분 위에 이어지는 다음 1회"이므로
+  `peek 값 + 1` 과 DB 자체 값 중 더 큰 쪽을 최종 스트릭으로 삼는다 — 더 크면 그 값으로
+  DB 를 UPDATE 해 흡수하고, 어느 쪽이든 폴백 엔트리는 지워 두 번 세지 않는다. 흡수
+  UPDATE 가 실패해도 psycopg 커넥션이 `with` 블록 예외 시 트랜잭션 전체(방금 성공한 원
+  UPSERT 포함)를 롤백해 이중 계수 없이 기존 예외 처리로 자연히 흘러가 폴백이 이어받는다
+  — 이 메서드는 여전히 절대 예외를 밖으로 내지 않는다. 실측: 실패→성공→실패→성공 4회에서
+  수정 전엔 두 저장소가 각자 자기 성공분만 세어 마지막 값이 2([1,1,2,2])였는데, 수정
+  후엔 3([1,2,1,3])으로 상한 도달이 앞당겨진다. **부분 수용인 이유**: 폴백을 흡수 후
+  지우기 때문에 흡수 직후 다시 DB 가 실패하면 그 다음 폴백 bump 는 지워진 자신의 기록만
+  보고 0 부터 다시 세, 임의의 교차 패턴에서 "정확히 호출 횟수만큼"을 수학적으로 보장하진
+  못한다(폴백을 지우지 않고 동기화해 두면 완전히 재현되지만, 그러면 폴백이 실패 전용
+  임시 저장소가 아니라 DB 의 상시 그림자 사본이 돼 이 이슈 범위를 넘어선다) — 남는 한계로
+  문서화했다. (api-spec §4.8 은 "저장 실패 시 프로세스 메모리 폴백"까지만 말하고 내부
+  조정은 서술 범위 밖이라 문장 변경 없음, v0.28.2 그대로)
 - **#435 — 프로필 벡터 경로로 추천된 상품을 이름으로 지목한 찜/담기가 실패하던 문제 (api-spec §3.1, v0.28.1)** — 조건 없는 발화의 회원 경로(`no_condition.rank_by_profile`, 취향 벡터 랭킹)가 `set_last_reco` 에 빈 이름(`(pid, "")`)만 저장해, decompose 프롬프트의 `LAST_RECOMMENDATIONS` 에 이름이 없어 이름 매칭(#118 실측 8/8 신호)이 원천적으로 불가능했다 — FE 위조방지 설계(추천 카드는 `screen` 에 실리지 않는다)와 AI 상품명 공백(AI 카탈로그 인덱스에 원본 컬럼 없음)의 이음매였다. `products.search_doc`(AI 생성물, `build_search_doc` 임베딩 입력으로 이미 조립돼 저장됨) 첫 줄에서 이름을 최선노력 복원해(`_extract_name_from_search_doc`, 필드 순서 커플링을 왕복 테스트로 고정) `set_last_reco` 에 실었다. 노출 집합 안에서 이름이 중복되면(name 없는 상품은 첫 줄이 category 로 밀려 여러 상품이 같은 문자열을 가질 수 있다) 모호함을 확정하지 않고 전부 버린다(`dedup_exposed_names`, G2). `products.search_doc` 는 판매자 입력이라 `_strip_unsafe` 로 신뢰경계를 통과시키고(G3), 스토어 조회·추출 실패는 예외 없이 이름 없음으로 degrade 한다(G4) — pg-profile 에는 여전히 productId 만 영속하고 이름은 기존과 같이 프로세스 로컬 휘발성 캐시로만 흐른다(CLAUDE.md 원본 컬럼 사본 금지 불변). 되물음 문구도 함께 고쳤다 — `last_reco`(스레드 누적 추천)가 비어 있지 않은 담기/찜 미해소 턴은 "추천을 먼저 받아보시면"(거짓 — 이미 추천을 받았다) 대신 "추천해 드린 상품 중에서 이름을 말씀해 주시면"으로 안내한다(화면 지시어 문구가 있으면 그쪽이 우선, `last_reco` 가 비면 오늘 문구와 바이트 동일). 담기·찜 계열 턴에 `last_reco_name_coverage`(개수만, PII 미포함) INFO 로그를 추가해 다음 추적 라운드가 같은 미확정을 반복하지 않게 했다. **판정(프로필 경로 vs 화면 vs LLM)은 운영 로그로 확증한 것이 아니라 코드 경로·저장소 실측(캐시 LRU 미축출·I-3 폴백은 정상 경로 합류)으로 추론한 것이다.** `resolve_screen_reference`(결정적 화면 지시어 해소기)는 손대지 않았다 — 그 모듈은 이름 지목을 의도적으로 LLM 에 양보하는 설계라(§3.1 v0.28.1 서술 추가) 이 이슈는 이름 **공급**을 고치는 것이지 해소기를 늘리는 것이 아니다. 담기 허용 목록(`allowed`) 계산·미해소 판정 조건은 불변.
 - **#430 — `decompose` 가 "아무거나"류 발화에도 `semanticQuery` 를 지어내 과소지정 되물음(#336)이 100% 발동하지 않던 문제** — `_SYSTEM` 은 `semanticQuery` 를 "찾는 상품의 의미"로 정의만 하고 **"지정할 게 없으면 비워라"는 지시가 없었다.** LLM 이 무엇이든 텍스트를 내면 `semantic_query_is_fallback` 이 즉시 False 가 되고 `is_underspecified_turn` 이 "의미 신호가 있는 턴"으로 읽어 되물음을 껐다 — 실측 `missRate` **111/112(99.1%)**, 독립 2런 동일. `- recommend:` 규칙 절 **끝에 규칙 한 줄만** 넣어 고쳤다: "찾는 상품의 단서(종류·용도·상황·목적·브랜드·색상)가 발화에도 PRIOR_FILTERS·LAST_RECOMMENDATIONS·SCREEN 맥락에도 없으면 `semanticQuery` 는 빈 문자열". 판정 코드(`underspecified.is_underspecified_turn`·`no_condition.py`)는 **한 줄도 바뀌지 않았다** — 실측이 판정 코드는 정상이라 말한다. 같은 하네스·같은 앵커·같은 티어(fast, `gpt-5-nano`)로 전/후 각 2런(전부 `source=repo:_SYSTEM`, 출고판 sha12 `865ed6fd771e`): `missRate` 99.1%·99.1% → **9.8%·6.2%**, `falseAlarmRate` 0.0%·0.0% → **1.9%·2.9%**(사전 등록 상한 3.6% 내), `judgmentAccuracy` 48.6% → 94.0%·95.4%, 의미신호 소실 가드(상품명이 실제로 발화에 있는 category·keyword 4앵커 32표본) 1/32·0/32, 불변식(`flagOffInvariant`·`priorGateInvariant`) 4런 모두 0/240. 산출물 `evals/underspecified_probe/baselines/fast-2026-08-07-430-{before,merged,after}-*/`(판정표 정본은 `after-1/README.md`, 탈락 후보 9종의 sha12·수치 포함). **작업 중 `origin/dev` 병합이 측정물을 바꿨다** — #386(PR #441, 커밋 `3547e43`, `wishlist_view` 의도 신설)이 `_SYSTEM` 에 548자를 더한 판(`f99a98867e4a`)에서 `falseAlarmRate` 가 1.9 → 3.8 → 4.8% 로 단조 상승해 상한을 3런 중 2런에서 넘겼고(오탐 11건 중 9건이 브랜드-only 앵커 — 모델이 "삼성"·"LG"를 `filters.brand` 로 추출하지 못한 표본이 드러난 것이다), 비움 트리거의 단서 목록에 **브랜드·색상 10자**를 더해 되찾았다(병합판 3런은 `-merged-{1,2,3}` 에 근거로 커밋). **잔여 회귀를 알고 머지한다** — 같은 픽스처(v6)에서 그 10자만 다른 `evals/intent_probe` 대조에서 `categoryClear` 31·31 → **28·28**(−3)이고 `demonstrative`·`mainIntent` 도 각 −3 이다(팔 내부 분산 0이라 노이즈로 보기 어렵다). 반대로 `categoryAction3Way` +4.5 · `general` +3.5(#386 이 떨어뜨린 것을 병합 전 수준으로 복구) · `categoryMixedReplace` +3.5 · `conditionOnlyNoCategoryQuery` +3.0 등 **10축이 올랐고**, `screenExactPick` 과 안전축 `screenNoHallucination`·`screenReask` 는 무회귀다. 이슈 「할 일」 ②·③은 **진단하고 반려**했다 — ②(수치 제약 지시)는 재작성 후보 2종이 primary 를 +31.2pp·+6.2pp 깎았고 원인이 어휘가 아니라 같은 절 뒤쪽의 무조건 긍정 명령이었으며, ③(`attrConditions` 억제)은 미탐의 그 갈래를 11건 → 0건으로 없앴지만 `screenExactPick` 을 추가로 −1.5 끌어 별도 이슈로 분리를 제안한다(`docs/lessons.md` 2026-08-07 4건). 계약(api-spec) 무변경.
 - **#430 부수 — #162(조건 없는 발화 → I-3 인기 경로, api-spec §4.17)가 기본 설정에서 비로소 발동한다** — `semantic_query_is_fallback` 의 소비자는 둘인데(`is_underspecified_turn` #336 · `is_no_condition_turn` #162) **후자에는 플래그가 없다.** 위 프롬프트 수정은 `underspecified_reask_enabled`(기본 False)를 켜지 않아도 **오늘 운영 동작을 바꾼다**: `semanticQueryIsFallback=true` 표본이 1/240·1/240 → **출고판 2런에서 `no_condition` 슬라이스 39~40/40** 이 됐고, 그중 `is_no_condition_turn` 의 더 엄격한 조건(`_FILTER_AXES` 전부 빔 + `prior is None`)까지 통과하는 것이 바로 그 슬라이스다. 즉 "아무거나 추천해줘"류가 무필터 I-1(실측 7,245건·13.33MB·1.112s, `docs/specs/MEASURE-I1-RESPONSE-132.md`)로 새던 것이 멈추고 #162 설계대로 I-3 인기 경로 + 고지로 간다 — `no_condition.py` 모듈 docstring 이 그 무필터 호출을 "계약 위반"이라고 부르고 있었다. 회귀가 아니라 **두 번째 죽은 기능이 살아나는 것**이며, `no_condition.py` 는 한 줄도 바뀌지 않았다. 가격 제약만 있는 턴이 여전히 `is_no_condition_turn=False` 로 남는 혈반경은 기존 `tests/unit/test_no_condition.py::test_any_single_condition_axis_blocks_trigger` 가 고정한다. 계약(api-spec) 무변경.
