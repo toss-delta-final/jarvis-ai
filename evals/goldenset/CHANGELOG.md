@@ -3,6 +3,7 @@
 아직 baseline 실행·공개 전인 v1 초안이므로 아래 정정에도 `datasetVersion`은 `1.0.0`을 유지한다.
 
 | 날짜 | datasetVersion | 변경(add/remove/relabel) | caseId | 사유 |
+| 2026-08-09 | 2.3.0 | add | dev: buy-colr-0001~0006 | #474 색상 고유어/정본 3쌍 MFT와 결정론 fixture를 추가했다. labelSource=model, adjudicator는 독립 검수 부재로 비어 있다. |
 |---|---|---|---|---|
 | 2026-08-02 | 1.0.0 | add | dev: buy-srch-0001~0006, buy-gust-0001~0002, buy-cold-0001~0002, buy-pers-0001~0003, buy-over-0001, buy-repu-0001~0003, buy-cmap-0001~0006, buy-mult-0001~0002, buy-fail-0001~0003; holdout: buy-srch-1001~1006, buy-cmap-1001~1002, buy-fail-1001~1002, buy-repu-1001, buy-pers-1001 | 구매자 추천 골든셋 v1 최초 40건(dev 28 / holdout 12) 구축 |
 | 2026-08-03 | 1.0.0 | add | buy-over-0002, buy-over-0003 | 카테고리·브랜드 축의 personalization_overreach 회귀 케이스 보강 |

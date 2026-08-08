@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import ExitStack
 from typing import Any
 from unittest.mock import patch
 
@@ -105,6 +106,31 @@ def _filter_products_by_requested_price(
     return filtered
 
 
+def _filter_products_by_requested_color(
+    products: list[dict[str, Any]], params: httpx.QueryParams
+) -> list[dict[str, Any]]:
+    """I-1 color 반복 파라미터로 상품을 거른다(#474).
+
+    api-spec §4.6의 3갈래 판정을 모사한다. color가 없으면 전부 통과하고, 색상 축이 키 부재,
+    ``None``, 공백 문자열이면 판정 불가이므로 통과한다. 그 밖에는 요청의 반복 color 값 중 하나가
+    상품 색상 값에 부분 일치할 때만 통과하며, 양쪽 모두 ``strip().casefold()``으로 정규화한다.
+    """
+    requested = [value.strip().casefold() for value in params.get_list("color") if value.strip()]
+    if not requested:
+        return products
+    filtered: list[dict[str, Any]] = []
+    for product in products:
+        attributes = product.get("attributes")
+        color = attributes.get("색상") if isinstance(attributes, dict) else None
+        if not isinstance(color, str) or not color.strip():
+            filtered.append(product)
+            continue
+        normalized = color.strip().casefold()
+        if any(value in normalized for value in requested):
+            filtered.append(product)
+    return filtered
+
+
 class _CaseTransport:
     """I-1/I-19/I-21만 제공하고 모든 요청을 감사용으로 기록한다."""
 
@@ -142,6 +168,7 @@ class _CaseTransport:
                 if str(product_id) in self.fixtures.catalog
             ]
             products = _filter_products_by_requested_price(products, request.url.params)
+            products = _filter_products_by_requested_color(products, request.url.params)
             return httpx.Response(200, json={"success": True, "data": products})
         if request.method == "GET" and request.url.path.startswith("/internal/members/"):
             persona_id = self.case.identity.persona_id
@@ -166,12 +193,19 @@ class OfflineBuyerAdapter:
         "rerank": "searchOrderPassthrough",
     }
 
-    def __init__(self, *, settings: Settings | None = None) -> None:
-        self.settings = settings or EvaluationSettings(
+    def __init__(self, *, settings: Settings | None = None, color_expansion: bool = False) -> None:
+        base_settings = settings or EvaluationSettings(
             auth_mode="dev",
             internal_api_token=_INTERNAL_TOKEN,
             search_backend="spring",
         )
+        self.settings = base_settings.model_copy(
+            update={
+                "color_synonym_expansion_enabled": color_expansion,
+                "color_synonym_array_contract_ready": color_expansion,
+            }
+        )
+        self.color_expansion = color_expansion
         self.last_requests: list[dict[str, Any]] = []
 
     def __call__(self, case: GoldenCase, fixtures: EvaluationFixtures) -> dict[str, object]:
@@ -224,13 +258,23 @@ class OfflineBuyerAdapter:
                 backend=search_service.SpringSearchBackend(),
             )
 
-        with (
+        patches = (
             patch.object(spring_client, "_client", _client),
             patch(
                 "app.agents.buyer.recommendation.rerank.get_settings", return_value=self.settings
             ),
             patch.object(spring_client, "get_settings", return_value=self.settings),
-        ):
+        )
+        if self.color_expansion:
+            from evals.metrics.color_expansion import load_approved_color_synonym_map
+
+            async def _load_seed_map(_settings: Settings) -> dict[str, list[str]]:
+                return load_approved_color_synonym_map()
+
+            patches += (patch.object(spring_client, "_load_color_synonym_map", _load_seed_map),)
+        with ExitStack() as stack:
+            for active_patch in patches:
+                stack.enter_context(active_patch)
             async for _ in stream_recommendation(
                 request=request,
                 decision=decision,

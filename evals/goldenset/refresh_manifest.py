@@ -1,0 +1,37 @@
+"""골든셋 파일 해시·건수·datasetHash를 결정론적으로 갱신한다."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+
+from evals.goldenset.audit import dataset_hash
+from evals.goldenset.loader import load_cases
+
+ROOT = Path(__file__).resolve().parent
+
+
+def run() -> None:
+    path = ROOT / "manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    dev, holdout = load_cases("dev"), load_cases("holdout")
+    by_slice: dict[str, dict[str, int]] = {"dev": {}, "holdout": {}}
+    for split, cases in (("dev", dev), ("holdout", holdout)):
+        for case in cases:
+            for name in case.slices:
+                by_slice[split][name] = by_slice[split].get(name, 0) + 1
+    manifest["datasetVersion"] = "2.3.0"
+    manifest["counts"].update({"dev": len(dev), "holdout": len(holdout), "total": len(dev) + len(holdout), "bySlice": by_slice})
+    paths = {entry["path"] for entry in manifest["files"]} | {"add_color_synonym_cases.py", "refresh_manifest.py"}
+    files = []
+    for rel in sorted(paths):
+        payload = (ROOT / rel).read_bytes()
+        files.append({"path": rel, "bytes": len(payload), "records": len(payload.splitlines()) if rel.endswith(".jsonl") else 0, "sha256": hashlib.sha256(payload).hexdigest()})
+    manifest["files"] = files
+    manifest["datasetHash"] = dataset_hash(files)
+    path.write_text(json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+
+
+if __name__ == "__main__":
+    run()

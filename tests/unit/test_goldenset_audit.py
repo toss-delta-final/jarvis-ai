@@ -28,8 +28,8 @@ def test_manifest_file_hashes_match_committed_files() -> None:
 
 def test_committed_dataset_has_required_counts_and_slice_coverage() -> None:
     manifest = json.loads((ROOT / "manifest.json").read_text())
-    assert manifest["counts"]["total"] == 127
-    assert manifest["counts"]["dev"] == 103
+    assert manifest["counts"]["total"] == 133
+    assert manifest["counts"]["dev"] == 109
     assert manifest["counts"]["holdout"] == 24
     assert 30 <= manifest["counts"]["total"] <= 160
     assert all(count > 0 for count in manifest["counts"]["bySlice"]["dev"].values())

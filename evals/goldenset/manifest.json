@@ -38,14 +38,14 @@
         "category_mapping_failure": 9,
         "cold_start": 2,
         "failure": 5,
-        "guest": 68,
+        "guest": 74,
         "member": 35,
         "multi_constraint": 12,
         "personalization": 11,
         "personalization_overreach": 6,
         "repurchase": 8,
-        "search": 62,
-        "single_need": 71
+        "search": 68,
+        "single_need": 77
       },
       "holdout": {
         "category_mapping_failure": 6,
@@ -58,20 +58,20 @@
         "single_need": 18
       }
     },
-    "dev": 103,
+    "dev": 109,
     "holdout": 24,
-    "total": 127
+    "total": 133
   },
   "createdAt": "2026-08-02",
-  "datasetHash": "ef3a5af8b303041d9f44c156d687e3572feed33d2e85469dce1e0aa49a7ecf37",
+  "datasetHash": "60b824c301c570d98234634f8f1cb7e9a0e57ed5fda5573a43f15134bdaaeb7b",
   "datasetName": "buyer-goldenset",
-  "datasetVersion": "2.2.0",
+  "datasetVersion": "2.3.0",
   "files": [
     {
-      "bytes": 21520,
+      "bytes": 21726,
       "path": "CHANGELOG.md",
       "records": 0,
-      "sha256": "50f35d3548982b3aabab7a46e819a029ddde54d9499e349f8fbd5dd562ec1e88"
+      "sha256": "4776401500a34548a7032878b899086beceeafe1f721ac9b57c921e773a267ea"
     },
     {
       "bytes": 28828,
@@ -92,6 +92,12 @@
       "sha256": "f3752f48ee915e79685ff539e71941fb3a6a37853ffd063cd10b8b4ee8289e2b"
     },
     {
+      "bytes": 5289,
+      "path": "add_color_synonym_cases.py",
+      "records": 0,
+      "sha256": "30fc400528e7b450c9086835484035588c09a3e96fa82421f70908c4d62ceda7"
+    },
+    {
       "bytes": 12089,
       "path": "audit.py",
       "records": 0,
@@ -101,13 +107,13 @@
       "bytes": 6336,
       "path": "audit/leakage_report.json",
       "records": 0,
-      "sha256": "e6d6b5301e8c3d2b4920313fa75c4671c816f4d55a457a17110ec593f05b8fbb"
+      "sha256": "8388c2a394bf8035b7230d6b290762d704cb2b6725af472712eeb0b3095b5ac0"
     },
     {
       "bytes": 3242,
       "path": "audit/leakage_report.md",
       "records": 0,
-      "sha256": "40b2a4e05de02fd3a93727b2254b05ae6a3910c4bc393f63940a1c34a9667941"
+      "sha256": "5c6fbb2e6f2587e3c8c13798efd4ab0b3a303f930d45c3d019619b67f1aa534b"
     },
     {
       "bytes": 3589,
@@ -122,16 +128,16 @@
       "sha256": "e359a4b795df6187512d66af05a084af934ef7174ac926ba6ebcb0640a719129"
     },
     {
-      "bytes": 142395,
+      "bytes": 148530,
       "path": "cases/buyer_dev.jsonl",
-      "records": 103,
-      "sha256": "c1bab25161324a4248ade092aabb623ef2287a846787fd9390276ac2fe570cf8"
+      "records": 109,
+      "sha256": "fb18f962f37bdc158ead956c19d4392b2d6e05a7c7334dcaeeb1233086f89dee"
     },
     {
       "bytes": 22815,
       "path": "cases/buyer_holdout.jsonl",
       "records": 24,
-      "sha256": "d1713422c334098f514beb3ca76c2b15263c23587dc33f55cfccc87c0bf9080a"
+      "sha256": "3b91a8870f6e97109d53f97805fc33b0e9c39209bbde39f57801882317d2dcdd"
     },
     {
       "bytes": 11195,
@@ -152,10 +158,10 @@
       "sha256": "d4203b8d31ef2bbc4c46d5bff6e1eb672c189ffc449299a898eaeb9adf687e3b"
     },
     {
-      "bytes": 536944,
+      "bytes": 555502,
       "path": "fixtures/search_responses.json",
       "records": 0,
-      "sha256": "9b95d071e0075a8a976bdeabfe1dfc11bf2aa63ca31bc277afa3cc52baf13c1e"
+      "sha256": "e4104ab7081d24c0ac0ceb190076cc1d9f4bebc447cf854f711d4da746031c69"
     },
     {
       "bytes": 18965,
@@ -182,10 +188,16 @@
       "sha256": "1073256fe6495f4113940581952cdbb0017f33d15c1ab069c8abdafb9b02d390"
     },
     {
+      "bytes": 1536,
+      "path": "refresh_manifest.py",
+      "records": 0,
+      "sha256": "39ccc9b30e9ee841ab0d5c4d8ed2ee9edab2763f14a1528d19a312c916188df3"
+    },
+    {
       "bytes": 30674,
       "path": "schema.py",
       "records": 0,
-      "sha256": "22a6890d313ec69d9a5e724c930c0e475cf27ee5d2d4fa66494b1e6832cf5d46"
+      "sha256": "cbd5248cc71ea296adb9b7f2b8d35fab84aa4a5e2e5867d9db3a84e903328e98"
     },
     {
       "bytes": 8507,
@@ -269,7 +281,7 @@
         "target": 8
       },
       "single_need": {
-        "actual": 71,
+        "actual": 77,
         "target": 24
       }
     },
