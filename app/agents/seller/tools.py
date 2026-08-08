@@ -374,16 +374,21 @@ async def get_funnel(runtime: ToolRuntime[SellerContext], from_date: str, to_dat
     )
 
 
-# [#196] purchase_complete 는 FE 가 productId 없이 발사(주문 단위 이벤트)해
-# behavior_events.product_id = NULL 로 적재되고, I-13 집계(product 조인 스코프)에서
-# 통째로 탈락한다 — 상품별·합계 모두 0 으로 내려올 수 있다(실데이터 존재해도).
-# BE 근본 수정(order_item 기반 귀속, jarvis-backend#62) 배포 전까지 워커가 0 을
-# '구매 전무'로 오해석하지 않도록 노트로 통제한다. 배포 후 완화(후속 커밋).
-_BEHAVIOR_AUTHORITY_NOTE = (
-    "※ purchaseComplete 는 이벤트 기준(완료 페이지 발사)인데 현 수집 경로상 "
-    "상품 미귀속으로 0 집계될 수 있다(실제 구매 있어도) — 0 을 '구매 전무'의 "
-    "근거로 쓰지 말 것. 구매 존재·규모의 권위는 매출 조회(I-6)/퍼널(I-7)/"
-    "주문 전이(I-14)다."
+# [#488] purchaseComplete 는 **주문 기준** 집계다 — order_item × product × brand
+# 조인의 PAID(paid_at) 건을 COUNT(DISTINCT order_id) 한 값이라 I-7 퍼널 4단과 같은
+# 정본이고, 이벤트 유실·미귀속과 무관하며 과거 구간도 소급 복구된다. 구 규정
+# ("이벤트 기준, 권위는 I-6/I-14", #196)은 근본 수정 배포(jarvis-backend#62,
+# 2026-07-31 개정)로 폐기됐다 — 그 문구를 남겨 두면 워커가 실재하는 구매를
+# '신뢰 불가'로 취급하고 다른 도구로 우회한다(능동적 오정보).
+# 남는 오해석 위험은 '권위'가 아니라 '집계 단위'(건수≠수량, 상품별 합 > 합계)라
+# 노트도 그쪽만 통제한다.
+_BEHAVIOR_PURCHASE_RULES_NOTE = (
+    "※ purchaseComplete 는 주문 기준 집계(PAID 주문의 상품별 주문 건수)이며 "
+    "퍼널 4단(구매)과 같은 정본이다 — 이벤트 유실과 무관하니 0 은 실제 '구매 "
+    "없음'으로 읽어도 된다. ① 한 주문에 같은 상품을 여러 개 담아도 1 — 건수이지 "
+    "수량이 아니므로 수량 질문의 근거로 쓰지 말 것. ② 상품별 값의 합이 "
+    "합계(eventType 집계)보다 클 수 있다(한 주문에 자사 상품이 여러 종) — 버그 "
+    "아님. ③ 부분 취소·반품이 반영돼 과거 기간을 재조회하면 값이 줄 수 있다."
 )
 
 
@@ -609,7 +614,8 @@ async def get_behavior_events(
     if result.series:
         spike_note = await _point_spike_note(brand_id, from_date, to_date, result.series)
     return (
-        f"{summary}.{spike_note} {_BEHAVIOR_AUTHORITY_NOTE} {_reference_note(from_date, to_date)}"
+        f"{summary}.{spike_note} {_BEHAVIOR_PURCHASE_RULES_NOTE} "
+        f"{_reference_note(from_date, to_date)}"
     )
 
 
@@ -848,7 +854,7 @@ async def get_product_change_logs(
     )
 
 
-# I-16 신호 해석 주의 문구 — 상시 부착(#197, _BEHAVIOR_AUTHORITY_NOTE 와 같은 패턴).
+# I-16 신호 해석 주의 문구 — 상시 부착(#197, _BEHAVIOR_PURCHASE_RULES_NOTE 와 같은 패턴).
 _CHURN_SIGNAL_RULES_NOTE = (
     "※ 검색 무결과 세션은 현 수집 스키마상 상시 0(미적재) — '검색 불만 없음'의 "
     "근거로 쓰지 말 것. 이탈률 분모는 기간 내 자사 상품 상호작용 회원(코호트)이다. "

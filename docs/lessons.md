@@ -40,6 +40,37 @@
 
 ---
 
+## [2026-08-08] 명세 개정이 폐기한 규정이 프롬프트·주석에 남으면 미반영이 아니라 LLM 에 대한 능동적 오정보다
+- 증상: I-13 `purchaseComplete` 산출 규정은 2026-07-31 에 "이벤트 기준, 권위는 I-6/I-14"
+  → "주문 기준 집계(`order_item × product × brand`, PAID, `COUNT(DISTINCT order_id)`)" 로
+  개정됐다(jarvis-backend#62 근본 수정 배포 / #196). 그런데 구 규정 문구가 코드에 **3개월간
+  잔존**해, `get_behavior_events` 도구 출력 말미에 상시 부착되고 behavior·abuse 워커
+  프롬프트에 박힌 채 LLM 에게 "이 값은 0 일 수 있으니 근거로 쓰지 말라"고 안내하고 있었다.
+  워커는 실재하는 구매 데이터를 신뢰 불가로 취급하고 다른 도구로 우회한다 — **데이터가
+  없어서 못 쓰는 게 아니라, 우리가 쓰지 말라고 시켜서 안 쓴 것**이다.
+- 원인: 개정 작업이 "새 규정을 어디에 반영할까"(추가 지점)만 보고 "구 규정이 어디에
+  적혀 있나"(제거 지점)를 grep 하지 않았다. 게다가 잔존 지점이 이슈에 적힌 3곳이 아니라
+  **6곳**이었다 — 도구 상수(`tools.py`)·워커 프롬프트 2종(`prompts.py` ABUSE/BEHAVIOR)·
+  스키마 docstring(`spring.py`)·군집 모듈 docstring(`segmentation.py`)·계약 사본
+  (`docs/api-spec.md` §4.4 I-13). 특히 **주** 프롬프트인 BEHAVIOR_PROMPT 와 계약 사본이
+  이슈 목록에서 빠져 있었다. 기존 테스트는 전부 "구 문구가 **있는지**"를 어설션해서
+  (`assert "권위는 매출 조회(I-6)" in result`) 드리프트를 잡기는커녕 **고정하고** 있었다.
+- 규칙: (1) 계약·명세를 개정하면 **폐기되는 문구를 문자열로 grep** 해 잔존 지점을 전부
+  세고 같은 PR 에서 지운다 — 코드뿐 아니라 프롬프트·docstring·`docs/api-spec.md` 사본까지.
+  이슈에 적힌 목록을 그대로 믿지 말고 직접 grep 한다. (2) LLM 에 주입되는 문구를 바꿀 때는
+  "새 문구가 있다"는 어설션만 두지 말고 **"폐기 문구가 없다"는 역방향 어설션**을 함께 남긴다
+  — 존재 어설션은 드리프트를 못 잡고, 문구가 재작성될 때마다 리터럴만 갱신되며 살아남는다.
+  (3) 부재 검사의 범위는 **LLM 이 실제로 읽는 표면**(도구 출력 문자열·프롬프트 상수)으로
+  한정한다. 파일 단위 grep 으로 짜면 "구 규정은 폐기됐다"고 남긴 개정 이력·주석까지 잡혀
+  결국 이력을 못 남기게 된다. (4) 폐기 규정을 근거로 세웠던 **판단 게이트**도 함께 걷어낸다
+  — BEHAVIOR_PROMPT 에는 "구매 관련 판정은 퍼널과 교차 확인한 뒤에만 warning 이상으로
+  올린다"는 게이트가 있었고, 전제가 사라진 뒤에도 남으면 근거 없이 워커 민감도만 깎는다.
+- 관련: `app/agents/seller/tools.py::_BEHAVIOR_PURCHASE_RULES_NOTE`(구
+  `_BEHAVIOR_AUTHORITY_NOTE`) · `app/agents/seller/prompts.py`(BEHAVIOR/ABUSE) ·
+  `app/schemas/spring.py::BehaviorEventsResult` · `app/agents/seller/analysis/segmentation.py` ·
+  `docs/api-spec.md` §4.4 I-13(v0.29.2) · `tests/unit/test_seller_tools.py::
+  test_behavior_surfaces_drop_deprecated_purchase_wording` · #488
+
 ## [2026-08-07] "얼마나 좁힐지" 계산에 하한만 걸고 "이미 지났으면" 을 안 걸면 좁히기가 음수를 낸다
 - 증상: #427 리뷰(오케스트레이터 직접 재현)가 `rescue_deadline` 이 이미 지난 턴(과거
   `turn_started_at`)에서 `narrow_search_budget` 이 **음수 예산**을 받는 결함을 잡았다.

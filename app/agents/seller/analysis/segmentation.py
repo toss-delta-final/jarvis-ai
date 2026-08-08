@@ -12,8 +12,8 @@ visitors/view] — 카운트 절대량은 로그로 눌러(멱법칙 분포) 비
 맞추고, 표준화(z-score) 후 k-means. k 는 k_min..k_max 중 실루엣 최대 선택.
 
 순수 함수·결정론(§10-②): random_state·n_init 고정 주입 — 같은 입력 = 같은 군집.
-[#196 주의] purchaseComplete 는 상품 미귀속으로 0 일 수 있다 — purchase 파생
-피처가 0 인 것은 '구매 전무'가 아니라 수집 경로 문제일 수 있음(도구 노트가 통제).
+[#488] purchaseComplete 는 주문 기준 집계라 purchase 파생 피처의 0 은 실제 구매
+없음이다 — 수집 경로 결함으로 보고 보정하지 않는다(구 #196 미귀속 주의는 폐기).
 """
 
 from __future__ import annotations
