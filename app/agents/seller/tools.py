@@ -1128,11 +1128,13 @@ async def get_churn_cohort(
     if result.members:
         # [#197 리뷰] I-16 전용 상한 — I-14 kv 상한(seller_summary_max_events)과 분리.
         shown = result.members[: settings.seller_churn_member_max]
-        # [#487] 라벨 결측(BE 미배포 구간)은 '?' 로 떨어뜨린다 — memberId 폴백을 두면
-        # 이번에 막으려는 원시 회원 키 노출이 조용히 되살아난다(I-8 "404 시 구경로
-        # 폴백 금지"와 같은 원칙).
+        # [#487] 라벨 결측(BE 미배포 구간)에 memberId 폴백을 두지 않는다 — 이번에 막으려는
+        # 원시 회원 키 노출이 조용히 되살아난다(I-8 "404 시 구경로 폴백 금지"와 같은 원칙).
+        # [#495] 그 결측을 '?' 가 아니라 '라벨없음' 으로 적는다 — 같은 줄의 마지막 활동·세션도
+        # 결측을 '?' 로 쓰기 때문에 "[?]" 가 라벨 미수신인지 개명 미반영(#487 증상)인지
+        # 문자열로 구분되지 않았다. 폴백 금지 원칙은 그대로고 표기만 갈라 세운다.
         member_lines = "; ".join(
-            f"[{m.customer_label or '?'}] "
+            f"[{m.customer_label or '라벨없음'}] "
             f"마지막 활동 {m.last_activity_at or '?'}"
             f"·최근30일 세션 {m.sessions_30d if m.sessions_30d is not None else '?'}"
             f"·이탈 전 이벤트 {m.pre_churn_event or '-'}"
@@ -1140,10 +1142,13 @@ async def get_churn_cohort(
         )
         omitted = len(result.members) - len(shown)
         omitted_note = f" 외 {omitted}명" if omitted > 0 else ""
-        # members 는 서버 CHURN_LIST_CAP=50 절단본일 수 있다 — 표본=전수 오해석 방지
+        # members 는 서버 CHURN_LIST_CAP 절단본일 수 있다 — 표본=전수 오해석 방지
         # 고지(I-14 total_note 와 같은 취지, 전수는 코호트×이탈률로 유추 가능).
+        # [#495] 상한값은 Settings 주입이다 — 판매자에게 보이는 문구에 숫자를 박아두면
+        # I-16 명세에 없는 BE 구현 실측값이라 BE 가 바꾼 순간 거짓 고지가 된다.
         members_note = (
-            f" 이탈 회원 {len(result.members)}명(서버 상한 50 절단본일 수 있음): "
+            f" 이탈 회원 {len(result.members)}명"
+            f"(서버 상한 {settings.seller_churn_server_list_cap} 절단본일 수 있음): "
             f"{member_lines}{omitted_note}."
         )
     else:

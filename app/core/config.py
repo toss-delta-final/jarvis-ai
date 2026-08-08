@@ -556,8 +556,12 @@ class Settings(BaseSettings):
     seller_summary_max_events: int = 5  # I-14 이벤트 kv 나열 상한(건)
     # [#197 PR 리뷰] I-16 이탈 회원 나열 상한 — I-14 용 max_events(위)와 분리 신설.
     # 같은 값 공유 시 I-14 요약 상세도 조정이 이탈 회원 노출 건수까지 바꾸는 결합이
-    # 생긴다(#196 의 max_products 분리와 같은 취지). 서버 절단 상한은 별도로 50.
+    # 생긴다(#196 의 max_products 분리와 같은 취지). 서버 절단 상한은 아래 별도 키다.
     seller_churn_member_max: int = 5  # I-16 members 상세 나열 상한(명)
+    # [#495] I-16 members 서버 절단 상한(BE CHURN_LIST_CAP 실측, #197) — 판매자에게
+    # 보이는 고지 문구에 실린다. I-16 명세에 없는 구현 실측값이라 BE 가 바꾸면 고지가
+    # 거짓이 된다 — 문자열 하드코딩 대신 여기서 주입하고 BE 에 명세화를 요청한다(#495).
+    seller_churn_server_list_cap: int = 50  # I-16 members 서버 절단 상한(명)
     # [#196] I-13 상품별 rows 상세 상한 — I-14 용(위)과 분리. 구 공용 상한 5는
     # 시드 브랜드 상품 7종보다 작아 하위 2종이 상시 잘렸다. 상한 초과분은
     # _summarize_behavior 가 꼬리 합계로 남긴다(정보 소실 없음).
