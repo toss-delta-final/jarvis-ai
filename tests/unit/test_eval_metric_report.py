@@ -11,6 +11,7 @@ from evals.legs_probe import report as legs_probe_report
 from evals.metrics.report import normalize_artifacts, write_artifacts
 from evals.metrics.run_manifest import VOLATILE_MANIFEST_KEYS, build_run_manifest
 from evals.metrics.cli import main
+from evals.taste_probe import report as taste_probe_report
 from evals.underspecified_probe import report as underspecified_probe_report
 
 
@@ -225,6 +226,7 @@ def test_volatile_manifest_keys_is_subsumed_by_every_probe_normalization() -> No
         category_probe_report,
         intent_probe_report,
         legs_probe_report,
+        taste_probe_report,
         underspecified_probe_report,
     ):
         assert VOLATILE_MANIFEST_KEYS <= module.VOLATILE_JSON_KEYS, module.__name__
