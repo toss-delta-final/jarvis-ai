@@ -305,12 +305,21 @@ class Settings(BaseSettings):
     catalog_store_query_timeout_s: float = Field(default=2.5, gt=0.0)
 
     # ── 색상 동의어 확장 (이슈 #258) ──
-    # 와이어 리스트 전송은 api-spec §4.6 `color: string` → `string[]` 개정과 BE 배포가
-    # 모두 끝난 뒤에만 켠다. 기본 off에서는 승인 사전 DB도 조회하지 않아 현행 I-1 요청이 불변이다.
-    color_synonym_expansion_enabled: bool = False
+    # 선행 조건이 전부 충족돼(BE 배포 — jarvis-backend 머지 `1e0ce150` 2026-08-04·운영 배포
+    # 2026-08-08 확인, api-spec §4.6 `color: string` → `string[]` 사본 동기화 — v0.28.3,
+    # 운영 pg-catalog 색상 동의어 시드 적재 — 2026-08-08, 789행/승인 46행) 기본 on 으로
+    # 전환했다. 되돌리려면 이 값 하나만 False 로 — 그러면 승인 사전 DB 조회를 아예 하지
+    # 않고 현행 단수 `color` 와이어로 돌아간다. `color_synonym_array_contract_ready` 와
+    # 항상 함께 바꿔야 한다(기동 가드 `_require_color_synonym_array_contract_gate`).
+    # **주의**: 이 튜너블은 `.github/workflows/deploy.yml` env 목록에 없어 운영이 이
+    # 기본값을 그대로 쓴다 — env 로 켜는 경로가 아니라 이 기본값 자체가 운영 동작이다.
+    color_synonym_expansion_enabled: bool = True
     # 운영자가 api-spec §4.6의 `color: string[]` 개정과 이를 파싱하는 BE 배포 완료를 함께
-    # 확인했다는 명시적 계약 게이트. 확장 플래그와 이 값을 따로 켜면 기동 시점에 거부한다.
-    color_synonym_array_contract_ready: bool = False
+    # 확인했다는 명시적 계약 게이트 — 위 근거(BE 배포·api-spec 동기화·운영 시드 적재)로
+    # 2026-08-08 충족돼 True 로 전환했다. `color_synonym_expansion_enabled` 와 따로 값을
+    # 두면 기동 시점에 거부한다. 이 튜너블도 `deploy.yml` env 목록에 없어 운영이 이
+    # 기본값을 그대로 쓴다.
+    color_synonym_array_contract_ready: bool = True
     # 새 표기마다 임베딩 API+DB write가 I-17에 추가되고 테이블도 아직 미검수 상태이므로 기본 off.
     # 초기 검수 완료 뒤 운영 비용을 확인하고 켠다.
     color_synonym_batch_harvest_enabled: bool = False

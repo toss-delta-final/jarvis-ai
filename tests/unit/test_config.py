@@ -628,11 +628,14 @@ def test_color_synonym_expansion_and_array_contract_must_be_enabled_together() -
     assert settings.color_synonym_array_contract_ready is True
 
 
-def test_color_synonym_contract_gate_defaults_both_off() -> None:
+def test_color_synonym_contract_gate_defaults_both_on() -> None:
+    """선행 조건(BE 배포 2026-08-04·api-spec §4.6 동기화 v0.28.3·운영 시드 적재 2026-08-08)
+    이 충족돼 기본값이 True/True 로 전환됐다(#258). 여전히 함께 움직여야 하므로 가드
+    (`_require_color_synonym_array_contract_gate`)는 성립해야 한다."""
     settings = Settings(_env_file=None)
 
-    assert settings.color_synonym_expansion_enabled is False
-    assert settings.color_synonym_array_contract_ready is False
+    assert settings.color_synonym_expansion_enabled is True
+    assert settings.color_synonym_array_contract_ready is True
 
 
 def test_color_synonym_pool_reserves_runtime_search_slot_only_when_harvest_enabled() -> None:
