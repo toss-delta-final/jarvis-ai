@@ -111,12 +111,14 @@ def narrow_options(
     걸리는 것 방지). 매칭 집합이 `options` 전체와 같으면 좁힌 게 아니므로 빈 튜플로 돌려준다
     (0건도 빈 튜플).
 
-    **발화 매칭(R1)은 토큰 경계를 본다**(#455 리뷰 F-1) — 세그먼트·term 이 발화에 "나타났다"고
-    인정하는 조건은 어떤 발화 토큰이 `그 문자열 + match_suffixes 의 원소`와 정확히 같을 때뿐이다.
-    부분 문자열 포함이면 "블루" ⊂ "블루투스"처럼 더 긴 낱말에 우연히 낀 세그먼트까지 매칭시켜,
-    자동 선택(`by_message` 전용, `_select_auto_option`)이 사용자가 말한 적 없는 옵션을 담아버린다.
-    누적 조건 ↔ 이름 매칭(R2, `_term_matches`)은 되물음 문구를 좁히는 데만 쓰이므로 이 토큰
-    경계 규칙을 적용하지 않는다(오탐의 대가가 다르다).
+    **발화 매칭(R1)은 토큰 경계 + 세그먼트 정확 일치만 본다**(#455 리뷰 F-1, F-5) — 두 갈래로만
+    인정된다: (1) 옵션 세그먼트가 발화에 "나타났다" — 어떤 발화 토큰이 `그 세그먼트 +
+    match_suffixes 의 원소`와 정확히 같을 때, (2) 발화에 토큰으로 나타난 term 이 옵션 세그먼트와
+    **정확히 같을 때**(`term in long_segments`). 두 갈래 다 부분 문자열 포함을 쓰지 않는다 —
+    "블루" ⊂ "블루투스", "그레이" ⊂ "그레이라이트"처럼 더 긴 낱말·이름에 우연히 낀 세그먼트까지
+    매칭시키면 자동 선택(`by_message` 전용, `_select_auto_option`)이 사용자가 말한 적 없는
+    옵션을 담아버린다. 누적 조건 ↔ 이름 매칭(R2, `_term_matches`)은 되물음 문구를 좁히는 데만
+    쓰여 부분 문자열 포함을 허용한다(오탐의 대가가 다르다) — R1 에는 쓰지 않는다.
     """
     message_norm = _normalize(message)
     message_tokens = _tokenize(message_norm)
@@ -134,7 +136,7 @@ def narrow_options(
 
         r1 = any(
             _appears_as_token(seg, message_tokens, match_suffixes) for seg in long_segments
-        ) or any(_term_matches(term, name_norm, long_segments) for term in terms_in_message)
+        ) or any(term in long_segments for term in terms_in_message)
         r2 = any(_term_matches(term, name_norm, long_segments) for term in long_terms)
 
         if r1:

@@ -2765,6 +2765,33 @@ async def test_cart_add_accumulated_condition_does_not_autoselect() -> None:
     assert pending is not None and len(pending.options) == 3
 
 
+async def test_cart_add_term_substring_of_name_does_not_autoselect() -> None:
+    """(#455 리뷰 F-5) 조건어가 옵션 이름의 부분 문자열일 뿐이면(세그먼트 정확 일치 아님) 자동
+    선택하지 않고 되묻는다 — "그레이"라고만 말했는데 확인 없이 "그레이라이트"가 담기면 안 된다."""
+    store = CartStateStore()
+    calls: list[int | None] = []
+    options = [CartOption(option_id=1, name="그레이라이트"), CartOption(option_id=2, name="네이비")]
+
+    async def add_fn(req):
+        calls.append(req.option_id)
+        raise CartOptionRequired(options)
+
+    events = await _run_add(
+        store,
+        CartIntent(product_id=1, quantity=1),
+        add_fn,
+        message="그레이로 담아줘",
+        condition_terms=("그레이",),
+    )
+
+    assert calls == [None]  # 재호출 없음 — 자동 선택 안 됨
+    assert "action" not in _types(events)
+    token = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert "그레이라이트" in token  # 조건에 맞는 옵션으로 문구는 좁혀진다(R2)
+    pending = await store.get_pending("m:t")
+    assert pending is not None and len(pending.options) == 2
+
+
 async def test_cart_add_narrows_without_any_hint_present() -> None:
     """(미전송) 힌트가 아예 없어도(재추천 없이 바로 담기 등) 좁히기 동작은 그대로다."""
     store = CartStateStore()

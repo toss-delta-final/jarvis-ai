@@ -244,6 +244,51 @@ def test_narrow_options_particle_suffixed_mention_without_config_suffix_does_not
     assert narrowing.by_message == ()
 
 
+@pytest.mark.parametrize(
+    ("option_names", "message", "terms"),
+    [
+        (("그레이라이트", "네이비"), "그레이로 담아줘", ("그레이",)),
+        (("라이트그레이", "블랙"), "그레이로 담아줘", ("그레이",)),
+        (("니트릴 장갑", "면 장갑"), "니트로 담아줘", ("니트",)),
+    ],
+)
+def test_narrow_options_term_substring_of_name_does_not_feed_by_message(
+    option_names: tuple[str, str], message: str, terms: tuple[str, ...]
+) -> None:
+    """(#455 리뷰 F-5) term 이 발화에 토큰으로 나타나도, 옵션 이름의 부분 문자열일 뿐 세그먼트와
+    정확히 같지 않으면 R1(자동 선택 근거)엔 실리지 않는다 — R2(by_condition, 되물음 문구 좁히기)엔
+    남아 조용히 담기는 대신 되묻는다."""
+    matching, other = _opt(1, option_names[0]), _opt(2, option_names[1])
+
+    narrowing = narrow_options(
+        [matching, other],
+        message=message,
+        terms=terms,
+        min_term_len=_MIN_TERM_LEN,
+        match_suffixes=_SUFFIXES,
+    )
+
+    assert narrowing.by_message == ()
+    assert narrowing.by_condition == (matching,)
+
+
+def test_narrow_options_term_exact_segment_match_still_feeds_by_message() -> None:
+    """(#455 리뷰 F-5 회귀) term 이 옵션 세그먼트와 정확히 같으면 여전히 R1 에 실려 자동 선택
+    근거가 된다 — 이번 수정이 막는 것은 부분 문자열 매칭뿐, 정확 일치 경로는 살아 있다."""
+    red_m = _opt(1, "레드/M")
+    blue_m = _opt(2, "블루/M")
+
+    narrowing = narrow_options(
+        [red_m, blue_m],
+        message="레드로 담아줘",
+        terms=("레드",),
+        min_term_len=_MIN_TERM_LEN,
+        match_suffixes=_SUFFIXES,
+    )
+
+    assert narrowing.by_message == (red_m,)
+
+
 def test_narrow_options_r3_segment_is_substring_of_condition_term() -> None:
     """R3 세 번째 절(세그먼트가 term 의 부분 문자열) — 이름 매칭(R2/`by_condition`)에서만 적용되고
     발화 매칭(R1/`by_message`)에는 적용되지 않는다. 여기서는 `terms=` 로 실제 R3 경로를 태운다."""
