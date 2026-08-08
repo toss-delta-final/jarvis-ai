@@ -8,6 +8,7 @@ from pathlib import Path
 
 from evals.goldenset.audit import dataset_hash
 from evals.goldenset.loader import load_cases
+from evals.goldenset.schema import DATASET_VERSION
 
 ROOT = Path(__file__).resolve().parent
 
@@ -21,16 +22,36 @@ def run() -> None:
         for case in cases:
             for name in case.slices:
                 by_slice[split][name] = by_slice[split].get(name, 0) + 1
-    manifest["datasetVersion"] = "2.3.0"
-    manifest["counts"].update({"dev": len(dev), "holdout": len(holdout), "total": len(dev) + len(holdout), "bySlice": by_slice})
-    paths = {entry["path"] for entry in manifest["files"]} | {"add_color_synonym_cases.py", "refresh_manifest.py"}
+    manifest["datasetVersion"] = DATASET_VERSION
+    manifest["counts"].update(
+        {
+            "dev": len(dev),
+            "holdout": len(holdout),
+            "total": len(dev) + len(holdout),
+            "bySlice": by_slice,
+        }
+    )
+    paths = {
+        file.relative_to(ROOT).as_posix()
+        for file in ROOT.rglob("*")
+        if file.is_file() and file.name != "manifest.json" and "__pycache__" not in file.parts
+    }
     files = []
     for rel in sorted(paths):
         payload = (ROOT / rel).read_bytes()
-        files.append({"path": rel, "bytes": len(payload), "records": len(payload.splitlines()) if rel.endswith(".jsonl") else 0, "sha256": hashlib.sha256(payload).hexdigest()})
+        files.append(
+            {
+                "path": rel,
+                "bytes": len(payload),
+                "records": len(payload.splitlines()) if rel.endswith(".jsonl") else 0,
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }
+        )
     manifest["files"] = files
     manifest["datasetHash"] = dataset_hash(files)
-    path.write_text(json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2) + "\n", encoding="utf-8"
+    )
 
 
 if __name__ == "__main__":

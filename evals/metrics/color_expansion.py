@@ -8,7 +8,7 @@ from pathlib import Path
 
 from app.pipelines import color_synonyms
 from evals.goldenset.loader import load_cases
-from evals.metrics.harness import OfflineBuyerAdapter
+from evals.metrics.harness import OfflineBuyerAdapter, classify_color_exposure
 from evals.metrics.runner import evaluate, load_evaluation_fixtures
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -26,20 +26,14 @@ def load_approved_color_synonym_map() -> dict[str, list[str]]:
     )
 
 
-def _exposure_breakdown(product_ids: list[int], catalog: dict[str, dict], requested: list[str]) -> dict[str, int]:
+def _exposure_breakdown(
+    product_ids: list[int], catalog: dict[str, dict], requested: list[str]
+) -> dict[str, int]:
     """노출을 색상축 없음·일치·불일치로 분해한다."""
-    requested_normalized = [value.strip().casefold() for value in requested]
     result = {"missingColorAxis": 0, "matchedColorAxis": 0, "mismatchedColorAxis": 0}
     for product_id in product_ids:
         product = catalog[str(product_id)]
-        attributes = product.get("attributes")
-        color = attributes.get("색상") if isinstance(attributes, dict) else None
-        if not isinstance(color, str) or not color.strip():
-            result["missingColorAxis"] += 1
-        elif any(value in color.strip().casefold() for value in requested_normalized):
-            result["matchedColorAxis"] += 1
-        else:
-            result["mismatchedColorAxis"] += 1
+        result[classify_color_exposure(product, requested)] += 1
     return result
 
 
@@ -47,7 +41,9 @@ def evaluate_color_expansion() -> dict[str, object]:
     """#474 신규 MFT 6건을 동의어 확장 off/on으로 결정론 실행한다."""
     cases = [case for case in load_cases("dev") if case.case_id.startswith("buy-colr-")]
     fixtures = load_evaluation_fixtures()
-    off = evaluate(cases=cases, fixtures=fixtures, adapter=OfflineBuyerAdapter(color_expansion=False))
+    off = evaluate(
+        cases=cases, fixtures=fixtures, adapter=OfflineBuyerAdapter(color_expansion=False)
+    )
     on_adapter = OfflineBuyerAdapter(color_expansion=True)
     on = evaluate(cases=cases, fixtures=fixtures, adapter=on_adapter)
     off_rows = {row["caseId"]: row for row in off["cases"]}
@@ -56,19 +52,47 @@ def evaluate_color_expansion() -> dict[str, object]:
     for case in cases:
         before, after = off_rows[case.case_id], on_rows[case.case_id]
         requested = [str(case.expected_filters["color"])]
-        expanded = load_approved_color_synonym_map().get(requested[0].casefold(), requested)
+        expanded = color_synonyms.expand_color(requested[0], load_approved_color_synonym_map())
         rows.append(
             {
                 "caseId": case.case_id,
-                "recallAt10": {"off": before["metrics"]["recallAtK"]["10"], "on": after["metrics"]["recallAtK"]["10"]},
-                "ndcgAt10": {"off": before["metrics"]["ndcgAtK"]["10"], "on": after["metrics"]["ndcgAtK"]["10"]},
-                "exposure": {"off": len(before["rankedProductIds"]), "on": len(after["rankedProductIds"]), "delta": len(after["rankedProductIds"]) - len(before["rankedProductIds"])},
-                "exposureBreakdown": {"off": _exposure_breakdown(before["rankedProductIds"], fixtures.catalog, requested), "on": _exposure_breakdown(after["rankedProductIds"], fixtures.catalog, expanded)},
+                "recallAt10": {
+                    "off": before["metrics"]["recallAtK"]["10"],
+                    "on": after["metrics"]["recallAtK"]["10"],
+                },
+                "ndcgAt10": {
+                    "off": before["metrics"]["ndcgAtK"]["10"],
+                    "on": after["metrics"]["ndcgAtK"]["10"],
+                },
+                "exposure": {
+                    "off": len(before["rankedProductIds"]),
+                    "on": len(after["rankedProductIds"]),
+                    "delta": len(after["rankedProductIds"]) - len(before["rankedProductIds"]),
+                },
+                "exposureBreakdown": {
+                    "off": _exposure_breakdown(
+                        before["rankedProductIds"], fixtures.catalog, requested
+                    ),
+                    "on": _exposure_breakdown(
+                        after["rankedProductIds"], fixtures.catalog, expanded
+                    ),
+                },
                 "offProductIds": before["rankedProductIds"],
                 "onProductIds": after["rankedProductIds"],
                 "relevantProductIds": case.relevant_product_ids,
+                "isCanonical": expanded[0] == requested[0],
             }
         )
-    native = [row for row in rows if int(row["caseId"].rsplit("-", 1)[1]) % 2]
-    canonical = [row for row in rows if row not in native]
-    return {"cases": rows, "nativeDeltaSummary": {"count": len(native), "recallDelta": sum(r["recallAt10"]["on"] - r["recallAt10"]["off"] for r in native)}, "canonicalDeltaSummary": {"count": len(canonical), "recallDelta": sum(r["recallAt10"]["on"] - r["recallAt10"]["off"] for r in canonical)}}
+    native = [row for row in rows if not row["isCanonical"]]
+    canonical = [row for row in rows if row["isCanonical"]]
+    return {
+        "cases": rows,
+        "nativeDeltaSummary": {
+            "count": len(native),
+            "recallDelta": sum(r["recallAt10"]["on"] - r["recallAt10"]["off"] for r in native),
+        },
+        "canonicalDeltaSummary": {
+            "count": len(canonical),
+            "recallDelta": sum(r["recallAt10"]["on"] - r["recallAt10"]["off"] for r in canonical),
+        },
+    }

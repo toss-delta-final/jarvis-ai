@@ -133,12 +133,23 @@ def test_holdout_public_notes_do_not_reveal_labels() -> None:
 def test_fixture_requests_equal_case_expected_filters() -> None:
     responses = json.loads((ROOT / "fixtures" / "search_responses.json").read_text())
     for path in (ROOT / "cases" / "buyer_dev.jsonl", ROOT / "cases" / "buyer_holdout.jsonl"):
-            for line in path.read_text().splitlines():
-                case = json.loads(line)
-                if case["caseId"].startswith("buy-colr-"):
-                    # #474 쌍둥이 MFT는 같은 후보 fixture를 공유하고 query/color만 다르다.
-                    continue
-                assert responses[case["searchFixtureId"]]["request"] == case["expectedFilters"]
+        for line in path.read_text().splitlines():
+            case = json.loads(line)
+            fixture_request = responses[case["searchFixtureId"]]["request"]
+            if case["caseId"].startswith("buy-colr-"):
+                twins = [
+                    json.loads(row)
+                    for row in (ROOT / "cases" / "buyer_dev.jsonl").read_text().splitlines()
+                    if json.loads(row)["searchFixtureId"] == case["searchFixtureId"]
+                ]
+                assert {key: value for key, value in fixture_request.items() if key != "color"} == {
+                    key: value for key, value in case["expectedFilters"].items() if key != "color"
+                }
+                assert fixture_request["color"] in {
+                    twin["expectedFilters"]["color"] for twin in twins
+                }
+            else:
+                assert fixture_request == case["expectedFilters"]
 
 
 def test_holdout_non_failure_cases_have_live_distractors() -> None:

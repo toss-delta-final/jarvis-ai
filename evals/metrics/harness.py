@@ -131,6 +131,20 @@ def _filter_products_by_requested_color(
     return filtered
 
 
+def classify_color_exposure(product: dict[str, Any], requested: list[str]) -> str:
+    """색상 축 없음·일치·불일치의 api-spec §4.6 판정을 한 곳에서 제공한다."""
+    attributes = product.get("attributes")
+    color = attributes.get("색상") if isinstance(attributes, dict) else None
+    if not isinstance(color, str) or not color.strip():
+        return "missingColorAxis"
+    normalized = color.strip().casefold()
+    return (
+        "matchedColorAxis"
+        if any(value.strip().casefold() in normalized for value in requested)
+        else "mismatchedColorAxis"
+    )
+
+
 class _CaseTransport:
     """I-1/I-19/I-21만 제공하고 모든 요청을 감사용으로 기록한다."""
 
@@ -153,7 +167,7 @@ class _CaseTransport:
             {
                 "method": request.method,
                 "path": request.url.path,
-                "query": dict(request.url.params),
+                "query": {key: request.url.params.get_list(key) for key in request.url.params},
                 "headers": dict(request.headers),
                 "body": body,
             }

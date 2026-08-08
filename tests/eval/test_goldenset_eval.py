@@ -55,8 +55,8 @@ def test_color_synonym_expansion_ab_channel_is_not_vacuous() -> None:
     """#474: 색상 mock·확장 와이어가 꺼지면 고유어 정답이 실제로 사라져야 한다."""
     report = evaluate_color_expansion()
     rows = report["cases"]
-    native = [row for row in rows if int(row["caseId"].rsplit("-", 1)[1]) % 2]
-    canonical = [row for row in rows if row not in native]
+    native = [row for row in rows if not row["isCanonical"]]
+    canonical = [row for row in rows if row["isCanonical"]]
 
     assert all(row["recallAt10"]["on"] > row["recallAt10"]["off"] for row in native)
     assert all(set(row["offProductIds"]).isdisjoint(row["relevantProductIds"]) for row in native)

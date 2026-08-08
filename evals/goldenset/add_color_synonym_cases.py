@@ -18,8 +18,10 @@ CASE_SPECS = (
 
 def _has_color(product: dict) -> bool:
     attributes = product.get("attributes")
-    return isinstance(attributes, dict) and isinstance(attributes.get("색상"), str) and bool(
-        attributes["색상"].strip()
+    return (
+        isinstance(attributes, dict)
+        and isinstance(attributes.get("색상"), str)
+        and bool(attributes["색상"].strip())
     )
 
 
@@ -34,13 +36,13 @@ def _case(case_id: str, query: str, color: str, fixture_id: str, relevant: list[
         "queryType": "simple",
         "identity": {"kind": "guest"},
         "expectedRoute": "recommend",
-        "expectedFilters": {"keyword": query, "color": color},
+        "expectedFilters": {"keyword": query.split()[1], "color": color},
         "searchFixtureId": fixture_id,
         "provenance": "synthetic",
-        "labeler": "labeler-01",
+        "labeler": "labeler-03",
         "adjudicator": None,
         "createdAt": "2026-08-09",
-        "notes": "#474 색상 동의어 확장 A/B MFT; INV 그룹에 등록하지 않는다.",
+        "notes": "injected-relevant-approved: #474 색상 동의어 확장 A/B MFT; INV 그룹에 등록하지 않는다.",
         "labelSource": "model",
         "labeledAt": "2026-08-09",
         "labelRationale": "catalog_snapshot의 정본 색상 표기 상품만 정답으로 라벨링했다.",
@@ -60,7 +62,9 @@ def run(root: Path = ROOT) -> None:
     fixtures_path = root / "fixtures" / "search_responses.json"
     fixtures = json.loads(fixtures_path.read_text(encoding="utf-8"))
     cases_path = root / "cases" / "buyer_dev.jsonl"
-    cases = [json.loads(line) for line in cases_path.read_text(encoding="utf-8").splitlines() if line]
+    cases = [
+        json.loads(line) for line in cases_path.read_text(encoding="utf-8").splitlines() if line
+    ]
     cases = [case for case in cases if not case["caseId"].startswith("buy-colr-")]
     all_products = [catalog[key] for key in sorted(catalog, key=int)]
     new_cases: list[dict] = []
@@ -76,7 +80,11 @@ def run(root: Path = ROOT) -> None:
         relevant = [int(product["productId"]) for product in matching[:3]]
         if len(relevant) < 1:
             raise ValueError(f"{canonical}: 정본 색상 정답 상품이 부족합니다")
-        filler = [product for product in all_products if int(product["productId"]) not in used | set(relevant)]
+        filler = [
+            product
+            for product in all_products
+            if int(product["productId"]) not in used | set(relevant)
+        ]
         missing_axis = [product for product in filler if not _has_color(product)][:6]
         other = [
             product
@@ -89,14 +97,14 @@ def run(root: Path = ROOT) -> None:
             "candidates": [
                 {
                     "productId": product_id,
-                    "source": "golden_filter",
-                    "rule": "semantic_near",
+                    "source": "injected",
+                    "rule": None if product_id in relevant else "random_catalog",
                     "from": "offline_catalog_snapshot:#474-color-synonym",
                 }
                 for product_id in candidates
             ],
             "productIds": candidates,
-            "request": {"keyword": f"{native} {noun} 추천", "color": native},
+            "request": {"keyword": noun, "color": native},
             "totalCount": len(candidates),
             "recordedAt": "2026-08-09T00:00:00+09:00",
             "source": "offline_catalog_snapshot",

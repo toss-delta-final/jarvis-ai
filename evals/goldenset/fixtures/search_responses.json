@@ -14409,182 +14409,182 @@
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 1268754,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 1268795,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 1514436,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 3731324,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 3734979,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 7024509,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 28267275,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 41775954,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 551359202,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 790701466,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 879232236,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 992797753,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 993726995,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 1083745266,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 1115928543,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 1162332060,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 1225570600,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 1397955896,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 1403307056,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 1413234421,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 1447204557,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 1459350505,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 1474594765,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 1562033247,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 1567478782,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 1606860343,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 1618615474,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 8678618184,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": null,
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 8700782493,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": null,
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 9372086297,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": null,
+        "source": "injected"
       }
     ],
     "productIds": [
@@ -14622,7 +14622,7 @@
     "recordedAt": "2026-08-09T00:00:00+09:00",
     "request": {
       "color": "남색",
-      "keyword": "남색 멜빵 추천"
+      "keyword": "멜빵"
     },
     "source": "offline_catalog_snapshot",
     "totalCount": 30
@@ -14632,182 +14632,182 @@
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 11231684,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 13206559,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 16202915,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 16204789,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 18606659,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 20486029,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 1641893287,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 1665616651,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 1679183612,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 1689362985,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 1787513037,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 1924364761,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 2117349485,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 2131048256,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 2223234652,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 2234522391,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 2350490722,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 2375297672,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 2376177306,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 2390886312,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 2444091119,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 2452477145,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 2532665884,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 2581154087,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 2595956796,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 2610002879,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 2675526925,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 5296219841,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": null,
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 5306620048,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": null,
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 8356697584,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": null,
+        "source": "injected"
       }
     ],
     "productIds": [
@@ -14845,7 +14845,7 @@
     "recordedAt": "2026-08-09T00:00:00+09:00",
     "request": {
       "color": "검정",
-      "keyword": "검정 크로스백 추천"
+      "keyword": "크로스백"
     },
     "source": "offline_catalog_snapshot",
     "totalCount": 30
@@ -14855,182 +14855,182 @@
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 24502268,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 24502592,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 26368525,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 31142631,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 46558935,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 55642190,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 1665600200,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 1670827228,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 1863243481,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 1947442499,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 2135033708,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 2225603463,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 2307349971,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 2397978702,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 2454053767,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 2469150914,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 2469152027,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 2649195265,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 2664196774,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 2665770445,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 2673637422,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 2677593439,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 2685678512,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 2718364788,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 2728881123,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 2796777201,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 2798306828,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": "random_catalog",
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 9160015721,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": null,
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 9294151365,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": null,
+        "source": "injected"
       },
       {
         "from": "offline_catalog_snapshot:#474-color-synonym",
         "productId": 9418230887,
-        "rule": "semantic_near",
-        "source": "golden_filter"
+        "rule": null,
+        "source": "injected"
       }
     ],
     "productIds": [
@@ -15068,7 +15068,7 @@
     "recordedAt": "2026-08-09T00:00:00+09:00",
     "request": {
       "color": "빨강",
-      "keyword": "빨강 동전지갑 추천"
+      "keyword": "동전지갑"
     },
     "source": "offline_catalog_snapshot",
     "totalCount": 30
