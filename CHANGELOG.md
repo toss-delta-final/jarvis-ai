@@ -483,6 +483,22 @@
   문자열·BE DB 정규 컬럼·AI 다중 fan-out·런타임 벡터/LLM 확장) 탈락 이유와 하위 호환·롤아웃
   순서를 정리했다. `docs/api-spec.md` 는 건드리지 않는다 — 계약 개정은 사람 승인 게이트다.
   (`docs/specs/PROPOSAL-I1-COLOR-ARRAY-258.md`)
+- **#258 — api-spec §4.6 `color` 사본 drift 정정(string → string[]) — 신설 협의 아님** —
+  `toss-delta-final/jarvis-backend` main 을 직접 확인한 결과 위 제안은 이미 협의가 아니라
+  **확정·배포된 계약**이었다: `InternalProductController.search` 시그니처가 이미
+  `List<String> color`(머지 커밋 `1e0ce150`, 2026-08-04), BE 자체 계약 문서
+  `docs/backend/05-llm-contract.md` §I-1 에 "2026-08-03 LLM팀 실측 합의"·"동의어 확장은
+  LLM 팀 소관" 으로 등재, 운영 배포 완료(2026-08-08 확인). `docs/api-spec.md` 사본만
+  단수로 남아 있던 drift라 v0.23.1·v0.20.4·v0.15.27 과 같은 유형으로 정정했다 — 반복
+  파라미터·BE 부분 일치 OR 매칭(`regexp_instr` alternation)·3갈래 판정(미지정/색상축
+  없음/좁혀 비교)·정규화 주체(BE, trim+소문자화)·메타문자 이스케이프(BE)를 함께 등재.
+  동의어 확장 주체는 여전히 AI(#258). `docs/specs/PROPOSAL-I1-COLOR-ARRAY-258.md` 도
+  "BE 송부용 제안" → "BE 실측 확인 완료 기록"으로 성격을 전환하고 §6 질문 6개를 답으로
+  다시 썼다. **`color_synonym_expansion_enabled`/`color_synonym_array_contract_ready`
+  기본값은 이번엔 켜지 않는다** — 두 플래그가 `.github/workflows/deploy.yml` env 목록에
+  없어 운영이 코드 기본값을 그대로 쓰는데, `color_synonyms` 테이블은 fresh 볼륨에서만
+  자동 생성돼(PR #273) 운영 pg-catalog 에 시드가 없을 가능성이 높다 — 플래그 on 은 운영
+  DB 시드 적재 후 별도 단계다. (api-spec §4.6, v0.28.3)
 - **#425 — overspecified_zero 는 완화 축이 없어 재검색이 안 돈다, 정의된 동작으로 판정** —
   combo_matrix 매트릭스가 README·`expected_behavior.jsonl` 의 `expected` 서술("0건이면 자동 완화·
   완화 칩으로 대안 제시")과 실측(combo-0031: `searchCallCount=1`·`finishReason=zero_result`,
