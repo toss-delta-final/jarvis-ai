@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -110,25 +110,38 @@ def _dump(pending: PendingPeriod) -> dict:
         "wants_chart": plan.wants_chart,
         "period_expr": plan.period_expr,
         "period_clipped": plan.period_clipped,
+        # [#346] 비교 기간도 함께 저장한다 — 빠지면 승인 재개가 **대조군 없는 다른 분석**을
+        # 돌린다. 확인 문구에는 두 기간이 다 적혀 있으므로 판매자는 어긋남을 알 수 없다.
+        "comparison_expr": plan.comparison_expr,
+        "compare_from": plan.compare_from.isoformat() if plan.compare_from else None,
+        "compare_to": plan.compare_to.isoformat() if plan.compare_to else None,
         "created_at": pending.created_at.isoformat(),
     }
 
 
+def _optional_date(value: object) -> "date | None":
+    """저장형의 선택 날짜 필드 → date. 형식 불일치는 ValueError 로 올려 대기를 폐기시킨다."""
+    if value is None:
+        return None
+    return date.fromisoformat(str(value))
+
+
 def _load(data: dict) -> PendingPeriod:
     """직렬화형 → PendingPeriod. 형식 불일치는 ValueError/KeyError 로 올려 호출부가 폐기한다."""
-    from datetime import date as _date
-
     analyses: tuple[AnalysisType, ...] = tuple(data["analyses"])
     plan = ResolvedPlan(
         analyses=analyses,
-        date_from=_date.fromisoformat(data["date_from"]),
-        date_to=_date.fromisoformat(data["date_to"]),
+        date_from=date.fromisoformat(data["date_from"]),
+        date_to=date.fromisoformat(data["date_to"]),
         wants_chart=bool(data.get("wants_chart", False)),
         # 재개 시점에는 확인이 끝났으므로 needs_confirmation 을 되살리지 않는다 —
         # 그대로 True 로 두면 승인했는데 다시 확인을 묻는 무한 왕복이 된다.
         needs_confirmation=False,
         period_expr=str(data.get("period_expr", "")),
         period_clipped=bool(data.get("period_clipped", False)),
+        comparison_expr=str(data.get("comparison_expr", "")),
+        compare_from=_optional_date(data.get("compare_from")),
+        compare_to=_optional_date(data.get("compare_to")),
     )
     return PendingPeriod(
         question=str(data["question"]),
@@ -194,7 +207,12 @@ async def load_pending(context: SellerContext, thread_id: str) -> PendingPeriod 
         return None
 
     ttl = timedelta(minutes=get_settings().seller_period_confirm_ttl_minutes)
-    if datetime.now(UTC) - pending.created_at > ttl:
+    # 경계는 **포함**이다(>=). ttl=0 은 "즉시 만료" 로 읽는 것이 맞고, 엄격 부등호로 두면
+    # 판정이 시계 분해능에 걸린다 — Windows 의 기본 시스템 타이머 틱(~15.6ms)에서는
+    # 저장→조회가 같은 틱 안에 끝나 delta 가 정확히 0 이 되고, ttl=0 인데도 만료가 아니게
+    # 된다(리눅스 CI 는 µs 분해능이라 늘 통과해 이 차이가 안 보인다). 운영 TTL(10분)에서는
+    # 두 부등호가 같은 결과이므로 잃는 것이 없다.
+    if datetime.now(UTC) - pending.created_at >= ttl:
         await clear_pending(context, thread_id)
         return None
     return pending

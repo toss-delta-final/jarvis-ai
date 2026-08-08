@@ -136,7 +136,12 @@ def test_pending_is_scoped_by_seller_id() -> None:
 
 
 def test_pending_expires_after_ttl(monkeypatch: pytest.MonkeyPatch) -> None:
-    """TTL 이 지난 대기는 없는 것과 같다 — 조회 시점에 폐기까지 한다(DESIGN §5.1 TTL 경로)."""
+    """TTL 이 지난 대기는 없는 것과 같다 — 조회 시점에 폐기까지 한다(DESIGN §5.1 TTL 경로).
+
+    ttl=0 은 "즉시 만료" 다. 판정이 엄격 부등호(>)면 이 단언이 **시계 분해능에 걸린다** —
+    Windows 기본 타이머 틱(~15.6ms)에서는 저장→조회가 같은 틱에 끝나 경과가 정확히 0 이
+    되고, 리눅스(µs 분해능)에서만 통과하는 플랫폼 의존 테스트가 된다.
+    """
 
     class _ZeroTtlSettings:
         seller_period_confirm_ttl_minutes = 0
@@ -148,6 +153,51 @@ def test_pending_expires_after_ttl(monkeypatch: pytest.MonkeyPatch) -> None:
         return first
 
     assert asyncio.run(run()) is None
+
+
+def test_pending_expires_when_elapsed_is_exactly_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+    """경과가 **정확히 0** 이어도 ttl=0 이면 만료다 — 경계 포함(>=) 회귀 가드.
+
+    시계를 얼려 OS 타이머 분해능을 지운다. 엄격 부등호(>)로 되돌아가면 이 테스트만
+    깨지고, 위 test_pending_expires_after_ttl 은 리눅스에서 계속 통과해 회귀를 놓친다
+    (실제로 그렇게 Windows 에서만 깨져 있었다 — docs/lessons.md 2026-08-08).
+    """
+    frozen = dt.datetime(2026, 8, 8, 12, 0, 0, tzinfo=dt.UTC)
+
+    class _FrozenDatetime(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):  # noqa: ANN001, ANN206 — stdlib 시그니처 그대로
+            return frozen
+
+    class _ZeroTtlSettings:
+        seller_period_confirm_ttl_minutes = 0
+
+    monkeypatch.setattr(seller_period_confirm, "datetime", _FrozenDatetime)
+
+    async def run():
+        await seller_period_confirm.save_pending(_CONTEXT, _THREAD, question="q", plan=_PLAN)
+        monkeypatch.setattr(seller_period_confirm, "get_settings", lambda: _ZeroTtlSettings())
+        return await seller_period_confirm.load_pending(_CONTEXT, _THREAD)
+
+    assert asyncio.run(run()) is None
+
+
+def test_pending_survives_within_ttl_with_frozen_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """반대 방향 가드 — 정상 TTL 에서는 경과 0 이 만료가 아니다(>= 가 과잉 만료로 새지 않는다)."""
+    frozen = dt.datetime(2026, 8, 8, 12, 0, 0, tzinfo=dt.UTC)
+
+    class _FrozenDatetime(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):  # noqa: ANN001, ANN206
+            return frozen
+
+    monkeypatch.setattr(seller_period_confirm, "datetime", _FrozenDatetime)
+
+    async def run():
+        await seller_period_confirm.save_pending(_CONTEXT, _THREAD, question="q", plan=_PLAN)
+        return await seller_period_confirm.load_pending(_CONTEXT, _THREAD)
+
+    assert asyncio.run(run()) is not None
 
 
 # ── 입구 3경로 (DESIGN §5.1·§5.5) ───────────────────────────────────────────────
@@ -310,3 +360,52 @@ def _route_analysis(question, context, recent_turns=(), screen=None):
         return RouteDecision(category="analysis", reason="stub", confidence=0.9)
 
     return _decide()
+
+
+# ── 비교(기준) 기간 저장 (#346) ────────────────────────────────────────────────
+
+
+def test_pending_roundtrip_preserves_comparison_period() -> None:
+    """[#346] 비교 기간도 대기에 실린다.
+
+    빠지면 승인 재개가 **대조군 없는 다른 분석**을 돌린다 — 확인 문구에는 두 기간이 다
+    적혀 있으므로 판매자는 자기가 승인한 것과 다른 게 돌았다는 사실을 알 수 없다.
+    """
+    plan = ResolvedPlan(
+        analyses=("sales_anomaly",),
+        date_from=dt.date(2026, 8, 1),
+        date_to=dt.date(2026, 8, 5),
+        needs_confirmation=True,
+        period_expr="이번 달",
+        period_clipped=True,
+        comparison_expr="지난달 대비",
+        compare_from=dt.date(2026, 7, 1),
+        compare_to=dt.date(2026, 7, 5),
+    )
+
+    async def run():
+        assert await seller_period_confirm.save_pending(
+            _CONTEXT, _THREAD, question="지난달 대비 이번 달 매출 분석해줘", plan=plan
+        )
+        return await seller_period_confirm.load_pending(_CONTEXT, _THREAD)
+
+    pending = asyncio.run(run())
+    assert pending is not None
+    assert pending.plan.comparison_expr == "지난달 대비"
+    assert pending.plan.compare_from == dt.date(2026, 7, 1)
+    assert pending.plan.compare_to == dt.date(2026, 7, 5)
+
+
+def test_pending_roundtrip_without_comparison_stays_empty() -> None:
+    """비교가 없던 계획은 재개 후에도 비어 있다 — 없던 대조군을 만들어내지 않는다."""
+
+    async def run():
+        assert await seller_period_confirm.save_pending(
+            _CONTEXT, _THREAD, question="이번 달 매출 분석해줘", plan=_PLAN
+        )
+        return await seller_period_confirm.load_pending(_CONTEXT, _THREAD)
+
+    pending = asyncio.run(run())
+    assert pending is not None
+    assert pending.plan.comparison_expr == ""
+    assert pending.plan.compare_from is None and pending.plan.compare_to is None
