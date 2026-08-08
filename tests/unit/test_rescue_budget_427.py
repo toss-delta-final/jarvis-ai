@@ -15,6 +15,14 @@
    상수가 아니라 실제 판정 갈림으로 증명한다.
 9. 공유 계수(D7) — 런타임 "남은 단 수" 계산과 기동 검증기가 같은 함수(`_rescue_chain_stage_
    counts`)에서 계수를 얻는다.
+10. **핵심 명제(오케스트레이터 지적, R9)** — 위 1~9 는 전부 메커니즘(좁히기 호출 여부·clamp·
+    계수·거짓 신호 없음)만 잰다. 이 이슈가 존재하는 이유인 "3s 를 넘기는 검색이 오늘은 실패로
+    바뀌고, 검색 전용 타임아웃을 올리면 살아난다"는 명제 자체는 아무 테스트도 재지 않았다 —
+    `spring_client.search_products` 를 실제로 태워 A(기본값에서 느린 검색은 실패)·B(타임아웃만
+    올리면 같은 지연이 성공)를 지연·응답이 동일하고 손잡이 하나만 다른 쌍으로 고정한다(운영
+    실측 #395, 2026-08-06 근거는 각 테스트 docstring). C(다른 Spring 호출은 영향 없음)는 1번
+    테스트가 이미 재고 있어 새로 만들지 않고 상호 참조만 한다. D 는 `run_buyer_turn` 을 태워
+    사용자가 보는 SSE `error{code:"SEARCH_FAILED"}` 까지 확인한다.
 
 각 테스트는 "이 변경이 회귀했을 때 실제로 깨지는가"를 기준으로 짰다 — 상수를 상수와 비교하는
 어설션은 두지 않는다(예: mode 를 무조건 skip/narrow 로 바꿔보면 5·6 이 깨져야 한다).
@@ -23,6 +31,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 from contextlib import contextmanager
 
@@ -34,7 +43,8 @@ from app.agents.buyer.recommendation import graph as recommendation_graph
 from app.core.config import Settings, get_settings
 from app.core.stream import open_stream
 from app.schemas.spring import ProductSearchFilters
-from app.services import spring_client
+from app.services import search_service, spring_client
+from app.services.spring_client import SpringUnavailableError
 from tests._fakes import DEFAULT_PRODUCTS, FakeLLM
 from tests.unit.test_infra import _FakeRequest
 from tests.unit.test_recommendation import (
@@ -48,6 +58,7 @@ from tests.unit.test_recommendation import (
     run_buyer_turn,
 )
 from tests.unit.test_relaxation import _decompose_with, _product
+from tests.unit.test_spring_search_budget_132 import _install_transport, _SlowTransport
 
 pytestmark = pytest.mark.anyio
 
@@ -781,3 +792,138 @@ def test_config_and_graph_share_the_same_stage_counts_function() -> None:
     from app.core.config import _rescue_chain_stage_counts as config_fn
 
     assert recommendation_graph._rescue_chain_stage_counts is config_fn
+
+
+# ─────────── [R9, 오케스트레이터 지적] 핵심 명제 — 3s 벽이 성공할 검색을 실패로 바꾼다 ───────
+#
+# 위 테스트들(1~9)은 전부 메커니즘만 잰다 — 이 이슈가 존재하는 이유인 "3s 를 넘기는 검색이
+# 오늘은 실패로 바뀌고, 검색 전용 타임아웃을 올리면 살아난다"는 명제 자체를 재는 테스트가
+# 없었다(오케스트레이터가 PR #452 리뷰 완주 뒤 직접 지적, 사장님 승인).
+#
+# 운영 실측 근거(#395, 2026-08-06): 필터 없음 검색은 7.74초·12.3MB 로 3초 검색 예산을 넘겨
+# `SEARCH_FAILED` 로 끝나고, "신발" 같은 필터 있는 검색은 0.24초·435B 로 정상 완료한다. 이
+# 파일의 A/B 는 그 비율을 그대로 재지 않는다 — 테스트에서 7.74초를 실제로 자면 안 되므로
+# `tests/unit/test_spring_search_budget_132.py` 가 이미 쓰는 방식(초 단위를 0.05 급으로
+# 스케일 다운)을 따라 **"응답 지연 > 검색 예산" 관계**만 재현한다(숫자는 테스트 소요 시간
+# 때문에 줄였다 — 실측 절대값이 아니라 그 부등식 방향이 핵심 주장이다).
+#
+# `_SlowTransport`/`_install_transport` 는 새로 정의하지 않고 `test_spring_search_budget_132`
+# 에서 그대로 import 한다(#132 가 만든 "httpx 타임아웃에 안 걸리는 느린 응답" 도구 — 같은
+# 개념을 두 곳에 다르게 두지 않는다). `MockTransport` 는 즉시 응답이라 이 결을 못 만든다는
+# 것도 그 클래스 docstring 에 이미 적혀 있다.
+#
+# **`spring_client.search_products` 를 가짜 `search=` 콜러블로 우회하지 않는다** — 타임아웃이
+# 실제로 무는 지점(`asyncio.wait_for(..., timeout=budget_s)`, `spring_client.py::search_products`)
+# 이 거기이므로, A/B 는 그 함수를 직접 호출하고 HTTP 경계에만 `_install_transport` 로 대역을
+# 세운다.
+#
+# ⚠️ 새 기동 검증기(`RESCUE_STAGE_MIN_TIMEOUT_S < SPRING_SEARCH_TIMEOUT_S`, PR #452 리뷰 R5)와
+# 충돌한다 — `SPRING_SEARCH_TIMEOUT_S` 를 0.05 급으로 낮추면 기본 하한(0.5)에 걸린다.
+# `test_spring_search_budget_132.py::_shrink_budget` 가 같은 이유로 하한을 함께 낮춰 재조준한
+# 것과 같은 방식으로, 아래도 `RESCUE_STAGE_MIN_TIMEOUT_S` 를 `SPRING_SEARCH_TIMEOUT_S` 보다
+# 항상 작게 함께 설정한다(검증 대상이 아닌 무관한 설정만 맞춘다).
+
+
+async def test_default_search_timeout_fails_a_response_slower_than_the_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[R9-A — 문제가 실재함을 코드가 스스로 증명] 응답 지연이 검색 예산보다 크면
+    `spring_client.search_products` 는 `SpringUnavailableError` 로 끝난다.
+
+    `SPRING_SEARCH_TIMEOUT_S=0.01`(budget = 0.01 × attempts(1) = 0.01s) 에 0.05s 지연 응답을
+    준다 — 지연이 예산의 5배라 넉넉히 초과한다. 이 비율(지연 > 예산)이 운영 실측(#395)
+    "필터 없음 7.74초 > 검색 예산 3초"와 같은 방향이다(절대값은 테스트 소요 때문에 스케일
+    다운했다 — 위 섹션 코멘트 참조).
+
+    검증 실효성(리뷰 요구사항 4): **B 와 짝을 이루는 이 테스트가 상수가 아니라 실제 조건을
+    재는지, `SPRING_SEARCH_TIMEOUT_S` 를 지연(0.05s) 위로 올려 확인했다** — B 의 값(1.0s)으로
+    바꾸면 이 테스트는 예외가 나지 않아 실패한다(수동 확인, 코드에는 남기지 않는다 — 커밋
+    보고에 결과를 적는다).
+    """
+    monkeypatch.setenv("SPRING_SEARCH_TIMEOUT_S", "0.01")
+    # [R5 검증기 회피] 하한(기본 0.5)이 위 예산(0.01)보다 커지지 않게 함께 낮춘다 — 검증 대상이
+    # 아닌 무관한 설정만 맞춘다(`test_spring_search_budget_132.py::_shrink_budget` 와 같은 이유).
+    monkeypatch.setenv("RESCUE_STAGE_MIN_TIMEOUT_S", "0.001")
+    get_settings.cache_clear()
+
+    _install_transport(monkeypatch, _SlowTransport(delay_s=0.05))
+
+    with pytest.raises(SpringUnavailableError):
+        await spring_client.search_products(ProductSearchFilters(keyword="무선 이어폰"))
+
+
+async def test_raising_search_timeout_above_the_same_delay_makes_it_succeed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[R9-B — 이 PR 의 손잡이가 실제로 문제를 푼다] A 와 **완전히 같은 지연**(0.05s)을 주고
+    `SPRING_SEARCH_TIMEOUT_S` 만 그 지연 위(1.0s, 20배 여유 — 지터로 인한 불안정성 방지)로
+    올리면, 이번엔 예외 없이 정상 `ProductSearchResult` 가 돌아온다.
+
+    A 와 이 테스트는 지연·응답이 동일하고 `SPRING_SEARCH_TIMEOUT_S` 손잡이 하나만 다른 쌍이다
+    — 그래야 그 손잡이가 원인이라는 게 증명된다(다른 Spring 호출은 이 손잡이의 영향을 안
+    받는다는 성질은 `test_spring_search_timeout_only_scopes_search_products`(위 (1))가 이미
+    재고 있어 새로 만들지 않는다 — 상호 참조).
+
+    "예외 안 남"이 아니라 **실제 결과 객체**를 검사한다(리뷰 요구사항) — `_SlowTransport` 는
+    `{"success": True, "data": []}` 를 주므로(그 클래스 docstring 참조) 빈 결과가 정답이다.
+    """
+    monkeypatch.setenv("SPRING_SEARCH_TIMEOUT_S", "1.0")
+    monkeypatch.setenv("RESCUE_STAGE_MIN_TIMEOUT_S", "0.001")
+    get_settings.cache_clear()
+
+    _install_transport(monkeypatch, _SlowTransport(delay_s=0.05))
+
+    result = await spring_client.search_products(ProductSearchFilters(keyword="무선 이어폰"))
+
+    assert result.products == []
+    assert result.total_count == 0
+
+
+async def test_slow_search_surfaces_as_search_failed_sse_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[R9-D — 사용자가 보는 것까지] 기본값 + A 와 같은 지연으로 `run_buyer_turn` 을 태우면
+    SSE 에 `error{code:"SEARCH_FAILED"}` 프레임이 실제로 나간다 — A(단위)가 잡는 결함을
+    사용자가 겪는 형태로 한 번 더 고정한다.
+
+    A/B 와 달리 `search=` 에 가짜 콜러블을 주지 않는다 — 실제 `search_service.search_catalog`
+    를 `SpringSearchBackend`(Spring 위임, `spring_client.search_products` 를 그대로 부른다,
+    pgvector 재정렬 없음)로 고정해 주입한다. 기본 백엔드(`embedding_rerank`)는 pgvector DB 가
+    있어야 해 단위테스트 범위 밖이라 이 백엔드로 고정했다 — 이것도 가짜가 아니라 저장소에 이미
+    있는 실제 백엔드 구현체다.
+
+    카테고리 매핑도 실 DB 를 타지 않게 `categoryQueries=[]` 로 비웠다 — 신호가 없으면
+    `category_mapping.py::map_categories` 가 DB/임베딩 호출 없이 빈 매핑을 낸다(그 함수
+    docstring "(4) raw·query 모두 없음(빈 리스트 포함) → 신호 없음"·"빈 리스트를 강제로 채우지
+    않는다" 참조) — `filters.keyword` 는 남아 있어 무필터 판정(I-3 폴백)에도 걸리지 않는다.
+    """
+    monkeypatch.setenv("SPRING_SEARCH_TIMEOUT_S", "0.01")
+    monkeypatch.setenv("RESCUE_STAGE_MIN_TIMEOUT_S", "0.001")
+    get_settings.cache_clear()
+
+    _install_transport(monkeypatch, _SlowTransport(delay_s=0.05))
+
+    decompose = {
+        "intent": "recommend",
+        "reply": "",
+        "case": 2,
+        "semanticQuery": "무선 이어폰",
+        "categoryQueries": [],
+        "filters": {"keyword": "무선 이어폰"},
+    }
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(),
+            _guest(),  # 게스트 — I-19 구매 이력 조회가 없어 배선이 단순하다
+            llm=FakeLLM(decompose=decompose),
+            search=functools.partial(
+                search_service.search_catalog, backend=search_service.SpringSearchBackend()
+            ),
+            push_fn=_RecordingPush(),
+        )
+    )
+
+    error = next((e for e in events if e["type"] == "error"), None)
+    assert error is not None, "느린 검색이 SSE error 프레임으로 이어지지 않았다"
+    assert error["data"]["code"] == "SEARCH_FAILED"
