@@ -1809,11 +1809,17 @@ class SpringClient:
         from_: str | None = None,
         to: str | None = None,
         product_id: int | None = None,
+        rating: str | None = None,
     ) -> SellerReviewStats:
         """I-31 리뷰 집계 조회 — stats=true 모드 (§4.20).
 
         totalCount/averageRating/distribution(P-3 형태)/byProduct. 0건이면
         averageRating 은 null(I-16 churnRate 규칙과 동일 — 평점 0점 오독 금지).
+
+        [#494] from/to·rating·productId 는 **집계에도 전부 적용**된다(I-31 확정) —
+        rating 을 안 실으면 전 별점 합산 순위가 200 으로 조용히 돌아와, 명세가 대표
+        사용례로 든 "1–2점이 어느 상품에 몰렸어?"가 '그냥 리뷰가 가장 많은 상품'을
+        지목한다. sort/limit/offset 만 미전송이 맞다(집계 모드에는 rows 가 없다).
         """
         params: dict = {"stats": "true"}
         if from_:
@@ -1822,6 +1828,8 @@ class SpringClient:
             params["to"] = to
         if product_id is not None:
             params["productId"] = product_id
+        if rating:
+            params["rating"] = rating
         data = await self._request(
             "GET",
             f"/internal/seller/{brand_id}/reviews",

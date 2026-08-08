@@ -1011,3 +1011,75 @@ async def test_get_review_stats_parses_null_average() -> None:
     assert "stats=true" in captured["url"]
     assert result.total_count == 0
     assert result.average_rating is None
+
+
+async def test_get_review_stats_sends_rating_and_product_filters() -> None:
+    """[#494] rating·productId·기간이 집계 요청 쿼리스트링에 전부 실린다(I-31).
+
+    응답 픽스처를 고정하는 계약 테스트로는 이 회귀가 안 잡힌다 — shape 가 아니라
+    **요청 파라미터** 누락이라 HTTP 200 이 그대로 돌아온다. 그래서 요청 URL 을
+    직접 스냅샷한다.
+    """
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        return httpx.Response(
+            200,
+            json={
+                "success": True,
+                "data": {
+                    "totalCount": 18,
+                    "averageRating": 1.4,
+                    "distribution": {"5": 0, "4": 0, "3": 0, "2": 11, "1": 7},
+                    "byProduct": [
+                        {
+                            "productId": 3,
+                            "productName": "여행용 파우치",
+                            "count": 12,
+                            "averageRating": 1.3,
+                        }
+                    ],
+                },
+            },
+        )
+
+    client = _client(handler)
+    result = await client.get_review_stats(
+        12, from_="2026-07-01", to="2026-07-31", product_id=3, rating="1,2"
+    )
+
+    url = captured["url"]
+    assert "stats=true" in url
+    assert "rating=1%2C2" in url or "rating=1,2" in url
+    assert "productId=3" in url
+    assert "from=2026-07-01" in url and "to=2026-07-31" in url
+    # 집계 모드에는 rows 가 없다 — 목록 전용 파라미터는 실리지 않아야 한다.
+    assert "sort=" not in url and "limit=" not in url and "offset=" not in url
+    assert result.total_count == 18
+    assert result.by_product[0].product_id == 3
+
+
+async def test_get_review_stats_omits_rating_when_absent() -> None:
+    """[#494 회귀] rating 미지정이면 쿼리스트링에 rating 이 실리지 않는다."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        return httpx.Response(
+            200,
+            json={
+                "success": True,
+                "data": {
+                    "totalCount": 47,
+                    "averageRating": 3.8,
+                    "distribution": {"5": 12, "4": 15, "3": 8, "2": 7, "1": 5},
+                    "byProduct": [],
+                },
+            },
+        )
+
+    client = _client(handler)
+    await client.get_review_stats(12)
+
+    assert "rating" not in captured["url"]

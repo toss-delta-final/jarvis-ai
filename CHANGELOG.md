@@ -29,6 +29,15 @@
   I-16 경로로만 열려 있던 셈이다.
 
 ### Fixed
+- **#494 — I-31 집계 모드가 `rating` 필터를 버려 저평점 상품을 틀리게 지목하던 문제** (api-spec
+  §4.20, 계약 무변경 — 코드가 확정 명세를 못 따라간 단방향 드리프트). `SpringClient.get_review_stats`
+  시그니처에 `rating` 이 없어 `get_reviews(stats=True, rating="1,2")` 가 별점을 쿼리스트링에 싣지
+  않았고, 전 별점 합산 `byProduct` 가 HTTP 200 으로 돌아와 워커가 그것을 "1–2점이 몰린 상품"으로
+  서술했다 — 명세가 대표 사용례로 든 질문이 에러·경고 없이 조용히 틀렸고 `passed=True` 로 끝나
+  로그에도 남지 않았다. 클라이언트·도구 양쪽에 `rating` 을 배선하고, 집계 출력에 적용 스코프를
+  명시한다(`리뷰 집계(별점 1,2 한정): …`, 0건도 `별점 1,2 리뷰가 없습니다`). `rating` 미지정 시
+  출력은 종전과 바이트 동일하다. 재발 방지로 응답 픽스처가 아닌 **요청 쿼리스트링 스냅샷** 테스트를
+  추가했다(`docs/lessons.md` 2026-08-08 항목).
 - **#488 — I-13 `purchaseComplete` 폐기 규정이 판매자 워커에 주입하던 오정보 제거** (api-spec
   §4.4, v0.29.2). 2026-07-31 개정(jarvis-backend#62 근본 수정 배포 / #196)으로 `purchaseComplete`
   는 **주문 기준 집계**(`order_item × product × brand`, PAID·`paid_at`, `COUNT(DISTINCT order_id)`
