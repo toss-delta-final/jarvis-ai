@@ -50,17 +50,35 @@ class _SlowTransport(httpx.AsyncBaseTransport):
 def _install_transport(
     monkeypatch: pytest.MonkeyPatch, transport: httpx.AsyncBaseTransport
 ) -> None:
-    """`_client` 를 교체해 HTTP 경계에서만 대역을 세운다(tests/integration/conftest.py 규약)."""
+    """`_client` 를 교체해 HTTP 경계에서만 대역을 세운다(tests/integration/conftest.py 규약).
+
+    [#427] `_client` 는 이제 `timeout` 키워드 인자를 받는다(`search_products` 가 검색 전용
+    타임아웃을 넘긴다) — fake 도 같은 시그니처를 받아야 몽키패치가 실제 호출과 어긋나지 않는다.
+    """
     monkeypatch.setattr(
         spring_client,
         "_client",
-        lambda: httpx.AsyncClient(base_url="https://spring.test", transport=transport),
+        lambda *, timeout=None: httpx.AsyncClient(
+            base_url="https://spring.test", transport=transport
+        ),
     )
 
 
 def _shrink_budget(monkeypatch: pytest.MonkeyPatch, timeout_s: str = "0.05") -> None:
-    """검색 총예산을 테스트 규모로 줄인다 — 가드는 `spring_timeout_s × (재시도+1)` 을 쓴다."""
-    monkeypatch.setenv("SPRING_TIMEOUT_S", timeout_s)
+    """검색 총예산을 테스트 규모로 줄인다 — 가드는 `spring_search_timeout_s × (재시도+1)` 을 쓴다.
+
+    [#427] `search_products` 전용 타임아웃(`spring_search_timeout_s`)이 공용
+    `spring_timeout_s` 와 분리됐다 — 이 헬퍼는 검색 총시간 가드(#132)를 겨누므로 전용
+    타임아웃을 줄인다.
+
+    [PR #452 리뷰 R5] 기본 `RESCUE_STAGE_MIN_TIMEOUT_S`(0.5)가 `timeout_s` 를 0.5 미만으로
+    줄이면(기본 인자 "0.05" 가 그렇다) 새 기동 검증기(`RESCUE_STAGE_MIN_TIMEOUT_S <
+    SPRING_SEARCH_TIMEOUT_S`)를 어긴다 — 이 가드(#132)는 구제 체인 좁히기와 무관한 검색
+    HTTP 타임아웃 자체를 겨누는 테스트라, 그 부등식이 깨지지 않게 하한도 `timeout_s` 보다
+    작게 함께 낮춘다(검증 대상·어설션은 그대로, 무관한 설정만 맞춘다).
+    """
+    monkeypatch.setenv("SPRING_SEARCH_TIMEOUT_S", timeout_s)
+    monkeypatch.setenv("RESCUE_STAGE_MIN_TIMEOUT_S", str(float(timeout_s) / 10))
     get_settings.cache_clear()
 
 
@@ -77,7 +95,7 @@ async def test_slow_body_exceeding_budget_raises_spring_unavailable(
 ) -> None:
     """httpx 가 못 잡는 '느리지만 끊기지 않는' 응답을 총시간 가드가 잘라 §7 degrade 로 보낸다."""
     _shrink_budget(monkeypatch)
-    budget = get_settings().spring_timeout_s * (get_settings().spring_max_retries + 1)
+    budget = get_settings().spring_search_timeout_s * (get_settings().spring_max_retries + 1)
     _install_transport(monkeypatch, _SlowTransport(delay_s=budget * 20))
 
     started = time.perf_counter()
@@ -238,7 +256,7 @@ async def test_guard_timeout_is_recorded_on_the_span(monkeypatch: pytest.MonkeyP
     남고 로그와 대조가 깨진다.
     """
     _shrink_budget(monkeypatch)
-    budget = get_settings().spring_timeout_s * (get_settings().spring_max_retries + 1)
+    budget = get_settings().spring_search_timeout_s * (get_settings().spring_max_retries + 1)
     _install_transport(monkeypatch, _SlowTransport(delay_s=budget * 20))
 
     exporter = FakeTraceExporter()

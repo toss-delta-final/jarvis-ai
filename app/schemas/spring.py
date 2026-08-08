@@ -74,7 +74,12 @@ class ProductSearchFilters(CamelModel):
     # 의미검색용 자연어(#101) — AI 내부 필드. keyword(상품명 LIKE)와 분리되며 Spring 에 안 나가고
     # EmbeddingRerankBackend(방식2)가 pgvector 재정렬의 query 임베딩 입력으로 쓴다(§4.8 방식2).
     semantic_query: str | None = None
-    color: str | None = None  # 색상 조건(#100 P1) — BE I-1 attributes LIKE 로 필터
+    # 색상 조건(#100 P1) — 내부 모델: decompose 가 사용자 발화에서 표기 하나만 뽑아 담는다.
+    # 와이어로 나갈 때 app.pipelines.color_synonyms.expand_color 가 동의어 묶음으로 펼쳐
+    # 반복 파라미터 리스트가 된다(api-spec §4.6, #258) — 여기 타입이 str 인 건 드리프트가
+    # 아니라 의도다. BE 매칭은 attributes 전문 LIKE 가 아니라 json_extract 로 색상 키만
+    # 좁힌 뒤 regexp_instr 부분 일치다(#258, BE 2026-08-03 개정).
+    color: str | None = None
     # 명시 속성조건(PR②, api-spec §4.6 "2차 압축 속성 매칭 대상") — 축→희망값(예 {소재:린넨, 핏:오버핏}).
     # AI 내부 필드(Spring 에 안 나감) — search_catalog 가 SpringProduct.attributes 와 관대 하드 매칭한다.
     # 사용자 명시 조건만 담는다(하드). 추측 선호(소프트)는 rerank(원문+attributes)가 판단(별도 필드 없음).

@@ -427,14 +427,24 @@ class RequestTrace:
         return text
 
     def record_request_content(
-        self, *, input_text: str | None = None, output_text: str | None = None
+        self,
+        *,
+        input_text: str | None = None,
+        output_text: str | None = None,
+        extra_inputs: Mapping[str, object] | None = None,
     ) -> None:
-        """[#326] 루트 span 에 사용자 발화/최종 응답 원문을 싣는다(콘텐츠 모드에서만)."""
+        """[#326] 루트 span 에 사용자 발화/최종 응답 원문을 싣는다(콘텐츠 모드에서만).
+
+        `extra_inputs` 는 발화 외 구조화 입력(예: 칩 제거 `conditionActions`, I-22 시그널)용이다 —
+        키가 `_LLM_CONTENT_KEYS` 에 없으므로 자동으로 strict(전체 카나리아) 검증을 받는다(#469).
+        """
         if not self.captures_content:
             return
         root = self._nodes[0]
         if input_text is not None:
             root.inputs["message"] = self._clip(input_text)
+        if extra_inputs:
+            root.inputs.update({key: self._clip(value) for key, value in extra_inputs.items()})
         if output_text is not None:
             root.outputs["message"] = self._clip(output_text)
 
@@ -655,9 +665,13 @@ class NoopRequestTrace(RequestTrace):
         return False
 
     def record_request_content(
-        self, *, input_text: str | None = None, output_text: str | None = None
+        self,
+        *,
+        input_text: str | None = None,
+        output_text: str | None = None,
+        extra_inputs: Mapping[str, object] | None = None,
     ) -> None:
-        del input_text, output_text
+        del input_text, output_text, extra_inputs
 
     def record_llm_content(
         self,
