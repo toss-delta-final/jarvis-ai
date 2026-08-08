@@ -10,6 +10,7 @@
 ## [Unreleased]
 
 ### Added
+- **#469 — 홈 추천(I-22)·칩 제거 LangSmith 관측 추가 + home_reco 로그 결함 수정** — (1) I-22 에 요청 트레이스 신설: 루트 `home_recommendation` + 단계 span 4종(`home.profile`/`home.query_vector`/`home.rank`/`home.reasons`) — 운영 콜드스타트 504 진단이 로그 한 줄뿐이던 것을 단계별 지연으로 볼 수 있게 했다. finish/export 는 P-5 예산(3s)을 지키기 위해 요청 경로에서 await 하지 않고 분리 태스크로 흘린다. memberId 원값은 트레이스에 없다(지문만, §3.7 [HARD]) — 콘텐츠 모드일 때만 시그널·outcome·반환 id 가 실린다(strict 카나리아). (2) `/chat` 루트 콘텐츠에 `conditionActions` 직렬화 기록 — 발화 없는 칩 제거 턴이 트레이스에서 보이게. (3) `home_reco_request` 로그의 outcome·개수가 `extra` 로 남아 기본 포맷터에서 증발하던 결함을 JSON 메시지 방식(observability 관례)으로 수정 — `docker logs` 에서 outcome 구분 가능. 계약(api-spec) 무변경.
 - **#432 — 과소지정 프로브에 union 측정 모드를 넣어 전개 후 판정까지 잰다** — 기존
   `evals/underspecified_probe` 는 decompose 직후·판정 직전 형상만 쟀다. `--union`(기본 off)을
   켜면 `app.agents.buyer.graph._prepare_recommendation`(카테고리 매핑 + `needs_expansion`
