@@ -1474,7 +1474,13 @@ class SpringClient:
     async def get_sales(
         self, brand_id: int, from_: str, to: str, granularity: str = "daily"
     ) -> SalesResult:
-        """I-6 매출 시계열 조회 (§4.4). granularity: daily/weekly/monthly/summary."""
+        """I-6 매출 시계열 조회 (§4.4). granularity: daily/weekly/monthly/summary.
+
+        [#489] series[].salesCount(판매 **수량**, SUM(oi.quantity) · CANCELLED/
+        RETURNED 제외)를 수신한다 — 구현에는 처음부터 있었으나 스키마에 필드가
+        없어 파싱되지 않고 버려지던 드리프트 정정(2026-08-06). granularity=summary
+        응답에는 수량 필드가 없어 nullable 이다.
+        """
         data = await self._request(
             "GET",
             f"/internal/seller/{brand_id}/sales",
@@ -1504,8 +1510,13 @@ class SpringClient:
     ) -> BehaviorEventsResult:
         """I-13 행동 이벤트 집계 조회 (§4.4 — 07/17 BE 확정, REALIGN ②-3).
 
-        eventType 은 상품 연계 4종 복수 선택(미지정 = 4종 전체), groupBy 는
-        product(기본)/eventType/date. 실패 코드: INVALID_PERIOD/INVALID_GROUP_BY(400).
+        eventType 은 상품 연계 **5종** 복수 선택(미지정 = 5종 전체) — product_view /
+        add_to_cart / **remove_from_cart** / checkout_start / purchase_complete.
+        [2026-08-06 개정, #489] remove_from_cart 편입으로 4종 → 5종이며, 5종 밖의
+        값은 400 INVALID_GROUP_BY 다(session_start/login/search/page_view 는 상품
+        귀속 경로가 없어 이 엔드포인트 스코프 밖).
+        groupBy 는 product(기본)/eventType/date. 실패 코드:
+        INVALID_PERIOD/INVALID_GROUP_BY(400).
         """
         params: dict = {"from": from_, "to": to}
         if event_type:

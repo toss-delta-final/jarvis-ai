@@ -9,26 +9,15 @@
 
 ## [Unreleased]
 
-### Added
-- **#346 — 비교(기준) 기간 어휘 양 레인 지원** (`직전 동일 기간`·`지난달 대비`·`전월 동기간`·
-  `작년 대비`·`전년 동기간`). `period.resolve_comparison(expr, base)` 가 본 기간을 받아 환산하고
-  (`직전 동일 기간` 은 보충값이 없어 확인 불필요 — `tools._previous_period` 와 같은 정의,
-  달력 시프트 2종은 정렬 방식을 코드가 고르므로 확인 대상), 확인 판정은 본 기간과의 **합집합**이다.
-  배선은 `AnalysisPlan.comparison_expr`(planner 는 표현만) → `ResolvedPlan.compare_from/to` →
-  입력 메시지 `[비교 기간]` 한 줄이며 **도구 시그니처·Spring 계약은 불변**이다 — 워커가 두 기간으로
-  같은 도구를 각각 호출한다. general 레인은 한 발화에서 비교 표현을 먼저 떼어내 본 기간과 함께
-  해석한다. 확인 대기 저장(`period_confirm`)에도 비교 기간을 실어 승인 재개가 대조군을 잃지 않게 했다.
-  (DESIGN-SELLER-PERIOD §2.5, 와이어 계약 무변경)
-
-### Security
-- **#487 — I-16 이탈 코호트가 원시 `memberId` 를 판매자 LLM 표면에 싣던 재식별 경로 차단**
-  (api-spec §4.4, v0.29.1). `get_churn_cohort` 요약이 이탈 회원을 `[41] 마지막 활동 …` 형태로
-  적재해, 판매자 주문 화면(S-2: `orderId` + 수령인 실명)과 대조하면 회원이 특정됐다 — memberId 는
-  가명이 아니라 재식별 키라는 것이 #481 I-14 개정의 근거였는데, 같은 논리가 I-16 에만 적용되지
-  않고 있었다. 노션 개정이 I-8·I-14·I-16 **동시 배포**를 전제했으므로 그 사이 기간 내내 노출이
-  I-16 경로로만 열려 있던 셈이다.
-
 ### Fixed
+- **#489 — I-13 신필드(`salesQuantity`·체류시간 4종·`removeFromCart`)·I-6 `salesCount` 수신 정합**
+  (api-spec §4.4, v0.29.3). 개정 전에는 **AI 가 판매 수량에 도달할 경로가 하나도 없었다** — I-6
+  `salesCount` 는 BE 구현에 원래 있었으나 스키마에 필드가 없어 파싱되지 않고 버려졌고, 공백을
+  메우려 신설된 I-13 `salesQuantity` 는 미반영, 대체 경로 S-1 `products[]` 는 같은 날 제거됐다.
+  **근본 원인 제거**: `BehaviorProductRow` 만 `CamelModel`(pydantic 기본 `extra="ignore"`)을 상속해
+  형제 판매자 모델(`SellerAggregateModel`, `extra="allow"`)과 달리 **BE 가 추가한 필드가 예외도
+  없이 `model_extra` 에도 안 남고 통째로 소실**되고 있었다 — 베이스를 `SellerAggregateModel` 로
+  교체해 앞으로 BE 가 뭘 추가하든 같은 일이 반복되지 않게 했다.
 - **#488 — I-13 `purchaseComplete` 폐기 규정이 판매자 워커에 주입하던 오정보 제거** (api-spec
   §4.4, v0.29.2). 2026-07-31 개정(jarvis-backend#62 근본 수정 배포 / #196)으로 `purchaseComplete`
   는 **주문 기준 집계**(`order_item × product × brand`, PAID·`paid_at`, `COUNT(DISTINCT order_id)`
@@ -62,7 +51,44 @@
   가드(`_guard_period_args`)를 걸어 LLM 이 날짜를 지어내도 상한·역전이 다시 새지 않게 했다.
   와이어 계약 무변경.
 
+### Added
+- **#346 — 비교(기준) 기간 어휘 양 레인 지원** (`직전 동일 기간`·`지난달 대비`·`전월 동기간`·
+  `작년 대비`·`전년 동기간`). `period.resolve_comparison(expr, base)` 가 본 기간을 받아 환산하고
+  (`직전 동일 기간` 은 보충값이 없어 확인 불필요 — `tools._previous_period` 와 같은 정의,
+  달력 시프트 2종은 정렬 방식을 코드가 고르므로 확인 대상), 확인 판정은 본 기간과의 **합집합**이다.
+  배선은 `AnalysisPlan.comparison_expr`(planner 는 표현만) → `ResolvedPlan.compare_from/to` →
+  입력 메시지 `[비교 기간]` 한 줄이며 **도구 시그니처·Spring 계약은 불변**이다 — 워커가 두 기간으로
+  같은 도구를 각각 호출한다. general 레인은 한 발화에서 비교 표현을 먼저 떼어내 본 기간과 함께
+  해석한다. 확인 대기 저장(`period_confirm`)에도 비교 기간을 실어 승인 재개가 대조군을 잃지 않게 했다.
+  (DESIGN-SELLER-PERIOD §2.5, 와이어 계약 무변경)
+- **#489 — I-13 `BehaviorProductRow` 신필드 5종** (api-spec §4.4, v0.29.3): `salesQuantity`(PAID
+  `SUM(oi.quantity)`·아이템 `PENDING`/`CANCELLED`/`RETURNED` 제외 — I-6 `salesCount` 와 동일 산식)와
+  체류시간 4종(`medianDwellSeconds`·`avgDwellSeconds`·`dwellSampleCount`·`dwellSource`). 전부
+  **nullable 이며 기본값 `0` 을 두지 않는다** — 명세가 `null` 을 계약값으로 규정한다(`0`="안 팔림",
+  `null`="미조회"). `0` 기본값은 `churn_rate` 에서 잡았던 silent-mismatch(#197)를 그대로 재도입한다.
+- **#489 — I-6 `SalesSeriesPoint.salesCount`** (api-spec §4.4, v0.29.3). `granularity=summary` 응답에는
+  수량 필드가 없어 nullable. `get_sales_timeseries` 요약이 포인트별 `/N개`·기간 합계를 함께 표기하되,
+  `null` 포인트를 `0` 으로 섞지 않고 집계 대상 포인트 수를 밝힌다.
+
+### Security
+- **#487 — I-16 이탈 코호트가 원시 `memberId` 를 판매자 LLM 표면에 싣던 재식별 경로 차단**
+  (api-spec §4.4, v0.29.1). `get_churn_cohort` 요약이 이탈 회원을 `[41] 마지막 활동 …` 형태로
+  적재해, 판매자 주문 화면(S-2: `orderId` + 수령인 실명)과 대조하면 회원이 특정됐다 — memberId 는
+  가명이 아니라 재식별 키라는 것이 #481 I-14 개정의 근거였는데, 같은 논리가 I-16 에만 적용되지
+  않고 있었다. 노션 개정이 I-8·I-14·I-16 **동시 배포**를 전제했으므로 그 사이 기간 내내 노출이
+  I-16 경로로만 열려 있던 셈이다.
+
 ### Changed
+- **#489 — behavior 요약 5종화 + 신지표 표기** (api-spec §4.4, v0.29.3). I-13 `counts` 어휘에
+  `removeFromCart` 가 편입되어 표시 행·꼬리 합계 키·꼬리 출력 3곳이 각각 4종을 하드코딩하던 것을
+  모듈 상수 `_BEHAVIOR_COUNT_KEYS`/`_BEHAVIOR_COUNT_LABELS` 로 단일 출처화했다. 상품 행에
+  판매 수량과 체류시간(중앙·평균·표본 수)을 함께 싣고, `dwellSource` 한계(next_event 기준이라 세션
+  마지막 조회가 표본에서 빠짐)는 행마다 반복하지 않고 요약 말미에 1회 각주로 붙인다.
+  `dwellSampleCount` 가 없거나 0 이면 중앙값·평균이 실려 와도 **수치를 감추고 사유만 남긴다**
+  (표본 없이 해석 금지 — conversion 워커 유의성 판정 원칙과 동일). 군집(k-means) 피처와 Tukey 비율
+  지표는 **의도적으로 종전 4종·3종 유지** — 어휘 확장과 분석 피처 변경은 별개 결정이라 스코프 밖.
+  `_BEHAVIOR_AUTHORITY_NOTE` 에는 "판매 **수량**의 권위는 같은 행의 `salesQuantity`" 한 줄을 더해,
+  `purchaseComplete` 경고가 신설 수량 지표까지 싸잡아 불신하게 만들지 않도록 했다.
 - **#487 — I-16 노션 2026-08-06 개정 정합(#481 잔여분)** (api-spec §4.4, v0.29.1).
   `ChurnMember` 에서 `member_id`·`last_login_at` 을 제거하고 `customer_label`(HMAC 6자 사례번호,
   I-14 와 같은 규약·같은 값)을 신설했다. `get_churn_cohort` 요약은 라벨만 노출하며 **라벨 결측
