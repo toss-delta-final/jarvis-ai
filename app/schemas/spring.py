@@ -618,6 +618,13 @@ class SalesSeriesPoint(SellerAggregateModel):
     date: str
     sales: int
     order_count: int
+    # [#489] 판매 **수량** — PAID 주문 order_item 의 SUM(oi.quantity), CANCELLED/
+    # RETURNED 제외(S-1 과 동일 규칙). orderCount(주문 **건수**)와 단위가 다르다.
+    # nullable 인 이유: granularity=summary 응답에는 수량 필드가 없다고 명세가
+    # 명시했고, BE 미배포 구간 대비도 겸한다. (2026-08-06 드리프트 정정 — 구현
+    # sumSellerSalesByPeriod 에는 처음부터 있었으나 스키마에 필드가 없어 AI 가
+    # 파싱하지 않고 버리고 있었다. 신규 계약이 아니라 문서 정정이다.)
+    sales_count: int | None = None
     is_anomaly: bool = False
     deviation_pct: float | None = None
 
@@ -708,17 +715,49 @@ class FunnelResult(SellerAggregateModel):
 # ── I-13 행동 이벤트 집계 (§4.4 — 07/17 BE 확정 명세 반영, REALIGN F4/②-3) ──
 
 
-class BehaviorProductRow(CamelModel):
+class BehaviorProductRow(SellerAggregateModel):
     """I-13 groupBy=product rows[] 항목 — 상품별 행동 카운트·전환 보조 지표.
 
-    counts 키는 event_type 의 camelCase(productView/addToCart/checkoutStart/
-    purchaseComplete). viewToCartRate 는 addToCart/productView(분모 0 = null).
+    counts 키는 event_type 의 camelCase(productView/addToCart/removeFromCart/
+    checkoutStart/purchaseComplete — 2026-08-06 개정으로 4종 → 5종, 장바구니
+    이벤트 BE 이관과 함께 remove_from_cart 편입). viewToCartRate 는
+    addToCart/productView(분모 0 = null).
     uniqueVisitors = distinct(memberId, guestId) — 비로그인 게스트 포함.
+
+    [#489 근본 수정] 베이스가 CamelModel(extra 무설정 = pydantic 기본 "ignore")
+    이라 형제 판매자 모델(SellerAggregateModel, extra="allow")과 달리 **BE 가
+    추가한 신필드가 예외도 안 나고 model_extra 에도 안 남고 통째로 소실**됐다.
+    필드 5종을 더하는 것보다 이 베이스 교체가 근본 수정이다 — 앞으로 BE 가 뭘
+    추가하든 같은 일이 반복된다. SellerAggregateModel 은 CamelModel 하위라
+    alias_generator(to_camel)·populate_by_name 규약은 그대로다.
+
+    [#489] 신필드 5종은 전부 nullable 이며 **기본값 0 을 두지 않는다** — 명세가
+    null 을 계약값으로 규정한다(0="안 팔림"/"체류 0초", null="미조회"/"표본 없음").
+    0 기본값은 churn_rate 에서 잡았던 silent-mismatch(#197)를 그대로 재도입한다.
     """
 
     product_id: int
     product_name: str | None = None
     counts: dict[str, int] = Field(default_factory=dict)
+    # 판매 **수량**(2026-08-06 신설) — 기간 내 PAID 주문(orders.paid_at)의
+    # SUM(oi.quantity). 아이템 상태 PENDING/CANCELLED/RETURNED 를 **제외**한다
+    # (I-6 salesCount 와 동일 산식). 같은 row 의 counts.purchaseComplete 는 주문
+    # **건수**이고 아이템 상태를 보지 않아 부분 취소·반품을 포함한다 — 단위도
+    # 규칙도 달라 두 값을 직접 비교하면 안 된다(명세상 의도된 비대칭).
+    # eventType 필터에 purchase_complete 가 없으면 null(= 미조회).
+    sales_quantity: int | None = None
+    # 체류시간 4종(2026-08-06 신설 — 이벤트 차분 산출, FE 무변경·과거 로그 소급).
+    # 같은 session_key 안에서 occurred_at 오름차순 정렬 후 product_view 부터 다음
+    # 이벤트까지의 초 단위 시간차(끝 이벤트 종류 무관 = 이탈 시각).
+    # ⚠️ 세션의 **마지막 조회는 표본에서 빠진다** — page_leave 를 수집하지 않아
+    # 끝 시각이 없다(구조적 한계, 버그 아님). dwellSource 가 이 사실을 표기한다.
+    # 이상치 제외 3종은 BE 설정 고정(AI 가 바꿀 수 있는 쿼리 파라미터가 아니다):
+    # properties._timeShifted 행 · 음수(시계 역전) · 1800초 초과(세션 30분 정합).
+    # eventType 필터에 product_view 가 없거나 표본 0건이면 4필드 모두 null.
+    median_dwell_seconds: float | None = None  # 주 지표(롱테일 분포라 평균은 참고값)
+    avg_dwell_seconds: float | None = None  # 분포 왜곡 확인용 참고값
+    dwell_sample_count: int | None = None  # 이것 없이 평균·중앙값만 해석 금지
+    dwell_source: str | None = None  # "next_event" | (향후) "page_leave"
     view_to_cart_rate: float | None = None
     unique_visitors: int | None = None
 
@@ -726,13 +765,20 @@ class BehaviorProductRow(CamelModel):
 class BehaviorEventsResult(SellerAggregateModel):
     """I-13 GET /internal/seller/{brandId}/events 응답 (07/17 확정 — 구 events[] 폐기).
 
-    원천 = behavior_events(상품 연계 4종만 — session_start/login/search/page_view 는
-    브랜드 귀속 불가로 제외). groupBy 3형이 한 모델에 겹친다 — 채워지는 필드:
+    원천 = behavior_events(상품 연계 **5종**만 — session_start/login/search/page_view
+    는 브랜드 귀속 경로가 없어 제외). [2026-08-06 개정, #489] remove_from_cart 편입
+    으로 4종 → 5종 — 장바구니 이벤트 BE 이관과 동시 신설된 이벤트로, 열지 않으면
+    이벤트가 쌓여도 AI 가 읽을 경로가 없다. counts 키가 5종이 되고 **rows 정렬
+    기준(활동량 합)에도 removeFromCart 가 포함**된다(삭제가 잦은 상품의 순위가
+    올라갈 수 있다 — "담김도 삭제도 활동"이라는 의도된 변경).
+    groupBy 3형이 한 모델에 겹친다 — 채워지는 필드:
       - product(기본) : rows (+ total)
       - eventType     : counts
       - date          : series (date + camelCase 이벤트 카운트, 키 동적 → dict 유지)
     ⚠️ purchaseComplete 는 이벤트 기준(주문 완료 페이지 발사) — 매출·주문수의
     권위는 I-6/I-14(order 기준)다(명세 집계 규칙 — 워커 해석 주의).
+    ⚠️ 판매 **수량**의 권위는 같은 row 의 salesQuantity 다(2026-08-06 신설, 취소·
+    반품 제외) — purchaseComplete 는 건수라 수량 질문에 답하지 못한다.
     """
 
     group_by: str = "product"
