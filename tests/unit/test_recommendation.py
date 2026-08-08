@@ -2031,7 +2031,7 @@ async def test_search_products_parses_i1_items(monkeypatch: pytest.MonkeyPatch) 
             ]
         },
     }
-    monkeypatch.setattr(sc, "_client", lambda: _FakeClient(payload))
+    monkeypatch.setattr(sc, "_client", lambda *, timeout=None: _FakeClient(payload))
     res = await sc.search_products(ProductSearchFilters())
     assert len(res.products) == 1
     assert res.products[0].category == "의류" and res.products[0].brand == "B"
@@ -2055,7 +2055,7 @@ async def test_search_products_parses_i1_array_envelope(monkeypatch: pytest.Monk
             }
         ],
     }
-    monkeypatch.setattr(sc, "_client", lambda: _FakeClient(payload))
+    monkeypatch.setattr(sc, "_client", lambda *, timeout=None: _FakeClient(payload))
     res = await sc.search_products(ProductSearchFilters())
     assert len(res.products) == 1
     assert res.products[0].category == "의류" and res.products[0].brand == "B"
@@ -2069,7 +2069,7 @@ async def test_search_products_malformed_maps_to_search_failed(
     from app.schemas.spring import ProductSearchFilters
 
     payload = {"success": True, "data": {"items": [{"name": "x"}]}}  # productId 없음
-    monkeypatch.setattr(sc, "_client", lambda: _FakeClient(payload))
+    monkeypatch.setattr(sc, "_client", lambda *, timeout=None: _FakeClient(payload))
     with pytest.raises(SpringUnavailableError):
         await sc.search_products(ProductSearchFilters())
 
@@ -2087,7 +2087,7 @@ async def test_search_products_unknown_envelope_fails_closed(
     from app.schemas.spring import ProductSearchFilters
 
     payload = {"success": True, "data": {"products": [{"productId": 1}]}}  # 미인식 형태
-    monkeypatch.setattr(sc, "_client", lambda: _FakeClient(payload))
+    monkeypatch.setattr(sc, "_client", lambda *, timeout=None: _FakeClient(payload))
     with caplog.at_level("WARNING"):
         with pytest.raises(SpringUnavailableError):
             await sc.search_products(ProductSearchFilters())
@@ -2102,7 +2102,7 @@ async def test_search_products_parses_bare_list_body(monkeypatch: pytest.MonkeyP
     payload = [
         {"productId": 7, "name": "모자", "price": 9900, "categoryName": "잡화", "brandName": "B"}
     ]
-    monkeypatch.setattr(sc, "_client", lambda: _FakeClient(payload))
+    monkeypatch.setattr(sc, "_client", lambda *, timeout=None: _FakeClient(payload))
     res = await sc.search_products(ProductSearchFilters())
     assert [p.product_id for p in res.products] == [7]
 
@@ -2114,7 +2114,7 @@ async def test_search_products_missing_data_key_fails_closed(
     import app.services.spring_client as sc
     from app.schemas.spring import ProductSearchFilters
 
-    monkeypatch.setattr(sc, "_client", lambda: _FakeClient({"success": True}))
+    monkeypatch.setattr(sc, "_client", lambda *, timeout=None: _FakeClient({"success": True}))
     with caplog.at_level("WARNING"):
         with pytest.raises(SpringUnavailableError):
             await sc.search_products(ProductSearchFilters())
@@ -2151,7 +2151,7 @@ def _counting_client(monkeypatch: pytest.MonkeyPatch, *responses):
     monkeypatch.setattr(
         sc,
         "_client",
-        lambda: httpx.AsyncClient(
+        lambda *, timeout=None: httpx.AsyncClient(
             base_url="http://spring.test", transport=httpx.MockTransport(_handler)
         ),
     )
@@ -2882,7 +2882,7 @@ async def test_get_recent_purchases_parses_and_collects_ids(
             ]
         },
     }
-    monkeypatch.setattr(_sc_mod, "_client", lambda: _FakeClient(body))
+    monkeypatch.setattr(_sc_mod, "_client", lambda *, timeout=None: _FakeClient(body))
     res = await _REAL_GET_RECENT(123)
     assert res.purchased_product_ids() == {552, 88}
 
@@ -2893,7 +2893,7 @@ async def test_get_recent_purchases_failure_degrades(monkeypatch: pytest.MonkeyP
         "success": True,
         "data": {"orders": [{"orderId": 1, "orderedAt": "x", "items": [{"orderItemId": 1}]}]},
     }
-    monkeypatch.setattr(_sc_mod, "_client", lambda: _FakeClient(body))
+    monkeypatch.setattr(_sc_mod, "_client", lambda *, timeout=None: _FakeClient(body))
     with pytest.raises(SpringUnavailableError):
         await _REAL_GET_RECENT(1)
 
@@ -7115,3 +7115,88 @@ async def test_underspecified_flag_off_default_unaffected_by_393() -> None:
 
     assert search_calls  # priceMax 는 payload 축이라 무필터가 아니다 — 필터 검색이 나간다
     assert popular_calls == []
+
+
+# ─────────── I-1 options·optionCount 적재 — 장바구니 옵션 힌트 (이슈 #455) ───────────
+
+
+def _products_with_option_hints():
+    """DEFAULT_RERANK 가 참조하는 101·102 에 options/optionCount 를 실은 후보 — 103 은 미수신."""
+    return [
+        SpringProduct(
+            product_id=101,
+            name="이어폰A",
+            price=39000,
+            rating=4.5,
+            category="무선이어폰",
+            brand="BrandX",
+            options=["레드", "블루"],
+            option_count=5,
+        ),
+        SpringProduct(
+            product_id=102,
+            name="이어폰B",
+            price=48000,
+            rating=4.2,
+            category="무선이어폰",
+            brand="BrandY",
+            option_count=0,  # options 는 없지만 optionCount 만 온 케이스도 적재 대상
+        ),
+        SpringProduct(
+            product_id=103,
+            name="이어폰C",
+            price=29000,
+            rating=3.9,
+            category="무선이어폰",
+            brand="BrandZ",
+        ),
+    ]
+
+
+async def test_push_success_loads_option_hints_for_cart() -> None:
+    """(적재) 추천 push **성공** 턴에 candidates 의 옵션 힌트가 장바구니 상태에 실린다."""
+    from app.agents.buyer.cart.options import OptionHint
+    from app.agents.buyer.cart.state import get_cart_store
+
+    request = _req(thread_id="option-hint-push-success")
+    identity = _member()
+    key = await _thread_key(request, identity)
+    cart_store = await get_cart_store()
+
+    await _collect(
+        run_buyer_turn(
+            request,
+            identity,
+            llm=FakeLLM(),
+            search=_make_search(_products_with_option_hints()),
+            push_fn=_RecordingPush(),
+        )
+    )
+
+    assert await cart_store.get_option_hint(key, 101) == OptionHint(names=("레드", "블루"), total=5)
+    assert await cart_store.get_option_hint(key, 102) == OptionHint(names=(), total=0)
+    # 103 은 I-1 이 options/optionCount 를 안 실어 보냈으므로 힌트가 없다(오늘 경로로 degrade).
+    assert await cart_store.get_option_hint(key, 103) is None
+
+
+async def test_push_failure_does_not_load_option_hints() -> None:
+    """(적재) push **실패** 턴에는 카드가 노출되지 않은 것과 대칭으로 옵션 힌트도 싣지 않는다."""
+    from app.agents.buyer.cart.state import get_cart_store
+
+    request = _req(thread_id="option-hint-push-failure")
+    identity = _member()
+    key = await _thread_key(request, identity)
+    cart_store = await get_cart_store()
+
+    await _collect(
+        run_buyer_turn(
+            request,
+            identity,
+            llm=FakeLLM(),
+            search=_make_search(_products_with_option_hints()),
+            push_fn=_failing_push,
+        )
+    )
+
+    assert await cart_store.get_option_hint(key, 101) is None
+    assert await cart_store.get_option_hint(key, 102) is None

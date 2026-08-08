@@ -481,7 +481,7 @@ async def test_buyer_spring_success_exports_only_bounded_transport_metadata(
     monkeypatch.setattr(
         spring_client,
         "_client",
-        lambda: httpx.AsyncClient(
+        lambda *, timeout=None: httpx.AsyncClient(
             base_url="https://spring.private.test",
             headers={"X-Internal-Token": "private-token-901"},
             transport=transport,
@@ -531,7 +531,7 @@ async def test_buyer_spring_http_failure_preserves_mapping_and_records_only_stat
     monkeypatch.setattr(
         spring_client,
         "_client",
-        lambda: httpx.AsyncClient(
+        lambda *, timeout=None: httpx.AsyncClient(
             base_url="https://spring.private.test",
             headers={"X-Internal-Token": "private-token-905"},
             transport=httpx.MockTransport(handler),
@@ -586,7 +586,7 @@ async def test_buyer_spring_retry_still_exports_one_span(
     monkeypatch.setattr(
         spring_client,
         "_client",
-        lambda: httpx.AsyncClient(
+        lambda *, timeout=None: httpx.AsyncClient(
             base_url="https://spring.private.test",
             transport=httpx.MockTransport(handler),
         ),
@@ -630,7 +630,7 @@ async def test_buyer_spring_remote_disconnect_exports_connection_error(
     monkeypatch.setattr(
         spring_client,
         "_client",
-        lambda: httpx.AsyncClient(
+        lambda *, timeout=None: httpx.AsyncClient(
             base_url="https://spring.private.test",
             transport=httpx.MockTransport(handler),
         ),
@@ -670,7 +670,7 @@ async def test_buyer_spring_connect_failure_exports_fixed_code_without_exception
     monkeypatch.setattr(
         spring_client,
         "_client",
-        lambda: httpx.AsyncClient(
+        lambda *, timeout=None: httpx.AsyncClient(
             base_url="https://spring.private.test",
             headers={"X-Internal-Token": "private-token-906"},
             transport=httpx.MockTransport(handler),
@@ -720,7 +720,7 @@ async def test_buyer_spring_cancellation_is_rethrown_unchanged_outside_span(
     monkeypatch.setattr(
         spring_client,
         "_client",
-        lambda: httpx.AsyncClient(
+        lambda *, timeout=None: httpx.AsyncClient(
             base_url="https://spring.private.test",
             headers={"X-Internal-Token": "private-token-908"},
             transport=httpx.MockTransport(handler),
@@ -756,7 +756,7 @@ async def test_all_buyer_spring_operations_trace_timeout_without_changing_error_
     monkeypatch.setattr(
         spring_client,
         "_client",
-        lambda: httpx.AsyncClient(
+        lambda *, timeout=None: httpx.AsyncClient(
             base_url="https://spring.private.test",
             headers={"X-Internal-Token": "private-token-902"},
             transport=httpx.MockTransport(handler),

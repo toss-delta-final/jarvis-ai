@@ -12,6 +12,7 @@ products.ready 는 {sessionId, listIds} 상관키만 나른다.
 from __future__ import annotations
 
 import asyncio
+import json
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
@@ -57,7 +58,23 @@ async def chat(
         environment=get_settings().app_environment,
     )
     # [#326] 콘텐츠 추적 모드에서만 발화 원문이 루트 span 에 실린다(off 면 no-op).
-    trace.record_request_content(input_text=request.message)
+    # [#469] 칩 제거 턴은 발화 없이 conditionActions 만 올 수 있어 함께 싣는다 — 키가
+    # _LLM_CONTENT_KEYS 밖이라 strict(전체 카나리아) 검증을 받는다. getattr 인 이유:
+    # 필드는 BuyerChatRequest 소유라, 기반 ChatRequest 로 직접 호출하는 테스트 더블을 깨지 않는다.
+    condition_actions = getattr(request, "condition_actions", None) or []
+    trace.record_request_content(
+        input_text=request.message,
+        extra_inputs=(
+            {
+                "conditionActions": json.dumps(
+                    [action.model_dump(by_alias=True) for action in condition_actions],
+                    ensure_ascii=False,
+                )
+            }
+            if condition_actions
+            else None
+        ),
+    )
     try:
         store = await get_conversation_store()
     except asyncio.CancelledError:
@@ -102,11 +119,12 @@ async def chat(
     return await open_stream(
         http_request,
         registry_key(identity, request.thread_id),
-        lambda: run_buyer_turn(
+        lambda turn_started_at: run_buyer_turn(
             request,
             identity,
             observer=observation,
             request_id=request_id,
+            turn_started_at=turn_started_at,
         ),
         observer=observation,
         role="buyer",
