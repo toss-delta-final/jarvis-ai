@@ -314,6 +314,110 @@ def _bare_date_range(match: re.Match[str], *, today: date, yesterday: date) -> t
     return date(today.year, from_month, from_day), date(today.year, to_month, to_day)
 
 
+# ── general 레인 진입점 (DESIGN-SELLER-PERIOD §7 — 이슈 #346) ──────────────────
+
+# 기간 미언급일 때 쓰는 표현. planner 의 `[기간]` 절과 **같은 규약**이다("기간 언급이
+# 없으면 '최근'") — 두 레인이 같은 기본값에 도달해야 대조가 성립한다.
+_NO_MENTION_EXPR = "최근"
+
+# 자유 발화 스캐너용 어휘 패턴. resolve_period 의 패턴은 문자열 **전체** 매칭(^…$)이라
+# 문장 속에서 쓸 수 없어, 같은 어휘를 부분 스캔용으로 한 번 더 적는다. 두 벌이 갈라지면
+# "어휘표엔 있는데 general 에서만 안 잡히는" 구멍이 생기므로 §2 어휘표 전 항목이 이
+# 스캐너에도 걸리는지 대조 테스트가 확인한다(tests/unit/test_seller_period_lane_parity.py).
+#
+# **미지원 어휘도 일부러 잡는다.** 잡아서 resolve_period 로 넘겨야 되묻기 문구가 나가고,
+# 안 잡으면 "기간 언급 없음"으로 읽혀 기본 7일로 조용히 답한다 — #269 가 없앤 침묵
+# 대체가 general 레인에서 형태만 바꿔 되살아난다("오늘 매출 얼마야?" → 7일치 응답).
+#
+# 순서가 곧 우선순위다(정규식 교체는 앞 대안부터 시도된다) — 긴 표현을 먼저 둔다.
+# 특히 단독 "최근" 은 맨 끝이어야 "최근 3개월" 의 앞부분만 선점하지 않는다.
+_MENTION_SOURCES: tuple[str, ...] = (
+    # 지원 — 날짜 범위(명시·연도 없음)
+    r"\d{4}-\d{2}-\d{2}\s*~\s*\d{4}-\d{2}-\d{2}",
+    r"\d{1,2}\s*월\s*\d{1,2}\s*일\s*(?:부터\s*|[~\-]\s*)\d{1,2}\s*월\s*\d{1,2}\s*일(?:\s*까지)?",
+    # 지원 — "최근 N단위"(미지원 단위는 아래 미지원 절이 잡는다)
+    r"최근\s*-?\d+\s*(?:일|주일|주|개월)",
+    # 지원 — 고정 어휘
+    r"지난\s?달",
+    r"이번\s?달",
+    r"금월",
+    r"올\s?해",
+    r"금년",
+    r"상반기",
+    r"하반기",
+    r"[1-4]\s*(?:/\s*4)?\s*분기",
+    r"어제",
+    # 미지원(→ 되묻기) — 기간처럼 보이는 표현. 여기서 잡지 않으면 침묵 대체가 된다.
+    r"최근\s*(?:반\s?년|한\s?달|두\s?달|세\s?달|몇\s?[일달주]|며칠)",
+    r"오늘",
+    r"금일",
+    r"내일",
+    r"이번\s?주",
+    r"저번\s?주",
+    r"지난\s?주",
+    r"다음\s?주",
+    r"지지난\s?달",
+    r"저번\s?달",
+    r"다음\s?달",
+    r"재작년",
+    r"작년",
+    r"내년",
+    r"\d{4}\s*년",
+    r"\d{1,2}\s*월",
+    # 지원 — 단독 "최근"(맨 끝, 위 주석 참조)
+    r"최근",
+)
+_PERIOD_MENTION_PATTERN = re.compile("|".join(f"(?:{source})" for source in _MENTION_SOURCES))
+
+
+def find_period_mentions(message: str) -> list[str]:
+    """자유 발화에서 기간 표현을 등장 순서대로 추출한다(중복 제거).
+
+    반환값은 **판정하지 않은 원문**이다 — 지원 어휘인지, 어떤 문구로 되물을지는 전부
+    resolve_period 소관이다(§4.2 문구 소유권 단일화). 이 함수는 "문장의 어느 조각이
+    기간인가"만 고른다.
+    """
+    text = " ".join(unicodedata.normalize("NFKC", message).split())
+    found: list[str] = []
+    for match in _PERIOD_MENTION_PATTERN.finditer(text):
+        expr = " ".join(match.group(0).split())
+        if expr not in found:
+            found.append(expr)
+    return found
+
+
+def resolve_from_message(
+    message: str,
+    *,
+    today: date,
+    recent_default_days: int,
+    max_days: int | None = None,
+) -> PeriodResolution:
+    """자유 발화 → PeriodResolution — planner 가 없는 general 레인의 기간 진입점.
+
+    분석 레인은 planner 가 기간 표현을 옮겨적어 주지만 general 레인에는 planner 가 없다.
+    그렇다고 이 레인에 planner 를 붙이면 가장 싼 레인에 LLM 왕복이 하나 늘어난다 —
+    어휘표가 폐집합이므로 **코드로 훑는다**(LLM 0회).
+
+    - 표현 1개: 그대로 resolve_period. 어휘표 밖이면 ValueError(되묻기).
+    - 표현 0개: ``"최근"`` — planner 의 `[기간]` 절과 같은 규약이라 두 레인이 같은
+      기본값에 도달한다. 기간 인자가 필요 없는 질문("재고 얼마 남았어?")은 이 값을
+      쓰지 않을 뿐 해가 없다.
+    - 표현 2개 이상("이번 달 들어 최근 7일"): 되묻는다 — 어느 쪽을 뜻하는지 코드가
+      고르면 그 선택이 곧 조용한 대체다(DESIGN §2.3 혼합 표현 규칙과 같은 결론).
+    """
+    mentions = find_period_mentions(message)
+    if len(mentions) > 1:
+        listed = " / ".join(_echo(mention) for mention in mentions[:3])
+        raise ValueError(
+            f"기간 표현이 여러 개 보입니다({listed}). 어느 기간을 말씀하시는지 하나만 알려주세요."
+        )
+    expr = mentions[0] if mentions else _NO_MENTION_EXPR
+    return resolve_period(
+        expr, today=today, recent_default_days=recent_default_days, max_days=max_days
+    )
+
+
 # ── 확인 문구 (DESIGN §4.3 — 기간 문구의 유일한 생성 지점) ──────────────────────
 
 _CONFIRM_CLIPPED_NOTE = "(아직 지나지 않은 날짜는 제외해 어제까지만 봅니다.)"
@@ -337,6 +441,29 @@ def confirmation_text(resolution: PeriodResolution) -> str:
         lines.append(_CONFIRM_CLIPPED_NOTE)
     lines.append(_CONFIRM_ASK)
     return "\n".join(lines)
+
+
+_DISCLOSURE_CLIPPED_NOTE = " (아직 지나지 않은 날짜는 빼고 어제까지만 봤습니다.)"
+
+
+def disclosure_text(resolution: PeriodResolution) -> str:
+    """general 레인 해석 고지 — 확인 대신 "무엇으로 봤는지"를 먼저 밝힌다(§7, #346).
+
+    분석 레인은 코드가 값을 보충한 해석을 실행 **전에** 확인받지만(§5) general 레인은
+    고지만 하고 바로 실행한다. 오해석 비용이 비대칭이기 때문이다 — 분석 레인은 잘못
+    해석한 기간으로 워커 팬아웃·검증 루프·추천까지 돌지만, general 은 조회 한두 번이고
+    판매자가 곧바로 정정하면 그만이다. 확인 상태기계를 레인마다 두는 대신 해석을 먼저
+    밝혀 P0 가 없앤 "조용한 대체"를 막는다.
+
+    고지는 **확인이 필요한 해석에만** 붙인다(needs_confirmation). 기간을 말하지 않은
+    질문까지 "최근 7일 기준입니다"로 열면 "재고 얼마 남았어?" 같은 기간 무관 질문에
+    무관한 고지가 매번 따라붙는다.
+    """
+    note = _DISCLOSURE_CLIPPED_NOTE if resolution.clipped else ""
+    return (
+        f"'{_echo(resolution.expr)}' 을 {resolution.date_from.isoformat()} ~ "
+        f"{resolution.date_to.isoformat()} 기간으로 봤습니다.{note}"
+    )
 
 
 # ── 승인 판정 (DESIGN §5.3 — 코드 선판정, LLM 0회) ──────────────────────────────

@@ -214,12 +214,26 @@ def test_general_tool_assignment() -> None:
 def test_general_prompt_principles() -> None:
     """확정 3원칙 — 해석 금지·calculate 강제·미지원 안내 + today 주입 슬롯."""
     prompt = GENERAL_PROMPT_TEMPLATE.format(today="2026-07-18")
-    assert "2026-07-18" in prompt  # today 주입(기간 환산 기준)
+    assert "2026-07-18" in prompt  # today 주입(대화 맥락 — 기간 환산용이 아니다)
     assert "해석 금지" in prompt
     assert "calculate" in prompt
     assert "암산·추정 금지" in prompt
     assert "미지원 안내" in prompt
-    assert "지난달" in prompt  # normalize_period 와 동일 정의 문구
+
+
+def test_general_prompt_delegates_period_to_code() -> None:
+    """[#346] 기간 문구 소유권 — general 프롬프트는 어휘도 환산 규칙도 알지 않는다.
+
+    이 레인의 기간 정의가 프롬프트에 적혀 있었기 때문에 period.py 와 갈라졌고
+    (`이번 달` = 당월 1일~오늘 vs ~어제), 상한·0/음수 가드도 통째로 비켜갔다.
+    어휘를 하나라도 다시 프롬프트에 적으면 그 분기가 되살아나므로 **부재**를 고정한다.
+    """
+    prompt = GENERAL_PROMPT_TEMPLATE.format(today="2026-07-18")
+    assert "입력에 주어진 from/to 를 그대로" in prompt
+    assert "날짜를 직접 계산·추론하지" in prompt
+    # 어휘·환산 정의가 프롬프트로 돌아오지 않았는가 — 정의의 유일한 소유자는 period.py 다.
+    for vocab in ("지난달", "이번 달", "최근 N일", "전월 1일", "당월 1일"):
+        assert vocab not in prompt, f"기간 어휘 '{vocab}' 가 프롬프트로 돌아왔다(#346)"
 
 
 def test_build_general_agent_compiles() -> None:

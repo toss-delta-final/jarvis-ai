@@ -4,7 +4,8 @@
 - ResolvedPlan: AnalysisPlan(LLM 출력)의 기간을 코드가 환산한 내부 실행 계획.
 - resolve_plan: AnalysisPlan → ResolvedPlan. 모든 불성립(clarification·빈 워커·환산
   실패)은 ValueError 로 통일 — 호출부(3-3)는 이를 받아 되묻기 token 으로 전환한다.
-- format_worker_input: 워커 입력 메시지 포맷(기간 주입 규약, 장치 ④ 접속점).
+- format_worker_input / format_general_input: 입력 메시지 포맷(기간 주입 규약,
+  장치 ④ 접속점). 두 레인이 같은 규약으로 기간을 받는다(#346).
 - PROGRESS_TOKENS·WORKER_PROGRESS_TOKENS·ALL_WORKERS_FAILED_TOKEN: 진행 token 문구.
 
 오케스트레이션(asyncio.gather 팬아웃·검증 루프·SSE 배선)은 3-3 이후 소관.
@@ -136,6 +137,29 @@ def format_worker_input(question: str, plan: ResolvedPlan) -> str:
     return WORKER_INPUT_TEMPLATE.format(
         date_from=plan.date_from.isoformat(),
         date_to=plan.date_to.isoformat(),
+        question=question,
+    )
+
+
+# general 레인 입력 포맷 (#346) — 워커 포맷과 **나란히** 둔다.
+# 두 레인이 같은 모양으로 기간을 받는 것이 "같은 기간 표현 → 같은 (from, to)" 를
+# 눈으로 확인할 수 있게 하는 지점이다. 라벨만 다르다(분석 기간 / 조회 기간) —
+# general 은 분석이 아니라 조회 레인이라 판매자 대면 어휘를 맞춘다.
+GENERAL_INPUT_TEMPLATE = """\
+[조회 기간] from={date_from} to={date_to}
+[판매자 질문] {question}"""
+
+
+def format_general_input(question: str, resolution: seller_period.PeriodResolution) -> str:
+    """general_agent 에 넣을 HumanMessage 본문 — 코드가 환산한 기간을 주입한다.
+
+    ResolvedPlan 이 아니라 PeriodResolution 을 받는 이유: general 레인에는 planner 도
+    분석 계획도 없고 필요한 것은 기간뿐이다. 굳이 ResolvedPlan 을 만들면 analyses 가
+    빈 가짜 계획이 생겨 "계획이 있는데 워커가 없다"는 없는 상태가 하나 늘어난다.
+    """
+    return GENERAL_INPUT_TEMPLATE.format(
+        date_from=resolution.date_from.isoformat(),
+        date_to=resolution.date_to.isoformat(),
         question=question,
     )
 
