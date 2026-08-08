@@ -549,7 +549,7 @@ async def test_new_guest_thread_slot_before_db_touch_blocks_claim(
     observer = _BlockingObserver(BuyerSessionInput("session-1", "new-thread", "guest", "guest-1"))
     coordinator = lifecycle.SessionLifecycleCoordinator(repo, registry)
 
-    async def inner():
+    async def inner(_turn_started_at=None):
         yield 'data: {"type":"done","data":{"finishReason":"stop"}}\n\n'
 
     stream_task = asyncio.create_task(
@@ -626,7 +626,7 @@ async def test_claim_fence_blocks_new_guest_slot_until_transition_finishes(
     assert registry.is_fenced("guest-1", "session-1")
     observer = _BlockingObserver(BuyerSessionInput("session-1", "new-thread", "guest", "guest-1"))
 
-    async def inner():
+    async def inner(_turn_started_at=None):
         yield 'data: {"type":"done","data":{"finishReason":"stop"}}\n\n'
 
     with pytest.raises(HTTPException) as blocked:

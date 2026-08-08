@@ -217,7 +217,10 @@ async def test_llm_assignment_rejects_hallucinated_terms_exactly() -> None:
     )
     assert "검정" in _group_members(result)["블랙"]
     assert all("오white" not in members for members in _group_members(result).values())
-    assert any("환각" in rejection.reason and "오white" in rejection.terms for rejection in result.rejections)
+    assert any(
+        "환각" in rejection.reason and "오white" in rejection.terms
+        for rejection in result.rejections
+    )
 
 
 async def test_llm_assignment_rejects_duplicate_exclusive_assignments() -> None:
@@ -492,6 +495,8 @@ def test_upsert_transports_failed_evaluation_canonical_preservation_flag() -> No
 def test_seed_connection_pool_is_reused_per_dsn(monkeypatch) -> None:
     import psycopg_pool
 
+    from app.core import pg_resilience
+
     created: list[tuple[str, dict]] = []
 
     class Pool:
@@ -502,6 +507,9 @@ def test_seed_connection_pool_is_reused_per_dsn(monkeypatch) -> None:
     monkeypatch.setattr(psycopg_pool, "ConnectionPool", Pool)
     monkeypatch.setattr(color_synonyms, "_pools", {})
     monkeypatch.setattr(config, "get_settings", lambda: settings)
+    # 이 테스트는 dsn 별 풀 재사용(캐시 키)을 확인한다 — hardened_pg_conninfo 가 실제 접속
+    # 문자열에 무엇을 병합하는지는 app/core/test_pg_resilience.py 소관이라 항등으로 둔다.
+    monkeypatch.setattr(pg_resilience, "hardened_pg_conninfo", lambda dsn: dsn)
     assert seed._get_pool("postgresql://same") is seed._get_pool("postgresql://same")
     assert len(created) == 1
     assert created[0][0] == "postgresql://same"
@@ -573,8 +581,13 @@ def test_batch_harvest_upserts_only_unknown_terms_as_pending_proposals(monkeypat
 
     import psycopg_pool
 
+    from app.core import pg_resilience
+
     monkeypatch.setattr(psycopg_pool, "ConnectionPool", Pool)
     monkeypatch.setattr(color_synonyms, "_pools", {})
+    # ConnectionPool 이 모킹돼 있어 실제 접속 문자열 형식은 이 테스트의 관심사가 아니다 —
+    # 항등으로 두어 dsn 리터럴 "dsn"이 hardened_pg_conninfo 의 conninfo 파서를 타지 않게 한다.
+    monkeypatch.setattr(pg_resilience, "hardened_pg_conninfo", lambda dsn: dsn)
     captured = []
     monkeypatch.setattr(
         seed,
@@ -667,13 +680,16 @@ def test_batch_harvest_releases_db_connection_before_embedding(monkeypatch) -> N
 
     monkeypatch.setattr(seed, "_get_pool", lambda dsn: Pool())
 
-    assert seed.harvest_new_terms(
-        "dsn",
-        {"색상": "남색"},
-        embed,
-        "model",
-        0.84,
-    ) == 1
+    assert (
+        seed.harvest_new_terms(
+            "dsn",
+            {"색상": "남색"},
+            embed,
+            "model",
+            0.84,
+        )
+        == 1
+    )
     assert active_connections == 0
     assert max_active_connections == 1
 
@@ -786,3 +802,642 @@ async def test_build_offloads_all_blocking_stages_from_event_loop(monkeypatch, t
     assert result.upserted_rows == 1
     assert set(stage_threads) == {"embed", "write", "upsert"}
     assert all(thread_id != loop_thread for thread_id in stage_threads.values())
+
+
+# --- 정본 시드 적재 (`load_seed_rows`/`seed_from_file`, 이슈 #258 §4.5) --------------------
+
+
+def _write_seed_json(tmp_path, rows: list[dict]):
+    path = tmp_path / "color_synonyms.json"
+    path.write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def test_load_seed_rows_parses_valid_file(tmp_path) -> None:
+    path = _write_seed_json(
+        tmp_path,
+        [
+            {
+                "term": "블랙",
+                "canonical": "블랙",
+                "status": "approved",
+                "provenance": "human",
+                "doc_count": 2358,
+            },
+            {
+                "term": "그린",
+                "canonical": "그린",
+                "status": "approved",
+                "provenance": "human",
+                "doc_count": 287,
+            },
+            {
+                "term": "다크그린",
+                "canonical": "그린",
+                "status": "pending_review",
+                "provenance": "seed_llm_assignment",
+                "doc_count": 22,
+            },
+        ],
+    )
+
+    rows = seed.load_seed_rows(path)
+
+    assert rows == [
+        seed.SeedColorTermRow("블랙", "블랙", "approved", "human", 2358),
+        seed.SeedColorTermRow("그린", "그린", "approved", "human", 287),
+        seed.SeedColorTermRow("다크그린", "그린", "pending_review", "seed_llm_assignment", 22),
+    ]
+
+
+def test_load_seed_rows_rejects_non_array_root(tmp_path) -> None:
+    path = tmp_path / "bad.json"
+    path.write_text(json.dumps({"not": "an array"}), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="배열"):
+        seed.load_seed_rows(path)
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        {"canonical": "블랙", "status": "approved", "provenance": "human", "doc_count": 1},
+        {"term": "블랙", "canonical": "블랙", "provenance": "human", "doc_count": 1},
+        {"term": "블랙", "canonical": "블랙", "status": "approved", "doc_count": 1},
+    ],
+)
+def test_load_seed_rows_rejects_missing_required_keys(tmp_path, row) -> None:
+    """term·status·provenance는 필수(nullable 아님) — 없으면 거부한다."""
+    path = _write_seed_json(tmp_path, [row])
+
+    with pytest.raises(ValueError):
+        seed.load_seed_rows(path)
+
+
+def test_load_seed_rows_accepts_missing_nullable_canonical_and_doc_count(tmp_path) -> None:
+    """canonical·doc_count는 DB 스키마상 nullable — 키 자체가 없어도 None 으로 로드된다."""
+    path = _write_seed_json(
+        tmp_path, [{"term": "미상토큰", "status": "pending_review", "provenance": "human"}]
+    )
+
+    rows = seed.load_seed_rows(path)
+
+    assert rows == [seed.SeedColorTermRow("미상토큰", None, "pending_review", "human", None)]
+
+
+def test_load_seed_rows_rejects_status_outside_enum(tmp_path) -> None:
+    path = _write_seed_json(
+        tmp_path,
+        [
+            {
+                "term": "블랙",
+                "canonical": "블랙",
+                "status": "확정",
+                "provenance": "human",
+                "doc_count": 1,
+            }
+        ],
+    )
+
+    with pytest.raises(ValueError, match="status"):
+        seed.load_seed_rows(path)
+
+
+def test_load_seed_rows_rejects_provenance_outside_enum(tmp_path) -> None:
+    path = _write_seed_json(
+        tmp_path,
+        [
+            {
+                "term": "블랙",
+                "canonical": "블랙",
+                "status": "approved",
+                "provenance": "사람이_그냥_넣음",
+                "doc_count": 1,
+            }
+        ],
+    )
+
+    with pytest.raises(ValueError, match="provenance"):
+        seed.load_seed_rows(path)
+
+
+def test_load_seed_rows_rejects_approved_row_with_empty_string_canonical(tmp_path) -> None:
+    """빈 문자열은 WHERE canonical IS NOT NULL 을 통과해 build_synonym_map 이 ""를 키로
+    무관한 승인 행들을 한 묶음으로 잘못 합친다(PR #447 리뷰 R1) — canonical 없음은 null 로만."""
+    path = _write_seed_json(
+        tmp_path,
+        [
+            {
+                "term": "블랙",
+                "canonical": "",
+                "status": "approved",
+                "provenance": "human",
+                "doc_count": 1,
+            }
+        ],
+    )
+
+    with pytest.raises(ValueError, match="canonical"):
+        seed.load_seed_rows(path)
+
+
+def test_load_seed_rows_rejects_approved_row_with_null_canonical(tmp_path) -> None:
+    """status=approved 인데 canonical 이 없으면 build_synonym_map 필터에 걸려 조용히
+    사전에서 빠진다 — 검수자는 승인했다고 믿는데 런타임엔 존재하지 않는 모순 상태다."""
+    path = _write_seed_json(
+        tmp_path,
+        [
+            {
+                "term": "블랙",
+                "canonical": None,
+                "status": "approved",
+                "provenance": "human",
+                "doc_count": 1,
+            }
+        ],
+    )
+
+    with pytest.raises(ValueError, match="canonical"):
+        seed.load_seed_rows(path)
+
+
+def test_load_seed_rows_rejects_empty_string_canonical_regardless_of_status(tmp_path) -> None:
+    """빈 문자열은 status 와 무관하게 거부한다 — approved 만이 아니라 pending_review 도 대상."""
+    path = _write_seed_json(
+        tmp_path,
+        [
+            {
+                "term": "블랙",
+                "canonical": "",
+                "status": "pending_review",
+                "provenance": "human",
+                "doc_count": 1,
+            }
+        ],
+    )
+
+    with pytest.raises(ValueError, match="canonical"):
+        seed.load_seed_rows(path)
+
+
+def test_load_seed_rows_accepts_pending_review_row_with_explicit_null_canonical(tmp_path) -> None:
+    """정본 789행 중 190행이 이 상태(canonical=None, status=pending_review) — 여기서
+    막으면 실제 정본이 로드 불가가 된다(정상 경로 회귀 방지)."""
+    path = _write_seed_json(
+        tmp_path,
+        [
+            {
+                "term": "미상토큰",
+                "canonical": None,
+                "status": "pending_review",
+                "provenance": "human",
+                "doc_count": 1,
+            }
+        ],
+    )
+
+    rows = seed.load_seed_rows(path)
+
+    assert rows == [seed.SeedColorTermRow("미상토큰", None, "pending_review", "human", 1)]
+
+
+def test_load_seed_rows_rejects_duplicate_term_with_conflicting_fields(tmp_path) -> None:
+    """`_execute_seed_upserts`가 rows 순서대로 ON CONFLICT (term) DO UPDATE 를 실행하므로,
+    같은 term 이 두 번(다른 status/canonical) 있으면 배열 순서에 좌우돼 나중 행이 앞 행을
+    조용히 덮는다(PR #447 리뷰 R2)."""
+    path = _write_seed_json(
+        tmp_path,
+        [
+            {
+                "term": "블랙",
+                "canonical": "블랙",
+                "status": "approved",
+                "provenance": "human",
+                "doc_count": 100,
+            },
+            {
+                "term": "블랙",
+                "canonical": None,
+                "status": "pending_review",
+                "provenance": "seed_llm_assignment",
+                "doc_count": 1,
+            },
+        ],
+    )
+
+    with pytest.raises(ValueError, match="term 중복"):
+        seed.load_seed_rows(path)
+
+
+def test_load_seed_rows_accepts_distinct_terms(tmp_path) -> None:
+    """정상 회귀 — 서로 다른 term 이면 중복 가드가 발화하지 않는다."""
+    path = _write_seed_json(
+        tmp_path,
+        [
+            {
+                "term": "블랙",
+                "canonical": "블랙",
+                "status": "approved",
+                "provenance": "human",
+                "doc_count": 100,
+            },
+            {
+                "term": "화이트",
+                "canonical": "화이트",
+                "status": "approved",
+                "provenance": "human",
+                "doc_count": 90,
+            },
+        ],
+    )
+
+    rows = seed.load_seed_rows(path)
+
+    assert [row.term for row in rows] == ["블랙", "화이트"]
+
+
+def test_load_seed_rows_rejects_canonical_not_present_as_a_term(tmp_path) -> None:
+    """canonical이 파일 안에 실재하는 term을 가리키지 않으면(앵커 누락·오타) build_synonym_map
+    이 그 canonical을 그룹 키로 못 찾아 "승인이 조용히 아무 일도 하지 않는" 상태가 된다
+    (PR #447 리뷰 R4)."""
+    path = _write_seed_json(
+        tmp_path,
+        [
+            {
+                "term": "남색",
+                "canonical": "네이비",
+                "status": "approved",
+                "provenance": "human",
+                "doc_count": 8,
+            }
+        ],
+    )
+
+    with pytest.raises(ValueError, match="term을 가리키지 않음"):
+        seed.load_seed_rows(path)
+
+
+def test_load_seed_rows_rejects_orphan_approval(tmp_path) -> None:
+    """approved 행의 canonical 행이 approved가 아니면(pending_review) 고아 승인이다."""
+    path = _write_seed_json(
+        tmp_path,
+        [
+            {
+                "term": "남색",
+                "canonical": "네이비",
+                "status": "approved",
+                "provenance": "human",
+                "doc_count": 8,
+            },
+            {
+                "term": "네이비",
+                "canonical": "네이비",
+                "status": "pending_review",
+                "provenance": "seed_llm_assignment",
+                "doc_count": 632,
+            },
+        ],
+    )
+
+    with pytest.raises(ValueError, match="고아 승인"):
+        seed.load_seed_rows(path)
+
+
+def test_load_seed_rows_rejects_two_step_canonical_chain(tmp_path) -> None:
+    """X→Y→Z 2단계 체인 — status와 무관하게 X의 확장이 조용히 무력화된다."""
+    path = _write_seed_json(
+        tmp_path,
+        [
+            {
+                "term": "X",
+                "canonical": "Y",
+                "status": "pending_review",
+                "provenance": "seed_llm_assignment",
+                "doc_count": 1,
+            },
+            {
+                "term": "Y",
+                "canonical": "Z",
+                "status": "pending_review",
+                "provenance": "seed_llm_assignment",
+                "doc_count": 1,
+            },
+            {
+                "term": "Z",
+                "canonical": "Z",
+                "status": "approved",
+                "provenance": "human",
+                "doc_count": 1,
+            },
+        ],
+    )
+
+    with pytest.raises(ValueError, match="2단계 체인/순환 금지"):
+        seed.load_seed_rows(path)
+
+
+def test_load_seed_rows_accepts_pending_review_row_pointing_at_approved_anchor(tmp_path) -> None:
+    """정상 회귀 — 정본 실제 형태(예: 다크그린→그린): pending_review 행이 approved 앵커를
+    canonical로 가리키면 통과해야 한다. 여기서 막으면 정본 743행 중 상당수가 로드 불가가 된다."""
+    path = _write_seed_json(
+        tmp_path,
+        [
+            {
+                "term": "다크그린",
+                "canonical": "그린",
+                "status": "pending_review",
+                "provenance": "seed_llm_assignment",
+                "doc_count": 22,
+            },
+            {
+                "term": "그린",
+                "canonical": "그린",
+                "status": "approved",
+                "provenance": "human",
+                "doc_count": 287,
+            },
+        ],
+    )
+
+    rows = seed.load_seed_rows(path)
+
+    assert {row.term for row in rows} == {"다크그린", "그린"}
+
+
+def test_load_seed_rows_rejects_term_with_leading_or_trailing_whitespace(tmp_path) -> None:
+    """생성물은 바이트 정본이라 로더가 조용히 strip 하면 파일 값과 DB 적재 값이 갈라진다
+    (PR #447 리뷰 R5) — 정규화하지 않고 거부한다."""
+    path = _write_seed_json(
+        tmp_path,
+        [
+            {
+                "term": " 블랙",
+                "canonical": "블랙",
+                "status": "approved",
+                "provenance": "human",
+                "doc_count": 1,
+            }
+        ],
+    )
+
+    with pytest.raises(ValueError, match="term에 앞뒤 공백"):
+        seed.load_seed_rows(path)
+
+
+def test_load_seed_rows_rejects_canonical_with_leading_or_trailing_whitespace(tmp_path) -> None:
+    path = _write_seed_json(
+        tmp_path,
+        [
+            {
+                "term": "블랙",
+                "canonical": "블랙 ",
+                "status": "approved",
+                "provenance": "human",
+                "doc_count": 1,
+            }
+        ],
+    )
+
+    with pytest.raises(ValueError, match="canonical에 앞뒤 공백"):
+        seed.load_seed_rows(path)
+
+
+def test_load_seed_rows_rejects_term_with_embedded_newline(tmp_path) -> None:
+    path = _write_seed_json(
+        tmp_path,
+        [
+            {
+                "term": "블랙\n",
+                "canonical": "블랙",
+                "status": "approved",
+                "provenance": "human",
+                "doc_count": 1,
+            }
+        ],
+    )
+
+    with pytest.raises(ValueError, match="term에 앞뒤 공백"):
+        seed.load_seed_rows(path)
+
+
+def test_load_seed_rows_accepts_term_and_canonical_without_whitespace(tmp_path) -> None:
+    """정상 회귀 — 공백 없는 정상 행은 그대로 통과한다."""
+    path = _write_seed_json(
+        tmp_path,
+        [
+            {
+                "term": "블랙",
+                "canonical": "블랙",
+                "status": "approved",
+                "provenance": "human",
+                "doc_count": 1,
+            }
+        ],
+    )
+
+    rows = seed.load_seed_rows(path)
+
+    assert rows == [seed.SeedColorTermRow("블랙", "블랙", "approved", "human", 1)]
+
+
+def test_load_seed_rows_rejects_norm_collision_between_distinct_terms(tmp_path) -> None:
+    """casefold 만 다른 두 원문 term(예: Walnut/WALNUT)이 둘 다 self-canonical approved 로
+    통과하면 build_synonym_map 이 `mapping[_norm(term)]` 키를 나중 term 으로 조용히 덮어써
+    먼저 term 의 동의어 목록이 사라진다(PR #447 리뷰 R6) — 원문 완전일치(seen_terms)와는
+    별개 불변식이라 둘 다 검사해야 한다."""
+    path = _write_seed_json(
+        tmp_path,
+        [
+            {
+                "term": "Walnut",
+                "canonical": "Walnut",
+                "status": "approved",
+                "provenance": "human",
+                "doc_count": 5,
+            },
+            {
+                "term": "WALNUT",
+                "canonical": "WALNUT",
+                "status": "approved",
+                "provenance": "human",
+                "doc_count": 3,
+            },
+        ],
+    )
+
+    with pytest.raises(ValueError, match="_norm 기준 term 충돌"):
+        seed.load_seed_rows(path)
+
+
+def test_load_seed_rows_accepts_terms_with_distinct_norm_values(tmp_path) -> None:
+    """정상 회귀 — `_norm` 이 서로 다른 term 들은 통과해야 한다."""
+    path = _write_seed_json(
+        tmp_path,
+        [
+            {
+                "term": "블랙",
+                "canonical": "블랙",
+                "status": "approved",
+                "provenance": "human",
+                "doc_count": 100,
+            },
+            {
+                "term": "Walnut",
+                "canonical": "Walnut",
+                "status": "approved",
+                "provenance": "human",
+                "doc_count": 5,
+            },
+        ],
+    )
+
+    rows = seed.load_seed_rows(path)
+
+    assert {row.term for row in rows} == {"블랙", "Walnut"}
+
+
+def test_load_seed_rows_exact_duplicate_term_still_raises_seen_terms_message(tmp_path) -> None:
+    """원문 완전 중복은 여전히 기존 "term 중복" 메시지로 잡혀야 한다(R2 회귀 방지) —
+    _norm 충돌 검사를 추가해도 seen_terms 검사가 먼저 발화한다."""
+    path = _write_seed_json(
+        tmp_path,
+        [
+            {
+                "term": "블랙",
+                "canonical": "블랙",
+                "status": "approved",
+                "provenance": "human",
+                "doc_count": 100,
+            },
+            {
+                "term": "블랙",
+                "canonical": None,
+                "status": "pending_review",
+                "provenance": "seed_llm_assignment",
+                "doc_count": 1,
+            },
+        ],
+    )
+
+    with pytest.raises(ValueError, match="term 중복"):
+        seed.load_seed_rows(path)
+
+
+def test_upsert_seed_sql_is_authoritative_not_review_protected() -> None:
+    """검수 보호 CASE 가드(UPSERT_COLOR_TERM_SQL)와 달리, 시드 upsert는 파일 값을 그대로 반영한다."""
+    sql = seed.UPSERT_SEED_COLOR_TERM_SQL
+    assert "canonical = EXCLUDED.canonical" in sql
+    assert "status = EXCLUDED.status" in sql
+    assert "provenance = EXCLUDED.provenance" in sql
+    assert "doc_count = EXCLUDED.doc_count" in sql
+    assert "CASE" not in sql
+    assert "embedding = COALESCE(EXCLUDED.embedding, color_synonyms.embedding)" in sql
+
+
+def test_execute_seed_upserts_passes_file_values_straight_through() -> None:
+    calls = []
+
+    class Conn:
+        def execute(self, sql, params):
+            calls.append((sql, params))
+
+    rows = [seed.SeedColorTermRow("곤색", "네이비", "approved", "human", 5)]
+
+    count = seed._execute_seed_upserts(Conn(), rows, {}, "model")
+
+    assert count == 1
+    sql, params = calls[0]
+    assert sql is seed.UPSERT_SEED_COLOR_TERM_SQL
+    assert params == ("곤색", "네이비", "approved", None, None, "human", 5)
+
+
+def test_seed_from_file_upserts_authoritative_rows_and_skips_non_color_embedding(
+    monkeypatch, tmp_path
+) -> None:
+    path = _write_seed_json(
+        tmp_path,
+        [
+            {
+                "term": "블랙",
+                "canonical": "블랙",
+                "status": "approved",
+                "provenance": "human",
+                "doc_count": 2358,
+            },
+            {
+                "term": "기타",
+                "canonical": None,
+                "status": "pending_review",
+                "provenance": "seed_llm_assignment",
+                "doc_count": 70,
+            },
+        ],
+    )
+
+    embed_calls: list[list[str]] = []
+
+    def embed(terms):
+        embed_calls.append(list(terms))
+        return [[1.0, 0.0] for _ in terms]
+
+    captured: list[seed.SeedColorTermRow] = []
+
+    def fake_seed_color_terms(dsn, rows, embeddings, model):
+        captured.extend(rows)
+        assert "기타" not in embeddings
+        assert "블랙" in embeddings
+        return len(rows)
+
+    monkeypatch.setattr(seed, "seed_color_terms", fake_seed_color_terms)
+
+    count = seed.seed_from_file(path, "dsn", embed=embed, model="test-model")
+
+    assert count == 2
+    assert embed_calls == [["블랙"]]
+    assert {row.term for row in captured} == {"블랙", "기타"}
+
+
+def test_seed_from_file_does_not_call_embed_on_empty_seed_file(monkeypatch, tmp_path) -> None:
+    path = _write_seed_json(tmp_path, [])
+    embed_calls = []
+
+    def embed(terms):
+        embed_calls.append(terms)
+        return []
+
+    monkeypatch.setattr(seed, "seed_color_terms", lambda *args, **kwargs: 0)
+
+    count = seed.seed_from_file(path, "dsn", embed=embed, model="test-model")
+
+    assert count == 0
+    assert embed_calls == []
+
+
+def test_seed_from_file_is_idempotent_across_repeated_runs(monkeypatch, tmp_path) -> None:
+    path = _write_seed_json(
+        tmp_path,
+        [
+            {
+                "term": "블랙",
+                "canonical": "블랙",
+                "status": "approved",
+                "provenance": "human",
+                "doc_count": 2358,
+            }
+        ],
+    )
+
+    def embed(terms):
+        return [[1.0, 0.0] for _ in terms]
+
+    calls: list[tuple] = []
+    monkeypatch.setattr(
+        seed,
+        "seed_color_terms",
+        lambda dsn, rows, embeddings, model: calls.append((rows, embeddings, model)) or len(rows),
+    )
+
+    seed.seed_from_file(path, "dsn", embed=embed, model="test-model")
+    seed.seed_from_file(path, "dsn", embed=embed, model="test-model")
+
+    assert calls[0] == calls[1]

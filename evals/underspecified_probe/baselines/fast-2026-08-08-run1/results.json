@@ -1,0 +1,5956 @@
+{
+  "axes": {
+    "expansionGateWouldFireRate": {
+      "axisId": "expansionGateWouldFireRate",
+      "belowSampleThreshold": true,
+      "ci95": [
+        0.20654931437723742,
+        1.0
+      ],
+      "definition": {
+        "denominator": "판정 True 인 recommend 표본(F-1)",
+        "numerator": "detect_expansion_need(...) 가 사유를 돌려준 표본"
+      },
+      "denominator": 1,
+      "nature": "exploratory",
+      "numerator": 1,
+      "ratio": 1.0,
+      "title": "전개 게이트 발동률(판정 True 표본 중)"
+    },
+    "falseAlarmRate": {
+      "axisId": "falseAlarmRate",
+      "belowSampleThreshold": false,
+      "ci95": [
+        0.0,
+        0.03562135437245191
+      ],
+      "definition": {
+        "denominator": "expectedReask=false 앵커의 recommend 표본(multiturn_gate 슬라이스 제외)(F-1)",
+        "numerator": "판정 True"
+      },
+      "denominator": 104,
+      "nature": "confirmatory-secondary",
+      "numerator": 0,
+      "ratio": 0.0,
+      "title": "오탐율"
+    },
+    "falseAlarmRateWithGateSlice": {
+      "axisId": "falseAlarmRateWithGateSlice",
+      "belowSampleThreshold": false,
+      "ci95": [
+        0.0,
+        0.029136956273508416
+      ],
+      "definition": {
+        "denominator": "expectedReask=false 앵커의 recommend 표본(게이트 포함)(F-1)",
+        "numerator": "판정 True"
+      },
+      "denominator": 128,
+      "nature": "exploratory",
+      "numerator": 0,
+      "ratio": 0.0,
+      "title": "오탐율"
+    },
+    "falseAlarmRateWithNonRecommendIntent": {
+      "axisId": "falseAlarmRateWithNonRecommendIntent",
+      "belowSampleThreshold": false,
+      "ci95": [
+        0.0,
+        0.03562135437245191
+      ],
+      "definition": {
+        "denominator": "expectedReask=false 표본(intent 무관, multiturn_gate 제외, 포함판)",
+        "numerator": "판정 True"
+      },
+      "denominator": 104,
+      "nature": "exploratory",
+      "numerator": 0,
+      "ratio": 0.0,
+      "title": "오탐율(비-recommend 포함, 참고용)"
+    },
+    "flagOffInvariant": {
+      "axisId": "flagOffInvariant",
+      "belowSampleThreshold": false,
+      "ci95": [
+        0.0,
+        0.015753919941558815
+      ],
+      "definition": {
+        "denominator": "전 표본(intent 무관 — 판정 함수 게이트 자체를 보는 불변식, F-1)",
+        "numerator": "underspecified_reask_enabled=False 로 재판정했을 때 True 인 표본 수"
+      },
+      "denominator": 240,
+      "nature": "invariant",
+      "numerator": 0,
+      "ratio": 0.0,
+      "title": "flag off 불변식"
+    },
+    "judgmentAccuracy": {
+      "axisId": "judgmentAccuracy",
+      "belowSampleThreshold": false,
+      "ci95": [
+        0.42234877742992,
+        0.554803632232562
+      ],
+      "definition": {
+        "denominator": "recommend 표본(게이트 제외)(F-1)",
+        "numerator": "판정 == expectedReask"
+      },
+      "denominator": 215,
+      "nature": "exploratory",
+      "numerator": 105,
+      "ratio": 0.4883720930232558,
+      "title": "판정 정확도"
+    },
+    "judgmentAccuracyWithGateSlice": {
+      "axisId": "judgmentAccuracyWithGateSlice",
+      "belowSampleThreshold": false,
+      "ci95": [
+        0.47642966143650245,
+        0.6018106855465428
+      ],
+      "definition": {
+        "denominator": "recommend 표본(게이트 포함)(F-1)",
+        "numerator": "판정 == expectedReask"
+      },
+      "denominator": 239,
+      "nature": "exploratory",
+      "numerator": 129,
+      "ratio": 0.5397489539748954,
+      "title": "판정 정확도"
+    },
+    "missRate": {
+      "axisId": "missRate",
+      "belowSampleThreshold": false,
+      "ci95": [
+        0.950726667364727,
+        0.9984079145129328
+      ],
+      "definition": {
+        "denominator": "expectedReask=true 앵커의 recommend 표본 — 프로덕션은 intent==recommend 인 턴에서만 is_underspecified_turn 을 호출한다(F-1)",
+        "numerator": "판정 False"
+      },
+      "denominator": 111,
+      "nature": "confirmatory-primary",
+      "numerator": 110,
+      "ratio": 0.990990990990991,
+      "title": "미탐율"
+    },
+    "missRateUnderExpansionAssumption": {
+      "axisId": "missRateUnderExpansionAssumption",
+      "belowSampleThreshold": false,
+      "ci95": [
+        0.9665498953066077,
+        1.0
+      ],
+      "definition": {
+        "denominator": "expectedReask=true 앵커의 recommend 표본(F-1)",
+        "numerator": "(판정 False) 또는 (판정 True ∧ detect_expansion_need 가 사유를 돌려줌)"
+      },
+      "denominator": 111,
+      "nature": "exploratory",
+      "numerator": 111,
+      "ratio": 1.0,
+      "title": "미탐율(전개 가정 상한)"
+    },
+    "missRateWithNonRecommendIntent": {
+      "axisId": "missRateWithNonRecommendIntent",
+      "belowSampleThreshold": false,
+      "ci95": [
+        0.9372195125788386,
+        0.9950891884637512
+      ],
+      "definition": {
+        "denominator": "expectedReask=true 앵커의 표본 전부(intent 무관, 포함판)",
+        "numerator": "판정 False"
+      },
+      "denominator": 112,
+      "nature": "exploratory",
+      "numerator": 110,
+      "ratio": 0.9821428571428571,
+      "title": "미탐율(비-recommend 포함, 참고용)"
+    },
+    "priorGateInvariant": {
+      "axisId": "priorGateInvariant",
+      "belowSampleThreshold": false,
+      "ci95": [
+        0.0,
+        0.015753919941558815
+      ],
+      "definition": {
+        "denominator": "전 표본(intent 무관 — 판정 함수 게이트 자체를 보는 불변식, F-1)",
+        "numerator": "prior=ProductSearchFilters() 로 재판정했을 때 True 인 표본 수"
+      },
+      "denominator": 240,
+      "nature": "invariant",
+      "numerator": 0,
+      "ratio": 0.0,
+      "title": "prior 게이트 불변식"
+    }
+  },
+  "baseline": {
+    "falseAlarmRate": 0.0,
+    "judgmentAccuracy": {
+      "denominator": 215,
+      "numerator": 104,
+      "ratio": 0.48372093023255813
+    },
+    "judgmentAccuracyPerSlice": {
+      "blocking_rating": {
+        "denominator": 40,
+        "numerator": 40,
+        "ratio": 1.0
+      },
+      "constraint_budget_set": {
+        "denominator": 32,
+        "numerator": 0,
+        "ratio": 0.0
+      },
+      "constraint_price": {
+        "denominator": 40,
+        "numerator": 0,
+        "ratio": 0.0
+      },
+      "multiturn_gate": {
+        "denominator": 24,
+        "numerator": 24,
+        "ratio": 1.0
+      },
+      "no_condition": {
+        "denominator": 39,
+        "numerator": 0,
+        "ratio": 0.0
+      },
+      "what_axis": {
+        "denominator": 64,
+        "numerator": 64,
+        "ratio": 1.0
+      }
+    },
+    "judgmentAccuracyWithGateSlice": {
+      "denominator": 239,
+      "numerator": 128,
+      "ratio": 0.5355648535564853
+    },
+    "missRate": 1.0,
+    "policy": "항상 reask=false(플래그 off 동작과 동일)"
+  },
+  "budget": {
+    "budgetExceeded": false,
+    "budgetExceededReason": null,
+    "callCount": 240,
+    "costGateStatus": "unknown",
+    "limits": {
+      "maxCalls": 720,
+      "maxCostUsd": 5.0,
+      "maxTotalTokens": 30000000
+    },
+    "tokenGateStatus": "unknown",
+    "totalCostUsd": 0.05359709999999999,
+    "totalTokens": 811164,
+    "unknownCostCallCount": 39,
+    "unknownTokenCallCount": 39
+  },
+  "causeAxisSummary": {
+    "falseAlarmCauseAxisCounts": {},
+    "missBlockingAxisComboCounts": {
+      "categoryQueries;semanticQueryIsFallback": 9,
+      "filters.attrConditions;semanticQueryIsFallback": 4,
+      "semanticQueryIsFallback": 97
+    },
+    "missCauseAxisCounts": {
+      "multiple": 13,
+      "semanticQueryIsFallback": 97
+    },
+    "outcomeCounts": {
+      "correctReject": 128,
+      "hit": 2,
+      "miss": 110
+    }
+  },
+  "cellCount": 30,
+  "cells": [
+    {
+      "attempts": 8,
+      "caseId": "buy-under-0001",
+      "cellId": "buy-under-0001",
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 8,
+      "slice": "constraint_budget_set"
+    },
+    {
+      "attempts": 8,
+      "caseId": "buy-under-0002",
+      "cellId": "buy-under-0002",
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 8,
+      "slice": "no_condition"
+    },
+    {
+      "attempts": 8,
+      "caseId": "buy-under-0003",
+      "cellId": "buy-under-0003",
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 8,
+      "slice": "constraint_price"
+    },
+    {
+      "attempts": 8,
+      "caseId": "buy-under-0004",
+      "cellId": "buy-under-0004",
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 8,
+      "slice": "what_axis"
+    },
+    {
+      "attempts": 8,
+      "caseId": "buy-under-0005",
+      "cellId": "buy-under-0005",
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 8,
+      "slice": "what_axis"
+    },
+    {
+      "attempts": 8,
+      "caseId": "buy-under-0006",
+      "cellId": "buy-under-0006",
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 8,
+      "slice": "multiturn_gate"
+    },
+    {
+      "attempts": 8,
+      "caseId": "buy-under-0007",
+      "cellId": "buy-under-0007",
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 8,
+      "slice": "blocking_rating"
+    },
+    {
+      "attempts": 8,
+      "caseId": "under-br-0001",
+      "cellId": "under-br-0001",
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 8,
+      "slice": "blocking_rating"
+    },
+    {
+      "attempts": 8,
+      "caseId": "under-br-0002",
+      "cellId": "under-br-0002",
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 8,
+      "slice": "blocking_rating"
+    },
+    {
+      "attempts": 8,
+      "caseId": "under-br-0003",
+      "cellId": "under-br-0003",
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 8,
+      "slice": "blocking_rating"
+    },
+    {
+      "attempts": 8,
+      "caseId": "under-br-0004",
+      "cellId": "under-br-0004",
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 8,
+      "slice": "blocking_rating"
+    },
+    {
+      "attempts": 8,
+      "caseId": "under-cbs-0001",
+      "cellId": "under-cbs-0001",
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 8,
+      "slice": "constraint_budget_set"
+    },
+    {
+      "attempts": 8,
+      "caseId": "under-cbs-0002",
+      "cellId": "under-cbs-0002",
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 8,
+      "slice": "constraint_budget_set"
+    },
+    {
+      "attempts": 8,
+      "caseId": "under-cbs-0003",
+      "cellId": "under-cbs-0003",
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 8,
+      "slice": "constraint_budget_set"
+    },
+    {
+      "attempts": 8,
+      "caseId": "under-cp-0001",
+      "cellId": "under-cp-0001",
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 8,
+      "slice": "constraint_price"
+    },
+    {
+      "attempts": 8,
+      "caseId": "under-cp-0002",
+      "cellId": "under-cp-0002",
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 8,
+      "slice": "constraint_price"
+    },
+    {
+      "attempts": 8,
+      "caseId": "under-cp-0003",
+      "cellId": "under-cp-0003",
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 8,
+      "slice": "constraint_price"
+    },
+    {
+      "attempts": 8,
+      "caseId": "under-cp-0004",
+      "cellId": "under-cp-0004",
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 8,
+      "slice": "constraint_price"
+    },
+    {
+      "attempts": 8,
+      "caseId": "under-mg-0001",
+      "cellId": "under-mg-0001",
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 8,
+      "slice": "multiturn_gate"
+    },
+    {
+      "attempts": 8,
+      "caseId": "under-mg-0002",
+      "cellId": "under-mg-0002",
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 8,
+      "slice": "multiturn_gate"
+    },
+    {
+      "attempts": 8,
+      "caseId": "under-nc-0001",
+      "cellId": "under-nc-0001",
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 8,
+      "slice": "no_condition"
+    },
+    {
+      "attempts": 8,
+      "caseId": "under-nc-0002",
+      "cellId": "under-nc-0002",
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 8,
+      "slice": "no_condition"
+    },
+    {
+      "attempts": 8,
+      "caseId": "under-nc-0003",
+      "cellId": "under-nc-0003",
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 8,
+      "slice": "no_condition"
+    },
+    {
+      "attempts": 8,
+      "caseId": "under-nc-0004",
+      "cellId": "under-nc-0004",
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 8,
+      "slice": "no_condition"
+    },
+    {
+      "attempts": 8,
+      "caseId": "under-wa-0001",
+      "cellId": "under-wa-0001",
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 8,
+      "slice": "what_axis"
+    },
+    {
+      "attempts": 8,
+      "caseId": "under-wa-0002",
+      "cellId": "under-wa-0002",
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 8,
+      "slice": "what_axis"
+    },
+    {
+      "attempts": 8,
+      "caseId": "under-wa-0003",
+      "cellId": "under-wa-0003",
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 8,
+      "slice": "what_axis"
+    },
+    {
+      "attempts": 8,
+      "caseId": "under-wa-0004",
+      "cellId": "under-wa-0004",
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 8,
+      "slice": "what_axis"
+    },
+    {
+      "attempts": 8,
+      "caseId": "under-wa-0005",
+      "cellId": "under-wa-0005",
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 8,
+      "slice": "what_axis"
+    },
+    {
+      "attempts": 8,
+      "caseId": "under-wa-0006",
+      "cellId": "under-wa-0006",
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 8,
+      "slice": "what_axis"
+    }
+  ],
+  "diagnostics": {
+    "categoryEchoWithoutQueriesCount": 0,
+    "definition": {
+      "categoryEchoWithoutQueriesCount": "filters.category 가 비어 있지 않은데 categoryQueries 는 빈 표본 수 — §D10 항목 2(프로덕션이 필터를 덮어쓰는 괴리)의 노출 크기",
+      "nonRecommendIntentCount": "intent != 'recommend' 표본 수(앵커별·intent별) — 프로덕션은 이 표본에서 is_underspecified_turn 에 도달하지 않는다(F-1). confirmatory 축 분모에서 제외된 표본의 노출 크기이며, 그 실패는 intent 라우팅 축(evals/intent_probe)의 소관이다."
+    },
+    "nonRecommendIntentCount": {
+      "under-nc-0002": {
+        "general": 1
+      }
+    }
+  },
+  "dryRun": false,
+  "fixture": {
+    "name": "anchors.json",
+    "sha256": "cdadb1cac1d88c7d6fa2904ca2f5c29065ad4c6663e47d46cd7b8be2ea384b8c",
+    "version": "underspec-anchors-v1"
+  },
+  "judgment": {
+    "underspecifiedReaskEnabled": true
+  },
+  "modelConfig": {
+    "fastModel": "gpt-5-nano",
+    "fastReasoningEffort": "minimal",
+    "maxRetries": 0,
+    "provider": "openai",
+    "smartModel": "gpt-5.6-luna",
+    "smartReasoningEffort": "medium",
+    "timeoutS": 30.0
+  },
+  "n": 8,
+  "pacer": {
+    "acquireCount": 240,
+    "estimatedTokensPerCall": 3900,
+    "maxRpm": 45,
+    "maxTpm": 200000,
+    "maxWaitS": 31.267,
+    "totalWaitS": 188.81,
+    "waitCount": 93,
+    "windowS": 60.0
+  },
+  "prompt": {
+    "charCount": 7685,
+    "sha12": "e62fd0f6e03d",
+    "sha256": "e62fd0f6e03dd900a2d23e562d721110c82086f4121a7283f5a7ea970f9fd5fd",
+    "source": "repo:_SYSTEM"
+  },
+  "sampleRows": [
+    {
+      "blockingAxes": [
+        "categoryQueries",
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "buy-under-0001",
+      "causeAxes": [
+        "multiple"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 5001,
+      "n": 0,
+      "outcome": "miss",
+      "semanticQuery": "5만원 이내 세트",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_budget_set",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "buy-under-0001",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2221,
+      "n": 1,
+      "outcome": "miss",
+      "semanticQuery": "5만원 이내 세트",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_budget_set",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "buy-under-0001",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2145,
+      "n": 2,
+      "outcome": "miss",
+      "semanticQuery": "5만원 이내 세트",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_budget_set",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "buy-under-0001",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2563,
+      "n": 3,
+      "outcome": "miss",
+      "semanticQuery": "5만원 이내로 세트 구성 추천",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_budget_set",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "buy-under-0001",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2280,
+      "n": 4,
+      "outcome": "miss",
+      "semanticQuery": "5만원 이내 세트",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_budget_set",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "buy-under-0001",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2177,
+      "n": 5,
+      "outcome": "miss",
+      "semanticQuery": "5만원 이내 아무거나 세트로",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_budget_set",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "buy-under-0001",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2104,
+      "n": 6,
+      "outcome": "miss",
+      "semanticQuery": "5만원 이내 세트",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_budget_set",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "buy-under-0001",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2048,
+      "n": 7,
+      "outcome": "miss",
+      "semanticQuery": "5만원 이내로 세트로",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_budget_set",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "buy-under-0002",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 4142,
+      "n": 0,
+      "outcome": "miss",
+      "semanticQuery": "아무거나 추천해줘",
+      "semanticQueryIsFallback": false,
+      "slice": "no_condition",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "buy-under-0002",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2182,
+      "n": 1,
+      "outcome": "miss",
+      "semanticQuery": "아무거나 추천해줘",
+      "semanticQueryIsFallback": false,
+      "slice": "no_condition",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 3,
+      "caseId": "buy-under-0002",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": "no_legs",
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2245,
+      "n": 2,
+      "outcome": "miss",
+      "semanticQuery": "무엇을 살지 말을 하지 않았을 때의 일반 추천",
+      "semanticQueryIsFallback": false,
+      "slice": "no_condition",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 3,
+      "caseId": "buy-under-0002",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": "no_legs",
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2035,
+      "n": 3,
+      "outcome": "miss",
+      "semanticQuery": "아무거나 추천해줘",
+      "semanticQueryIsFallback": false,
+      "slice": "no_condition",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "buy-under-0002",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2121,
+      "n": 4,
+      "outcome": "miss",
+      "semanticQuery": "아무거나 추천해줘",
+      "semanticQueryIsFallback": false,
+      "slice": "no_condition",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 3,
+      "caseId": "buy-under-0002",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": "no_legs",
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2097,
+      "n": 5,
+      "outcome": "miss",
+      "semanticQuery": "아무거나 추천해줘",
+      "semanticQueryIsFallback": false,
+      "slice": "no_condition",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 3,
+      "caseId": "buy-under-0002",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": "no_legs",
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 1892,
+      "n": 6,
+      "outcome": "miss",
+      "semanticQuery": "아무거나 추천해줘",
+      "semanticQueryIsFallback": false,
+      "slice": "no_condition",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "buy-under-0002",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 1807,
+      "n": 7,
+      "outcome": "miss",
+      "semanticQuery": "아무거나 추천해줘",
+      "semanticQueryIsFallback": false,
+      "slice": "no_condition",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "buy-under-0003",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 4263,
+      "n": 0,
+      "outcome": "miss",
+      "semanticQuery": "5만원 이하 아무거나",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_price",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "filters.attrConditions",
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "buy-under-0003",
+      "causeAxes": [
+        "multiple"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2332,
+      "n": 1,
+      "outcome": "miss",
+      "semanticQuery": "5만원 이하 아무거나",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_price",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "buy-under-0003",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2056,
+      "n": 2,
+      "outcome": "miss",
+      "semanticQuery": "5만원 이하 아무거나",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_price",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "buy-under-0003",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2210,
+      "n": 3,
+      "outcome": "miss",
+      "semanticQuery": "무조건 다섯만원 이하의 상품 중 아무거나",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_price",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "buy-under-0003",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2626,
+      "n": 4,
+      "outcome": "miss",
+      "semanticQuery": "5만원 이하 아무거나",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_price",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "buy-under-0003",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2013,
+      "n": 5,
+      "outcome": "miss",
+      "semanticQuery": "5만원 이하 아무거나",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_price",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "buy-under-0003",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2241,
+      "n": 6,
+      "outcome": "miss",
+      "semanticQuery": "5만원 이하 아무거나",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_price",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "buy-under-0003",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2170,
+      "n": 7,
+      "outcome": "miss",
+      "semanticQuery": "5만원 이하 아무거나",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_price",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 3,
+      "caseId": "buy-under-0004",
+      "causeAxes": [],
+      "expansionReason": "no_legs",
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 4099,
+      "n": 0,
+      "outcome": "correctReject",
+      "semanticQuery": "이어폰",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 3,
+      "caseId": "buy-under-0004",
+      "causeAxes": [],
+      "expansionReason": "no_legs",
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 10942,
+      "n": 1,
+      "outcome": "correctReject",
+      "semanticQuery": "무선 이어폰",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "buy-under-0004",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2120,
+      "n": 2,
+      "outcome": "correctReject",
+      "semanticQuery": "무선 이어폰",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 3,
+      "caseId": "buy-under-0004",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 1981,
+      "n": 3,
+      "outcome": "correctReject",
+      "semanticQuery": "무선 이어폰",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "buy-under-0004",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2414,
+      "n": 4,
+      "outcome": "correctReject",
+      "semanticQuery": "이어폰",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 3,
+      "caseId": "buy-under-0004",
+      "causeAxes": [],
+      "expansionReason": "no_legs",
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 1939,
+      "n": 5,
+      "outcome": "correctReject",
+      "semanticQuery": "이어폰",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 3,
+      "caseId": "buy-under-0004",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2100,
+      "n": 6,
+      "outcome": "correctReject",
+      "semanticQuery": "이어폰",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 3,
+      "caseId": "buy-under-0004",
+      "causeAxes": [],
+      "expansionReason": "no_legs",
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2002,
+      "n": 7,
+      "outcome": "correctReject",
+      "semanticQuery": "이어폰",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "buy-under-0005",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2135,
+      "n": 0,
+      "outcome": "correctReject",
+      "semanticQuery": "삼성 제품",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "buy-under-0005",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2309,
+      "n": 1,
+      "outcome": "correctReject",
+      "semanticQuery": "삼성 제품",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "buy-under-0005",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 1932,
+      "n": 2,
+      "outcome": "correctReject",
+      "semanticQuery": "삼성 제품",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "buy-under-0005",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2822,
+      "n": 3,
+      "outcome": "correctReject",
+      "semanticQuery": "삼성 제품",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "buy-under-0005",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 33863,
+      "n": 4,
+      "outcome": "correctReject",
+      "semanticQuery": "삼성 제품",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "buy-under-0005",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 4668,
+      "n": 5,
+      "outcome": "correctReject",
+      "semanticQuery": "삼성 제품",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "buy-under-0005",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2622,
+      "n": 6,
+      "outcome": "correctReject",
+      "semanticQuery": "삼성 제품",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "buy-under-0005",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2991,
+      "n": 7,
+      "outcome": "correctReject",
+      "semanticQuery": "삼성 제품",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "buy-under-0006",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2464,
+      "n": 0,
+      "outcome": "correctReject",
+      "semanticQuery": "다음 다섯 가지 중에서 예산 5만원 이하의 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "multiturn_gate",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "buy-under-0006",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 1973,
+      "n": 1,
+      "outcome": "correctReject",
+      "semanticQuery": "5만원 이하 제품",
+      "semanticQueryIsFallback": false,
+      "slice": "multiturn_gate",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "buy-under-0006",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2109,
+      "n": 2,
+      "outcome": "correctReject",
+      "semanticQuery": "5만원 이하 아무거나",
+      "semanticQueryIsFallback": false,
+      "slice": "multiturn_gate",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "buy-under-0006",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 3475,
+      "n": 3,
+      "outcome": "correctReject",
+      "semanticQuery": "5만원 이하",
+      "semanticQueryIsFallback": false,
+      "slice": "multiturn_gate",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "buy-under-0006",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 32393,
+      "n": 4,
+      "outcome": "correctReject",
+      "semanticQuery": "5만원 이하의 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "multiturn_gate",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "buy-under-0006",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 4285,
+      "n": 5,
+      "outcome": "correctReject",
+      "semanticQuery": "5만원 이하 아무거나",
+      "semanticQueryIsFallback": false,
+      "slice": "multiturn_gate",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "buy-under-0006",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2167,
+      "n": 6,
+      "outcome": "correctReject",
+      "semanticQuery": "5만원 이하",
+      "semanticQueryIsFallback": false,
+      "slice": "multiturn_gate",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "buy-under-0006",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2191,
+      "n": 7,
+      "outcome": "correctReject",
+      "semanticQuery": "다음 중에서 5만원 이하의 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "multiturn_gate",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "buy-under-0007",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2426,
+      "n": 0,
+      "outcome": "correctReject",
+      "semanticQuery": "평점이 높은 아무 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "blocking_rating",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "buy-under-0007",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2053,
+      "n": 1,
+      "outcome": "correctReject",
+      "semanticQuery": "평점이 높은 상품 중 아무거나",
+      "semanticQueryIsFallback": false,
+      "slice": "blocking_rating",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "buy-under-0007",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2027,
+      "n": 2,
+      "outcome": "correctReject",
+      "semanticQuery": "평점 4 이상 아무거나",
+      "semanticQueryIsFallback": false,
+      "slice": "blocking_rating",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "buy-under-0007",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2601,
+      "n": 3,
+      "outcome": "correctReject",
+      "semanticQuery": "평점 4 이상 아무거나",
+      "semanticQueryIsFallback": false,
+      "slice": "blocking_rating",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "buy-under-0007",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 33107,
+      "n": 4,
+      "outcome": "correctReject",
+      "semanticQuery": "평점 4 이상 아무거나",
+      "semanticQueryIsFallback": false,
+      "slice": "blocking_rating",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "buy-under-0007",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 4203,
+      "n": 5,
+      "outcome": "correctReject",
+      "semanticQuery": "평점 4 이상 아무거나",
+      "semanticQueryIsFallback": false,
+      "slice": "blocking_rating",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "buy-under-0007",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2473,
+      "n": 6,
+      "outcome": "correctReject",
+      "semanticQuery": "평점 4 이상 무관하게 아무거나",
+      "semanticQueryIsFallback": false,
+      "slice": "blocking_rating",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "buy-under-0007",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 3121,
+      "n": 7,
+      "outcome": "correctReject",
+      "semanticQuery": "평점 4 이상 아무거나",
+      "semanticQueryIsFallback": false,
+      "slice": "blocking_rating",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-br-0001",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2084,
+      "n": 0,
+      "outcome": "correctReject",
+      "semanticQuery": "별점 4.5 이상인 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "blocking_rating",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-br-0001",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 32322,
+      "n": 1,
+      "outcome": "correctReject",
+      "semanticQuery": "별점 4.5 이상 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "blocking_rating",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-br-0001",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 7586,
+      "n": 2,
+      "outcome": "correctReject",
+      "semanticQuery": "별점이 4.5 이상인 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "blocking_rating",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-br-0001",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 8143,
+      "n": 3,
+      "outcome": "correctReject",
+      "semanticQuery": "별점 4.5 이상 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "blocking_rating",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-br-0001",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2443,
+      "n": 4,
+      "outcome": "correctReject",
+      "semanticQuery": "별점이 4.5 이상인 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "blocking_rating",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-br-0001",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2104,
+      "n": 5,
+      "outcome": "correctReject",
+      "semanticQuery": "별점 높은 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "blocking_rating",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-br-0001",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2355,
+      "n": 6,
+      "outcome": "correctReject",
+      "semanticQuery": "4.5 stars or higher",
+      "semanticQueryIsFallback": false,
+      "slice": "blocking_rating",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-br-0001",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 6076,
+      "n": 7,
+      "outcome": "correctReject",
+      "semanticQuery": "별점 4.5 이상인 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "blocking_rating",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-br-0002",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 3769,
+      "n": 0,
+      "outcome": "correctReject",
+      "semanticQuery": "평점이 높은 가전/잡화 품목",
+      "semanticQueryIsFallback": false,
+      "slice": "blocking_rating",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-br-0002",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2251,
+      "n": 1,
+      "outcome": "correctReject",
+      "semanticQuery": "평점 4점대 이상인 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "blocking_rating",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-br-0002",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2430,
+      "n": 2,
+      "outcome": "correctReject",
+      "semanticQuery": "평점 4점대 이상인 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "blocking_rating",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-br-0002",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2190,
+      "n": 3,
+      "outcome": "correctReject",
+      "semanticQuery": "평점 4점대 이상 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "blocking_rating",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-br-0002",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 3462,
+      "n": 4,
+      "outcome": "correctReject",
+      "semanticQuery": "평점 4점대 이상 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "blocking_rating",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-br-0002",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2079,
+      "n": 5,
+      "outcome": "correctReject",
+      "semanticQuery": "평점 4점대 이상 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "blocking_rating",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-br-0002",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2310,
+      "n": 6,
+      "outcome": "correctReject",
+      "semanticQuery": "평점 4점대 이상 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "blocking_rating",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-br-0002",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2271,
+      "n": 7,
+      "outcome": "correctReject",
+      "semanticQuery": "평점 4점대 이상의 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "blocking_rating",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-br-0003",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2199,
+      "n": 0,
+      "outcome": "correctReject",
+      "semanticQuery": "리뷰 평점 4 넘는 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "blocking_rating",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-br-0003",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2441,
+      "n": 1,
+      "outcome": "correctReject",
+      "semanticQuery": "리뷰 평점이 4 이상인 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "blocking_rating",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-br-0003",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2506,
+      "n": 2,
+      "outcome": "correctReject",
+      "semanticQuery": "리뷰 평점 4 넘는 제품",
+      "semanticQueryIsFallback": false,
+      "slice": "blocking_rating",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-br-0003",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2215,
+      "n": 3,
+      "outcome": "correctReject",
+      "semanticQuery": "리뷰 평점 4 넘는 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "blocking_rating",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-br-0003",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 1981,
+      "n": 4,
+      "outcome": "correctReject",
+      "semanticQuery": "리뷰 평점 4 넘는 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "blocking_rating",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-br-0003",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 1907,
+      "n": 5,
+      "outcome": "correctReject",
+      "semanticQuery": "리뷰 평점 4 넘는 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "blocking_rating",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-br-0003",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2155,
+      "n": 6,
+      "outcome": "correctReject",
+      "semanticQuery": "리뷰 평점 4 넘는 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "blocking_rating",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-br-0003",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2041,
+      "n": 7,
+      "outcome": "correctReject",
+      "semanticQuery": "리뷰 평점 4 넘는 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "blocking_rating",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-br-0004",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 6279,
+      "n": 0,
+      "outcome": "correctReject",
+      "semanticQuery": "평점이 높은 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "blocking_rating",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-br-0004",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2061,
+      "n": 1,
+      "outcome": "correctReject",
+      "semanticQuery": "평점 3.5 이상 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "blocking_rating",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-br-0004",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2803,
+      "n": 2,
+      "outcome": "correctReject",
+      "semanticQuery": "평점이 높은 무조건 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "blocking_rating",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-br-0004",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2760,
+      "n": 3,
+      "outcome": "correctReject",
+      "semanticQuery": "높은 평점을 가진 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "blocking_rating",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-br-0004",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2347,
+      "n": 4,
+      "outcome": "correctReject",
+      "semanticQuery": "평점이 높고 다양한 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "blocking_rating",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-br-0004",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2368,
+      "n": 5,
+      "outcome": "correctReject",
+      "semanticQuery": "평점이 높은 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "blocking_rating",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-br-0004",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2460,
+      "n": 6,
+      "outcome": "correctReject",
+      "semanticQuery": "평점 3.5 이상인 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "blocking_rating",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-br-0004",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 29031,
+      "n": 7,
+      "outcome": "correctReject",
+      "semanticQuery": "평점 3.5 이상이면 뭐든 좋아",
+      "semanticQueryIsFallback": false,
+      "slice": "blocking_rating",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "under-cbs-0001",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 1933,
+      "n": 0,
+      "outcome": "miss",
+      "semanticQuery": "상품 전체 예산 10만원 이내로 추천",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_budget_set",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "under-cbs-0001",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 1986,
+      "n": 1,
+      "outcome": "miss",
+      "semanticQuery": "10만원 안에서 전부 챙겨줄 수 있어?",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_budget_set",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "under-cbs-0001",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 29639,
+      "n": 2,
+      "outcome": "miss",
+      "semanticQuery": "10만원 내로 전부 구매",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_budget_set",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "under-cbs-0001",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 3739,
+      "n": 3,
+      "outcome": "miss",
+      "semanticQuery": "전부 다 합쳐서 10만원 이내로",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_budget_set",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "under-cbs-0001",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 3990,
+      "n": 4,
+      "outcome": "miss",
+      "semanticQuery": "10만원 내 전체 구성",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_budget_set",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 3,
+      "caseId": "under-cbs-0001",
+      "causeAxes": [],
+      "expansionReason": "no_legs",
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2198,
+      "n": 5,
+      "outcome": "hit",
+      "semanticQuery": "10만원 안에서 전부 챙겨줄 수 있어?",
+      "semanticQueryIsFallback": true,
+      "slice": "constraint_budget_set",
+      "verdict": true
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "under-cbs-0001",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 3637,
+      "n": 6,
+      "outcome": "miss",
+      "semanticQuery": "10만원 안에서 전부 챙겨줄 수 있어",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_budget_set",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "under-cbs-0001",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 3955,
+      "n": 7,
+      "outcome": "miss",
+      "semanticQuery": "전부 챙겨줄 수 있어 10만원 예산 내 상품 묶음",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_budget_set",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "under-cbs-0002",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2010,
+      "n": 0,
+      "outcome": "miss",
+      "semanticQuery": "총 8만원으로 세트 구성해줘",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_budget_set",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "filters.attrConditions",
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "under-cbs-0002",
+      "causeAxes": [
+        "multiple"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 29378,
+      "n": 1,
+      "outcome": "miss",
+      "semanticQuery": "세트 구성",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_budget_set",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "categoryQueries",
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "under-cbs-0002",
+      "causeAxes": [
+        "multiple"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 4461,
+      "n": 2,
+      "outcome": "miss",
+      "semanticQuery": "세트 구성",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_budget_set",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 3,
+      "caseId": "under-cbs-0002",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": "no_legs",
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2334,
+      "n": 3,
+      "outcome": "miss",
+      "semanticQuery": "8만원으로 구성된 상품 세트",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_budget_set",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "under-cbs-0002",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2452,
+      "n": 4,
+      "outcome": "miss",
+      "semanticQuery": "8만원으로 세트 구성",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_budget_set",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "under-cbs-0002",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 3819,
+      "n": 5,
+      "outcome": "miss",
+      "semanticQuery": "상품 세트 구성",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_budget_set",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "under-cbs-0002",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 4077,
+      "n": 6,
+      "outcome": "miss",
+      "semanticQuery": "8만원 세트 구성을 원합니다",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_budget_set",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 3,
+      "caseId": "under-cbs-0002",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": "no_legs",
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2355,
+      "n": 7,
+      "outcome": "miss",
+      "semanticQuery": "총 8만원으로 세트 구성해줘",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_budget_set",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 3,
+      "caseId": "under-cbs-0003",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": "no_legs",
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 29989,
+      "n": 0,
+      "outcome": "miss",
+      "semanticQuery": "예산 6만원 다 써서 이것저것 담아줘",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_budget_set",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 3,
+      "caseId": "under-cbs-0003",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": "no_legs",
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 4830,
+      "n": 1,
+      "outcome": "miss",
+      "semanticQuery": "예산 6만원 다 써서 이것저것 담아줘",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_budget_set",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 3,
+      "caseId": "under-cbs-0003",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": "no_legs",
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2302,
+      "n": 2,
+      "outcome": "miss",
+      "semanticQuery": "예산 6만원 다 써서 이것저것 담아줘",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_budget_set",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 3,
+      "caseId": "under-cbs-0003",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": "no_legs",
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2818,
+      "n": 3,
+      "outcome": "miss",
+      "semanticQuery": "예산 6만원 다 써서 이것저것 담아줘",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_budget_set",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 3,
+      "caseId": "under-cbs-0003",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": "no_legs",
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 3699,
+      "n": 4,
+      "outcome": "miss",
+      "semanticQuery": "예산 6만원 다 써서 이것저것 담아줘",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_budget_set",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 3,
+      "caseId": "under-cbs-0003",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": "no_legs",
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 3938,
+      "n": 5,
+      "outcome": "miss",
+      "semanticQuery": "예산 6만원 다 써서 이것저것 담아줘",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_budget_set",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "under-cbs-0003",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2177,
+      "n": 6,
+      "outcome": "miss",
+      "semanticQuery": "예산 6만원 다 써서 이것저것 담아줘",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_budget_set",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "under-cbs-0003",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 3388,
+      "n": 7,
+      "outcome": "miss",
+      "semanticQuery": "예산 6만원 다 써서 이것저것 담아줘",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_budget_set",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "under-cp-0001",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 4330,
+      "n": 0,
+      "outcome": "miss",
+      "semanticQuery": "상품 가격 3만원 이상",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_price",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "under-cp-0001",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2623,
+      "n": 1,
+      "outcome": "miss",
+      "semanticQuery": "30,000원 이상 아무거나",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_price",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "under-cp-0001",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 4919,
+      "n": 2,
+      "outcome": "miss",
+      "semanticQuery": "가격대 3만원 이상",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_price",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "under-cp-0001",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2971,
+      "n": 3,
+      "outcome": "miss",
+      "semanticQuery": "30,000원 이상 아무거나",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_price",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "under-cp-0001",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 3848,
+      "n": 4,
+      "outcome": "miss",
+      "semanticQuery": "3만원 이상 아무거나 보여줄래?",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_price",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "under-cp-0001",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2765,
+      "n": 5,
+      "outcome": "miss",
+      "semanticQuery": "가격 30000원 이상 아무거나",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_price",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "under-cp-0001",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2177,
+      "n": 6,
+      "outcome": "miss",
+      "semanticQuery": "가격대 3만원 이상 아무거나",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_price",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "under-cp-0001",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2849,
+      "n": 7,
+      "outcome": "miss",
+      "semanticQuery": "가격대가 3만원 이상인 일반 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_price",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "under-cp-0002",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2368,
+      "n": 0,
+      "outcome": "miss",
+      "semanticQuery": "10만원 이내에서 구매 가능한 다양한 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_price",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "under-cp-0002",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2201,
+      "n": 1,
+      "outcome": "miss",
+      "semanticQuery": "10만원 이내에서 구매 가능한 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_price",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "under-cp-0002",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 3038,
+      "n": 2,
+      "outcome": "miss",
+      "semanticQuery": "10만원 이내에서 무엇을 살까",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_price",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "under-cp-0002",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2055,
+      "n": 3,
+      "outcome": "miss",
+      "semanticQuery": "10만원 이내에서 다양한 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_price",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "under-cp-0002",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2961,
+      "n": 4,
+      "outcome": "miss",
+      "semanticQuery": "10만원 이내에서 무슨 상품이든",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_price",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "under-cp-0002",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 29071,
+      "n": 5,
+      "outcome": "miss",
+      "semanticQuery": "10만원 이내에서 살 수 있는 모든 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_price",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "under-cp-0002",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 4102,
+      "n": 6,
+      "outcome": "miss",
+      "semanticQuery": "10만원 이내에서 구매하기 좋은 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_price",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "categoryQueries",
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "under-cp-0002",
+      "causeAxes": [
+        "multiple"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 3168,
+      "n": 7,
+      "outcome": "miss",
+      "semanticQuery": "10만원 이내에서 구매하고 싶은 물건",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_price",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "filters.attrConditions",
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "under-cp-0003",
+      "causeAxes": [
+        "multiple"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2302,
+      "n": 0,
+      "outcome": "miss",
+      "semanticQuery": "가격 범위 내 무난한 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_price",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "under-cp-0003",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2214,
+      "n": 1,
+      "outcome": "miss",
+      "semanticQuery": "5만원 이하 무관 가격대의 일반 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_price",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "under-cp-0003",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2036,
+      "n": 2,
+      "outcome": "miss",
+      "semanticQuery": "금액 범위 내 무언가",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_price",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "under-cp-0003",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2824,
+      "n": 3,
+      "outcome": "miss",
+      "semanticQuery": "5만원 이내 가격대의 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_price",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "under-cp-0003",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2279,
+      "n": 4,
+      "outcome": "miss",
+      "semanticQuery": "5만원 이하 예산에서 무관한 아무거나",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_price",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "under-cp-0003",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 29227,
+      "n": 5,
+      "outcome": "miss",
+      "semanticQuery": "가격 범위 내 아무거나",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_price",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "under-cp-0003",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 3965,
+      "n": 6,
+      "outcome": "miss",
+      "semanticQuery": "가격대 2만원에서 5만원 사이의 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_price",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "under-cp-0003",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 12178,
+      "n": 7,
+      "outcome": "miss",
+      "semanticQuery": "가격대 2만 원에서 5만 원 사이의 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_price",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "under-cp-0004",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2185,
+      "n": 0,
+      "outcome": "miss",
+      "semanticQuery": "6만원 이하 무선/유선 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_price",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "under-cp-0004",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2335,
+      "n": 1,
+      "outcome": "miss",
+      "semanticQuery": "가격대 6만원 이하 아무 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_price",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "under-cp-0004",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2514,
+      "n": 2,
+      "outcome": "miss",
+      "semanticQuery": "6만원 이하 아무 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_price",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "under-cp-0004",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2279,
+      "n": 3,
+      "outcome": "miss",
+      "semanticQuery": "가격대 6만원 이하 아무것도",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_price",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "under-cp-0004",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 28783,
+      "n": 4,
+      "outcome": "miss",
+      "semanticQuery": "가격대 6만원 밑으로 아무거나 있어?",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_price",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "filters.attrConditions",
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "under-cp-0004",
+      "causeAxes": [
+        "multiple"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 3927,
+      "n": 5,
+      "outcome": "miss",
+      "semanticQuery": "가격대 6만원 아래의 가전/패션/용품 등 다양한 품목 중에서 마음에 드는 무언가",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_price",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "under-cp-0004",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 4191,
+      "n": 6,
+      "outcome": "miss",
+      "semanticQuery": "가격대 6만원 밑으로 아무거나 있어",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_price",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "under-cp-0004",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2302,
+      "n": 7,
+      "outcome": "miss",
+      "semanticQuery": "가격대 6만원 밑으로 아무거나 있어?",
+      "semanticQueryIsFallback": false,
+      "slice": "constraint_price",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-mg-0001",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 3029,
+      "n": 0,
+      "outcome": "correctReject",
+      "semanticQuery": "더 싼 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "multiturn_gate",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-mg-0001",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 29588,
+      "n": 1,
+      "outcome": "correctReject",
+      "semanticQuery": "더 싼 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "multiturn_gate",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-mg-0001",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 5281,
+      "n": 2,
+      "outcome": "correctReject",
+      "semanticQuery": "더 싼 무선 이어폰",
+      "semanticQueryIsFallback": false,
+      "slice": "multiturn_gate",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-mg-0001",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2271,
+      "n": 3,
+      "outcome": "correctReject",
+      "semanticQuery": "더 싼 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "multiturn_gate",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-mg-0001",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2258,
+      "n": 4,
+      "outcome": "correctReject",
+      "semanticQuery": "더 싼 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "multiturn_gate",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-mg-0001",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 8139,
+      "n": 5,
+      "outcome": "correctReject",
+      "semanticQuery": "더 싼 물건",
+      "semanticQueryIsFallback": false,
+      "slice": "multiturn_gate",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-mg-0001",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2163,
+      "n": 6,
+      "outcome": "correctReject",
+      "semanticQuery": "더 싼 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "multiturn_gate",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-mg-0001",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2233,
+      "n": 7,
+      "outcome": "correctReject",
+      "semanticQuery": "더 싼 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "multiturn_gate",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 3,
+      "caseId": "under-mg-0002",
+      "causeAxes": [],
+      "expansionReason": "no_legs",
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2325,
+      "n": 0,
+      "outcome": "correctReject",
+      "semanticQuery": "이전 목록 중에 저렴한 쪽으로",
+      "semanticQueryIsFallback": false,
+      "slice": "multiturn_gate",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 3,
+      "caseId": "under-mg-0002",
+      "causeAxes": [],
+      "expansionReason": "no_legs",
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2322,
+      "n": 1,
+      "outcome": "correctReject",
+      "semanticQuery": "이전 목록 중에 저렴한 쪽으로",
+      "semanticQueryIsFallback": false,
+      "slice": "multiturn_gate",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-mg-0002",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2150,
+      "n": 2,
+      "outcome": "correctReject",
+      "semanticQuery": "이전 목록 중에 저렴한 쪽으로",
+      "semanticQueryIsFallback": false,
+      "slice": "multiturn_gate",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-mg-0002",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2566,
+      "n": 3,
+      "outcome": "correctReject",
+      "semanticQuery": "이전 목록 중에서 더 저렴한 걸로",
+      "semanticQueryIsFallback": false,
+      "slice": "multiturn_gate",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 3,
+      "caseId": "under-mg-0002",
+      "causeAxes": [],
+      "expansionReason": "no_legs",
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2707,
+      "n": 4,
+      "outcome": "correctReject",
+      "semanticQuery": "이전 목록 중에 저렴한 쪽으로",
+      "semanticQueryIsFallback": false,
+      "slice": "multiturn_gate",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 3,
+      "caseId": "under-mg-0002",
+      "causeAxes": [],
+      "expansionReason": "no_legs",
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 1980,
+      "n": 5,
+      "outcome": "correctReject",
+      "semanticQuery": "저렴한 무선 이어폰",
+      "semanticQueryIsFallback": false,
+      "slice": "multiturn_gate",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 3,
+      "caseId": "under-mg-0002",
+      "causeAxes": [],
+      "expansionReason": "no_legs",
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 1862,
+      "n": 6,
+      "outcome": "correctReject",
+      "semanticQuery": "저렴한 쪽으로 이전 목록 중에서",
+      "semanticQueryIsFallback": false,
+      "slice": "multiturn_gate",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-mg-0002",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2047,
+      "n": 7,
+      "outcome": "correctReject",
+      "semanticQuery": "이전 목록 중에 저렴한 쪽으로",
+      "semanticQueryIsFallback": false,
+      "slice": "multiturn_gate",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 3,
+      "caseId": "under-nc-0001",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": "no_legs",
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2863,
+      "n": 0,
+      "outcome": "miss",
+      "semanticQuery": "무난한 가성비 추천 품목",
+      "semanticQueryIsFallback": false,
+      "slice": "no_condition",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 3,
+      "caseId": "under-nc-0001",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": "no_legs",
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2075,
+      "n": 1,
+      "outcome": "miss",
+      "semanticQuery": "좋은 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "no_condition",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 3,
+      "caseId": "under-nc-0001",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": "no_legs",
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 1997,
+      "n": 2,
+      "outcome": "miss",
+      "semanticQuery": "좋은 상품 추천해줘",
+      "semanticQueryIsFallback": false,
+      "slice": "no_condition",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 3,
+      "caseId": "under-nc-0001",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": "no_legs",
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2092,
+      "n": 3,
+      "outcome": "miss",
+      "semanticQuery": "상품 추천을 위한 일반적 탐색",
+      "semanticQueryIsFallback": false,
+      "slice": "no_condition",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 3,
+      "caseId": "under-nc-0001",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": "no_legs",
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2297,
+      "n": 4,
+      "outcome": "miss",
+      "semanticQuery": "좋은 상품 추천해줘",
+      "semanticQueryIsFallback": false,
+      "slice": "no_condition",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 3,
+      "caseId": "under-nc-0001",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": "no_legs",
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2881,
+      "n": 5,
+      "outcome": "miss",
+      "semanticQuery": "좋은 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "no_condition",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 3,
+      "caseId": "under-nc-0001",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": "no_legs",
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2683,
+      "n": 6,
+      "outcome": "miss",
+      "semanticQuery": "무엇을 찾고 있는지 특정하지 않는 일반 추천 의도",
+      "semanticQueryIsFallback": false,
+      "slice": "no_condition",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 3,
+      "caseId": "under-nc-0001",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": "no_legs",
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2153,
+      "n": 7,
+      "outcome": "miss",
+      "semanticQuery": "사용자가 찾는 물건을 구체적으로 지시하지 않는 일반적인 상품 추천 요청",
+      "semanticQueryIsFallback": false,
+      "slice": "no_condition",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "categoryQueries",
+        "semanticQueryIsFallback"
+      ],
+      "case": 3,
+      "caseId": "under-nc-0002",
+      "causeAxes": [
+        "multiple"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2647,
+      "n": 0,
+      "outcome": "miss",
+      "semanticQuery": "아무거나 하나 골라줘",
+      "semanticQueryIsFallback": false,
+      "slice": "no_condition",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "categoryQueries",
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "under-nc-0002",
+      "causeAxes": [
+        "multiple"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2252,
+      "n": 1,
+      "outcome": "miss",
+      "semanticQuery": "아무거나 하나 골라줘",
+      "semanticQueryIsFallback": false,
+      "slice": "no_condition",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 3,
+      "caseId": "under-nc-0002",
+      "causeAxes": [],
+      "expansionReason": "no_legs",
+      "expectedReask": true,
+      "intent": "general",
+      "latencyMs": 2332,
+      "n": 2,
+      "outcome": "hit",
+      "semanticQuery": "아무거나 하나 골라줘",
+      "semanticQueryIsFallback": true,
+      "slice": "no_condition",
+      "verdict": true
+    },
+    {
+      "blockingAxes": [
+        "categoryQueries",
+        "semanticQueryIsFallback"
+      ],
+      "case": 3,
+      "caseId": "under-nc-0002",
+      "causeAxes": [
+        "multiple"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2586,
+      "n": 3,
+      "outcome": "miss",
+      "semanticQuery": "아무거나 하나 골라줘",
+      "semanticQueryIsFallback": false,
+      "slice": "no_condition",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 3,
+      "caseId": "under-nc-0002",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": "no_legs",
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 3013,
+      "n": 4,
+      "outcome": "miss",
+      "semanticQuery": "아무거나 하나 골라줘",
+      "semanticQueryIsFallback": false,
+      "slice": "no_condition",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "categoryQueries",
+        "semanticQueryIsFallback"
+      ],
+      "case": 3,
+      "caseId": "under-nc-0002",
+      "causeAxes": [
+        "multiple"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 3531,
+      "n": 5,
+      "outcome": "miss",
+      "semanticQuery": "아무거나 하나 골라줘",
+      "semanticQueryIsFallback": false,
+      "slice": "no_condition",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 3,
+      "caseId": "under-nc-0002",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": "no_legs",
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 26924,
+      "n": 6,
+      "outcome": "miss",
+      "semanticQuery": "아무거나 하나 골라줘",
+      "semanticQueryIsFallback": false,
+      "slice": "no_condition",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "categoryQueries",
+        "semanticQueryIsFallback"
+      ],
+      "case": 3,
+      "caseId": "under-nc-0002",
+      "causeAxes": [
+        "multiple"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 4498,
+      "n": 7,
+      "outcome": "miss",
+      "semanticQuery": "아무거나 하나 골라줘",
+      "semanticQueryIsFallback": false,
+      "slice": "no_condition",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 3,
+      "caseId": "under-nc-0003",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": "no_legs",
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 1982,
+      "n": 0,
+      "outcome": "miss",
+      "semanticQuery": "일반적인 상품 추천",
+      "semanticQueryIsFallback": false,
+      "slice": "no_condition",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 3,
+      "caseId": "under-nc-0003",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": "no_legs",
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2361,
+      "n": 1,
+      "outcome": "miss",
+      "semanticQuery": "일반적인 상품 추천",
+      "semanticQueryIsFallback": false,
+      "slice": "no_condition",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 3,
+      "caseId": "under-nc-0003",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": "no_legs",
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2729,
+      "n": 2,
+      "outcome": "miss",
+      "semanticQuery": "일반적인 상품 추천",
+      "semanticQueryIsFallback": false,
+      "slice": "no_condition",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 3,
+      "caseId": "under-nc-0003",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": "no_legs",
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2695,
+      "n": 3,
+      "outcome": "miss",
+      "semanticQuery": "그냥 추천해줘",
+      "semanticQueryIsFallback": false,
+      "slice": "no_condition",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 3,
+      "caseId": "under-nc-0003",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": "no_legs",
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 29268,
+      "n": 4,
+      "outcome": "miss",
+      "semanticQuery": "일반적인 상품 추천",
+      "semanticQueryIsFallback": false,
+      "slice": "no_condition",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 3,
+      "caseId": "under-nc-0003",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": "no_legs",
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 3553,
+      "n": 5,
+      "outcome": "miss",
+      "semanticQuery": "일반적인 상품 추천",
+      "semanticQueryIsFallback": false,
+      "slice": "no_condition",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 3,
+      "caseId": "under-nc-0003",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": "no_legs",
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2345,
+      "n": 6,
+      "outcome": "miss",
+      "semanticQuery": "추천해줘",
+      "semanticQueryIsFallback": false,
+      "slice": "no_condition",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 3,
+      "caseId": "under-nc-0003",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": "no_legs",
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2918,
+      "n": 7,
+      "outcome": "miss",
+      "semanticQuery": "더 추천해줘",
+      "semanticQueryIsFallback": false,
+      "slice": "no_condition",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 3,
+      "caseId": "under-nc-0004",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": "no_legs",
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2738,
+      "n": 0,
+      "outcome": "miss",
+      "semanticQuery": "무엇을 살지 추천해줘",
+      "semanticQueryIsFallback": false,
+      "slice": "no_condition",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 3,
+      "caseId": "under-nc-0004",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": "no_legs",
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 5922,
+      "n": 1,
+      "outcome": "miss",
+      "semanticQuery": "상품 추천을 위한 일반적 의미",
+      "semanticQueryIsFallback": false,
+      "slice": "no_condition",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 3,
+      "caseId": "under-nc-0004",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": "no_legs",
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 26528,
+      "n": 2,
+      "outcome": "miss",
+      "semanticQuery": "무엇을 살지 추천 요청",
+      "semanticQueryIsFallback": false,
+      "slice": "no_condition",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "categoryQueries",
+        "semanticQueryIsFallback"
+      ],
+      "case": 2,
+      "caseId": "under-nc-0004",
+      "causeAxes": [
+        "multiple"
+      ],
+      "expansionReason": null,
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 4291,
+      "n": 3,
+      "outcome": "miss",
+      "semanticQuery": "무슨 무난한 상품 추천해줘",
+      "semanticQueryIsFallback": false,
+      "slice": "no_condition",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 3,
+      "caseId": "under-nc-0004",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": "no_legs",
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 3610,
+      "n": 4,
+      "outcome": "miss",
+      "semanticQuery": "무엇을 살지 추천해줘",
+      "semanticQueryIsFallback": false,
+      "slice": "no_condition",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 3,
+      "caseId": "under-nc-0004",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": "no_legs",
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 2483,
+      "n": 5,
+      "outcome": "miss",
+      "semanticQuery": "무엇을 사고 싶은지 구체적으로 말하지 않은 상태에서 추천해달라는 일반 질의",
+      "semanticQueryIsFallback": false,
+      "slice": "no_condition",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 3,
+      "caseId": "under-nc-0004",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": "no_legs",
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 3685,
+      "n": 6,
+      "outcome": "miss",
+      "semanticQuery": "무엇을 살지 모르는 상태에서 추천받기",
+      "semanticQueryIsFallback": false,
+      "slice": "no_condition",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "case": 3,
+      "caseId": "under-nc-0004",
+      "causeAxes": [
+        "semanticQueryIsFallback"
+      ],
+      "expansionReason": "no_legs",
+      "expectedReask": true,
+      "intent": "recommend",
+      "latencyMs": 4927,
+      "n": 7,
+      "outcome": "miss",
+      "semanticQuery": "무언가 사고 싶은데 추천해줘",
+      "semanticQueryIsFallback": false,
+      "slice": "no_condition",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 3,
+      "caseId": "under-wa-0001",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 29869,
+      "n": 0,
+      "outcome": "correctReject",
+      "semanticQuery": "노트북",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 3,
+      "caseId": "under-wa-0001",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 4183,
+      "n": 1,
+      "outcome": "correctReject",
+      "semanticQuery": "노트북",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-wa-0001",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2608,
+      "n": 2,
+      "outcome": "correctReject",
+      "semanticQuery": "노트북",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-wa-0001",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2752,
+      "n": 3,
+      "outcome": "correctReject",
+      "semanticQuery": "노트북",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 3,
+      "caseId": "under-wa-0001",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 3921,
+      "n": 4,
+      "outcome": "correctReject",
+      "semanticQuery": "노트북",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 3,
+      "caseId": "under-wa-0001",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 4996,
+      "n": 5,
+      "outcome": "correctReject",
+      "semanticQuery": "노트북",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 3,
+      "caseId": "under-wa-0001",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2551,
+      "n": 6,
+      "outcome": "correctReject",
+      "semanticQuery": "노트북",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 3,
+      "caseId": "under-wa-0001",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2601,
+      "n": 7,
+      "outcome": "correctReject",
+      "semanticQuery": "노트북",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 3,
+      "caseId": "under-wa-0002",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 4453,
+      "n": 0,
+      "outcome": "correctReject",
+      "semanticQuery": "LG 가전",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-wa-0002",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2547,
+      "n": 1,
+      "outcome": "correctReject",
+      "semanticQuery": "LG 가전",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-wa-0002",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 4638,
+      "n": 2,
+      "outcome": "correctReject",
+      "semanticQuery": "LG 가전",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-wa-0002",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 3006,
+      "n": 3,
+      "outcome": "correctReject",
+      "semanticQuery": "LG 가전",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-wa-0002",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2518,
+      "n": 4,
+      "outcome": "correctReject",
+      "semanticQuery": "LG 가전",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-wa-0002",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2488,
+      "n": 5,
+      "outcome": "correctReject",
+      "semanticQuery": "LG 가전",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-wa-0002",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2922,
+      "n": 6,
+      "outcome": "correctReject",
+      "semanticQuery": "LG 가전",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-wa-0002",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2773,
+      "n": 7,
+      "outcome": "correctReject",
+      "semanticQuery": "LG 가전",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-wa-0003",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2870,
+      "n": 0,
+      "outcome": "correctReject",
+      "semanticQuery": "노란색으로 아무거나 골라줘",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-wa-0003",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 4469,
+      "n": 1,
+      "outcome": "correctReject",
+      "semanticQuery": "노란색으로 아무거나 골라줘",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-wa-0003",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 3061,
+      "n": 2,
+      "outcome": "correctReject",
+      "semanticQuery": "노란색 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-wa-0003",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2529,
+      "n": 3,
+      "outcome": "correctReject",
+      "semanticQuery": "노란색으로 아무거나",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-wa-0003",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 10602,
+      "n": 4,
+      "outcome": "correctReject",
+      "semanticQuery": "노란색 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-wa-0003",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 26459,
+      "n": 5,
+      "outcome": "correctReject",
+      "semanticQuery": "노란색으로 아무거나 골라줘",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-wa-0003",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 5893,
+      "n": 6,
+      "outcome": "correctReject",
+      "semanticQuery": "노란색으로 아무거나",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-wa-0003",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2763,
+      "n": 7,
+      "outcome": "correctReject",
+      "semanticQuery": "노란색으로 아무거나 골라줘",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-wa-0004",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2388,
+      "n": 0,
+      "outcome": "correctReject",
+      "semanticQuery": "초록색 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-wa-0004",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2108,
+      "n": 1,
+      "outcome": "correctReject",
+      "semanticQuery": "초록색 제품",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-wa-0004",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2330,
+      "n": 2,
+      "outcome": "correctReject",
+      "semanticQuery": "초록색 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-wa-0004",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2272,
+      "n": 3,
+      "outcome": "correctReject",
+      "semanticQuery": "초록색 제품",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-wa-0004",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2445,
+      "n": 4,
+      "outcome": "correctReject",
+      "semanticQuery": "초록색 제품",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-wa-0004",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2284,
+      "n": 5,
+      "outcome": "correctReject",
+      "semanticQuery": "초록색",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-wa-0004",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 27114,
+      "n": 6,
+      "outcome": "correctReject",
+      "semanticQuery": "초록색 제품",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-wa-0004",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 3901,
+      "n": 7,
+      "outcome": "correctReject",
+      "semanticQuery": "초록색 상품",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-wa-0005",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2747,
+      "n": 0,
+      "outcome": "correctReject",
+      "semanticQuery": "레트로 무드등",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-wa-0005",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2282,
+      "n": 1,
+      "outcome": "correctReject",
+      "semanticQuery": "레트로 무드등",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-wa-0005",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 3090,
+      "n": 2,
+      "outcome": "correctReject",
+      "semanticQuery": "레트로 무드등",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-wa-0005",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2023,
+      "n": 3,
+      "outcome": "correctReject",
+      "semanticQuery": "레트로 무드등",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-wa-0005",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 26954,
+      "n": 4,
+      "outcome": "correctReject",
+      "semanticQuery": "레트로 무드등",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-wa-0005",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 4514,
+      "n": 5,
+      "outcome": "correctReject",
+      "semanticQuery": "레트로 무드등",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 3,
+      "caseId": "under-wa-0005",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2772,
+      "n": 6,
+      "outcome": "correctReject",
+      "semanticQuery": "레트로 무드등",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-wa-0005",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2412,
+      "n": 7,
+      "outcome": "correctReject",
+      "semanticQuery": "레트로 무드등",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-wa-0006",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2363,
+      "n": 0,
+      "outcome": "correctReject",
+      "semanticQuery": "미니멀 텀블러",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-wa-0006",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 3229,
+      "n": 1,
+      "outcome": "correctReject",
+      "semanticQuery": "미니멀 텀블러",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-wa-0006",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 25246,
+      "n": 2,
+      "outcome": "correctReject",
+      "semanticQuery": "미니멀 텀블러",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-wa-0006",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 4053,
+      "n": 3,
+      "outcome": "correctReject",
+      "semanticQuery": "미니멀 텀블러",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-wa-0006",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2455,
+      "n": 4,
+      "outcome": "correctReject",
+      "semanticQuery": "미니멀 텀블러",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-wa-0006",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2361,
+      "n": 5,
+      "outcome": "correctReject",
+      "semanticQuery": "미니멀 텀블러",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-wa-0006",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2538,
+      "n": 6,
+      "outcome": "correctReject",
+      "semanticQuery": "미니멀 텀블러",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    },
+    {
+      "blockingAxes": [],
+      "case": 2,
+      "caseId": "under-wa-0006",
+      "causeAxes": [],
+      "expansionReason": null,
+      "expectedReask": false,
+      "intent": "recommend",
+      "latencyMs": 2033,
+      "n": 7,
+      "outcome": "correctReject",
+      "semanticQuery": "미니멀 텀블러",
+      "semanticQueryIsFallback": false,
+      "slice": "what_axis",
+      "verdict": false
+    }
+  ],
+  "slices": {
+    "expansionGateWouldFireRate": {
+      "blocking_rating": {
+        "axisId": "expansionGateWouldFireRate",
+        "belowSampleThreshold": true,
+        "ci95": null,
+        "definition": {
+          "denominator": "판정 True 인 recommend 표본(F-1)",
+          "numerator": "detect_expansion_need(...) 가 사유를 돌려준 표본"
+        },
+        "denominator": 0,
+        "nature": "exploratory",
+        "numerator": 0,
+        "ratio": null,
+        "title": "전개 게이트 발동률(판정 True 표본 중)"
+      },
+      "constraint_budget_set": {
+        "axisId": "expansionGateWouldFireRate",
+        "belowSampleThreshold": true,
+        "ci95": [
+          0.20654931437723742,
+          1.0
+        ],
+        "definition": {
+          "denominator": "판정 True 인 recommend 표본(F-1)",
+          "numerator": "detect_expansion_need(...) 가 사유를 돌려준 표본"
+        },
+        "denominator": 1,
+        "nature": "exploratory",
+        "numerator": 1,
+        "ratio": 1.0,
+        "title": "전개 게이트 발동률(판정 True 표본 중)"
+      },
+      "constraint_price": {
+        "axisId": "expansionGateWouldFireRate",
+        "belowSampleThreshold": true,
+        "ci95": null,
+        "definition": {
+          "denominator": "판정 True 인 recommend 표본(F-1)",
+          "numerator": "detect_expansion_need(...) 가 사유를 돌려준 표본"
+        },
+        "denominator": 0,
+        "nature": "exploratory",
+        "numerator": 0,
+        "ratio": null,
+        "title": "전개 게이트 발동률(판정 True 표본 중)"
+      },
+      "multiturn_gate": {
+        "axisId": "expansionGateWouldFireRate",
+        "belowSampleThreshold": true,
+        "ci95": null,
+        "definition": {
+          "denominator": "판정 True 인 recommend 표본(F-1)",
+          "numerator": "detect_expansion_need(...) 가 사유를 돌려준 표본"
+        },
+        "denominator": 0,
+        "nature": "exploratory",
+        "numerator": 0,
+        "ratio": null,
+        "title": "전개 게이트 발동률(판정 True 표본 중)"
+      },
+      "no_condition": {
+        "axisId": "expansionGateWouldFireRate",
+        "belowSampleThreshold": true,
+        "ci95": null,
+        "definition": {
+          "denominator": "판정 True 인 recommend 표본(F-1)",
+          "numerator": "detect_expansion_need(...) 가 사유를 돌려준 표본"
+        },
+        "denominator": 0,
+        "nature": "exploratory",
+        "numerator": 0,
+        "ratio": null,
+        "title": "전개 게이트 발동률(판정 True 표본 중)"
+      },
+      "what_axis": {
+        "axisId": "expansionGateWouldFireRate",
+        "belowSampleThreshold": true,
+        "ci95": null,
+        "definition": {
+          "denominator": "판정 True 인 recommend 표본(F-1)",
+          "numerator": "detect_expansion_need(...) 가 사유를 돌려준 표본"
+        },
+        "denominator": 0,
+        "nature": "exploratory",
+        "numerator": 0,
+        "ratio": null,
+        "title": "전개 게이트 발동률(판정 True 표본 중)"
+      }
+    },
+    "falseAlarmRate": {
+      "blocking_rating": {
+        "axisId": "falseAlarmRate",
+        "belowSampleThreshold": false,
+        "ci95": [
+          0.0,
+          0.08762160119728664
+        ],
+        "definition": {
+          "denominator": "expectedReask=false 앵커의 recommend 표본(multiturn_gate 슬라이스 제외)(F-1)",
+          "numerator": "판정 True"
+        },
+        "denominator": 40,
+        "nature": "confirmatory-secondary",
+        "numerator": 0,
+        "ratio": 0.0,
+        "title": "오탐율"
+      },
+      "constraint_budget_set": {
+        "axisId": "falseAlarmRate",
+        "belowSampleThreshold": true,
+        "ci95": null,
+        "definition": {
+          "denominator": "expectedReask=false 앵커의 recommend 표본(multiturn_gate 슬라이스 제외)(F-1)",
+          "numerator": "판정 True"
+        },
+        "denominator": 0,
+        "nature": "confirmatory-secondary",
+        "numerator": 0,
+        "ratio": null,
+        "title": "오탐율"
+      },
+      "constraint_price": {
+        "axisId": "falseAlarmRate",
+        "belowSampleThreshold": true,
+        "ci95": null,
+        "definition": {
+          "denominator": "expectedReask=false 앵커의 recommend 표본(multiturn_gate 슬라이스 제외)(F-1)",
+          "numerator": "판정 True"
+        },
+        "denominator": 0,
+        "nature": "confirmatory-secondary",
+        "numerator": 0,
+        "ratio": null,
+        "title": "오탐율"
+      },
+      "multiturn_gate": {
+        "axisId": "falseAlarmRate",
+        "belowSampleThreshold": true,
+        "ci95": null,
+        "definition": {
+          "denominator": "expectedReask=false 앵커의 recommend 표본(multiturn_gate 슬라이스 제외)(F-1)",
+          "numerator": "판정 True"
+        },
+        "denominator": 0,
+        "nature": "confirmatory-secondary",
+        "numerator": 0,
+        "ratio": null,
+        "title": "오탐율"
+      },
+      "no_condition": {
+        "axisId": "falseAlarmRate",
+        "belowSampleThreshold": true,
+        "ci95": null,
+        "definition": {
+          "denominator": "expectedReask=false 앵커의 recommend 표본(multiturn_gate 슬라이스 제외)(F-1)",
+          "numerator": "판정 True"
+        },
+        "denominator": 0,
+        "nature": "confirmatory-secondary",
+        "numerator": 0,
+        "ratio": null,
+        "title": "오탐율"
+      },
+      "what_axis": {
+        "axisId": "falseAlarmRate",
+        "belowSampleThreshold": false,
+        "ci95": [
+          0.0,
+          0.05662405979280534
+        ],
+        "definition": {
+          "denominator": "expectedReask=false 앵커의 recommend 표본(multiturn_gate 슬라이스 제외)(F-1)",
+          "numerator": "판정 True"
+        },
+        "denominator": 64,
+        "nature": "confirmatory-secondary",
+        "numerator": 0,
+        "ratio": 0.0,
+        "title": "오탐율"
+      }
+    },
+    "falseAlarmRateWithGateSlice": {
+      "blocking_rating": {
+        "axisId": "falseAlarmRateWithGateSlice",
+        "belowSampleThreshold": false,
+        "ci95": [
+          0.0,
+          0.08762160119728664
+        ],
+        "definition": {
+          "denominator": "expectedReask=false 앵커의 recommend 표본(게이트 포함)(F-1)",
+          "numerator": "판정 True"
+        },
+        "denominator": 40,
+        "nature": "exploratory",
+        "numerator": 0,
+        "ratio": 0.0,
+        "title": "오탐율"
+      },
+      "constraint_budget_set": {
+        "axisId": "falseAlarmRateWithGateSlice",
+        "belowSampleThreshold": true,
+        "ci95": null,
+        "definition": {
+          "denominator": "expectedReask=false 앵커의 recommend 표본(게이트 포함)(F-1)",
+          "numerator": "판정 True"
+        },
+        "denominator": 0,
+        "nature": "exploratory",
+        "numerator": 0,
+        "ratio": null,
+        "title": "오탐율"
+      },
+      "constraint_price": {
+        "axisId": "falseAlarmRateWithGateSlice",
+        "belowSampleThreshold": true,
+        "ci95": null,
+        "definition": {
+          "denominator": "expectedReask=false 앵커의 recommend 표본(게이트 포함)(F-1)",
+          "numerator": "판정 True"
+        },
+        "denominator": 0,
+        "nature": "exploratory",
+        "numerator": 0,
+        "ratio": null,
+        "title": "오탐율"
+      },
+      "multiturn_gate": {
+        "axisId": "falseAlarmRateWithGateSlice",
+        "belowSampleThreshold": true,
+        "ci95": [
+          1.1962983316807505e-17,
+          0.1379762046749802
+        ],
+        "definition": {
+          "denominator": "expectedReask=false 앵커의 recommend 표본(게이트 포함)(F-1)",
+          "numerator": "판정 True"
+        },
+        "denominator": 24,
+        "nature": "exploratory",
+        "numerator": 0,
+        "ratio": 0.0,
+        "title": "오탐율"
+      },
+      "no_condition": {
+        "axisId": "falseAlarmRateWithGateSlice",
+        "belowSampleThreshold": true,
+        "ci95": null,
+        "definition": {
+          "denominator": "expectedReask=false 앵커의 recommend 표본(게이트 포함)(F-1)",
+          "numerator": "판정 True"
+        },
+        "denominator": 0,
+        "nature": "exploratory",
+        "numerator": 0,
+        "ratio": null,
+        "title": "오탐율"
+      },
+      "what_axis": {
+        "axisId": "falseAlarmRateWithGateSlice",
+        "belowSampleThreshold": false,
+        "ci95": [
+          0.0,
+          0.05662405979280534
+        ],
+        "definition": {
+          "denominator": "expectedReask=false 앵커의 recommend 표본(게이트 포함)(F-1)",
+          "numerator": "판정 True"
+        },
+        "denominator": 64,
+        "nature": "exploratory",
+        "numerator": 0,
+        "ratio": 0.0,
+        "title": "오탐율"
+      }
+    },
+    "falseAlarmRateWithNonRecommendIntent": {
+      "blocking_rating": {
+        "axisId": "falseAlarmRateWithNonRecommendIntent",
+        "belowSampleThreshold": false,
+        "ci95": [
+          0.0,
+          0.08762160119728664
+        ],
+        "definition": {
+          "denominator": "expectedReask=false 표본(intent 무관, multiturn_gate 제외, 포함판)",
+          "numerator": "판정 True"
+        },
+        "denominator": 40,
+        "nature": "exploratory",
+        "numerator": 0,
+        "ratio": 0.0,
+        "title": "오탐율(비-recommend 포함, 참고용)"
+      },
+      "constraint_budget_set": {
+        "axisId": "falseAlarmRateWithNonRecommendIntent",
+        "belowSampleThreshold": true,
+        "ci95": null,
+        "definition": {
+          "denominator": "expectedReask=false 표본(intent 무관, multiturn_gate 제외, 포함판)",
+          "numerator": "판정 True"
+        },
+        "denominator": 0,
+        "nature": "exploratory",
+        "numerator": 0,
+        "ratio": null,
+        "title": "오탐율(비-recommend 포함, 참고용)"
+      },
+      "constraint_price": {
+        "axisId": "falseAlarmRateWithNonRecommendIntent",
+        "belowSampleThreshold": true,
+        "ci95": null,
+        "definition": {
+          "denominator": "expectedReask=false 표본(intent 무관, multiturn_gate 제외, 포함판)",
+          "numerator": "판정 True"
+        },
+        "denominator": 0,
+        "nature": "exploratory",
+        "numerator": 0,
+        "ratio": null,
+        "title": "오탐율(비-recommend 포함, 참고용)"
+      },
+      "multiturn_gate": {
+        "axisId": "falseAlarmRateWithNonRecommendIntent",
+        "belowSampleThreshold": true,
+        "ci95": null,
+        "definition": {
+          "denominator": "expectedReask=false 표본(intent 무관, multiturn_gate 제외, 포함판)",
+          "numerator": "판정 True"
+        },
+        "denominator": 0,
+        "nature": "exploratory",
+        "numerator": 0,
+        "ratio": null,
+        "title": "오탐율(비-recommend 포함, 참고용)"
+      },
+      "no_condition": {
+        "axisId": "falseAlarmRateWithNonRecommendIntent",
+        "belowSampleThreshold": true,
+        "ci95": null,
+        "definition": {
+          "denominator": "expectedReask=false 표본(intent 무관, multiturn_gate 제외, 포함판)",
+          "numerator": "판정 True"
+        },
+        "denominator": 0,
+        "nature": "exploratory",
+        "numerator": 0,
+        "ratio": null,
+        "title": "오탐율(비-recommend 포함, 참고용)"
+      },
+      "what_axis": {
+        "axisId": "falseAlarmRateWithNonRecommendIntent",
+        "belowSampleThreshold": false,
+        "ci95": [
+          0.0,
+          0.05662405979280534
+        ],
+        "definition": {
+          "denominator": "expectedReask=false 표본(intent 무관, multiturn_gate 제외, 포함판)",
+          "numerator": "판정 True"
+        },
+        "denominator": 64,
+        "nature": "exploratory",
+        "numerator": 0,
+        "ratio": 0.0,
+        "title": "오탐율(비-recommend 포함, 참고용)"
+      }
+    },
+    "flagOffInvariant": {
+      "blocking_rating": {
+        "axisId": "flagOffInvariant",
+        "belowSampleThreshold": false,
+        "ci95": [
+          0.0,
+          0.08762160119728664
+        ],
+        "definition": {
+          "denominator": "전 표본(intent 무관 — 판정 함수 게이트 자체를 보는 불변식, F-1)",
+          "numerator": "underspecified_reask_enabled=False 로 재판정했을 때 True 인 표본 수"
+        },
+        "denominator": 40,
+        "nature": "invariant",
+        "numerator": 0,
+        "ratio": 0.0,
+        "title": "flag off 불변식"
+      },
+      "constraint_budget_set": {
+        "axisId": "flagOffInvariant",
+        "belowSampleThreshold": true,
+        "ci95": [
+          0.0,
+          0.1071791982550706
+        ],
+        "definition": {
+          "denominator": "전 표본(intent 무관 — 판정 함수 게이트 자체를 보는 불변식, F-1)",
+          "numerator": "underspecified_reask_enabled=False 로 재판정했을 때 True 인 표본 수"
+        },
+        "denominator": 32,
+        "nature": "invariant",
+        "numerator": 0,
+        "ratio": 0.0,
+        "title": "flag off 불변식"
+      },
+      "constraint_price": {
+        "axisId": "flagOffInvariant",
+        "belowSampleThreshold": false,
+        "ci95": [
+          0.0,
+          0.08762160119728664
+        ],
+        "definition": {
+          "denominator": "전 표본(intent 무관 — 판정 함수 게이트 자체를 보는 불변식, F-1)",
+          "numerator": "underspecified_reask_enabled=False 로 재판정했을 때 True 인 표본 수"
+        },
+        "denominator": 40,
+        "nature": "invariant",
+        "numerator": 0,
+        "ratio": 0.0,
+        "title": "flag off 불변식"
+      },
+      "multiturn_gate": {
+        "axisId": "flagOffInvariant",
+        "belowSampleThreshold": true,
+        "ci95": [
+          1.1962983316807505e-17,
+          0.1379762046749802
+        ],
+        "definition": {
+          "denominator": "전 표본(intent 무관 — 판정 함수 게이트 자체를 보는 불변식, F-1)",
+          "numerator": "underspecified_reask_enabled=False 로 재판정했을 때 True 인 표본 수"
+        },
+        "denominator": 24,
+        "nature": "invariant",
+        "numerator": 0,
+        "ratio": 0.0,
+        "title": "flag off 불변식"
+      },
+      "no_condition": {
+        "axisId": "flagOffInvariant",
+        "belowSampleThreshold": false,
+        "ci95": [
+          0.0,
+          0.08762160119728664
+        ],
+        "definition": {
+          "denominator": "전 표본(intent 무관 — 판정 함수 게이트 자체를 보는 불변식, F-1)",
+          "numerator": "underspecified_reask_enabled=False 로 재판정했을 때 True 인 표본 수"
+        },
+        "denominator": 40,
+        "nature": "invariant",
+        "numerator": 0,
+        "ratio": 0.0,
+        "title": "flag off 불변식"
+      },
+      "what_axis": {
+        "axisId": "flagOffInvariant",
+        "belowSampleThreshold": false,
+        "ci95": [
+          0.0,
+          0.05662405979280534
+        ],
+        "definition": {
+          "denominator": "전 표본(intent 무관 — 판정 함수 게이트 자체를 보는 불변식, F-1)",
+          "numerator": "underspecified_reask_enabled=False 로 재판정했을 때 True 인 표본 수"
+        },
+        "denominator": 64,
+        "nature": "invariant",
+        "numerator": 0,
+        "ratio": 0.0,
+        "title": "flag off 불변식"
+      }
+    },
+    "judgmentAccuracy": {
+      "blocking_rating": {
+        "axisId": "judgmentAccuracy",
+        "belowSampleThreshold": false,
+        "ci95": [
+          0.9123783988027134,
+          1.0
+        ],
+        "definition": {
+          "denominator": "recommend 표본(게이트 제외)(F-1)",
+          "numerator": "판정 == expectedReask"
+        },
+        "denominator": 40,
+        "nature": "exploratory",
+        "numerator": 40,
+        "ratio": 1.0,
+        "title": "판정 정확도"
+      },
+      "constraint_budget_set": {
+        "axisId": "judgmentAccuracy",
+        "belowSampleThreshold": true,
+        "ci95": [
+          0.005537860164003125,
+          0.15744263820012558
+        ],
+        "definition": {
+          "denominator": "recommend 표본(게이트 제외)(F-1)",
+          "numerator": "판정 == expectedReask"
+        },
+        "denominator": 32,
+        "nature": "exploratory",
+        "numerator": 1,
+        "ratio": 0.03125,
+        "title": "판정 정확도"
+      },
+      "constraint_price": {
+        "axisId": "judgmentAccuracy",
+        "belowSampleThreshold": false,
+        "ci95": [
+          0.0,
+          0.08762160119728664
+        ],
+        "definition": {
+          "denominator": "recommend 표본(게이트 제외)(F-1)",
+          "numerator": "판정 == expectedReask"
+        },
+        "denominator": 40,
+        "nature": "exploratory",
+        "numerator": 0,
+        "ratio": 0.0,
+        "title": "판정 정확도"
+      },
+      "multiturn_gate": {
+        "axisId": "judgmentAccuracy",
+        "belowSampleThreshold": true,
+        "ci95": null,
+        "definition": {
+          "denominator": "recommend 표본(게이트 제외)(F-1)",
+          "numerator": "판정 == expectedReask"
+        },
+        "denominator": 0,
+        "nature": "exploratory",
+        "numerator": 0,
+        "ratio": null,
+        "title": "판정 정확도"
+      },
+      "no_condition": {
+        "axisId": "judgmentAccuracy",
+        "belowSampleThreshold": true,
+        "ci95": [
+          0.0,
+          0.08966685370757144
+        ],
+        "definition": {
+          "denominator": "recommend 표본(게이트 제외)(F-1)",
+          "numerator": "판정 == expectedReask"
+        },
+        "denominator": 39,
+        "nature": "exploratory",
+        "numerator": 0,
+        "ratio": 0.0,
+        "title": "판정 정확도"
+      },
+      "what_axis": {
+        "axisId": "judgmentAccuracy",
+        "belowSampleThreshold": false,
+        "ci95": [
+          0.9433759402071946,
+          1.0
+        ],
+        "definition": {
+          "denominator": "recommend 표본(게이트 제외)(F-1)",
+          "numerator": "판정 == expectedReask"
+        },
+        "denominator": 64,
+        "nature": "exploratory",
+        "numerator": 64,
+        "ratio": 1.0,
+        "title": "판정 정확도"
+      }
+    },
+    "judgmentAccuracyWithGateSlice": {
+      "blocking_rating": {
+        "axisId": "judgmentAccuracyWithGateSlice",
+        "belowSampleThreshold": false,
+        "ci95": [
+          0.9123783988027134,
+          1.0
+        ],
+        "definition": {
+          "denominator": "recommend 표본(게이트 포함)(F-1)",
+          "numerator": "판정 == expectedReask"
+        },
+        "denominator": 40,
+        "nature": "exploratory",
+        "numerator": 40,
+        "ratio": 1.0,
+        "title": "판정 정확도"
+      },
+      "constraint_budget_set": {
+        "axisId": "judgmentAccuracyWithGateSlice",
+        "belowSampleThreshold": true,
+        "ci95": [
+          0.005537860164003125,
+          0.15744263820012558
+        ],
+        "definition": {
+          "denominator": "recommend 표본(게이트 포함)(F-1)",
+          "numerator": "판정 == expectedReask"
+        },
+        "denominator": 32,
+        "nature": "exploratory",
+        "numerator": 1,
+        "ratio": 0.03125,
+        "title": "판정 정확도"
+      },
+      "constraint_price": {
+        "axisId": "judgmentAccuracyWithGateSlice",
+        "belowSampleThreshold": false,
+        "ci95": [
+          0.0,
+          0.08762160119728664
+        ],
+        "definition": {
+          "denominator": "recommend 표본(게이트 포함)(F-1)",
+          "numerator": "판정 == expectedReask"
+        },
+        "denominator": 40,
+        "nature": "exploratory",
+        "numerator": 0,
+        "ratio": 0.0,
+        "title": "판정 정확도"
+      },
+      "multiturn_gate": {
+        "axisId": "judgmentAccuracyWithGateSlice",
+        "belowSampleThreshold": true,
+        "ci95": [
+          0.8620237953250198,
+          1.0
+        ],
+        "definition": {
+          "denominator": "recommend 표본(게이트 포함)(F-1)",
+          "numerator": "판정 == expectedReask"
+        },
+        "denominator": 24,
+        "nature": "exploratory",
+        "numerator": 24,
+        "ratio": 1.0,
+        "title": "판정 정확도"
+      },
+      "no_condition": {
+        "axisId": "judgmentAccuracyWithGateSlice",
+        "belowSampleThreshold": true,
+        "ci95": [
+          0.0,
+          0.08966685370757144
+        ],
+        "definition": {
+          "denominator": "recommend 표본(게이트 포함)(F-1)",
+          "numerator": "판정 == expectedReask"
+        },
+        "denominator": 39,
+        "nature": "exploratory",
+        "numerator": 0,
+        "ratio": 0.0,
+        "title": "판정 정확도"
+      },
+      "what_axis": {
+        "axisId": "judgmentAccuracyWithGateSlice",
+        "belowSampleThreshold": false,
+        "ci95": [
+          0.9433759402071946,
+          1.0
+        ],
+        "definition": {
+          "denominator": "recommend 표본(게이트 포함)(F-1)",
+          "numerator": "판정 == expectedReask"
+        },
+        "denominator": 64,
+        "nature": "exploratory",
+        "numerator": 64,
+        "ratio": 1.0,
+        "title": "판정 정확도"
+      }
+    },
+    "missRate": {
+      "blocking_rating": {
+        "axisId": "missRate",
+        "belowSampleThreshold": true,
+        "ci95": null,
+        "definition": {
+          "denominator": "expectedReask=true 앵커의 recommend 표본 — 프로덕션은 intent==recommend 인 턴에서만 is_underspecified_turn 을 호출한다(F-1)",
+          "numerator": "판정 False"
+        },
+        "denominator": 0,
+        "nature": "confirmatory-primary",
+        "numerator": 0,
+        "ratio": null,
+        "title": "미탐율"
+      },
+      "constraint_budget_set": {
+        "axisId": "missRate",
+        "belowSampleThreshold": true,
+        "ci95": [
+          0.8425573617998744,
+          0.9944621398359969
+        ],
+        "definition": {
+          "denominator": "expectedReask=true 앵커의 recommend 표본 — 프로덕션은 intent==recommend 인 턴에서만 is_underspecified_turn 을 호출한다(F-1)",
+          "numerator": "판정 False"
+        },
+        "denominator": 32,
+        "nature": "confirmatory-primary",
+        "numerator": 31,
+        "ratio": 0.96875,
+        "title": "미탐율"
+      },
+      "constraint_price": {
+        "axisId": "missRate",
+        "belowSampleThreshold": false,
+        "ci95": [
+          0.9123783988027134,
+          1.0
+        ],
+        "definition": {
+          "denominator": "expectedReask=true 앵커의 recommend 표본 — 프로덕션은 intent==recommend 인 턴에서만 is_underspecified_turn 을 호출한다(F-1)",
+          "numerator": "판정 False"
+        },
+        "denominator": 40,
+        "nature": "confirmatory-primary",
+        "numerator": 40,
+        "ratio": 1.0,
+        "title": "미탐율"
+      },
+      "multiturn_gate": {
+        "axisId": "missRate",
+        "belowSampleThreshold": true,
+        "ci95": null,
+        "definition": {
+          "denominator": "expectedReask=true 앵커의 recommend 표본 — 프로덕션은 intent==recommend 인 턴에서만 is_underspecified_turn 을 호출한다(F-1)",
+          "numerator": "판정 False"
+        },
+        "denominator": 0,
+        "nature": "confirmatory-primary",
+        "numerator": 0,
+        "ratio": null,
+        "title": "미탐율"
+      },
+      "no_condition": {
+        "axisId": "missRate",
+        "belowSampleThreshold": true,
+        "ci95": [
+          0.9103331462924287,
+          1.0
+        ],
+        "definition": {
+          "denominator": "expectedReask=true 앵커의 recommend 표본 — 프로덕션은 intent==recommend 인 턴에서만 is_underspecified_turn 을 호출한다(F-1)",
+          "numerator": "판정 False"
+        },
+        "denominator": 39,
+        "nature": "confirmatory-primary",
+        "numerator": 39,
+        "ratio": 1.0,
+        "title": "미탐율"
+      },
+      "what_axis": {
+        "axisId": "missRate",
+        "belowSampleThreshold": true,
+        "ci95": null,
+        "definition": {
+          "denominator": "expectedReask=true 앵커의 recommend 표본 — 프로덕션은 intent==recommend 인 턴에서만 is_underspecified_turn 을 호출한다(F-1)",
+          "numerator": "판정 False"
+        },
+        "denominator": 0,
+        "nature": "confirmatory-primary",
+        "numerator": 0,
+        "ratio": null,
+        "title": "미탐율"
+      }
+    },
+    "missRateUnderExpansionAssumption": {
+      "blocking_rating": {
+        "axisId": "missRateUnderExpansionAssumption",
+        "belowSampleThreshold": true,
+        "ci95": null,
+        "definition": {
+          "denominator": "expectedReask=true 앵커의 recommend 표본(F-1)",
+          "numerator": "(판정 False) 또는 (판정 True ∧ detect_expansion_need 가 사유를 돌려줌)"
+        },
+        "denominator": 0,
+        "nature": "exploratory",
+        "numerator": 0,
+        "ratio": null,
+        "title": "미탐율(전개 가정 상한)"
+      },
+      "constraint_budget_set": {
+        "axisId": "missRateUnderExpansionAssumption",
+        "belowSampleThreshold": true,
+        "ci95": [
+          0.8928208017449293,
+          1.0
+        ],
+        "definition": {
+          "denominator": "expectedReask=true 앵커의 recommend 표본(F-1)",
+          "numerator": "(판정 False) 또는 (판정 True ∧ detect_expansion_need 가 사유를 돌려줌)"
+        },
+        "denominator": 32,
+        "nature": "exploratory",
+        "numerator": 32,
+        "ratio": 1.0,
+        "title": "미탐율(전개 가정 상한)"
+      },
+      "constraint_price": {
+        "axisId": "missRateUnderExpansionAssumption",
+        "belowSampleThreshold": false,
+        "ci95": [
+          0.9123783988027134,
+          1.0
+        ],
+        "definition": {
+          "denominator": "expectedReask=true 앵커의 recommend 표본(F-1)",
+          "numerator": "(판정 False) 또는 (판정 True ∧ detect_expansion_need 가 사유를 돌려줌)"
+        },
+        "denominator": 40,
+        "nature": "exploratory",
+        "numerator": 40,
+        "ratio": 1.0,
+        "title": "미탐율(전개 가정 상한)"
+      },
+      "multiturn_gate": {
+        "axisId": "missRateUnderExpansionAssumption",
+        "belowSampleThreshold": true,
+        "ci95": null,
+        "definition": {
+          "denominator": "expectedReask=true 앵커의 recommend 표본(F-1)",
+          "numerator": "(판정 False) 또는 (판정 True ∧ detect_expansion_need 가 사유를 돌려줌)"
+        },
+        "denominator": 0,
+        "nature": "exploratory",
+        "numerator": 0,
+        "ratio": null,
+        "title": "미탐율(전개 가정 상한)"
+      },
+      "no_condition": {
+        "axisId": "missRateUnderExpansionAssumption",
+        "belowSampleThreshold": true,
+        "ci95": [
+          0.9103331462924287,
+          1.0
+        ],
+        "definition": {
+          "denominator": "expectedReask=true 앵커의 recommend 표본(F-1)",
+          "numerator": "(판정 False) 또는 (판정 True ∧ detect_expansion_need 가 사유를 돌려줌)"
+        },
+        "denominator": 39,
+        "nature": "exploratory",
+        "numerator": 39,
+        "ratio": 1.0,
+        "title": "미탐율(전개 가정 상한)"
+      },
+      "what_axis": {
+        "axisId": "missRateUnderExpansionAssumption",
+        "belowSampleThreshold": true,
+        "ci95": null,
+        "definition": {
+          "denominator": "expectedReask=true 앵커의 recommend 표본(F-1)",
+          "numerator": "(판정 False) 또는 (판정 True ∧ detect_expansion_need 가 사유를 돌려줌)"
+        },
+        "denominator": 0,
+        "nature": "exploratory",
+        "numerator": 0,
+        "ratio": null,
+        "title": "미탐율(전개 가정 상한)"
+      }
+    },
+    "missRateWithNonRecommendIntent": {
+      "blocking_rating": {
+        "axisId": "missRateWithNonRecommendIntent",
+        "belowSampleThreshold": true,
+        "ci95": null,
+        "definition": {
+          "denominator": "expectedReask=true 앵커의 표본 전부(intent 무관, 포함판)",
+          "numerator": "판정 False"
+        },
+        "denominator": 0,
+        "nature": "exploratory",
+        "numerator": 0,
+        "ratio": null,
+        "title": "미탐율(비-recommend 포함, 참고용)"
+      },
+      "constraint_budget_set": {
+        "axisId": "missRateWithNonRecommendIntent",
+        "belowSampleThreshold": true,
+        "ci95": [
+          0.8425573617998744,
+          0.9944621398359969
+        ],
+        "definition": {
+          "denominator": "expectedReask=true 앵커의 표본 전부(intent 무관, 포함판)",
+          "numerator": "판정 False"
+        },
+        "denominator": 32,
+        "nature": "exploratory",
+        "numerator": 31,
+        "ratio": 0.96875,
+        "title": "미탐율(비-recommend 포함, 참고용)"
+      },
+      "constraint_price": {
+        "axisId": "missRateWithNonRecommendIntent",
+        "belowSampleThreshold": false,
+        "ci95": [
+          0.9123783988027134,
+          1.0
+        ],
+        "definition": {
+          "denominator": "expectedReask=true 앵커의 표본 전부(intent 무관, 포함판)",
+          "numerator": "판정 False"
+        },
+        "denominator": 40,
+        "nature": "exploratory",
+        "numerator": 40,
+        "ratio": 1.0,
+        "title": "미탐율(비-recommend 포함, 참고용)"
+      },
+      "multiturn_gate": {
+        "axisId": "missRateWithNonRecommendIntent",
+        "belowSampleThreshold": true,
+        "ci95": null,
+        "definition": {
+          "denominator": "expectedReask=true 앵커의 표본 전부(intent 무관, 포함판)",
+          "numerator": "판정 False"
+        },
+        "denominator": 0,
+        "nature": "exploratory",
+        "numerator": 0,
+        "ratio": null,
+        "title": "미탐율(비-recommend 포함, 참고용)"
+      },
+      "no_condition": {
+        "axisId": "missRateWithNonRecommendIntent",
+        "belowSampleThreshold": false,
+        "ci95": [
+          0.8711863103652591,
+          0.9955731684973186
+        ],
+        "definition": {
+          "denominator": "expectedReask=true 앵커의 표본 전부(intent 무관, 포함판)",
+          "numerator": "판정 False"
+        },
+        "denominator": 40,
+        "nature": "exploratory",
+        "numerator": 39,
+        "ratio": 0.975,
+        "title": "미탐율(비-recommend 포함, 참고용)"
+      },
+      "what_axis": {
+        "axisId": "missRateWithNonRecommendIntent",
+        "belowSampleThreshold": true,
+        "ci95": null,
+        "definition": {
+          "denominator": "expectedReask=true 앵커의 표본 전부(intent 무관, 포함판)",
+          "numerator": "판정 False"
+        },
+        "denominator": 0,
+        "nature": "exploratory",
+        "numerator": 0,
+        "ratio": null,
+        "title": "미탐율(비-recommend 포함, 참고용)"
+      }
+    },
+    "priorGateInvariant": {
+      "blocking_rating": {
+        "axisId": "priorGateInvariant",
+        "belowSampleThreshold": false,
+        "ci95": [
+          0.0,
+          0.08762160119728664
+        ],
+        "definition": {
+          "denominator": "전 표본(intent 무관 — 판정 함수 게이트 자체를 보는 불변식, F-1)",
+          "numerator": "prior=ProductSearchFilters() 로 재판정했을 때 True 인 표본 수"
+        },
+        "denominator": 40,
+        "nature": "invariant",
+        "numerator": 0,
+        "ratio": 0.0,
+        "title": "prior 게이트 불변식"
+      },
+      "constraint_budget_set": {
+        "axisId": "priorGateInvariant",
+        "belowSampleThreshold": true,
+        "ci95": [
+          0.0,
+          0.1071791982550706
+        ],
+        "definition": {
+          "denominator": "전 표본(intent 무관 — 판정 함수 게이트 자체를 보는 불변식, F-1)",
+          "numerator": "prior=ProductSearchFilters() 로 재판정했을 때 True 인 표본 수"
+        },
+        "denominator": 32,
+        "nature": "invariant",
+        "numerator": 0,
+        "ratio": 0.0,
+        "title": "prior 게이트 불변식"
+      },
+      "constraint_price": {
+        "axisId": "priorGateInvariant",
+        "belowSampleThreshold": false,
+        "ci95": [
+          0.0,
+          0.08762160119728664
+        ],
+        "definition": {
+          "denominator": "전 표본(intent 무관 — 판정 함수 게이트 자체를 보는 불변식, F-1)",
+          "numerator": "prior=ProductSearchFilters() 로 재판정했을 때 True 인 표본 수"
+        },
+        "denominator": 40,
+        "nature": "invariant",
+        "numerator": 0,
+        "ratio": 0.0,
+        "title": "prior 게이트 불변식"
+      },
+      "multiturn_gate": {
+        "axisId": "priorGateInvariant",
+        "belowSampleThreshold": true,
+        "ci95": [
+          1.1962983316807505e-17,
+          0.1379762046749802
+        ],
+        "definition": {
+          "denominator": "전 표본(intent 무관 — 판정 함수 게이트 자체를 보는 불변식, F-1)",
+          "numerator": "prior=ProductSearchFilters() 로 재판정했을 때 True 인 표본 수"
+        },
+        "denominator": 24,
+        "nature": "invariant",
+        "numerator": 0,
+        "ratio": 0.0,
+        "title": "prior 게이트 불변식"
+      },
+      "no_condition": {
+        "axisId": "priorGateInvariant",
+        "belowSampleThreshold": false,
+        "ci95": [
+          0.0,
+          0.08762160119728664
+        ],
+        "definition": {
+          "denominator": "전 표본(intent 무관 — 판정 함수 게이트 자체를 보는 불변식, F-1)",
+          "numerator": "prior=ProductSearchFilters() 로 재판정했을 때 True 인 표본 수"
+        },
+        "denominator": 40,
+        "nature": "invariant",
+        "numerator": 0,
+        "ratio": 0.0,
+        "title": "prior 게이트 불변식"
+      },
+      "what_axis": {
+        "axisId": "priorGateInvariant",
+        "belowSampleThreshold": false,
+        "ci95": [
+          0.0,
+          0.05662405979280534
+        ],
+        "definition": {
+          "denominator": "전 표본(intent 무관 — 판정 함수 게이트 자체를 보는 불변식, F-1)",
+          "numerator": "prior=ProductSearchFilters() 로 재판정했을 때 True 인 표본 수"
+        },
+        "denominator": 64,
+        "nature": "invariant",
+        "numerator": 0,
+        "ratio": 0.0,
+        "title": "prior 게이트 불변식"
+      }
+    }
+  },
+  "tier": "fast",
+  "unfilledCells": []
+}

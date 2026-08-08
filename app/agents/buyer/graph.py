@@ -26,6 +26,7 @@ from pydantic import ValidationError
 from app.agents.buyer._frames import progress as progress_frame
 from app.agents.buyer._frames import sse
 from app.agents.buyer.cart.graph import stream_cart_add, stream_cart_view
+from app.agents.buyer.cart.options import condition_terms as cart_condition_terms
 from app.agents.buyer.cart.remove import stream_cart_remove
 from app.agents.buyer.cart.state import get_cart_store
 from app.agents.buyer.cart.wishlist import (
@@ -631,11 +632,17 @@ async def run_buyer_turn(
     popular_fn=None,
     observer=None,
     request_id: str | None = None,
+    turn_started_at: float | None = None,
 ) -> AsyncIterator[str]:
     """구매자 1턴을 SSE 프레임으로 스트리밍한다(open_stream 이 감싸는 inner).
 
     llm/search/push_fn/map_categories 미지정 시 라이브 기본값 — 테스트는 fake 를 주입한다.
     LLM 미구성(개발·CI)이면 네트워크 호출 없이 곧바로 LLM_UNAVAILABLE error 를 낸다.
+
+    [#427] `turn_started_at` 은 `open_stream` 이 잡은 스트림 시작 절대 시각(`loop.time()`)
+    이다 — 구제 체인 공유 예산(`stream_recommendation` 의 `rescue_deadline`)이 이 값을 원점으로
+    파생한다. 그대로 `stream_recommendation` 에 전달한다(새로 시각을 찍지 않는다 — 원점이
+    갈리면 D2 의 부등식 증명이 깨진다).
     """
     settings = get_settings()
     resolved_request_id = cast(
@@ -1053,6 +1060,18 @@ async def run_buyer_turn(
         else set()
     )
     allowed = {pid for pid, _ in last_reco} | screen_product_ids
+    # [#435] last_reco 이름 커버리지 관측 — 이 이슈가 "미확정"으로 넘어온 이유는 그 턴의
+    # LAST_RECOMMENDATIONS 에 이름이 있었는지 운영 로그에서 알 수 없었기 때문이다(패킷 §3).
+    # 담기·찜 계열 턴에 한해 개수만 남긴다 — 상품명·발화 원문은 판매자 입력·PII 라 싣지 않는다.
+    has_last_reco = bool(last_reco)
+    if decision.intent in ("cart_add", "wishlist_add", "wishlist_remove"):
+        logger.info(
+            "last_reco_name_coverage",
+            extra={
+                "total": len(last_reco),
+                "named": sum(1 for _, name in last_reco if name),
+            },
+        )
 
     if decision.intent == "order_status":
         if trace := current_request_trace():
@@ -1172,6 +1191,10 @@ async def run_buyer_turn(
                 message=request.message,
                 allowed_product_ids=allowed,
                 screen_reason=screen_reason,
+                # [이슈 #455] 누적 필터(prior) 우선 + 이번 턴 산출(decision.filters) — 옵션 되물음
+                # 좁히기의 조건어 원천. 담기 흐름 밖의 다른 라우팅·프롬프트는 건드리지 않는다.
+                condition_terms=cart_condition_terms(prior, decision.filters),
+                has_last_reco=has_last_reco,
                 observer=observer,
             ):
                 yield frame
@@ -1209,6 +1232,7 @@ async def run_buyer_turn(
                 cart=cart_intent,
                 settings=settings,
                 allowed_product_ids=allowed,
+                has_last_reco=has_last_reco,
                 observer=observer,
             ):
                 yield frame
@@ -1283,5 +1307,6 @@ async def run_buyer_turn(
             # [#119] 개인화 off(A/B baseline arm)면 취향 랭킹도 함께 끈다 — rerank 주입과 같은
             # 스위치를 따라야 arm 이 "개인화 없음"으로 일관된다.
             profile_vec=(None if settings.profile_injection_scope == "off" else profile_vec),
+            turn_started_at=turn_started_at,
         ):
             yield frame
