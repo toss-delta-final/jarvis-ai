@@ -39,10 +39,13 @@
    BE 코드(`HomeRecommendationService`, head `eed93d0`)에서 직접 확인했다(§2). 무효화가 필요한
    지점은 중지·초기화 2곳뿐이다 — **재개·개별 수정삭제는 요구하지 않는다**(직전 개정에서 재개를
    트리거에 넣었던 것은 정정했다, §2.1-2).
-3. **남은 진짜 협의는 C-20·C-21뿐이다** — 둘 다 BE에 구현이 없어(`internal/profile`·
+3. **남은 진짜 협의는 C-20·C-21뿐이다** — BE 쪽 HTTP 구현이 없어(`internal/profile`·
    `personalization`·`graphVersion` 검색 0건) 실측으로 대체할 수 없고, 본질이 "앞으로 이렇게
-   만들겠다"는 확약이다. **리드타임 때문에 지금 던져야 한다**(§3·§4). C-20 요청문에는 I-번호·
-   `M-11`~`M-16` 채번 확인(api-spec C-26)을 새로 추가했다(§3.4 R-20-5).
+   만들겠다"는 확약이다. **AI 쪽도 HTTP 표면(internal/profile 라우트)은 0건이지만 내부 모델
+   계층(`app/agents/profile/graph_models.py`·`graph_merge.py`·`resolver.py`)은 이미 착수됐다** —
+   이는 리드타임 논거를 약화시키지 않고 **오히려 강화한다**(§3.1). **리드타임 때문에 지금
+   던져야 한다**(§3·§4). C-20 요청문에는 I-번호·`M-11`~`M-16` 채번 확인(api-spec C-26)을 새로
+   추가했다(§3.4 R-20-5).
 
 ---
 
@@ -247,8 +250,9 @@ BE 문서 마지막 줄이 *"재적재 시에는 시드 생성 단계에서 브�
 3. **무효화 코드는 없다** — `HomeRecommendationService` 안에 `redisTemplate.delete(...)` 호출이
    0건이다. 단 `StringRedisTemplate`은 이 서비스에 **이미 주입돼 있다**(필드 선언 확인).
 4. **BE에 개인화 중지·그래프 관련 구현이 0건이다** — `personalization`·`graphVersion` 전체
-   검색 0건(§3.1에서 확인한 `internal/profile` 0건과 같은 결과). 즉 기존 코드를 고치는 게 아니라
-   **M-15·M-16을 새로 만들 때 같이 넣는 것**이다.
+   검색 0건. 즉 기존 코드를 고치는 게 아니라 **M-15·M-16을 새로 만들 때 같이 넣는 것**이다.
+   (§3.1에서 확인한 AI 쪽 `internal/profile` HTTP 표면 0건과 같은 결과이지만, AI 쪽은 내부 모델
+   계층은 이미 착수돼 있다 — §3.1 참조.)
 
 **「AI 단독 불가」의 메커니즘은 그대로 유지된다** — `recommend()`의 첫 문장이 `readCache()`이고
 히트하면 그대로 반환한다. 캐시가 히트하는 한 Spring이 I-22를 호출하지 않으므로, 저희 쪽 코드가
@@ -337,8 +341,13 @@ A가 확정적이라 지금은 쓰지 않지만, 혹시 회신에서 뒤집힐 �
 - 전환 근거: 마이페이지에는 채팅 세션이 없어 `chat:stream` 스트림 티켓을 발급받을 수 없다(CH-1b
   `POST /api/chat/tickets`는 `sessionId`가 필수). **티켓을 받을 수 없는 화면에 티켓 인증을 요구하는
   계약이었다.**
-- **AI 측 구현은 0** — `grep -rn "internal/profile" app/`가 0건. #150 미착수이므로 지금 확약을
-  받아 두면 그 위에서 구현을 시작할 수 있고, 나중에 받으면 이미 짠 인증 배선을 되돌려야 한다.
+- **AI 측 HTTP 표면은 여전히 0, 단 내부 모델 계층은 착수됐다** — `grep -rn "internal/profile"
+  app/`는 지금도 0건이라 `M-11`~`M-16`을 받는 라우트 자체는 없다. 하지만 `dev` 병합 이후
+  `ls app/agents/profile/`에 `graph_models.py`·`graph_merge.py`·`resolver.py`가 새로 생겼다
+  (저장 모델·결정론적 병합 엔진·resolver — `SPEC-PROFILE-GRAPH-149` §5~§6 구현, #150 내부 모델
+  계층 착수). **이건 리드타임 논거를 약화시키지 않고 오히려 강화한다** — 내부 구현이 이미
+  진행 중이므로, 확약이 늦게 오면 그 위에 얹은 라우팅·인증 배선뿐 아니라 이미 짜인 모델 계층까지
+  되돌릴 범위가 커진다. 지금 확약을 받아 두면 그 위에서 나머지(HTTP 표면)를 시작할 수 있다.
   **리드타임 논거**로 쓴다.
 - **[2026-08-08 재확인] BE 측도 아직 미착수다** — `jarvis-backend`에서
   `grep -rln "internal/profile\|personalization" src/main/java`가 **0건**이다. M-11~M-16 컨트롤러가
