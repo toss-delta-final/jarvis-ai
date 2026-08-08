@@ -775,10 +775,16 @@ class BehaviorEventsResult(SellerAggregateModel):
       - product(기본) : rows (+ total)
       - eventType     : counts
       - date          : series (date + camelCase 이벤트 카운트, 키 동적 → dict 유지)
-    ⚠️ purchaseComplete 는 이벤트 기준(주문 완료 페이지 발사) — 매출·주문수의
-    권위는 I-6/I-14(order 기준)다(명세 집계 규칙 — 워커 해석 주의).
-    ⚠️ 판매 **수량**의 권위는 같은 row 의 salesQuantity 다(2026-08-06 신설, 취소·
-    반품 제외) — purchaseComplete 는 건수라 수량 질문에 답하지 못한다.
+    ⚠️ purchaseComplete 는 **주문 기준** 집계다 — order_item × product × brand 의
+    PAID(paid_at) 건을 COUNT(DISTINCT order_id) 한 값으로 I-7 퍼널 4단과 같은
+    정본이며, 이벤트 유실과 무관하고 과거 구간도 소급 복구된다. 건수이지 수량이
+    아니고(한 주문에 같은 상품 여러 개여도 1), 상품별 합이 eventType 합계보다
+    클 수 있으며(한 주문에 자사 상품 여러 종), 조회·담기 없이 구매만 있는 상품도
+    rows 에 등장한다. 구 "이벤트 기준·권위는 I-6/I-14" 규정은 2026-07-31 개정
+    (jarvis-backend#62)으로 폐기(#488).
+    ⚠️ 판매 **수량**은 purchaseComplete 가 아니라 rows[].salesQuantity 다(#489,
+    2026-08-06 신설 — PAID SUM(oi.quantity), 아이템 취소·반품 제외). 위 "건수이지
+    수량이 아니다"의 답이 이 필드이며, 취소·반품 처리 규칙까지 서로 다르다.
     """
 
     group_by: str = "product"
@@ -880,11 +886,20 @@ class ChurnMember(SellerAggregateModel):
 
     preChurnEvent: 클레임 있으면 "RETURNED(상품불량)" 형식(최신 1건), 없으면 마지막
     행동 이벤트 타입. 서버가 CHURN_LIST_CAP=50 으로 절단해 내려보낸다(별도 total
-    없음 — 이탈 전수는 cohortSize×churnRate 로 유추)."""
+    없음 — 이탈 전수는 cohortSize×churnRate 로 유추).
 
-    member_id: int | None = None
+    [개정 2026-08-06, #487 — #481 잔여분] memberId(Long) → customerLabel(HMAC-SHA256
+    앞 6자 Base32 사례번호)로 교체하고 lastLoginAt 을 제거한다. 원시 memberId 는
+    가명이 아니라 재식별 키라 S-2(orderId+수령인 실명) 대조로 회원이 특정된다 —
+    I-14 개정(#481)과 같은 근거가 I-16 에만 적용되지 않고 있었다. lastLoginAt 은
+    계정 보안 정보라 판매자에게 회원 단위로 줄 이유가 없다(요약에서 읽히지도 않던 사문).
+
+    ※ 필드 제거는 배포 순서와 무관하게 안전하다 — SellerAggregateModel 이
+    extra="allow" 라 BE 미배포 구간의 구응답 memberId/lastLoginAt 은 예외 없이
+    model_extra 로 흡수되고, 표시 계층이 읽지 않으므로 노출만 끊긴다."""
+
+    customer_label: str | None = None  # HMAC 익명 라벨(사례번호) — 구 memberId 대체
     last_activity_at: str | None = None
-    last_login_at: str | None = None  # 로그인 이벤트가 없으면 null
     # to_camel("sessions_30d") 은 "sessions30D"(숫자 뒤 접미 대문자화)라 와이어 키
     # "sessions30d" 와 어긋난다 — 명시 alias 로 고정한다(#197, 테스트로 회귀 방지).
     sessions_30d: int | None = Field(default=None, alias="sessions30d")

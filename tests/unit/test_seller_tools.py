@@ -992,8 +992,8 @@ async def test_behavior_tool_passes_filters_to_client() -> None:
     assert fake.recorded_event_args == (["product_view", "add_to_cart"], 101, "date")
 
 
-async def test_behavior_tool_summarizes_product_rows_with_authority_note() -> None:
-    """groupBy=product — 상품별 카운트 요약 + purchaseComplete 권위 주의 문구."""
+async def test_behavior_tool_summarizes_product_rows_with_purchase_rules_note() -> None:
+    """groupBy=product — 상품별 카운트 요약 + purchaseComplete 집계 규칙 문구."""
     fake = FakeSpringClient()
     fake.behavior_result = BehaviorEventsResult(
         group_by="product",
@@ -1021,9 +1021,10 @@ async def test_behavior_tool_summarizes_product_rows_with_authority_note() -> No
     assert "[101] 에어 러너 2" in result
     assert "조회 1820" in result and "담기 240" in result
     assert "13.2%" in result  # viewToCartRate 백분율 표기
-    assert "권위는 매출 조회(I-6)" in result  # 이벤트≠주문 권위(명세 집계 규칙)
-    # [#196] purchaseComplete 미귀속 경고 — 0 을 '구매 전무'로 오해석 금지 문구.
-    assert "구매 전무" in result and "0 집계될 수 있다" in result
+    # [#488] purchaseComplete 집계 규칙 노트 — 권위 위임이 아니라 단위 고지다.
+    assert "주문 기준 집계" in result
+    assert "건수이지 수량이 아니" in result  # ① 수량 오용 차단
+    assert "합계(eventType 집계)보다 클 수 있다" in result  # ② 상품별 합 > 합계
 
 
 def _behavior_row(pid: int, view: int, cart: int, checkout: int, purchase: int):
@@ -1060,7 +1061,7 @@ async def test_behavior_tool_appends_cluster_labels_for_product_rows() -> None:
     assert "행동 군집" in result and "실루엣" in result
     assert "카트이탈형" in result
     assert "담기율" in result and "결제진입률" in result
-    assert "권위는 매출 조회(I-6)" in result  # 기존 노트 유지
+    assert "주문 기준 집계" in result  # 기존 노트(#488 교체분) 유지
 
 
 async def test_behavior_tool_skips_clustering_for_few_products_with_reason() -> None:
@@ -1336,7 +1337,9 @@ async def test_behavior_tool_shows_new_row_fields() -> None:
     # dwellSource 한계는 행마다 반복하지 않고 요약 말미에 1회 각주로.
     assert result.count("세션의 마지막 조회가 표본에서 빠진다") == 1
     # 수량 권위 문구 — purchaseComplete 경고가 신설 지표까지 싸잡아 불신시키지 않게.
-    assert "판매 **수량**의 권위는 같은 행의 salesQuantity" in result
+    # [#488 병합] 권위 노트가 주문 기준 규칙으로 교체됐다 — ① 항이 수량 질문을
+    # 막기만 하지 않고 salesQuantity 로 보내는지 확인한다.
+    assert "수량은 같은 행의 salesQuantity" in result
 
 
 async def test_behavior_tool_distinguishes_zero_and_null_sales_quantity() -> None:
@@ -1624,12 +1627,12 @@ async def test_churn_tool_summarizes_signals_and_members() -> None:
         ),
         members=[
             ChurnMember(
-                member_id=103,
+                customer_label="A3F29C",
                 last_activity_at="2026-06-15T10:00:00+09:00",
                 sessions_30d=0,
                 pre_churn_event="RETURNED(상품불량)",
             ),
-            ChurnMember(member_id=104, last_activity_at="2026-06-01T09:00:00+09:00"),
+            ChurnMember(customer_label="B71D04", last_activity_at="2026-06-01T09:00:00+09:00"),
         ],
     )
 
@@ -1641,8 +1644,71 @@ async def test_churn_tool_summarizes_signals_and_members() -> None:
     assert "사이즈 불만(2건)" in result
     assert "가격인상 노출 2명" in result
     assert "이탈 회원 2명" in result
-    assert "[103]" in result and "RETURNED(상품불량)" in result
+    # [#487] 회원 노출은 customerLabel(사례번호)뿐 — 구 memberId 표기는 폐기.
+    assert "[A3F29C]" in result and "RETURNED(상품불량)" in result
+    assert "[B71D04]" in result
     assert "쓰지 말 것" in result  # _CHURN_SIGNAL_RULES_NOTE 상시 부착
+
+
+async def test_churn_tool_never_exposes_raw_member_id_from_legacy_response() -> None:
+    """[#487] 구응답(memberId 포함·customerLabel 부재)을 먹여도 요약에 원시 회원 키가
+    등장하지 않는다 — 라벨 결측은 "[?]"로만 떨어진다.
+
+    ChurnMember 는 SellerAggregateModel(extra="allow") 상속이라 BE 미배포 구간의
+    구응답이 와도 ValidationError 없이 model_extra 로 흡수된다. 이 테스트가 지키는
+    것은 "흡수된 값이 표시 계층으로 새지 않는다"는 것 — memberId 폴백을 되살리면
+    여기서 깨진다(#487 이 고친 결함 그 자체).
+    """
+    fake = FakeSpringClient()
+    # 코호트 규모·비율·날짜와 우연히 겹치지 않도록 6자리 구분값을 쓴다.
+    fake.churn_result = ChurnResult.model_validate(
+        {
+            "cohortSize": 5,
+            "churnRate": 0.6,
+            "preChurnSignals": {},
+            "members": [
+                {
+                    "memberId": 987654,
+                    "lastActivityAt": "2026-06-15T10:00:00+09:00",
+                    "lastLoginAt": "2026-06-10T10:00:00+09:00",
+                    "sessions30d": 0,
+                    "preChurnEvent": "RETURNED(상품불량)",
+                }
+            ],
+        }
+    )
+
+    result = await _call_runtime_tool(
+        get_churn_cohort, {"from_date": "2026-06-01", "to_date": "2026-07-31"}, fake
+    )
+
+    assert "987654" not in result  # 원시 회원 키가 LLM 표면에 실리지 않는다
+    assert "[?]" in result  # 라벨 미수신은 '?' 로만 떨어진다
+    assert "이탈 회원 1명" in result  # 흡수 자체는 성공 — 항목이 사라지는 게 아니다
+
+
+async def test_customer_label_note_attached_to_both_order_and_churn_outputs() -> None:
+    """[#487] 사례번호 규약 문구는 상수 1벌(_CUSTOMER_LABEL_NOTE)로 I-14·I-16 양쪽
+    출력에 붙는다 — 복붙본이 갈라져 한쪽 경로의 규약만 낡는 것을 막는다."""
+    from app.agents.seller.tools import _CUSTOMER_LABEL_NOTE, _ORDER_LOG_RULES_NOTE
+
+    # I-14 기록 규칙 노트는 같은 문구를 같은 자리(맨 끝)에 그대로 유지한다(무회귀).
+    assert _ORDER_LOG_RULES_NOTE.endswith(_CUSTOMER_LABEL_NOTE)
+
+    fake = FakeSpringClient()
+    # rows 가 비면 "0건" 조기 반환 경로라 기록 규칙 노트가 붙지 않는다 — 목록 경로로 태운다.
+    fake.order_events_result = OrderEventsResult(
+        rows=[{"orderId": 5001, "toStatus": "CANCELLED", "customerLabel": "A3F29C"}], total=1
+    )
+    order_result = await _call_runtime_tool(
+        get_order_events, {"from_date": "2026-07-01", "to_date": "2026-07-31"}, fake
+    )
+    churn_result = await _call_runtime_tool(
+        get_churn_cohort, {"from_date": "2026-07-01", "to_date": "2026-07-31"}, fake
+    )
+
+    assert _CUSTOMER_LABEL_NOTE in order_result
+    assert _CUSTOMER_LABEL_NOTE in churn_result
 
 
 async def test_churn_tool_reports_missing_rate_as_unreceived_not_zero() -> None:
@@ -1692,7 +1758,7 @@ async def test_churn_tool_caps_member_lines_by_settings() -> None:
         churn_rate=0.5,
         cohort_size=cap * 4,
         pre_churn_signals=PreChurnSignals(),
-        members=[ChurnMember(member_id=i) for i in range(cap + 3)],
+        members=[ChurnMember(customer_label=f"L{i:05d}") for i in range(cap + 3)],
     )
 
     result = await _call_runtime_tool(
@@ -1824,7 +1890,8 @@ async def test_account_events_tool_degrades_on_spring_failure() -> None:
 
 
 def test_worker_prompts_contain_log_interpretation_rules() -> None:
-    """워커 프롬프트에 해석 규칙(완료만 기록·이벤트≠주문 권위)이 남아 있다(회귀 방지)."""
+    """워커 프롬프트에 해석 규칙(완료만 기록·purchaseComplete 집계 단위)이 남아
+    있다(회귀 방지)."""
     from app.agents.seller.prompts import (
         ABUSE_PROMPT,
         BEHAVIOR_PROMPT,
@@ -1839,9 +1906,82 @@ def test_worker_prompts_contain_log_interpretation_rules() -> None:
     # [#197 리뷰] 워커에 전달되는 리터럴의 번호 목록 구조 회귀 방지 — 연속 문장이
     # 3칸 들여쓰기를 잃으면 목록 밖 독립 문장처럼 보인다(충돌 해결 중 실제 발생).
     # [#215] purchaseComplete 금지 문구가 3단계로 재작성돼 리터럴을 새 문구로 갱신.
-    assert "\n   구매·주문 수치의 권위는 get_order_events" in ABUSE_PROMPT
-    assert "\n구매·주문 수치의 권위는" not in ABUSE_PROMPT
-    assert "'구매 0'" in ABUSE_PROMPT  # 금지 문구 자체의 존치도 함께 고정
+    # [#488] 그 문구가 '금지'에서 '신뢰해도 된다'로 뒤집혀 리터럴을 다시 갱신했다 —
+    # 고정하는 것은 의미가 아니라 들여쓰기 구조다.
+    assert "\n   purchaseComplete 는 주문 기준 집계라" in ABUSE_PROMPT
+    assert "\npurchaseComplete 는 주문 기준 집계라" not in ABUSE_PROMPT
+    assert "'구매 0'을 그대로 신뢰해도 된다" in ABUSE_PROMPT
+
+
+# [#488] 2026-07-31 개정으로 폐기된 I-13 purchaseComplete 구 규정의 어휘. 이 문구가
+# LLM 이 읽는 표면에 남으면 미반영이 아니라 **능동적 오정보**가 된다 — 워커가 실재하는
+# 구매 데이터를 '신뢰 불가'로 취급하고 다른 도구로 우회한다(3개월 방치된 실제 결함).
+_DEPRECATED_PURCHASE_WORDING = (
+    "이벤트 기준",
+    "미귀속",
+    "구매 전무",
+    "0 집계될 수 있다",
+    "권위는 매출 조회",
+    "권위는 I-6",
+    "권위는 get_order_events",
+)
+
+
+async def test_behavior_surfaces_drop_deprecated_purchase_wording() -> None:
+    """[#488] 역방향 회귀 — 폐기된 구 규정 어휘가 **LLM 주입 표면**(I-13 도구 출력
+    3형 + behavior·abuse 워커 프롬프트)에 하나도 남아 있지 않다.
+
+    문구 드리프트가 이번처럼 오래 방치되지 않게 '무엇이 있어야 하나'가 아니라
+    '무엇이 없어야 하나'를 고정한다. 검사 대상은 파일이 아니라 실제로 LLM 에
+    실리는 문자열 객체다 — 주석·개정 이력에 남긴 폐기 사실 기록까지 잡지 않도록.
+    """
+    from app.agents.seller.prompts import ABUSE_PROMPT, BEHAVIOR_PROMPT
+
+    fake = FakeSpringClient()
+    surfaces: dict[str, str] = {"BEHAVIOR_PROMPT": BEHAVIOR_PROMPT, "ABUSE_PROMPT": ABUSE_PROMPT}
+
+    # groupBy 3형 전부 — 노트는 어느 형태로 조회해도 상시 부착된다.
+    fake.behavior_result = BehaviorEventsResult(
+        group_by="product",
+        rows=[_behavior_row(101, 1820, 240, 96, 61)],
+        total=1,
+    )
+    surfaces["tool:product"] = await _call_runtime_tool(
+        get_behavior_events, {"from_date": "2026-07-01", "to_date": "2026-07-14"}, fake
+    )
+    fake.behavior_result = BehaviorEventsResult(
+        group_by="eventType",
+        counts={"productView": 1820, "addToCart": 240, "checkoutStart": 96, "purchaseComplete": 61},
+    )
+    surfaces["tool:eventType"] = await _call_runtime_tool(
+        get_behavior_events,
+        {"from_date": "2026-07-01", "to_date": "2026-07-14", "group_by": "eventType"},
+        fake,
+    )
+    fake.behavior_result = BehaviorEventsResult(
+        group_by="date",
+        series=[
+            {"date": "2026-07-01", "productView": 900, "purchaseComplete": 30},
+            {"date": "2026-07-02", "productView": 920, "purchaseComplete": 31},
+        ],
+    )
+    surfaces["tool:date"] = await _call_runtime_tool(
+        get_behavior_events,
+        {"from_date": "2026-07-01", "to_date": "2026-07-02", "group_by": "date"},
+        fake,
+    )
+
+    for name, text in surfaces.items():
+        for phrase in _DEPRECATED_PURCHASE_WORDING:
+            assert phrase not in text, f"{name} 에 폐기 문구 '{phrase}' 잔존"
+
+    # 걷어낸 자리를 신규정이 실제로 채웠는지도 함께 고정(공백 회귀 방지).
+    for name in ("tool:product", "tool:eventType", "tool:date"):
+        assert "주문 기준 집계" in surfaces[name], f"{name} 에 집계 규칙 노트 미부착"
+    assert "주문 기준 집계" in BEHAVIOR_PROMPT and "주문 기준 집계" in ABUSE_PROMPT
+    # 스키마 docstring 은 LLM 표면이 아니라 개발자 문서라 위 부재 검사 대상이 아니다
+    # (거기엔 "구 … 규정은 폐기" 기록을 의도적으로 남긴다) — 신규정 서술만 확인한다.
+    assert "주문 기준" in (BehaviorEventsResult.__doc__ or "")
 
 
 # ── [#297] get_orders (I-29 자사 주문 조회, §4.18) ────────────────────────────────

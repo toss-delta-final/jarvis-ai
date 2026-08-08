@@ -11,26 +11,48 @@
 
 ### Fixed
 - **#489 — I-13 신필드(`salesQuantity`·체류시간 4종·`removeFromCart`)·I-6 `salesCount` 수신 정합**
-  (api-spec §4.4, v0.29.1). 개정 전에는 **AI 가 판매 수량에 도달할 경로가 하나도 없었다** — I-6
+  (api-spec §4.4, v0.29.3). 개정 전에는 **AI 가 판매 수량에 도달할 경로가 하나도 없었다** — I-6
   `salesCount` 는 BE 구현에 원래 있었으나 스키마에 필드가 없어 파싱되지 않고 버려졌고, 공백을
   메우려 신설된 I-13 `salesQuantity` 는 미반영, 대체 경로 S-1 `products[]` 는 같은 날 제거됐다.
   **근본 원인 제거**: `BehaviorProductRow` 만 `CamelModel`(pydantic 기본 `extra="ignore"`)을 상속해
   형제 판매자 모델(`SellerAggregateModel`, `extra="allow"`)과 달리 **BE 가 추가한 필드가 예외도
   없이 `model_extra` 에도 안 남고 통째로 소실**되고 있었다 — 베이스를 `SellerAggregateModel` 로
   교체해 앞으로 BE 가 뭘 추가하든 같은 일이 반복되지 않게 했다.
+- **#488 — I-13 `purchaseComplete` 폐기 규정이 판매자 워커에 주입하던 오정보 제거** (api-spec
+  §4.4, v0.29.2). 2026-07-31 개정(jarvis-backend#62 근본 수정 배포 / #196)으로 `purchaseComplete`
+  는 **주문 기준 집계**(`order_item × product × brand`, PAID·`paid_at`, `COUNT(DISTINCT order_id)`
+  — I-7 퍼널 4단과 같은 정본, 이벤트 유실 무관·소급 복구)가 됐는데, 구 규정("이벤트 기준이라
+  상품 미귀속으로 0 집계될 수 있다 · 구매 권위는 I-6/I-7/I-14")이 6곳에 잔존해 워커에게 실재하는
+  구매 데이터를 "신뢰하지 말라"고 안내하고 있었다 — 미반영이 아니라 능동적 오정보다. 도구 노트
+  `_BEHAVIOR_AUTHORITY_NOTE` → **`_BEHAVIOR_PURCHASE_RULES_NOTE`** 로 개명·전면 교체(권위 위임
+  고지 → 집계 단위 고지: 건수≠수량 / 상품별 합 > `eventType` 합계 / 부분 취소·반품 소급 반영),
+  BEHAVIOR·ABUSE 워커 프롬프트, `BehaviorEventsResult` docstring, k-means 군집 모듈 docstring,
+  `docs/api-spec.md` §4.4 I-13 사본을 함께 정정했다. BEHAVIOR_PROMPT 에 있던 "구매 관련 판정은
+  퍼널과 교차 확인한 뒤에만 warning 이상" 게이트도 제거 — 데이터 불신을 전제로 세운 규칙이라
+  전제가 사라지면 근거 없이 워커 민감도만 깎는다(`get_funnel` 보강 절차 자체는 유지). 폐기 어휘가
+  LLM 주입 표면(도구 출력 3형 + 워커 프롬프트)에 없음을 어설션하는 **역방향 회귀 테스트**를 추가해
+  같은 드리프트가 재발하지 않게 고정했다. 와이어 계약 불변(문자열 교체, 로직 변경 없음).
 
 ### Added
-- **#489 — I-13 `BehaviorProductRow` 신필드 5종** (api-spec §4.4, v0.29.1): `salesQuantity`(PAID
+- **#489 — I-13 `BehaviorProductRow` 신필드 5종** (api-spec §4.4, v0.29.3): `salesQuantity`(PAID
   `SUM(oi.quantity)`·아이템 `PENDING`/`CANCELLED`/`RETURNED` 제외 — I-6 `salesCount` 와 동일 산식)와
   체류시간 4종(`medianDwellSeconds`·`avgDwellSeconds`·`dwellSampleCount`·`dwellSource`). 전부
   **nullable 이며 기본값 `0` 을 두지 않는다** — 명세가 `null` 을 계약값으로 규정한다(`0`="안 팔림",
   `null`="미조회"). `0` 기본값은 `churn_rate` 에서 잡았던 silent-mismatch(#197)를 그대로 재도입한다.
-- **#489 — I-6 `SalesSeriesPoint.salesCount`** (api-spec §4.4, v0.29.1). `granularity=summary` 응답에는
+- **#489 — I-6 `SalesSeriesPoint.salesCount`** (api-spec §4.4, v0.29.3). `granularity=summary` 응답에는
   수량 필드가 없어 nullable. `get_sales_timeseries` 요약이 포인트별 `/N개`·기간 합계를 함께 표기하되,
   `null` 포인트를 `0` 으로 섞지 않고 집계 대상 포인트 수를 밝힌다.
 
+### Security
+- **#487 — I-16 이탈 코호트가 원시 `memberId` 를 판매자 LLM 표면에 싣던 재식별 경로 차단**
+  (api-spec §4.4, v0.29.1). `get_churn_cohort` 요약이 이탈 회원을 `[41] 마지막 활동 …` 형태로
+  적재해, 판매자 주문 화면(S-2: `orderId` + 수령인 실명)과 대조하면 회원이 특정됐다 — memberId 는
+  가명이 아니라 재식별 키라는 것이 #481 I-14 개정의 근거였는데, 같은 논리가 I-16 에만 적용되지
+  않고 있었다. 노션 개정이 I-8·I-14·I-16 **동시 배포**를 전제했으므로 그 사이 기간 내내 노출이
+  I-16 경로로만 열려 있던 셈이다.
+
 ### Changed
-- **#489 — behavior 요약 5종화 + 신지표 표기** (api-spec §4.4, v0.29.1). I-13 `counts` 어휘에
+- **#489 — behavior 요약 5종화 + 신지표 표기** (api-spec §4.4, v0.29.3). I-13 `counts` 어휘에
   `removeFromCart` 가 편입되어 표시 행·꼬리 합계 키·꼬리 출력 3곳이 각각 4종을 하드코딩하던 것을
   모듈 상수 `_BEHAVIOR_COUNT_KEYS`/`_BEHAVIOR_COUNT_LABELS` 로 단일 출처화했다. 상품 행에
   판매 수량과 체류시간(중앙·평균·표본 수)을 함께 싣고, `dwellSource` 한계(next_event 기준이라 세션
@@ -40,8 +62,18 @@
   지표는 **의도적으로 종전 4종·3종 유지** — 어휘 확장과 분석 피처 변경은 별개 결정이라 스코프 밖.
   `_BEHAVIOR_AUTHORITY_NOTE` 에는 "판매 **수량**의 권위는 같은 행의 `salesQuantity`" 한 줄을 더해,
   `purchaseComplete` 경고가 신설 수량 지표까지 싸잡아 불신하게 만들지 않도록 했다.
-
-### Changed
+- **#487 — I-16 노션 2026-08-06 개정 정합(#481 잔여분)** (api-spec §4.4, v0.29.1).
+  `ChurnMember` 에서 `member_id`·`last_login_at` 을 제거하고 `customer_label`(HMAC 6자 사례번호,
+  I-14 와 같은 규약·같은 값)을 신설했다. `get_churn_cohort` 요약은 라벨만 노출하며 **라벨 결측
+  구간은 `?` 로 떨어뜨린다 — memberId 폴백을 두지 않는다**(I-8 "404 시 구경로 폴백 금지"와 같은
+  원칙: 조용히 원시 회원 키로 되돌아가는 것이 이번에 고친 결함이다). `last_login_at` 은 표시
+  계층에서 읽히지도 않던 사문이고, 계정 보안 정보를 회원 단위로 판매자에게 줄 근거가 없어 명세와
+  함께 제거했다. 사례번호 규약 문구는 `_ORDER_LOG_RULES_NOTE` 안에 I-14 기록 규칙과 섞여 있던
+  것을 `_CUSTOMER_LABEL_NOTE` 상수로 뽑아 I-14·I-16 양쪽 도구 출력에 부착했다(복붙본이 갈라져
+  한쪽 규약만 낡는 것이 이번 누락의 구조적 원인이라, 문자열·위치를 그대로 둬 I-14 회귀는 없다).
+  `CHURN_PROMPT` 에도 `ABUSE_PROMPT` 와 같은 취지의 라벨 규약을 넣었다. **BE 배포 순서와 무관하게
+  안전하다** — `SellerAggregateModel(extra="allow")` 이 구응답 `memberId`·`lastLoginAt` 을 예외
+  없이 `model_extra` 로 흡수하고 표시 계층이 읽지 않으므로, I-8 같은 파괴적 경로 전환이 아니다.
 - **#481 — I-14·I-8 노션 2026-08-06 개정 정합(판매자 파트, BE Phase 2 동시 배포 전제)** (api-spec
   §4.4, v0.29.0). **I-8 브랜드 스코프 전환**: `spring_client.get_account_events` 가 전역
   `/internal/account-events` 대신 `/internal/seller/{brandId}/account-events`(자사 코호트)를
@@ -110,6 +142,13 @@
   (`docs/specs/BE-NEGOTIATION-GRAPH-357.md` v2.3.0, 마지막 수정 라운드)
 
 ### Added
+- **#345(#269 P1) — 판매자 분석 레인이 `이번 달`·`올해`·`상반기`·`3분기`·`최근 3개월` 을 알아듣고, 해석한 기간을 실행 전에 확인받는다** — #269 는 P0(침묵 폴백 제거)·P1(어휘 확장+확인 흐름)·P2 로 나뉘어 있었는데 P0 만 구현한 PR #284 가 이슈를 닫아 P1 이 유실돼 있었다. 그 상태에서 "이번 달 매출 분석해줘"는 버그가 아니라 **설계상** 되묻기로 떨어졌다. 실측하니 차단 지점이 셋이었다 — ① `PLANNER_PROMPT [기간]` 절이 미지원 어휘를 clarification 으로 끊고, ② `AnalysisPlan.period_expr` 의 **Field description 에도 같은 정규 어휘 4종이 박혀 있어**(구조화 출력이라 LLM 이 이것도 읽는다) 프롬프트만 고치면 둘이 반대를 지시하며, ③ `calc.normalize_period` 가 `최근 3개월` 을 명시 거절했다. 셋을 함께 고쳤다.
+  - **신규 `app/agents/seller/period.py`** — 구 `calc.normalize_period` 를 이관·확장하고 `PeriodResolution`(값 + `needs_confirmation` + `clipped`)을 반환한다. 확인 없이 통과 5종(`지난달`·`최근 N일`·`최근`·`어제`·`YYYY-MM-DD~YYYY-MM-DD`, **회귀 가드로 고정**) / 확인 후 통과(`이번 달`·`올해`·`상반기`·`하반기`·`N분기`·`최근 N주`·`최근 N개월`·연도 없는 날짜 `M월 D일~M월 D일`) / 여전히 되묻기(`작년 여름`·`최근 반년`·`최근 한 달`·혼합 표현). 경계 규칙 5종: R1 오늘 제외(당일 집계 미완결), R2 미래 절단(**확인 어휘만** — 명시 범위는 판매자가 직접 지정한 값이라 말없이 자르지 않는다), R3 완전 미래 거절(8월의 `4분기`, 단 `하반기` 는 7월이 지났으므로 절단 대상), R4 상한, R5 연도 추론(**연도 없는 날짜만** — `N분기`·`올해` 는 어휘 자체가 "올해의"를 뜻하므로 작년으로 미루지 않는다). `최근 N개월` 은 30일 근사가 아니라 달력 기준이다.
+  - **문구 소유권을 구조로 단일화했다** — 되묻기 문구 생성 지점이 planner LLM 의 `clarification` 과 `calc` 예외 메시지 **두 곳**이라, P0 가 보장했다고 믿은 "예외 메시지 = 사용자 문구"가 실은 "planner 가 통과시켰을 때만" 성립하는 조건부였다(dev 실측 문구가 코드 원문과 달랐던 이유). planner 는 이제 **기간 표현을 그대로 옮겨적기만** 하고 **기간을 이유로 clarification 을 쓰지 않는다** — 프롬프트와 스키마 description 양쪽에 금지 문장을 넣고 테스트로 고정했다. 어느 쪽이 문구를 썼는지 측정해 맞추는 대신 생성 지점을 하나로 만들었으므로 프롬프트·모델이 바뀌어도 갈리지 않는다.
+  - **확인 흐름(신규 `period_confirm.py`)** — 코드가 값을 보충한 해석은 팬아웃 **앞**에서 `PipelineResult(kind="period_confirmation")` 로 끊고(잘못 해석한 기간으로 워커 LLM·Spring 비용을 쓰지 않는다), 확인 문구는 어휘가 아니라 **환산된 날짜**를 되돌려 보여준다(절단됐으면 그 사실도 밝힌다 — 자르고 말하지 않으면 P0 가 없앤 "조용한 대체"가 형태만 바꿔 돌아온다). 대기는 `seller-period:{sellerId}:{threadId}` 네임스페이스 checkpoint 에 `ResolvedPlan` 통째로 저장한다(`thread.py` recorder 패턴, seller_id 접두가 IDOR 차단). 승인 시 `orchestrator.run_resolved_pipeline` 로 재개 — planner 이후 구간을 별도 함수로 **분리**했으므로 "planner 재호출 0회"(#269 완료 조건)가 조건문이 아니라 호출 그래프로 보장되고, planner 빌더가 호출되면 실패하는 테스트로 고정했다.
+  - **경로는 3개다(원안 4개에서 축소)** — 승인 / 새 질문 / TTL 만료(`seller_period_confirm_ttl_minutes`, 기본 10분). "아니 7월로" 같은 **수정 발화는 새 질문으로 흡수**된다: 확인 문구가 이미 대화 스레드에 기록돼 있어 planner 가 맥락을 보고 재계획하므로 별도 기간 파서가 필요 없고, 파서를 따로 두면 어휘 정의가 두 곳으로 갈라진다.
+  - **승인은 자유 텍스트 + 코드 선판정(LLM 0회)이다 — "발화 ≠ 동의" [HARD] 의 명시적 예외.** HITL 상품 쓰기 승인은 최상위 `action` 구조화 필드로만 받는 규약을 그대로 두고 기간 확인만 예외로 둔다(읽기 전용이라 되돌릴 수 있고 판매자가 즉시 정정할 수 있다). 갈림길은 "자유 텍스트냐"가 아니라 **"승인이 되돌릴 수 없는 부작용을 일으키는가"** 임을 DESIGN 에 못박았다. 판정은 정규식 누적이 아니라 **공백으로 나눈 모든 토큰이 긍정 어휘일 때만 승인** — `네 7월로 해줘` 는 `7월로` 때문에, `응 아니야` 는 `아니야` 때문에 자동으로 새 질문이 된다. 입구 순서는 ①.7(HITL confirm·"N번 적용해줘" 뒤, scope 선차단 **앞** — `"응"` 이 scope 필터에 걸리지 않게).
+  - **와이어 계약 무변경** — SSE 이벤트·요청 필드가 그대로라 api-spec 개정도 FE 작업도 없다. 확인 턴은 기존 `token`+`done(panel:"keep")` 으로 나간다(확인은 대화이지 보고서가 아니다). 설계: `docs/specs/DESIGN-SELLER-PERIOD.md`. ⚠️ `GENERAL_PROMPT_TEMPLATE` 의 `이번 달`(= 당월 1일~**오늘**)과 분석 레인(R1 로 **어제**)이 하루 어긋나는 문제는 #269 P2("레인 통일") 범위로 남겼다 — DESIGN §7 에 기록.
 - **#462 — 취향 추출 골든셋 하네스(`evals/taste_probe/`) 신설, 미탐율·오탐율·trivial baseline
   최초 산출** — #356 이 만든 구조화 트리플 추출 경로(`generate_session_delta` → `should_promote`
   → `resolve_triple`)가 재는 대상인데, `scripts/probe_delta_prompt_356.py` 는 정답 라벨 없이

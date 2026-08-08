@@ -874,6 +874,65 @@ def test_pipeline_happy_path_composes_report_and_recommendations(
     ]
 
 
+def test_pipeline_period_confirmation_short_circuits_before_fanout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#345] 확인 필요 기간("이번 달") → 팬아웃 전에 kind=period_confirmation 으로 종료.
+
+    확인을 팬아웃 **앞**에 두는 이유: 잘못 해석한 기간으로 워커 LLM·Spring 호출 비용을
+    쓰지 않기 위함이다. 진행 token 이 planner 하나로 끝나는 것이 그 증거다.
+    """
+    plan = AnalysisPlan(analyses=["sales_anomaly"], period_expr="이번 달", reason="r")
+    _patch_pipeline(monkeypatch, plan)
+    tokens, emit = _collect_emit()
+
+    result = asyncio.run(
+        orchestrator.run_analysis_pipeline(
+            "이번 달 매출 분석해줘", _CTX, today=dt.date(2026, 8, 6), emit=emit
+        )
+    )
+
+    assert result.kind == "period_confirmation"
+    assert result.resolved is not None
+    assert result.resolved.date_from == dt.date(2026, 8, 1)
+    assert result.resolved.date_to == dt.date(2026, 8, 5)  # R1 — 오늘 제외
+    assert "2026-08-01" in result.text  # 어휘가 아니라 환산된 날짜를 보여준다
+    assert result.verified is None
+    assert tokens == ["질문을 분석하고 있습니다…"]  # 워커 token 없음
+
+
+def test_run_resolved_pipeline_executes_without_planner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#345] 승인 재개는 저장된 ResolvedPlan 만으로 돈다 — planner 를 부르지 않는다.
+
+    planner 빌더가 호출되면 즉시 실패하므로 "재호출 0회"(#269 완료 조건)가 호출 그래프
+    수준에서 고정된다. 진행 token 에 planner 문구가 없는 것도 같은 사실의 다른 표현이다.
+    """
+    plan = AnalysisPlan(analyses=["sales_anomaly"], period_expr="이번 달", reason="r")
+    _patch_pipeline(monkeypatch, plan)
+
+    def _boom():
+        raise AssertionError("승인 재개 경로에서 planner 를 빌드하면 안 된다")
+
+    monkeypatch.setattr(orchestrator, "build_analysis_planner", _boom)
+    resolved = ResolvedPlan(
+        analyses=("sales_anomaly",),
+        date_from=dt.date(2026, 8, 1),
+        date_to=dt.date(2026, 8, 5),
+        period_expr="이번 달",
+    )
+    tokens, emit = _collect_emit()
+
+    result = asyncio.run(
+        orchestrator.run_resolved_pipeline("이번 달 매출 분석해줘", resolved, _CTX, emit=emit)
+    )
+
+    assert result.kind == "report"
+    assert result.period == (dt.date(2026, 8, 1), dt.date(2026, 8, 5))
+    assert "질문을 분석하고 있습니다…" not in tokens
+
+
 def test_pipeline_clarification_short_circuits(monkeypatch: pytest.MonkeyPatch) -> None:
     """계획 불성립(clarification) → 워커 미실행, 되묻기 문안 반환."""
     plan = AnalysisPlan(analyses=[], reason="r", clarification="어느 기간을 분석할까요?")

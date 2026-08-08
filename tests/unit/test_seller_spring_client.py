@@ -78,7 +78,7 @@ async def test_get_sales_parses_camel_response() -> None:
 
 async def test_get_sales_parses_sales_count() -> None:
     """[#489] I-6 series[].salesCount(판매 수량) 수신 — 구현엔 있었으나 스키마에
-    필드가 없어 파싱되지 않고 버려지던 드리프트 정정(api-spec §4.4 v0.29.1)."""
+    필드가 없어 파싱되지 않고 버려지던 드리프트 정정(api-spec §4.4 v0.29.3)."""
 
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(
