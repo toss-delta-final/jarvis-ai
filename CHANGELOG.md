@@ -70,9 +70,12 @@
   행렬로 미탐 원인(프롬프트/게이트/resolver 중 어디)을 가른다. 판정(게이트·resolver·정규화·
   식별자 산출)은 전부 프로덕션 함수를 import 해 그대로 부른다(판정 복제 0, #380 규약). CI 는
   가짜 LLM·가짜 카탈로그로 실 LLM/pg 콜 0(`tests/unit/test_taste_probe_{schema,runner,metrics,
-  cli}.py`). **이 개발 환경에는 유효한 LLM provider 가 없어(OpenAI 크레딧 소진·Anthropic 키
-  무효, 둘 다 실측 확인) 실 LLM 기준선 산출물은 아직 커밋되지 않았다** — 재현 오류 문면과
-  생성 절차는 `evals/taste_probe/baselines/README.md` 참조. 계약(api-spec) 무변경.
+  cli}.py`). **2026-08-09 키 교체로 실 LLM 경로가 열려 최초 기준선(`openai-20260809-n5`,
+  provider=openai·model=gpt-5.6-luna·N=5)을 `evals/taste_probe/baselines/` 에 편입했다** —
+  recall 73.0%(84/115) · noiseFalsePositiveRate 0.0%(0/50) · nodeIdAgreement 88.1%(74/84),
+  `resolverDroppedByKind={'category': 26}` 로 category 대량 드롭을 실측(단일 실행, 방향
+  판정용). 상세 해석·정본 선언 표는 `evals/taste_probe/baselines/README.md` 참조. 계약
+  (api-spec) 무변경.
 - **#442 — 조건 칩 제거(`conditionActions`)가 로그에 아무 흔적도 남기지 않아 무동작과 구분이
   안 되던 관측 침묵을 메웠다** — `run_buyer_turn`(`app/agents/buyer/graph.py`)의
   `_remove_condition_actions` 호출부에 결정 로그 `condition_actions_applied`(요청 축·**실제로

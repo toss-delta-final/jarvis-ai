@@ -53,12 +53,11 @@ CLI 에 `--tier` 플래그가 없다(`app/agents/profile/builder.py` 호출부�
 
 ## 실 LLM 기준선
 
-**현재 커밋된 실 LLM 기준선이 없다.** 이 개발 환경에는 유효한 LLM 경로가 없었다(2026-08-08
-확인: `LLM_PROVIDER=openai` 는 크레딧 소진 429, 대안으로 시도한 `anthropic` 은 키 인증 401) —
-자세한 재현 오류 문면·기준선 생성 절차·정본 선언 표는 `evals/taste_probe/baselines/README.md`
-를 보라. §4~7(축·매칭 규칙·baseline·표본 사전 산정)의 내용은 기준선 유무와 무관하게 이미
-확정돼 있고 dry-run 으로 전부 실측 가능하다 — 막힌 것은 오직 "실 데이터로 그 수치를 채우는"
-단계다.
+정본은 `evals/taste_probe/baselines/openai-20260809-n5/`(provider=openai · model=gpt-5.6-luna ·
+N=5 · promptSha12=`f1087ac09a78` · datasetVersion=`2026-08-08.2`) — 정본 선언 표·해석은
+`evals/taste_probe/baselines/README.md` 를 보라. 2026-08-08 확인 시점에는 `LLM_PROVIDER=openai`
+크레딧 소진(429)·대안 `anthropic` 키 인증 실패(401)로 막혀 있었으나, 2026-08-09 키 교체로 해소돼
+첫 판을 생성했다(재현 오류 문면은 baselines/README.md 「과거 상태」절에 보존).
 
 ## CI 에서 돌리지 않는다
 
