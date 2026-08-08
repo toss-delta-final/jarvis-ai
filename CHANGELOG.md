@@ -9,6 +9,55 @@
 
 ## [Unreleased]
 
+### Docs
+- **#357 — 개인화 그래프 Spring 협의 패킷 v1→v2 전면 개정: BE 회신 3건·운영 덤프·`jarvis-backend`
+  코드 실측으로 C-28 종결·C-27 코드로 대부분 확정·C-18/C-19 해소를 반영** — v1(2026-08-07)은 "전
+  항목 회신 대기"였으나, BE가 브랜드 병합 결과(106행 병합/110건 삭제)·8/5 정리 대응표(34건)·
+  자리표시자 목록(41건/상품 249개)·운영 덤프 전체를 보내왔고, `~/inte-final/jarvis-backend`(75커밋
+  뒤처져 있던 것을 최신화)를 직접 실측했다. **C-28(브랜드 통제 어휘)은 해소됐다 — BE에 보낼 요청이
+  0건이라 협의 항목에서 내린다.** 시드 2,368행 →(8/5 −34)→(8/7 −110)→2,224행(BE 발표와 일치)
+  →(자리표시자 −41, 한글↔영문 −40)→2,143행이 되는 계산 체인을 전부 검증했고, 브랜드 행 수는 8/7
+  운영 덤프를 `zcat\|sed`로 직접 재집계해 복원 없이 독립 재확인했다(2,143행 일치). **2026-08-08
+  17:47 운영 덤프(`jarvis-prod-live.sql.gz`)로 한 번 더 독립 재검증**해 총행수(2,143)와 미탐
+  3쌍·대형 브랜드(나이키·아디다스·언더아머) 병합을 재확인했고, `jarvis-dump-20260807.sql.gz`와
+  `brand`·`product` 데이터가 완전히 동일함을 코드로 직접 대조해 확인했다 — 8/7 이후 하루 사이
+  추가 정리는 없었다. 이 재검증 과정에서 직전 개정의 오류도 하나 잡았다 — "`아디다스 오리지널스`가
+  이미 병합됐다"고 적었던 것은 틀렸고, 실제로는 두 덤프 모두에 `아디다스`(87상품)와 별도로
+  `아디다스 오리지널스`(9상품)가 남아 있어 하위 라인 잔여 목록으로 되돌렸다. **현재 실제 잔여는
+  성격이 다른 4행·28상품(「브랜드 미상」)뿐**이다 — 이전 개정에서 자리표시자(`중국OEM`·`협력업체`
+  등)를 잔여로 다룬 것은 오류였다(그 목록은 8/7 병합 시점 스냅샷이었고 같은 날 41행 정리에서 이미
+  전부 지워졌다). 결론을 뒤집었다 — v1의 "BE 조회 endpoint 요청"을 철회하고, **RDS는 건드리지 않고
+  AI 쪽 `canonical_id` 매핑 사전으로 닫기로 결정**했다(브랜드 미상 4행·표기 변형 3건·하위 라인
+  9건은 전부 사전에서 흡수하는 차기 DB 정리 대상이지 BE 협의 항목이 아니다, 하위 라인 병합은
+  사용자 결정으로 확정, 검색은 I-1 다중 브랜드 파라미터로 해결). BE는 I-17(§4.8) 응답에 `brandId`
+  추가에 합의(2026-08-08)해 사전이 지속 동기화된다. 남는 것은 재적재 시 정규화 지속 여부를
+  다음 덤프에서 우리가 직접 확인할 관찰 항목 1건뿐이며 BE에 요청하지 않는다. **C-27(캐시 무효화)은
+  마지막 라운드에서 전면 재작성했다** — `jarvis-backend`(head `eed93d0`)를 다시 읽어 캐시 키가
+  `p5:home:{memberId}`(회원 id 단독)임과, `writeCache()` 호출 지점이 코드 전체에 한 곳뿐이고
+  개인화 성공 분기에만 있음을 재확인했다. 이 재확인으로 **직전 개정의 오류를 정정했다** — "재개도
+  무효화 트리거 3개 중 하나"라는 서술은 틀렸다(`fallback()`은 캐시에 쓰지 않아 재개는 애초에 캐시가
+  비어 있다). 무효화가 필요한 지점을 **중지·초기화 2곳**으로 좁혔다 — 항목 삭제(M-13)도 다음
+  consolidation 전까지 랭킹에 반영되지 않아 실질 효과가 없으므로 요청에서 뺐다. **결과적으로
+  C-27은 확약 요청이 아니라 구현 시 `redisTemplate.delete(...)` 한 줄을 부탁하는 요청으로
+  축소됐다.** 캐시 키가 회원 id 단독임을 재확인해 api-spec §4.11 캐시 키 서술 오류를 다시
+  확정했고, catalogVersion이 애초에 캐시 키에 들어가지 않는다는 사실로 C-18 폐기 근거를
+  보강했다. **C-20 요청문에 이슈 코멘트(jovial1ns, 2026-08-06)가 지목한 I-번호·`M-11`~`M-16`
+  채번 확인 항목(api-spec C-26)을 추가했다**(R-20-5) — 낮은 번호 추측이 실제로 충돌했던 전례
+  (I-29~I-31, #297)를 근거로 든다. **C-18(`catalogVersion` 폐기)·C-19(`limit≤60`·
+  `signals≤200`·최신순)는 BE 코드(`HomeRecommendationRequest` 클래스 주석·`MAX_LIMIT`/
+  `MAX_SIGNALS` 상수)로 수용이 확인돼 해소로 전환**했다. 노션 「취향 관리 API 10개(되돌리기 폐기)」
+  문서에 대응하는 신설 절을 추가해 우리 답 3건(재삭제 200+replayed 유지 가능·Spring 타임아웃 4s
+  제안·취향 추출은 주기 배치가 아니라 세션 종료 트리거)과 결정 3건(즉시삭제+tombstone 필수·확인창
+  필요·If-Match 필수 유지)에 대한 의견을 남겼다(실제 api-spec 개정은 하지 않음, 별건). **C-20/C-21은
+  여전히 회신 대기**이며 BE 쪽도 M-11~M-16 미착수임을 코드로 재확인해 리드타임 논거를 보강했다.
+  `docs/api-spec.md`·`SPEC-PROFILE-GRAPH-149.md`에 대한 개정안 6건(C-20/21/27/28 상태·캐시 트리거
+  2종·REQ-PGRAPH-010 id 키잉 대안·OPEN-G2 해소·§12 선결조건·C-18/C-19 해소·§4.11 캐시 키 정정)을
+  unified diff로만 첨부했다(적용 금지 — 두 정본 파일은 이번 PR에서 한 글자도 바뀌지 않았다). 카테고리
+  시드 드리프트(1,007→1,003 잎)·골든셋 재라벨 필요(삭제 상품 249건 중 20개가 정답 라벨)·브랜드
+  사전 신설(#150 착수 시)을 후속 이슈 후보로 남겼다. **이 PR은 이슈를 닫지 않는다** — 발송은 사용자
+  몫이고, C-20/C-21 회신이 있어야 완전히 닫히므로 `Closes #357`을 쓰지 않는다.
+  (`docs/specs/BE-NEGOTIATION-GRAPH-357.md` v2.3.0, 마지막 수정 라운드)
+
 ### Added
 - **#462 — 취향 추출 골든셋 하네스(`evals/taste_probe/`) 신설, 미탐율·오탐율·trivial baseline
   최초 산출** — #356 이 만든 구조화 트리플 추출 경로(`generate_session_delta` → `should_promote`
@@ -24,6 +73,58 @@
   cli}.py`). **이 개발 환경에는 유효한 LLM provider 가 없어(OpenAI 크레딧 소진·Anthropic 키
   무효, 둘 다 실측 확인) 실 LLM 기준선 산출물은 아직 커밋되지 않았다** — 재현 오류 문면과
   생성 절차는 `evals/taste_probe/baselines/README.md` 참조. 계약(api-spec) 무변경.
+- **#442 — 조건 칩 제거(`conditionActions`)가 로그에 아무 흔적도 남기지 않아 무동작과 구분이
+  안 되던 관측 침묵을 메웠다** — `run_buyer_turn`(`app/agents/buyer/graph.py`)의
+  `_remove_condition_actions` 호출부에 결정 로그 `condition_actions_applied`(요청 축·**실제로
+  비워진** 축·no-op 여부·`requestId` 상관키, 값은 미포함 — #119 PII 규약)를 추가했다. "비워진
+  축"은 요청 필드에서 예측하지 않고 호출 전/후 `prior` 를 실측 비교해 낸다 — 예측식이었다면
+  `_remove_condition_actions` 가 통째로 죽어도 로그가 똑같이 나왔을 것이다(변이 시험으로 확인:
+  no-op 으로 되돌리면 신규 테스트가 즉시 깨진다). `prior is None`(스레드 만료·첫 턴)이라 분기
+  자체를 안 타는 경우도 `condition_actions_skipped_no_prior` 로 구분되게 했다 — 동작은 그대로
+  (지울 대상 없음, 무시가 맞다), 관측만 추가. `buyer_chat_turn` metadata(`SAFE_METADATA_KEYS`)는
+  건드리지 않는다 — 축 이름은 로그로 충분히 관측되고 화이트리스트 개정은 계약 표면만 넓힌다.
+  계약(api-spec) 무변경.
+- **#258 — 색상 동의어 사전 정본을 repo 로 편입하고 1차 사람 검수 결과를 고정한다** — A 파트
+  (PR #273)가 만든 789행 색상 표기 동의어 사전이 지금까지 로컬 pg-catalog 안에만 있었는데,
+  원천 I-17(Spring)이 2026-08-07 실측(`scripts/check_spring_connection.py`)에서 도달 불가로
+  확인돼 DB 를 날리면 재수확이 불가능하다는 것이 드러났다. `#401`(카테고리 사전) 이 만든
+  `db/catalog/seed/` 전례를 그대로 따라 정본을 repo 로 편입한다. 라이브 pg-catalog
+  `color_synonyms`(기계 산출: term/canonical/provenance/doc_count) 위에 사람 검수 오버레이
+  `db/catalog/seed/color_synonyms_review.json` 을 적용해 `db/catalog/seed/color_synonyms.json`
+  정본(789행)과 부트스트랩 SQL `db/catalog/init/05_color_synonyms_seed.sql` 을 같은 원천에서
+  함께 만드는 `scripts/derive_color_synonym_seed.py`(`--check` 모드 지원, 새 의존성 없음)를
+  신설했다. 오버레이는 오버레이 내부 정합성 → 하네스트 대비 존재성 → 의미 규칙(고아 승인
+  금지·2단계 체인/순환 금지·`_norm` 충돌 없음) 순으로 검증하고 위반 시 조용히 무시하지 않고
+  실패한다. 1차 검수 결과 46행(앵커 15 + 한글 고유어/한자어 ↔ 외래어 표기의 1:1 자명 대응
+  동의어 31)을 `approved`/`human` 으로 고정했다 — `곤색`은 LLM 이 `블루`로 배정했으나(seed_llm_
+  assignment) 검수에서 `네이비`로 정정(紺色=감색=navy), 검수 overlay 가 LLM 배정을 덮어쓸 수
+  있어야 한다는 요구의 실제 사례다. `app/pipelines/color_synonym_seed.py` 에 `load_seed_rows`/
+  `seed_from_file`(+ 새 상수 `UPSERT_SEED_COLOR_TERM_SQL`)을 추가해 정본 파일의 `status`/
+  `canonical`/`provenance`를 항상 권위 있게(authoritative) 반영하도록 했다 — 기존
+  `UPSERT_COLOR_TERM_SQL`(배치 수확이 사람 검수 결과를 덮지 않도록 보호하는 CASE 가드형)과는
+  별개 경로다. `color_synonym_expansion_enabled`/`color_synonym_array_contract_ready` 기본값
+  (둘 다 `False`)과 I-1 질의 확장 배선(#273 기 반영)은 변경하지 않는다 — 런타임 동작 변화는
+  이 PR 의 범위 밖이다.
+- **#427 — 검색 타임아웃을 턴 예산에서 파생시킨다(DESIGN-SHARED-BUDGET-384 §3 D1~D8)** — 고정
+  3s 검색 타임아웃이 성공했을 검색을 실패로 바꾸는 문제를, I-1 검색 전용 타임아웃
+  (`SPRING_SEARCH_TIMEOUT_S`, 기본 3.0 — 오늘 값 불변)을 AI→Spring 공용 타임아웃에서 분리하고,
+  구제 체인(F-1/#343/자동완화 probe)이 스트림 시작 시각(`open_stream` 의 실제 데드라인과 같은
+  원점)에서 파생한 잔여 예산으로 검색 타임아웃을 좁히거나(`RESCUE_BUDGET_MODE=narrow`) 최소
+  하한 미만이면 건너뛰는(`narrow_skip`, 본검색 제외) 3단 스위치로 푼다. 기본값은 `observe`
+  (판정만 계산·로그, 실제 집행 없음 — 오늘 동작 불변)이며, 기동 검증기(`_require_search_retry_
+  within_stream_budget`)와 런타임 좁히기가 같은 계수 함수(`_rescue_chain_stage_counts`/
+  `_rescue_chain_serial_budget_s`)에서 계수를 얻어 한쪽만 고쳐지는 드리프트를 구조적으로
+  막는다. 계약 무변경 — `docs/api-spec.md` 는 건드리지 않았다(§2.9(c) 개정은 별도 사람 승인
+  게이트).
+- **#455 — I-1 `options`·`optionCount` 소비로 옵션 되물음 단축(api-spec §4.6·§4.1, v0.28.3)** —
+  사용자가 이번 발화에서 말한 조건으로 `CART_OPTION_REQUIRED` 후보가 정확히 1개로 좁혀지면
+  되묻지 않고 같은 턴에 담고, 여러 개로만 좁혀지면 좁힌 목록으로 되묻는다(`optionId`는 여전히
+  I-2 400 응답에서만 얻는다 — 이름으로 유추하지 않는다). `optionCount`는 자동 선택의 정합
+  가드로 쓴다(불일치 시 자동 선택 금지). 발화 매칭은 부분 문자열이 아니라 토큰 경계 + 조사
+  허용목록으로 판정해 "블루투스"에 "블루"가 우연히 걸리는 것을 막는다. 신규
+  `app/agents/buyer/cart/options.py`(순수 좁히기 함수) · 튜너블 2종
+  (`cart_option_narrow_min_term_len`·`cart_option_match_suffixes`).
+- **#469 — 홈 추천(I-22)·칩 제거 LangSmith 관측 추가 + home_reco 로그 결함 수정** — (1) I-22 에 요청 트레이스 신설: 루트 `home_recommendation` + 단계 span 4종(`home.profile`/`home.query_vector`/`home.rank`/`home.reasons`) — 운영 콜드스타트 504 진단이 로그 한 줄뿐이던 것을 단계별 지연으로 볼 수 있게 했다. finish/export 는 P-5 예산(3s)을 지키기 위해 요청 경로에서 await 하지 않고 분리 태스크로 흘린다. memberId 원값은 트레이스에 없다(지문만, §3.7 [HARD]) — 콘텐츠 모드일 때만 시그널·outcome·반환 id 가 실린다(strict 카나리아). (2) `/chat` 루트 콘텐츠에 `conditionActions` 직렬화 기록 — 발화 없는 칩 제거 턴이 트레이스에서 보이게. (3) `home_reco_request` 로그의 outcome·개수가 `extra` 로 남아 기본 포맷터에서 증발하던 결함을 JSON 메시지 방식(observability 관례)으로 수정 — `docker logs` 에서 outcome 구분 가능. 계약(api-spec) 무변경.
 - **#432 — 과소지정 프로브에 union 측정 모드를 넣어 전개 후 판정까지 잰다** — 기존
   `evals/underspecified_probe` 는 decompose 직후·판정 직전 형상만 쟀다. `--union`(기본 off)을
   켜면 `app.agents.buyer.graph._prepare_recommendation`(카테고리 매핑 + `needs_expansion`
@@ -428,6 +529,14 @@
 - **#347 — Claude PR Review 에 `skip-claude-review` 라벨 게이트 추가** — 워크플로 job `if:` 에 라벨 조건을 더해, 리뷰가 불필요한 PR(대량 병합 정합·실험 브랜치)을 PR 단위로 끌 수 있게 했다. 기본 동작(라벨 없음 = 리뷰 실행)은 불변이며, 라벨 부착/제거는 다음 push 부터 적용된다. 계약(api-spec) 무변경.
 
 ### Fixed
+- **#413 — personalization 결정성 테스트가 워킹트리 편집 중 실행되면 깨지던 문제** — 산출물
+  정규화가 `run_manifest.json` 의 `run` 키만 걷어내고 `commitSha`·`dirty`(둘 다 실행 시점 라이브
+  git 상태)는 그대로 둬, 두 실행 사이에 리포를 편집·커밋하면 무관한 실패가 났다. 정본
+  `VOLATILE_MANIFEST_KEYS`/`strip_volatile_manifest_keys`(`evals/metrics/run_manifest.py`)를
+  두고 `evals.metrics.report.normalize_artifacts`·`evals.personalization.cli`(paired·live)·
+  `evals.scoring.cli`·probe 5종(`legs_probe`·`intent_probe`·`category_probe`·
+  `underspecified_probe`·`ablation`)의 정규화가 전부 이를 합성해 쓰도록 수렴시켰다. 평가 대상
+  소스 지문인 `hashes`는 의도대로 비교 대상에 남긴다.
 - **#428 — 전개(#217) 후 재매핑에서 동음이의어 노이즈 leg 이 살아남아 "과일 추천해줘"가 인기
   상품으로 답하던 문제** — decompose 가 `categoryQueries: []`(D1)를 내는 회차에서 전개 아이템
   ("바나나"·"사과"·"배"·"오렌지")을 재매핑하면, "배" 같은 동음이의어가 거리컷(0.26)에 전량
@@ -469,6 +578,29 @@
 - **#299 — 요청 바디 크기 상한** — 필드별 상한(`chat_message_max_chars`·`screen_products_raw_scan_max` 등)은 흩어져 있고 상한 없는 필드(`conditionActions` 등)도 계속 생기는데, 레이트 리밋(§2.8)은 요청 **건수**만 세 임의 크기 바디를 반복 전송할 수 있었다. `app/core/body_limit.py`에 `BodySizeLimitMiddleware`(순수 ASGI)를 신설해 `Content-Length` 초과는 바디를 읽기 전에, 헤더가 없는(chunked) 경우는 `receive`를 감싼 실수신 바이트 누적으로 상한(`request_body_max_bytes`, 기본 1MiB — 필드 상한이 절단 없이 받아들이는 최대 정상 페이로드의 약 4.8배)을 넘기면 거절한다. 초과 응답은 새 코드를 내지 않고 기존 `400 BAD_REQUEST` 봉투를 그대로 쓴다(§2.5에 413/`PAYLOAD_TOO_LARGE`가 없어 신설은 별도 명세 개정 대상) — 와이어 계약 변경 0. 미들웨어는 레이트 리밋 **바깥**(거대 바디가 JWT 서명 검증 비용·레이트 리밋 슬롯을 소모하지 않게)·CORS **안쪽**(400 응답에도 CORS 헤더가 실리게)에 등록한다.
 
 ### Docs
+- **#258 — I-1 `color` 반복 파라미터(BE 송부용 계약 제안문)** — 현행 `color: string | null`
+  단일값 LIKE 필터로는 표기 분포가 극단적으로 치우친 색상 동의어(`블랙` 2,358 vs `검정` 11)를
+  원리적으로 못 잡는다는 실측 근거와 함께, `brandName` 방법 D(§4.6, v0.15.23)와 동일 규약인
+  반복 파라미터(`color=네이비&color=남색`) → BE `OR` 매칭을 제안한다. 대안(콤마 구분 단일
+  문자열·BE DB 정규 컬럼·AI 다중 fan-out·런타임 벡터/LLM 확장) 탈락 이유와 하위 호환·롤아웃
+  순서를 정리했다. `docs/api-spec.md` 는 건드리지 않는다 — 계약 개정은 사람 승인 게이트다.
+  (`docs/specs/PROPOSAL-I1-COLOR-ARRAY-258.md`)
+- **#258 — api-spec §4.6 `color` 사본 drift 정정(string → string[]) — 신설 협의 아님** —
+  `toss-delta-final/jarvis-backend` main 을 직접 확인한 결과 위 제안은 이미 협의가 아니라
+  **확정·배포된 계약**이었다: `InternalProductController.search` 시그니처가 이미
+  `List<String> color`(머지 커밋 `1e0ce150`, 2026-08-04), BE 자체 계약 문서
+  `docs/backend/05-llm-contract.md` §I-1 에 "2026-08-03 LLM팀 실측 합의"·"동의어 확장은
+  LLM 팀 소관" 으로 등재, 운영 배포 완료(2026-08-08 확인). `docs/api-spec.md` 사본만
+  단수로 남아 있던 drift라 v0.23.1·v0.20.4·v0.15.27 과 같은 유형으로 정정했다 — 반복
+  파라미터·BE 부분 일치 OR 매칭(`regexp_instr` alternation)·3갈래 판정(미지정/색상축
+  없음/좁혀 비교)·정규화 주체(BE, trim+소문자화)·메타문자 이스케이프(BE)를 함께 등재.
+  동의어 확장 주체는 여전히 AI(#258). `docs/specs/PROPOSAL-I1-COLOR-ARRAY-258.md` 도
+  "BE 송부용 제안" → "BE 실측 확인 완료 기록"으로 성격을 전환하고 §6 질문 6개를 답으로
+  다시 썼다. **`color_synonym_expansion_enabled`/`color_synonym_array_contract_ready`
+  기본값은 이번엔 켜지 않는다** — 두 플래그가 `.github/workflows/deploy.yml` env 목록에
+  없어 운영이 코드 기본값을 그대로 쓰는데, `color_synonyms` 테이블은 fresh 볼륨에서만
+  자동 생성돼(PR #273) 운영 pg-catalog 에 시드가 없을 가능성이 높다 — 플래그 on 은 운영
+  DB 시드 적재 후 별도 단계다. (api-spec §4.6, v0.28.4)
 - **#425 — overspecified_zero 는 완화 축이 없어 재검색이 안 돈다, 정의된 동작으로 판정** —
   combo_matrix 매트릭스가 README·`expected_behavior.jsonl` 의 `expected` 서술("0건이면 자동 완화·
   완화 칩으로 대안 제시")과 실측(combo-0031: `searchCallCount=1`·`finishReason=zero_result`,

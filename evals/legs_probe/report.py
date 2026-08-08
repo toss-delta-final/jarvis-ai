@@ -18,8 +18,11 @@ from evals.legs_probe.metrics import (
 )
 from evals.legs_probe.runner import CellResult
 from evals.legs_probe.schema import AnchorSet
+from evals.metrics.run_manifest import VOLATILE_MANIFEST_KEYS
 
-VOLATILE_JSON_KEYS = frozenset({"run", "dirty", "timestamp", "latencyMs", "totalWaitS", "maxWaitS"})
+VOLATILE_JSON_KEYS = VOLATILE_MANIFEST_KEYS | frozenset(
+    {"timestamp", "latencyMs", "totalWaitS", "maxWaitS"}
+)
 VOLATILE_CSV_COLUMNS = frozenset({"latencyMs"})
 
 TRAPS = (

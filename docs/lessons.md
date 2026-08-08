@@ -13,6 +13,63 @@
 
 ---
 
+## [2026-08-07] "얼마나 좁힐지" 계산에 하한만 걸고 "이미 지났으면" 을 안 걸면 좁히기가 음수를 낸다
+- 증상: #427 리뷰(오케스트레이터 직접 재현)가 `rescue_deadline` 이 이미 지난 턴(과거
+  `turn_started_at`)에서 `narrow_search_budget` 이 **음수 예산**을 받는 결함을 잡았다.
+  `_stage_budget` 은 `granted = min(spring_search_timeout_s, remaining / n)` 를 그대로
+  돌려주는데, `remaining = rescue_deadline - time.monotonic()` 이 음수면 `granted` 도 음수다.
+  `_apply_stage_budget` 의 skip→narrow 강등 두 경로(본검색의 `allow_skip=False`, `narrow`
+  모드의 skip 실행)가 그 음수를 검증 없이 그대로 실행에 넘겼다 — `asyncio.wait_for(timeout=
+  음수)` 가 즉시 만료돼 **HTTP 요청 자체가 나가지 않았다**. "본검색은 절대 건너뛰지 않는다"는
+  불변식이 이름만 남고 실제로는 건너뛴 것보다 나쁜 결과(요청 없이 실패)를 냈고, 자동완화
+  probe 는 `relaxing` progress 를 emit 해 놓고 아무 일도 안 하는 거짓 신호(H4)까지 재현했다.
+- 원인: `granted >= min_threshold` 형태의 하한 분기(`"narrow"` vs `"skip"` 판정)를 만들 때
+  "판정이 `narrow`" 와 "그 값이 실행 가능한 양수" 를 같은 조건으로 착각했다 — 실제로는
+  `min(x, remaining/n)` 의 `remaining` 이 음수일 수 있다는 걸 놓쳐 `granted < min_threshold`
+  분기(`"skip"`)만 하한 아래를 잡고, `"skip"` 을 다시 `"narrow"` 로 강등하는 경로에는 하한이
+  전혀 적용되지 않았다. **판정 임계값과 실행 임계값은 같은 변수를 참조해도 강제 지점이 다르면
+  분리해서 각각 확인해야 한다** — 하나는 분류용(threshold 비교), 하나는 집행용(clamp)이다.
+  테스트도 `search=` 에 fake 를 주입해 `narrow_search_budget` 이 **불렸다는 것만** 확인하고
+  그 인자 값이 실제로 유효한지, 끝단(`spring_client.search_products`)까지 살아있는지는 재지
+  않아 이 결함을 통과시켰다.
+- 규칙: "예산을 좁힌다/못 쓰게 건너뛴다" 류 로직에서 원본 시간축 계산(`deadline - now`)이
+  음수가 될 수 있는 경우(데드라인이 이미 지난 턴), **판정(분류)과 실제로 실행에 넘기는 값을
+  분리해서 각각 clamp 하라** — 판정은 "어느 분기인가"만 정하고, 그 분기가 무엇이든 실행 직전에
+  "이 값을 그대로 API 에 넘겨도 되는가"(양수·최소 유효값 이상)를 다시 확인한다. 테스트는
+  fake 를 주입해 "그 함수가 불렸다"만 보지 말고, 스파이가 **실제 함수를 통과시키면서** 인자
+  값을 기록하게 하거나(`with real_fn(x): yield` 형태), 최소한 그 값 자체에 대한 별도 어설션을
+  추가한다 — 호출 여부와 호출 값의 유효성은 다른 주장이다.
+- 관련: `app/agents/buyer/recommendation/graph.py::stream_recommendation` 의 `_stage_budget`/
+  `_apply_stage_budget`(D4) · `app/services/spring_client.py::narrow_search_budget` · #427
+
+## [2026-08-07] `open_stream` 의 `inner_factory` 시그니처를 바꾸면 테스트 전수가 조용히 깨진다
+- 증상: #427 에서 `open_stream(..., inner_factory: Callable[[], AsyncIterator[str]])` 를
+  `Callable[[float], AsyncIterator[str]]` 로 바꿨더니(D2 턴 시작 시각 플럼빙), `uv run pytest`
+  전체 실행에서 `tests/unit/test_observability.py`·`test_infra.py`·`test_recommendation.py`·
+  `test_buyer_tracing.py`·`test_seller_tracing.py`·`test_session_claim_api.py`·
+  `test_spring_search_budget_132.py`·`tests/integration/conftest.py`·`evals/scoring/adapter.py`·
+  `evals/model_eval/adapter.py`·`evals/metrics/harness.py`·`evals/first_event_budget/
+  measure_first_event.py` 에 걸쳐 `TypeError: <lambda>() got an unexpected keyword/positional
+  argument` 가 40건 넘게 났다 — 전부 `inner_factory` 로 넘기는 0-인자 로컬 함수/람다/클래스
+  (`async def slow(): ...`, `lambda: httpx.AsyncClient(...)`)였다.
+- 원인: `open_stream` 은 `app/services/spring_client.py::_client()` 처럼 프로덕션 코드
+  안쪽에만 있는 함수가 아니라, 테스트가 **직접 인자로 넘기는 콜백**의 시그니처 계약이다.
+  그런 함수는 `grep -rn "open_stream(" tests/` 로도 호출부만 보이고 실제 깨지는 지점(그 호출에
+  넘긴 콜백의 정의부)은 별도로 찾아야 한다 — 콜백 정의가 호출부와 수십~수백 줄 떨어져 있거나
+  다른 파일(`tests/integration/conftest.py` 의 공유 fixture, `evals/*/adapter.py` 의 하네스)에
+  있으면 놓치기 쉽다. `spring_client._client()` 도 같은 패턴이라 `timeout=` 키워드 인자를
+  추가했을 때 `lambda: httpx.AsyncClient(...)` 로 patch 한 fake 들이 같은 이유로 깨졌다.
+- 규칙: 테스트가 **콜백으로 주입하는** 함수(래퍼가 시그니처를 정의하고 호출부가 인자를 받아
+  넘기는 패턴 — `open_stream(inner_factory)`, `_client()` 등)의 시그니처를 바꿀 때는
+  `grep -rn "<함수명>(" tests/ evals/` 로 호출부만 보지 말고, 그 호출에 넘겨지는 각 인자
+  (변수명)의 **정의부**를 별도로 찾아 전수 갱신한다. 새 인자는 가능하면 키워드 전용 +
+  기본값(`*, timeout: float | None = None`)으로 추가해 fake 들이 무시해도 무해하게 만들되,
+  위치 인자가 필수면(D2 의 `turn_started_at` 처럼 값 자체를 검증해야 하는 경우) 콜백 시그니처를
+  전수 갱신하고 `uv run pytest`(전체, 개별 파일 단위가 아니라)로 결과를 확인한다 — 개별 파일만
+  돌리면 다른 파일의 같은 패턴을 놓친다.
+- 관련: `app/core/stream.py::open_stream`(D2) · `app/services/spring_client.py::_client`(§1) ·
+  #427
+
 ## [2026-08-07] 두 정상 설계의 이음매는 어느 쪽 코드를 봐도 결함으로 안 보인다 — 적용 범위를 문서에 적어라
 - 증상: #435 "추천 카드를 이름으로 지목한 찜/담기가 실패한다"가 여러 라운드 동안 "미확정"
   으로 남아 있었다. `screen_reference.py`(화면 지시어 결정적 해소기)를 보면 정상 설계고,
@@ -659,6 +716,10 @@
 - 관련: `evals.metrics.run_manifest.build_run_manifest`(`commitSha`·`dirty`) ·
   `evals.metrics.report.normalize_artifacts` ·
   `evals.personalization.cli.normalize_paired_artifacts` · #380
+- **후속(#413)**: 정규화가 `commitSha`·`dirty` 축을 정본으로 걷어내 이 함정 자체는 사양으로
+  해소됐다(`evals.metrics.run_manifest.strip_volatile_manifest_keys`). 남은 위험은 `hashes`
+  축뿐 — `uv run pytest` 도중 uv.lock·goldenset·decompose.py·rerank.py·config.py 를 편집하면
+  여전히 실패한다(의도된 계약).
 
 ## [2026-08-06] `ruff format`/`--fix` 는 쓰기 명령이다 — `ruff check` 와 같은 감각으로 전체 스코프에 돌리면 안 된다
 - 증상: #380 리뷰 라운드 1 작업 중 `uv run ruff format .` 을 스코프 없이 전체 리포에 돌렸다.

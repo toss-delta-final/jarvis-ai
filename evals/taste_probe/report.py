@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from evals.metrics.run_manifest import VOLATILE_MANIFEST_KEYS
 from evals.taste_probe.metrics import AxisResult, match_sample
 from evals.taste_probe.runner import SessionResult
 from evals.taste_probe.schema import GoldenSet
@@ -389,7 +390,9 @@ def _strip_volatile(payload: Any, volatile_keys: frozenset[str]) -> Any:
     return payload
 
 
-VOLATILE_JSON_KEYS = frozenset({"run", "dirty", "timestamp", "latencyMs"})
+# 정본은 evals.metrics.run_manifest.VOLATILE_MANIFEST_KEYS(run/commitSha/dirty) —
+# latencyMs 는 우리 하네스 산출물 고유의 행 필드라 그쪽엔 없다(#413 수렴).
+VOLATILE_JSON_KEYS = VOLATILE_MANIFEST_KEYS | frozenset({"latencyMs"})
 VOLATILE_CSV_COLUMNS = frozenset({"latencyMs"})
 
 

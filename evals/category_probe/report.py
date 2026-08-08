@@ -13,8 +13,9 @@ from typing import Any
 
 from evals.category_probe.metrics import ADOPTED_DISTANCE_EVENTS, DROP_REASON_EVENTS, AxisResult
 from evals.category_probe.runner import CellResult, Sample
+from evals.metrics.run_manifest import VOLATILE_MANIFEST_KEYS
 
-VOLATILE_JSON_KEYS = frozenset({"run", "dirty", "timestamp", "latencyMs"})
+VOLATILE_JSON_KEYS = VOLATILE_MANIFEST_KEYS | frozenset({"timestamp", "latencyMs"})
 VOLATILE_CSV_COLUMNS = frozenset({"latencyMs"})
 
 BANNER = "단일 실행으로 채택 판정 금지 — 표본 분산이 커 축당 ±수 포인트가 흔들린다. 독립 2~3회 분포로 판정한다."

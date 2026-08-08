@@ -9,9 +9,20 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# 산출물 결정론 비교에서 제외하는 "실행 인스턴스 · 워킹트리 상태" 축.
+# run: runId/timestamp/command · commitSha/dirty: 실행 시점의 라이브 git 상태로,
+# 평가 입력이 아니라 리포 상태를 찍는 값이라 두 실행 사이 편집·커밋만으로 뒤집힌다(#413).
+VOLATILE_MANIFEST_KEYS = frozenset({"run", "commitSha", "dirty"})
+
+
+def strip_volatile_manifest_keys(manifest: dict[str, Any]) -> dict[str, Any]:
+    """매니페스트에서 실행 인스턴스·워킹트리 상태 축을 걷어낸 새 dict를 돌려준다."""
+    return {key: value for key, value in manifest.items() if key not in VOLATILE_MANIFEST_KEYS}
 
 
 def _sha256(path: Path) -> str:
