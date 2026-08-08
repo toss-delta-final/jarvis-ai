@@ -12,7 +12,7 @@ import httpx
 import pytest
 
 from app.core.config import get_settings
-from app.schemas.spring import ProductCreate, ProductUpdate
+from app.schemas.spring import ChurnMember, ProductCreate, ProductUpdate
 from app.services.spring_client import SpringClient, SpringUnavailableError
 
 BASE_URL = "http://spring.internal.test"
@@ -325,9 +325,8 @@ async def test_get_churn_parses_measured_response_shape() -> None:
                     },
                     "members": [
                         {
-                            "memberId": 103,
+                            "customerLabel": "A3F29C",
                             "lastActivityAt": "2026-06-15T10:00:00+09:00",
-                            "lastLoginAt": None,
                             "sessions30d": 0,
                             "preChurnEvent": "RETURNED(상품불량)",
                         }
@@ -347,10 +346,29 @@ async def test_get_churn_parses_measured_response_shape() -> None:
     assert result.pre_churn_signals.price_increase_exposed == 2
     assert len(result.members) == 1
     member = result.members[0]
-    assert member.member_id == 103
+    assert member.customer_label == "A3F29C"  # [#487] 구 memberId(Long) 대체
     assert member.sessions_30d == 0  # camel alias "sessions30d" 매핑 고정
-    assert member.last_login_at is None
     assert member.pre_churn_event == "RETURNED(상품불량)"
+
+
+async def test_churn_member_drops_raw_identifier_fields() -> None:
+    """[#487] ChurnMember 는 memberId·lastLoginAt 을 필드로 갖지 않는다.
+
+    구응답이 와도 extra="allow" 로 흡수돼 파싱은 계속 성공하지만(배포 순서 무관),
+    model_extra 에 남을 뿐 속성으로는 읽히지 않는다 — 표시 계층이 실수로도 원시
+    회원 키를 집어들 수 없게 하는 것이 이 단언의 목적이다.
+    """
+    assert "member_id" not in ChurnMember.model_fields
+    assert "last_login_at" not in ChurnMember.model_fields
+    assert "customer_label" in ChurnMember.model_fields
+
+    legacy = ChurnMember.model_validate(
+        {"memberId": 103, "lastLoginAt": "2026-06-10T10:00:00+09:00", "sessions30d": 0}
+    )
+
+    assert legacy.customer_label is None  # 라벨 미수신 — memberId 로 대체되지 않는다
+    assert not hasattr(legacy, "member_id")
+    assert legacy.model_extra.get("memberId") == 103  # 흡수는 되되 표면엔 안 나온다
 
 
 async def test_get_churn_missing_rate_parses_as_none_not_zero() -> None:
