@@ -18,6 +18,16 @@ BASELINE = Path("evals/personalization/baselines/dev-v2")
 def test_personalization_run_is_deterministic_across_environment_and_clock(
     tmp_path, monkeypatch
 ) -> None:
+    """이 테스트가 고정하는 축: 환경변수(`EXPOSE_MAX`)·시계가 달라도 산출물이 재현된다.
+
+    정규화(`normalize_paired_artifacts`)가 걷어내는 축: 실행 인스턴스(`run`)와 워킹트리 상태
+    (`commitSha`·`dirty`) — 이 실행 도중 리포를 편집하거나 커밋이 끼어도 이 테스트는 깨지지
+    않는다(#413).
+
+    남겨 둔 계약: `hashes`(uv.lock·goldenset manifest/fixtures·decompose.py·rerank.py·
+    config.py 의 sha256, `evals.metrics.run_manifest.build_run_manifest` 참조)는 여전히 비교
+    대상이다 — 이 실행 도중 그 파일들을 편집하면 실패하는 것이 의도다.
+    """
     first, second = tmp_path / "first", tmp_path / "second"
     monkeypatch.setenv("EXPOSE_MAX", "1")
     assert main(["--out", str(first)]) == 0

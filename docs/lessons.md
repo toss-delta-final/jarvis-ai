@@ -716,6 +716,10 @@
 - 관련: `evals.metrics.run_manifest.build_run_manifest`(`commitSha`·`dirty`) ·
   `evals.metrics.report.normalize_artifacts` ·
   `evals.personalization.cli.normalize_paired_artifacts` · #380
+- **후속(#413)**: 정규화가 `commitSha`·`dirty` 축을 정본으로 걷어내 이 함정 자체는 사양으로
+  해소됐다(`evals.metrics.run_manifest.strip_volatile_manifest_keys`). 남은 위험은 `hashes`
+  축뿐 — `uv run pytest` 도중 uv.lock·goldenset·decompose.py·rerank.py·config.py 를 편집하면
+  여전히 실패한다(의도된 계약).
 
 ## [2026-08-06] `ruff format`/`--fix` 는 쓰기 명령이다 — `ruff check` 와 같은 감각으로 전체 스코프에 돌리면 안 된다
 - 증상: #380 리뷰 라운드 1 작업 중 `uv run ruff format .` 을 스코프 없이 전체 리포에 돌렸다.

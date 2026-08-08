@@ -13,7 +13,7 @@ from app.core.config import Settings, get_settings
 from evals.goldenset.loader import load_cases
 from evals.goldenset.schema import GoldenCase, Identity
 from evals.metrics.report import normalize_artifacts, write_artifacts
-from evals.metrics.run_manifest import build_run_manifest
+from evals.metrics.run_manifest import build_run_manifest, strip_volatile_manifest_keys
 from evals.metrics.runner import evaluate, load_evaluation_fixtures
 from evals.metrics.settings import EvaluationSettings
 from evals.model_eval.budget import BudgetLimits, BudgetTracker
@@ -351,7 +351,8 @@ def run_tier_d(output_dir: Path, *, seed: int) -> dict[str, Any]:
 
 
 def normalize_paired_artifacts(output_dir: Path) -> dict[str, bytes]:
-    """Tier D arm/weight artifact에서 실행 인스턴스 run 메타만 제거한다."""
+    """Tier D arm/weight artifact에서 실행 인스턴스·워킹트리 상태 축(run·commitSha·dirty)을
+    제거한다."""
     normalized: dict[str, bytes] = {}
     for arm_dir in sorted(path for path in output_dir.iterdir() if path.is_dir()):
         for weight_dir in sorted(path for path in arm_dir.iterdir() if path.is_dir()):
@@ -360,8 +361,9 @@ def normalize_paired_artifacts(output_dir: Path) -> dict[str, bytes]:
     for name in ("comparison.json", "comparison.md", "overreach.json"):
         normalized[name] = (output_dir / name).read_bytes()
     manifest = json.loads((output_dir / "run_manifest.json").read_text(encoding="utf-8"))
-    manifest.pop("run", None)
-    normalized["run_manifest.json"] = (_json_text(manifest) + "\n").encode()
+    normalized["run_manifest.json"] = (
+        _json_text(strip_volatile_manifest_keys(manifest)) + "\n"
+    ).encode()
     return normalized
 
 
@@ -560,7 +562,8 @@ def run_tier_l(
 
 
 def normalize_live_artifacts(output_dir: Path) -> dict[str, bytes]:
-    """Tier L 산출물에서 run/latency/correlation ID만 제거한다."""
+    """Tier L 산출물에서 run/commitSha/dirty(실행 인스턴스·워킹트리 상태 축)와
+    latency/correlation ID를 제거한다."""
     normalized: dict[str, bytes] = {}
     for path in sorted(output_dir.rglob("*")):
         if not path.is_file():
@@ -569,7 +572,7 @@ def normalize_live_artifacts(output_dir: Path) -> dict[str, bytes]:
         if path.name.endswith(".json"):
             payload = json.loads(path.read_text(encoding="utf-8"))
             if path.name == "run_manifest.json":
-                payload.pop("run", None)
+                payload = strip_volatile_manifest_keys(payload)
             if path.name == "results.json":
                 for row in payload.get("caseResults", []):
                     row.pop("latencyMs", None)
