@@ -18,6 +18,7 @@ consolidation 이 요약을 만들 때 벡터도 함께 만들어 두고(`profil
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import math
 import time
@@ -28,6 +29,7 @@ from fastapi import HTTPException
 from app.agents.profile.reader import read_profile_summary
 from app.core.config import Settings, get_settings
 from app.core.text import _strip_unsafe
+from app.core.tracing import trace_span
 from app.pipelines.artifact_store import ArtifactStore, get_catalog_store
 from app.schemas.recommendations import (
     HomeRecommendationItem,
@@ -320,10 +322,12 @@ async def rank_home(request: HomeRecommendationRequest) -> HomeRecommendationRes
     # 취소가 실제로 듣는다(_call_store 가 필요한 건 동기 스레드 호출뿐).
     # 신원은 서비스 토큰이 인가하고 memberId 는 §3.7 계약상 본문으로 온다(레인 b).
     try:
-        profile = await asyncio.wait_for(
-            read_profile_summary(str(request.member_id)),
-            timeout=min(settings.home_reco_store_timeout_s, max(_remaining(), 0.001)),
-        )
+        # [#469] 단계 span — 트레이스 미바인딩(Noop)이면 no-op 이라 예산에 영향이 없다.
+        with trace_span("home.profile", "chain"):
+            profile = await asyncio.wait_for(
+                read_profile_summary(str(request.member_id)),
+                timeout=min(settings.home_reco_store_timeout_s, max(_remaining(), 0.001)),
+            )
     except TimeoutError:
         logger.warning("home_reco_profile_timeout")
         profile = None
@@ -356,15 +360,16 @@ async def rank_home(request: HomeRecommendationRequest) -> HomeRecommendationRes
     # errors.py 의 500 처리와 같은 관례). 와이어·trace 로는 코드만 나간다(§3.7 [HARD] 불변).
     try:
         store = get_catalog_store()
-        query_vec = await _call_store(
-            build_query_vector,
-            timeout=min(settings.home_reco_store_timeout_s, max(_remaining(), 0.001)),
-            cart_ids=signals.cart_product_ids,
-            viewed_ids=signals.recently_viewed_product_ids,
-            store=store,
-            settings=settings,
-            profile_vec=profile_vec,
-        )
+        with trace_span("home.query_vector", "tool"):
+            query_vec = await _call_store(
+                build_query_vector,
+                timeout=min(settings.home_reco_store_timeout_s, max(_remaining(), 0.001)),
+                cart_ids=signals.cart_product_ids,
+                viewed_ids=signals.recently_viewed_product_ids,
+                store=store,
+                settings=settings,
+                profile_vec=profile_vec,
+            )
     except TimeoutError as exc:
         logger.warning("home_reco_catalog_timeout")
         raise UpstreamTimeout from exc
@@ -391,15 +396,16 @@ async def rank_home(request: HomeRecommendationRequest) -> HomeRecommendationRes
         logger.warning("home_reco_catalog_timeout")
         raise UpstreamTimeout
     try:
-        ranked = await _call_store(
-            rank_candidates,
-            timeout=min(settings.home_reco_store_timeout_s, max(_remaining(), 0.001)),
-            query_vec=query_vec,
-            store=store,
-            exclude=exclude,
-            settings=settings,
-            k=max(want, settings.home_reco_min_candidates),
-        )
+        with trace_span("home.rank", "tool"):
+            ranked = await _call_store(
+                rank_candidates,
+                timeout=min(settings.home_reco_store_timeout_s, max(_remaining(), 0.001)),
+                query_vec=query_vec,
+                store=store,
+                exclude=exclude,
+                settings=settings,
+                k=max(want, settings.home_reco_min_candidates),
+            )
     except TimeoutError as exc:
         logger.warning("home_reco_catalog_timeout")
         raise UpstreamTimeout from exc
@@ -434,15 +440,16 @@ async def rank_home(request: HomeRecommendationRequest) -> HomeRecommendationRes
         reasons = {}
     else:
         try:
-            reasons = await _call_store(
-                build_reasons,
-                timeout=min(settings.home_reco_store_timeout_s, reason_budget),
-                product_ids=top,
-                store=store,
-                cart_ids=signals.cart_product_ids,
-                viewed_ids=signals.recently_viewed_product_ids,
-                settings=settings,
-            )
+            with trace_span("home.reasons", "tool"):
+                reasons = await _call_store(
+                    build_reasons,
+                    timeout=min(settings.home_reco_store_timeout_s, reason_budget),
+                    product_ids=top,
+                    store=store,
+                    cart_ids=signals.cart_product_ids,
+                    viewed_ids=signals.recently_viewed_product_ids,
+                    settings=settings,
+                )
         except TimeoutError:
             logger.warning("home_reco_reason_timeout")
             reasons = {}
@@ -474,16 +481,20 @@ def _respond(
     로그 key set 은 고정이며 **memberId·productId·프로필 원문·모델 식별자·토큰을 남기지 않는다**
     (§3.7 [HARD]·§6.3). 남기는 것은 무슨 일이 있었는지 판별할 유계 코드와 개수뿐이다.
     """
+    # [#469] observability 관례대로 JSON 을 메시지에 직접 싣는다 — `extra` 는 기본 포맷터가
+    # 출력하지 않아 outcome·개수가 실 로그에서 증발했다(운영 실측 2026-08-08).
     logger.info(
-        "home_reco_request",
-        extra={
-            "event": "home_reco_request",
-            "outcome": outcome,
-            "candidateCount": candidates,
-            "returnedCount": len(product_ids),
-            "reasonSource": "extras" if reasons else "none",
-            "elapsedMs": int((time.perf_counter() - started) * 1000),
-        },
+        json.dumps(
+            {
+                "event": "home_reco_request",
+                "outcome": outcome,
+                "candidateCount": candidates,
+                "returnedCount": len(product_ids),
+                "reasonSource": "extras" if reasons else "none",
+                "elapsedMs": int((time.perf_counter() - started) * 1000),
+            },
+            ensure_ascii=False,
+        )
     )
     return HomeRecommendationResponse(
         outcome=outcome,  # type: ignore[arg-type]

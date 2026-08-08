@@ -31,6 +31,11 @@ FetchFn = Callable[[str | None, int], Awaitable[ProductChangesPage]]
 _EMBED_BATCH_SIZE = 20
 SEED_LLM_PROVENANCE = "seed_llm_assignment"
 BATCH_EMBEDDING_PROVENANCE = "batch_embedding_unverified"
+# 사람 검수 결과(오버레이 approved/rejected)의 provenance. DB CHECK(03_color_synonyms.sql)와
+# scripts/derive_color_synonym_seed.py 양쪽이 이미 "human" 리터럴을 쓰고 있어 이 상수는 이
+# 모듈 안(정본 시드 로더 검증)에서만 쓴다 — 그 스크립트는 app 모듈을 lazy import 로만 참조하는
+# 관례라 거기로 끌고 가지 않는다(PR #447 리뷰 R3).
+HUMAN_PROVENANCE = "human"
 _EXCLUDED_TERM_LOG_PREVIEW = 5
 
 
@@ -120,9 +125,7 @@ def _color_term_limits(
     if max_terms is None or max_term_length is None or scan_max_values is None:
         settings = get_settings()
         max_terms = (
-            settings.color_synonym_harvest_max_terms_per_product
-            if max_terms is None
-            else max_terms
+            settings.color_synonym_harvest_max_terms_per_product if max_terms is None else max_terms
         )
         max_term_length = (
             settings.color_synonym_harvest_max_term_length
@@ -158,11 +161,7 @@ def extract_color_terms(
     )
     raw = attributes.get("색상")
     values = (
-        [raw]
-        if isinstance(raw, str)
-        else raw[:scan_max_values]
-        if isinstance(raw, list)
-        else []
+        [raw] if isinstance(raw, str) else raw[:scan_max_values] if isinstance(raw, list) else []
     )
     if isinstance(raw, list) and len(raw) > scan_max_values:
         _log.warning(
@@ -193,8 +192,7 @@ def extract_color_terms(
         remaining = len(excluded) - _EXCLUDED_TERM_LOG_PREVIEW
         suffix = f", 그 외 {remaining}건" if remaining > 0 else ""
         _log.warning(
-            "색상 표기 개수 상한 초과 — %d건 제외: [%s%s] "
-            "(unique_accepted=%d, max_terms=%d)",
+            "색상 표기 개수 상한 초과 — %d건 제외: [%s%s] (unique_accepted=%d, max_terms=%d)",
             len(excluded),
             preview,
             suffix,
@@ -594,13 +592,13 @@ async def assign_color_clusters(
     rejections.extend(tail_rejections)
 
     assignment: dict[str, str] = {
-        member: canonical
-        for canonical, members in anchor_groups.items()
-        for member in members
+        member: canonical for canonical, members in anchor_groups.items() for member in members
     }
     assignment.update(tail_assignments)
     anchor_order = {anchor: index for index, anchor in enumerate(canonicals)}
-    members_by_canonical: dict[str, list[ClusterMember]] = {canonical: [] for canonical in canonicals}
+    members_by_canonical: dict[str, list[ClusterMember]] = {
+        canonical: [] for canonical in canonicals
+    }
     for term, _ in ranked:
         canonical = assignment.get(term)
         if canonical is None:
@@ -628,9 +626,7 @@ async def assign_color_clusters(
                 nearest_anchor=nearest_anchor,
                 second_anchor=second_anchor,
                 second_cosine=second_score,
-                margin=(
-                    nearest_score - second_score if second_score is not None else None
-                ),
+                margin=(nearest_score - second_score if second_score is not None else None),
                 review_required=bool(reasons),
                 review_reasons=tuple(reasons),
             )
@@ -681,9 +677,7 @@ def _review_text(value: str) -> str:
             rendered.append("&#124;")
         elif unicodedata.category(character) == "Cc":
             codepoint = ord(character)
-            rendered.append(
-                f"\\x{codepoint:02x}" if codepoint <= 0xFF else f"\\u{codepoint:04x}"
-            )
+            rendered.append(f"\\x{codepoint:02x}" if codepoint <= 0xFF else f"\\u{codepoint:04x}")
         else:
             rendered.append(character)
     return "".join(rendered)
@@ -713,9 +707,7 @@ def _write_assignment_review_queue(
         for rejection in result.rejections:
             terms = ", ".join(_review_text(term) for term in rejection.terms) or "표기 없음"
             canonical = (
-                f" / canonical={_review_text(rejection.canonical)}"
-                if rejection.canonical
-                else ""
+                f" / canonical={_review_text(rejection.canonical)}" if rejection.canonical else ""
             )
             lines.append(
                 f"- [{_review_text(rejection.stage)}] {_review_text(rejection.reason)}: "
@@ -877,11 +869,7 @@ def harvest_new_terms(
     """
     settings = get_settings()
     max_terms, max_term_length, scan_max_values = _color_term_limits(
-        (
-            settings.color_synonym_harvest_max_terms_per_product
-            if max_terms is None
-            else max_terms
-        ),
+        (settings.color_synonym_harvest_max_terms_per_product if max_terms is None else max_terms),
         (
             settings.color_synonym_harvest_max_term_length
             if max_term_length is None
@@ -981,13 +969,9 @@ def _rows_from_result(
     result: ClusteringResult,
 ) -> list[ColorTermRow]:
     assignments = {
-        member.term: cluster.canonical
-        for cluster in result.clusters
-        for member in cluster.members
+        member.term: cluster.canonical for cluster in result.clusters for member in cluster.members
     }
-    preserve_existing = {
-        item.term: item.preserve_existing_canonical for item in result.unassigned
-    }
+    preserve_existing = {item.term: item.preserve_existing_canonical for item in result.unassigned}
     return [
         ColorTermRow(
             term=term,
@@ -1028,9 +1012,7 @@ async def build(
         embed,
         llm,
         top_n=settings.color_synonym_top_n if top_n is None else top_n,
-        terms_per_call=(
-            _EMBED_BATCH_SIZE * settings.color_synonym_llm_clusters_per_call
-        ),
+        terms_per_call=(_EMBED_BATCH_SIZE * settings.color_synonym_llm_clusters_per_call),
         threshold=settings.color_synonym_cluster_threshold if threshold is None else threshold,
         max_tokens=settings.color_synonym_llm_max_tokens,
     )
@@ -1064,3 +1046,227 @@ async def build(
         result.embedding_mismatch_count,
         len(result.unassigned),
     )
+
+
+_SEED_STATUSES = frozenset({"pending_review", "approved", "rejected"})
+_SEED_PROVENANCES = frozenset({SEED_LLM_PROVENANCE, BATCH_EMBEDDING_PROVENANCE, HUMAN_PROVENANCE})
+
+
+@dataclass(frozen=True)
+class SeedColorTermRow:
+    """정본 시드 파일(`db/catalog/seed/color_synonyms.json`) 한 행.
+
+    `ColorTermRow`(배치 수확 제안, 검수 보호형 upsert 대상)와 달리 이 행은 **이미 검수를 거친
+    정본** — 적재 시 `status`/`canonical`/`provenance`를 그대로 권위 있게(authoritative) 반영한다.
+    """
+
+    term: str
+    canonical: str | None
+    status: str
+    provenance: str
+    doc_count: int | None
+
+
+def load_seed_rows(path: str | Path) -> list[SeedColorTermRow]:
+    """정본 시드 JSON(`scripts/derive_color_synonym_seed.py` 생성물)을 엄격 로드한다.
+
+    형식 위반(배열 아님·필수 키 결측·enum 밖 값·타입 불일치)은 즉시 `ValueError`.
+    """
+    data = json.loads(Path(path).read_bytes().decode("utf-8"))
+    if not isinstance(data, list):
+        raise ValueError(f"색상 동의어 정본 시드는 배열이어야 함: {path}")
+    rows: list[SeedColorTermRow] = []
+    seen_terms: set[str] = set()
+    for item in data:
+        if not isinstance(item, dict):
+            raise ValueError(f"색상 동의어 정본 시드 항목은 객체여야 함: {item!r}")
+        term = item.get("term")
+        canonical = item.get("canonical")
+        status = item.get("status")
+        provenance = item.get("provenance")
+        doc_count = item.get("doc_count")
+        if not isinstance(term, str) or not term.strip():
+            raise ValueError(
+                f"색상 동의어 정본 시드 term은 비어 있지 않은 문자열이어야 함: {item!r}"
+            )
+        # 이 파일은 생성물이라 바이트가 derive --check·커밋된 sha256 으로 고정돼 있다 — 로더가
+        # 조용히 strip 하면 파일 내용과 DB 에 들어가는 값이 갈라져 "repo 파일이 바이트 단위
+        # 정본"이라는 이 PR 의 핵심 성질이 깨진다. extract_color_terms 가 셀러 자유 텍스트를
+        # strip 하는 것과는 신뢰 경계가 다르다(PR #447 리뷰 R5) — 여기는 고치지 않고 거부한다.
+        if term != term.strip():
+            raise ValueError(
+                f"색상 동의어 정본 시드 term에 앞뒤 공백/개행이 있음(허용 안 함) — "
+                f"scripts/derive_color_synonym_seed.py 로 재생성하라: {item!r}"
+            )
+        # _execute_seed_upserts 가 rows 순서대로 ON CONFLICT (term) DO UPDATE 를 실행하므로,
+        # 같은 term 이 두 번 있으면(다른 status/canonical 이어도) 배열 순서에 좌우돼 나중 행이
+        # 앞 행을 조용히 덮는다(PR #447 리뷰 R2). DB UNIQUE(term) 과 같은 기준으로 원문 term
+        # 중복만 판정한다 — 표기 정규화(`_norm`) 충돌 판정은 파생 스크립트(apply_overlay)의
+        # 책임이라 여기서 끌어오지 않는다.
+        if term in seen_terms:
+            raise ValueError(f"색상 동의어 정본 시드 term 중복: {term!r} ({item!r})")
+        seen_terms.add(term)
+        if canonical is not None and not isinstance(canonical, str):
+            raise ValueError(f"색상 동의어 정본 시드 canonical은 문자열/null이어야 함: {item!r}")
+        # 빈 문자열은 "canonical 없음"의 유효한 표현이 아니다 — WHERE canonical IS NOT NULL 을
+        # 통과해 build_synonym_map 의 groups.setdefault(canonical, ...) 가 ""를 키로 삼아
+        # 서로 무관한 승인 행을 한 묶음으로 잘못 합친다(PR #447 리뷰 R1). "없음"은 None 으로만
+        # 표현한다.
+        if canonical is not None and not canonical.strip():
+            raise ValueError(
+                f"색상 동의어 정본 시드 canonical은 빈 문자열일 수 없음(없으면 null): {item!r}"
+            )
+        # term 과 같은 이유(생성물 바이트 정본, PR #447 리뷰 R5) — canonical 도 조용히 strip 하지
+        # 않고 거부한다.
+        if canonical is not None and canonical != canonical.strip():
+            raise ValueError(
+                f"색상 동의어 정본 시드 canonical에 앞뒤 공백/개행이 있음(허용 안 함) — "
+                f"scripts/derive_color_synonym_seed.py 로 재생성하라: {item!r}"
+            )
+        if status not in _SEED_STATUSES:
+            raise ValueError(f"색상 동의어 정본 시드 status 위반({status!r}): {item!r}")
+        if provenance not in _SEED_PROVENANCES:
+            raise ValueError(f"색상 동의어 정본 시드 provenance 위반({provenance!r}): {item!r}")
+        if doc_count is not None and (
+            not isinstance(doc_count, int) or isinstance(doc_count, bool)
+        ):
+            raise ValueError(f"색상 동의어 정본 시드 doc_count는 정수/null이어야 함: {item!r}")
+        # status=approved 인데 canonical 이 없으면(None) build_synonym_map 필터
+        # (canonical IS NOT NULL)에 걸려 조용히 사전에서 빠진다 — 검수자는 승인했다고 믿는데
+        # 런타임에는 존재하지 않는 모순 상태다.
+        if status == "approved" and canonical is None:
+            raise ValueError(
+                f"색상 동의어 정본 시드 status=approved 인데 canonical 이 없음(null): {item!r}"
+            )
+        rows.append(SeedColorTermRow(term, canonical, status, provenance, doc_count))
+
+    # 2차 패스 — 행 단위 루프에서는 뒤에 올 행을 알 수 없으므로, 파일 전체를 다 읽은 뒤
+    # canonical 의 참조 무결성을 검증한다. scripts/derive_color_synonym_seed.py::apply_overlay
+    # 가 수확 집합(DB) 기준으로 이미 강제하는 것과 같은 세 규칙을 시드 파일(정본 JSON) 기준으로
+    # 지킨다 — 원천이 다를 뿐 불변식은 같다(#258 리뷰 R4). 위반해도 조용히 통과하면
+    # build_synonym_map 이 그 canonical 을 그룹 키로 못 찾아 "승인이 조용히 아무 일도 하지
+    # 않는" 상태가 된다.
+    by_term = {row.term: row for row in rows}
+    for row in rows:
+        if row.canonical is None:
+            continue
+        target = by_term.get(row.canonical)
+        if target is None:
+            raise ValueError(
+                f"색상 동의어 정본 시드 canonical이 파일 안 term을 가리키지 않음: "
+                f"{row.term!r} → {row.canonical!r}"
+            )
+        if row.status == "approved" and target.status != "approved":
+            raise ValueError(
+                f"고아 승인 — {row.term!r}(approved)의 canonical {row.canonical!r}이 "
+                f"approved가 아님(status={target.status!r})"
+            )
+        if target.canonical != row.canonical:
+            raise ValueError(
+                f"2단계 체인/순환 금지 위반: {row.term!r} → {row.canonical!r} → "
+                f"{target.canonical!r}"
+            )
+
+    # DB UNIQUE(term)(위 seen_terms)은 원문 기준이고, 이건 다른 불변식이다 —
+    # app.pipelines.color_synonyms.build_synonym_map 이 `mapping[_norm(term)] = ordered.copy()`
+    # 로 키를 만들므로, 서로 다른 원문 term 두 개가 같은 _norm 이면 나중 그룹이 먼저 그룹을
+    # 조용히 덮어써 먼저 term 의 동의어 목록이 사라진다(예외·로그 없음, PR #447 리뷰 R6).
+    # 두 검사는 대체가 아니라 공존해야 한다. scripts/derive_color_synonym_seed.py::apply_overlay
+    # 가 수확 집합 기준으로 같은 _norm 충돌 검사를 한다 — 여기는 시드 파일 기준의 대응물이다.
+    # 정규화는 런타임 build_synonym_map 의 키와 절대 갈라지면 안 되므로 복사하지 않고
+    # color_synonyms._norm 을 그대로 가져다 쓴다.
+    norm_seen: dict[str, str] = {}
+    for row in rows:
+        key = color_synonyms._norm(row.term)
+        if key in norm_seen and norm_seen[key] != row.term:
+            raise ValueError(
+                f"색상 동의어 정본 시드 _norm 기준 term 충돌: {norm_seen[key]!r} vs {row.term!r}"
+            )
+        norm_seen[key] = row.term
+
+    return rows
+
+
+# 정본은 repo 파일이다 — 위 UPSERT_COLOR_TERM_SQL은 배치 수확이 사람 검수 결과(status·canonical·
+# provenance)를 덮지 않도록 보호하는 CASE 가드를 쓴다. 이 상수는 반대로 시드 파일 값을 항상
+# 권위 있게(authoritative) 반영한다 — DB에서 직접 고친 검수 결과(수동 UPDATE)는 재파생·재커밋
+# 하지 않으면 다음 seed_from_file 실행에서 되돌아간다(db/catalog/seed/README.md 검수 워크플로 참고).
+UPSERT_SEED_COLOR_TERM_SQL = """
+INSERT INTO color_synonyms
+    (term, canonical, status, embedding, embedding_model, provenance, doc_count, updated_at)
+VALUES (%s, %s, %s, %s, %s, %s, %s, now())
+ON CONFLICT (term) DO UPDATE SET
+    canonical = EXCLUDED.canonical,
+    status = EXCLUDED.status,
+    -- 임베딩은 term+model의 파생값이라 재실행마다 다시 계산하지만, NULL(예: NON_COLOR_TERMS)로
+    -- 들어오면 기존 벡터를 지우지 않는다(UPSERT_COLOR_TERM_SQL과 같은 COALESCE 관례).
+    embedding = COALESCE(EXCLUDED.embedding, color_synonyms.embedding),
+    embedding_model = COALESCE(EXCLUDED.embedding_model, color_synonyms.embedding_model),
+    provenance = EXCLUDED.provenance,
+    doc_count = EXCLUDED.doc_count,
+    updated_at = now()
+"""
+
+
+def _execute_seed_upserts(
+    conn,
+    rows: Sequence[SeedColorTermRow],
+    embeddings: dict[str, list[float]],
+    model: str,
+) -> int:
+    from pgvector import Vector  # noqa: PLC0415 - LAZY import(pg 미설치 환경 유닛테스트 회피)
+
+    for row in rows:
+        vector = embeddings.get(row.term)
+        conn.execute(
+            UPSERT_SEED_COLOR_TERM_SQL,
+            (
+                row.term,
+                row.canonical,
+                row.status,
+                Vector(vector) if vector is not None else None,
+                model if vector is not None else None,
+                row.provenance,
+                row.doc_count,
+            ),
+        )
+    return len(rows)
+
+
+def seed_color_terms(
+    dsn: str,
+    rows: Sequence[SeedColorTermRow],
+    embeddings: dict[str, list[float]],
+    model: str,
+) -> int:
+    """정본 시드 행을 권위 있게(authoritative) upsert한다(단일 트랜잭션)."""
+    with _get_pool(dsn).connection() as conn, conn.transaction():
+        return _execute_seed_upserts(conn, rows, embeddings, model)
+
+
+def seed_from_file(
+    source_path: str | Path,
+    dsn: str,
+    embed: EmbedFn | None = None,
+    model: str | None = None,
+) -> int:
+    """정본 시드 파일 → 임베딩 → `color_synonyms` 권위 있게 upsert (오프라인 1회 빌드, 이슈 #258).
+
+    `app.pipelines.category_seed.seed_from_file`과 같은 관례 — 미주입 기본값은 문서(document)
+    임베딩이고, 오프라인 1회 빌드(SSE hot path 아님)이므로 hot path 총 예산
+    (embedding_total_timeout_s, #391)을 `total_timeout_s=math.inf`로 우회한다. `NON_COLOR_TERMS`는
+    임베딩하지 않는다(배치 파이프라인과 같은 sentinel 제외 관례).
+    """
+    settings = get_settings()
+    embed = embed or functools.partial(
+        _embed_texts, task_type=settings.embedding_task_document, total_timeout_s=math.inf
+    )
+    model = model or settings.embedding_model_id
+    rows = load_seed_rows(source_path)
+    terms_to_embed = list(
+        dict.fromkeys(row.term for row in rows if row.term not in NON_COLOR_TERMS)
+    )
+    embeddings = (
+        dict(zip(terms_to_embed, embed(terms_to_embed), strict=True)) if terms_to_embed else {}
+    )
+    return seed_color_terms(dsn, rows, embeddings, model)

@@ -11,7 +11,7 @@ from typing import Any
 
 from evals.goldenset.loader import load_cases
 from evals.metrics.report import normalize_artifacts, write_artifacts
-from evals.metrics.run_manifest import build_run_manifest
+from evals.metrics.run_manifest import build_run_manifest, strip_volatile_manifest_keys
 from evals.metrics.runner import evaluate, load_evaluation_fixtures
 from evals.scoring.adapter import ReferenceClockBuyerAdapter, ScoringBuyerAdapter
 from evals.scoring.embeddings import FIXTURE_PATH
@@ -97,7 +97,7 @@ def _comparison_markdown(comparison: dict[str, object]) -> str:
 
 
 def normalize_paired_artifacts(output_dir: Path) -> dict[str, bytes]:
-    """arm별 #143 정규화에 더해 paired runtime latency/run 메타를 제외한다."""
+    """arm별 #143 정규화에 더해 paired runtime latency/run·commitSha·dirty 메타를 제외한다."""
     normalized: dict[str, bytes] = {}
     for arm in ("passthrough", "scoring"):
         for name, content in normalize_artifacts(output_dir / arm).items():
@@ -105,8 +105,9 @@ def normalize_paired_artifacts(output_dir: Path) -> dict[str, bytes]:
     for name in ("comparison.json", "comparison.md", "scores_scoring.json"):
         normalized[name] = (output_dir / name).read_bytes()
     manifest = json.loads((output_dir / "run_manifest.json").read_text(encoding="utf-8"))
-    manifest.pop("run", None)
-    normalized["run_manifest.json"] = (_json_text(manifest) + "\n").encode()
+    normalized["run_manifest.json"] = (
+        _json_text(strip_volatile_manifest_keys(manifest)) + "\n"
+    ).encode()
     return normalized
 
 

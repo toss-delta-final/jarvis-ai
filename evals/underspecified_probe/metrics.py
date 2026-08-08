@@ -117,10 +117,10 @@ def _recommend_pairs(pairs: list[Pair]) -> list[Pair]:
     """[F-1] confirmatory 분모를 프로덕션이 실제로 판정을 호출하는 표본으로 좁힌다.
 
     `app/agents/buyer/graph.py::run_buyer_turn` 은 `decision.intent` 가 `general`·`cart_view`·
-    `order_status`·`cart_add`·`cart_remove`·`wishlist_add`·`wishlist_remove` 인 분기에서 전부
-    `is_underspecified_turn` 호출 **이전에 return** 한다 — 그 표본은 프로덕션에서 판정 함수에
-    도달조차 하지 않는다. 그 표본을 미탐/오탐으로 세면 intent 라우팅 축(`evals/intent_probe`
-    소관)의 실패를 과소지정 판정 축의 실패로 오귀속한다.
+    `order_status`·`cart_add`·`cart_remove`·`wishlist_add`·`wishlist_remove`·
+    `wishlist_view`(#386) 인 분기에서 전부 `is_underspecified_turn` 호출 **이전에 return** 한다
+    — 그 표본은 프로덕션에서 판정 함수에 도달조차 하지 않는다. 그 표본을 미탐/오탐으로 세면
+    intent 라우팅 축(`evals/intent_probe` 소관)의 실패를 과소지정 판정 축의 실패로 오귀속한다.
     """
     return [(s, a) for s, a in pairs if s.intent == "recommend"]
 
@@ -252,6 +252,102 @@ def axis_expansion_gate_would_fire_rate(pairs: list[Pair]) -> AxisResult:
     )
 
 
+def _union_ok_pairs(pairs: list[Pair]) -> list[Pair]:
+    """[#432, §2-6 항목2] union 단계가 실패한(`stageError` 있음) 표본은 union 축 **분모에서만**
+    제외한다 — decompose 단계 표본으로는 그대로 산다(다른 축의 분모는 이 함수를 거치지 않는다)."""
+    return [(s, a) for s, a in pairs if s.union is not None and s.union.ok]
+
+
+def axis_miss_rate_after_expansion(pairs: list[Pair]) -> AxisResult:
+    """[#432] `missRate` 의 union(전개 후) 대응판 — **분모 정의는 `missRate` 와 동일**
+    (expectedReask=true 앵커의 recommend 표본), union 단계가 성공한 표본으로만 좁힌다."""
+    rp = _union_ok_pairs([(s, a) for s, a in _recommend_pairs(pairs) if a.expected_reask])
+    numerator = sum(1 for s, _ in rp if not s.union.verdict)
+    return AxisResult(
+        axis_id="missRateAfterExpansion",
+        title="미탐율(전개 후, union)",
+        numerator=numerator,
+        denominator=len(rp),
+        definition_numerator="union 판정 False",
+        definition_denominator="missRate 와 동일(expectedReask=true 앵커의 recommend 표본) — "
+        "union 단계 실패 표본은 제외(§2-6 항목2)",
+        nature="exploratory",
+    )
+
+
+def axis_false_alarm_rate_after_expansion(pairs: list[Pair]) -> AxisResult:
+    """[#432] `falseAlarmRate` 의 union 대응판 — 분모 정의는 `falseAlarmRate` 와 동일."""
+    rp = _union_ok_pairs(
+        [
+            (s, a)
+            for s, a in _recommend_pairs(pairs)
+            if not a.expected_reask and a.slice != GATE_SLICE
+        ]
+    )
+    numerator = sum(1 for s, _ in rp if s.union.verdict)
+    return AxisResult(
+        axis_id="falseAlarmRateAfterExpansion",
+        title="오탐율(전개 후, union)",
+        numerator=numerator,
+        denominator=len(rp),
+        definition_numerator="union 판정 True",
+        definition_denominator="falseAlarmRate 와 동일(expectedReask=false 앵커의 recommend 표본, "
+        "multiturn_gate 제외) — union 단계 실패 표본은 제외(§2-6 항목2)",
+        nature="exploratory",
+    )
+
+
+def axis_expansion_suppression_rate(pairs: list[Pair]) -> AxisResult:
+    """[#432] 전개가 되물음을 얼마나 꺼뜨리는가 — decompose 판정 True 였다가 union 판정 False 로
+    뒤집힌 비율. #432 이슈가 지목한 핵심 질문의 직접 답."""
+    rp = _union_ok_pairs([(s, a) for s, a in _recommend_pairs(pairs) if s.verdict])
+    numerator = sum(1 for s, _ in rp if not s.union.verdict)
+    return AxisResult(
+        axis_id="expansionSuppressionRate",
+        title="전개 억제율(decompose True → union False)",
+        numerator=numerator,
+        denominator=len(rp),
+        definition_numerator="decompose 단계 판정 True ∧ union 판정 False",
+        definition_denominator="decompose 단계 판정 True 인 recommend 표본 — union 단계 실패 "
+        "표본은 제외(§2-6 항목2)",
+        nature="exploratory",
+    )
+
+
+def axis_expansion_gate_fired_rate(pairs: list[Pair]) -> AxisResult:
+    """[#432, F-5 리뷰 반영] union 단계에서 `detect_expansion_need` 가 실제 `unresolved` 로
+    사유를 돌려준 표본의 비율.
+
+    **`expansionGateWouldFireRate`(가정판)의 "실측 대응물"이 아니다** — 분모가 다르다. 가정판은
+    "판정 True 표본 중 몇 %가 게이트에 걸리나"를 묻고, 이 축은 "전체 recommend 표본 중 몇 %에서
+    게이트가 실제로 발동하나"를 묻는다. **분모를 가정판과 맞추지 않은 이유**: 판정 True 표본은
+    정의상 `category_queries` 가 비어 있고, `detect_expansion_need([], case=…, unresolved=…)`
+    는 `unresolved` 값과 무관하게 `no_legs` 를 돌려준다 — 그 좁은 분모 안에서는 가정판과 실측판이
+    **구조적으로 항상 같은 값**이 된다(2차 리뷰어가 분모를 맞추라고 제안했으나 반려한 근거).
+    분모를 좁히면 이 축은 기존 축의 복제가 되어 새로 재는 정보가 0이 된다 — 넓은 분모라야 비로소
+    D2(`mapping_failed`) 가 처음 관측된다."""
+    rp = _union_ok_pairs(_recommend_pairs(pairs))
+    numerator = sum(1 for s, _ in rp if s.union.expansion_reason is not None)
+    return AxisResult(
+        axis_id="expansionGateFiredRate",
+        title="전개 게이트 실제 발동률(union)",
+        numerator=numerator,
+        denominator=len(rp),
+        definition_numerator="union 단계에서 detect_expansion_need 가 실제 unresolved 로 사유를 "
+        "돌려준 표본",
+        definition_denominator="recommend 표본 — union 단계 실패 표본은 제외(§2-6 항목2)",
+        nature="exploratory",
+    )
+
+
+UNION_AXIS_BUILDERS: dict[str, Callable[[list[Pair]], AxisResult]] = {
+    "missRateAfterExpansion": axis_miss_rate_after_expansion,
+    "falseAlarmRateAfterExpansion": axis_false_alarm_rate_after_expansion,
+    "expansionSuppressionRate": axis_expansion_suppression_rate,
+    "expansionGateFiredRate": axis_expansion_gate_fired_rate,
+}
+
+
 def axis_flag_off_invariant(pairs: list[Pair]) -> AxisResult:
     """[§D9] `flagOffInvariant` — `underspecified_reask_enabled=False` 로 재판정. True 인 표본
     수는 0이어야 한다(`buy-under-0008` 의 실측판). LLM 콜 0(수집된 표본 재사용).
@@ -305,18 +401,28 @@ AXIS_BUILDERS: dict[str, Callable[[list[Pair]], AxisResult]] = {
 }
 
 
-def score_all(results: list[CellResult], anchors: AnchorSet) -> dict[str, Any]:
-    """축 전체 + 슬라이스별 병기(§D8: "모든 축은 슬라이스별로 분자·분모·비율·CI95 를 병기")."""
+def score_all(
+    results: list[CellResult], anchors: AnchorSet, *, union_enabled: bool = False
+) -> dict[str, Any]:
+    """축 전체 + 슬라이스별 병기(§D8: "모든 축은 슬라이스별로 분자·분모·비율·CI95 를 병기").
+
+    [#432] `union_enabled=True` 일 때만 `UNION_AXIS_BUILDERS` 를 함께 채점한다 — 기본(off)
+    산출물 형상은 그대로 얼어 있다(#433 이 굳힌 6판과 계속 비교 가능해야 한다)."""
     pairs = _pairs(results, anchors)
-    axes = {axis_id: builder(pairs) for axis_id, builder in AXIS_BUILDERS.items()}
+    builders = dict(AXIS_BUILDERS)
+    if union_enabled:
+        builders.update(UNION_AXIS_BUILDERS)
+    axes = {axis_id: builder(pairs) for axis_id, builder in builders.items()}
     slices = {
         axis_id: {slice_name: builder(_by_slice(pairs, slice_name)) for slice_name in SLICES}
-        for axis_id, builder in AXIS_BUILDERS.items()
+        for axis_id, builder in builders.items()
     }
     return {"axes": axes, "slices": slices}
 
 
-def diagnostics(results: list[CellResult], anchors: AnchorSet) -> dict[str, Any]:
+def diagnostics(
+    results: list[CellResult], anchors: AnchorSet, *, union_enabled: bool = False
+) -> dict[str, Any]:
     """[§D10.2, F-1] 합불이 아닌 진단 카운터.
 
     `categoryEchoWithoutQueriesCount` — `filters.category` 가 비어 있지 않은데 `categoryQueries`
@@ -340,7 +446,7 @@ def diagnostics(results: list[CellResult], anchors: AnchorSet) -> dict[str, Any]
             continue
         per_intent = non_recommend_by_case.setdefault(anchor.case_id, {})
         per_intent[sample.intent] = per_intent.get(sample.intent, 0) + 1
-    return {
+    payload = {
         "categoryEchoWithoutQueriesCount": category_echo_without_queries,
         "nonRecommendIntentCount": {
             case_id: dict(sorted(counts.items()))
@@ -356,6 +462,19 @@ def diagnostics(results: list[CellResult], anchors: AnchorSet) -> dict[str, Any]
             "(evals/intent_probe)의 소관이다.",
         },
     }
+    if union_enabled:
+        # [F-4, 리뷰 findings-432-r1] 기본(off) 산출물 형상을 그대로 얼린다(§2-1) — union 단계
+        # 실패 건수는 union_enabled 일 때만 넣는다. 표본을 버리지 않고 union 축 분모에서만 뺀
+        # 규모를 여기 수치로 남긴다.
+        union_stage_error_count = sum(
+            1 for sample, _ in pairs if sample.union is not None and not sample.union.ok
+        )
+        payload["unionStageErrorCount"] = union_stage_error_count
+        payload["definition"]["unionStageErrorCount"] = (
+            "union 단계(_prepare_recommendation)가 예외를 낸 표본 수 (#432, §2-6 항목2) — 그 "
+            "표본은 decompose 단계 표본으로는 살아 있고 union 축 분모에서만 제외된다."
+        )
+    return payload
 
 
 def _outcome(*, expected_reask: bool, verdict: bool) -> str:
@@ -392,24 +511,40 @@ def sample_rows(
             elif outcome == "falseAlarm":
                 # [§D11] 오탐 — 앵커가 라벨한 referenceAxes 를 원인으로 싣는다(채워졌어야 할 축).
                 cause_axes = list(anchor.reference_axes)
-            rows.append(
-                {
-                    "caseId": sample.case_id,
-                    "n": sample.sample_index,
-                    "slice": anchor.slice,
-                    "intent": sample.intent,
-                    "case": sample.case,
-                    "semanticQueryIsFallback": sample.semantic_query_is_fallback,
-                    "semanticQuery": sample.semantic_query,
-                    "verdict": sample.verdict,
-                    "expectedReask": anchor.expected_reask,
-                    "outcome": outcome,
-                    "causeAxes": cause_axes,
-                    "blockingAxes": blocking_axes,
-                    "expansionReason": sample.expansion_reason,
-                    "latencyMs": sample.latency_ms,
-                }
-            )
+            row = {
+                "caseId": sample.case_id,
+                "n": sample.sample_index,
+                "slice": anchor.slice,
+                "intent": sample.intent,
+                "case": sample.case,
+                "semanticQueryIsFallback": sample.semantic_query_is_fallback,
+                "semanticQuery": sample.semantic_query,
+                "verdict": sample.verdict,
+                "expectedReask": anchor.expected_reask,
+                "outcome": outcome,
+                "causeAxes": cause_axes,
+                "blockingAxes": blocking_axes,
+                "expansionReason": sample.expansion_reason,
+                "latencyMs": sample.latency_ms,
+            }
+            # [#432] union 모드일 때만 채워진다(samples.csv 컬럼 형상은 report.write_artifacts
+            # 호출부가 union_enabled 를 보고 정한다 — 여기서는 값만 싣는다).
+            if sample.union is not None:
+                union = sample.union
+                row["unionVerdict"] = union.verdict
+                row["unionOutcome"] = (
+                    _outcome(expected_reask=anchor.expected_reask, verdict=union.verdict)
+                    if union.ok
+                    else None
+                )
+                row["unionMappedLegCount"] = union.mapped_leg_count
+                row["unionCategoryExpanded"] = union.category_expanded
+                row["unionFiltersCategory"] = union.filters_category
+                row["unionExpansionReason"] = union.expansion_reason
+                row["unionBlockingAxes"] = union.blocking_axes
+                row["unionStageLatencyMs"] = union.stage_latency_ms
+                row["unionStageError"] = union.stage_error
+            rows.append(row)
     return rows
 
 

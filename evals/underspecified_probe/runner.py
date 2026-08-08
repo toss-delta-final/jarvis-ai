@@ -16,18 +16,22 @@ import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
 from time import perf_counter
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.agents.buyer.recommendation.decompose import decompose
 from app.agents.buyer.recommendation.needs_expansion import detect_expansion_need
 from app.agents.buyer.recommendation.no_condition import _is_blank
 from app.agents.buyer.recommendation.state import RouteDecision
 from app.agents.buyer.recommendation.underspecified import is_underspecified_turn
+from app.core.config import Settings
 from app.core.llm import LLMClient
 from app.schemas.spring import ProductSearchFilters
 from evals.model_eval.budget import BudgetExceeded
 from evals.underspecified_probe.loader import Cell
 from evals.underspecified_probe.schema import BLOCKING_AXES
+
+if TYPE_CHECKING:  # 순환 임포트 회피(union.py 가 이 파일의 _clone_decision 등을 쓴다) — 타입만.
+    from evals.underspecified_probe.union import UnionSampleResult
 
 BACKOFF_BASE_S = 0.5
 BACKOFF_MAX_S = 8.0
@@ -175,6 +179,9 @@ class Sample:
     verdict: bool
     expansion_reason: str | None
     latency_ms: int
+    # [#432] `--union` 일 때만 채워진다 — decompose 단계 표본은 union 단계 성패와 무관하게
+    # 그대로 산다(§2-6 항목 2). None 이면 union 모드가 아니었다는 뜻이다.
+    union: "UnionSampleResult | None" = None
 
     @property
     def intent(self) -> str:
@@ -206,12 +213,14 @@ class Sample:
         prior: ProductSearchFilters | None,
         judgment_settings: JudgmentSettings,
         latency_ms: int,
+        union: "UnionSampleResult | None" = None,
     ) -> "Sample":
         verdict = is_underspecified_turn(decision, prior, judgment_settings)
         # [§D10.3] `unresolved=[]` — 이 하네스는 카테고리 매핑(2단계)을 돌리지 않으므로(§D2 규약)
         # 매핑 실패 목록이 존재하지 않는다는 사실의 정직한 반영이다. D2 의 `mapping_failed` 규칙은
         # 이 하네스에서는 발동할 수 없다. `detect_expansion_need` 는 프로덕션 함수를 그대로
-        # 호출한다(재구현 금지 규약 유지).
+        # 호출한다(재구현 금지 규약 유지). [#432] union 모드의 **실측** 대응 축은
+        # `sample.union.expansion_reason`(실제 unresolved) 이다 — 이 값(가정판)과 혼동 금지.
         expansion_reason = detect_expansion_need(
             decision.category_queries, case=decision.case, unresolved=[]
         )
@@ -222,6 +231,7 @@ class Sample:
             prior=prior,
             verdict=verdict,
             expansion_reason=expansion_reason,
+            union=union,
             latency_ms=latency_ms,
         )
 
@@ -265,6 +275,9 @@ async def run_cell(
     category_fanout_max: int = 5,
     repurchase_max: int = 5,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    union_enabled: bool = False,
+    union_llm: Any | None = None,
+    union_settings: Settings | None = None,
 ) -> CellResult:
     """성공 표본 N개를 채울 때까지 재시도한다.
 
@@ -316,6 +329,31 @@ async def run_cell(
             )
             await sleep(backoff_seconds(len(result.failures)))
             continue
+        union_result = None
+        if union_enabled:
+            # [#432] 순환 임포트 회피(LAZY) — union.py 가 이 파일의 _clone_decision 등을 쓴다.
+            if union_llm is not None and union_settings is not None:
+                from evals.underspecified_probe.union import run_union_stage
+
+                union_result = await run_union_stage(
+                    decision=decision,
+                    prior=prior,
+                    utterance=anchor.utterance,
+                    llm=union_llm,
+                    settings=union_settings,
+                    judgment_settings=judgment_settings,
+                    # 표본마다 유일해야 한다 — 스레드 상태(멀티턴 필터·되돌리기)가 표본 간에
+                    # 새면 뒤 표본이 앞 표본의 승계를 오염된 채 받는다(§2-2 인자표).
+                    thread_key=f"union:{cell.cell_id}:{result.attempts}",
+                )
+            else:
+                # [§2-6 항목5] --dry-run 은 pg·임베딩 접근이 0 이어야 한다 — 실 호출 대신
+                # "건너뜀" 표시만 남긴다(배관 확인 전용, 실측 아님).
+                from evals.underspecified_probe.union import skipped_union_result
+
+                union_result = skipped_union_result(
+                    "dry-run: union 단계 건너뜀 — pg 접근 0(packet-432 §2-6 항목5)"
+                )
         result.samples.append(
             Sample.from_decision(
                 decision,
@@ -324,6 +362,7 @@ async def run_cell(
                 prior=prior,
                 judgment_settings=judgment_settings,
                 latency_ms=int(round((perf_counter() - started) * 1000)),
+                union=union_result,
             )
         )
     result.filled = len(result.samples) == n
@@ -343,6 +382,9 @@ async def run_probe(
     repurchase_max: int = 5,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     on_cell_done: Callable[[CellResult], None] | None = None,
+    union_enabled: bool = False,
+    union_llm: Any | None = None,
+    union_settings: Settings | None = None,
 ) -> list[CellResult]:
     """모든 셀을 돌린다. 결과는 항상 cellId 정렬이라 동시성이 순서를 바꾸지 않는다."""
     semaphore = asyncio.Semaphore(max(concurrency, 1))
@@ -359,6 +401,9 @@ async def run_probe(
                 category_fanout_max=category_fanout_max,
                 repurchase_max=repurchase_max,
                 sleep=sleep,
+                union_enabled=union_enabled,
+                union_llm=union_llm,
+                union_settings=union_settings,
             )
         if on_cell_done is not None:
             on_cell_done(result)
