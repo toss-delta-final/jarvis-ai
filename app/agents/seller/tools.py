@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import date, timedelta
@@ -61,6 +62,65 @@ def _traced_tool(
         return wrapped
 
     return decorate
+
+
+def _period_arg_error(from_date: str | None, to_date: str | None) -> str | None:
+    """도구 인자로 들어온 기간의 형식·역전·상한을 재검증한다 — 위반이면 "Error:" 문구.
+
+    [#346] 두 레인 모두 기간은 코드가 환산해 입력 메시지로 **주어지지만**, 그 값을 실제
+    도구 인자로 옮기는 것은 LLM 이다. 주어진 from/to 를 무시하고 제 손으로 날짜를 지어내면
+    period.py 의 상한(R4)·역전 가드가 통째로 비켜간다 — 프롬프트 한 줄에 기대는 대신
+    호출 경계에서 한 번 더 막는다("판정과 집행을 분리한다", docs/lessons.md 2026-08-07).
+
+    되묻기가 아니라 "Error:" 인 이유: 이 시점은 이미 스트림 안이라 되묻기로 되돌아갈 수
+    없고, 도구 실패 문자열은 프롬프트의 degrade 규약(§3.4)이 이미 다루는 어휘다.
+    None(기간 미지정)은 통과 — get_orders·get_reviews 는 기간이 선택 인자다.
+    """
+    if from_date is None or to_date is None:
+        return None
+    try:
+        start = date.fromisoformat(from_date)
+        end = date.fromisoformat(to_date)
+    except (TypeError, ValueError):
+        return (
+            f"Error: 기간 형식이 올바르지 않습니다(from_date={from_date!r}, "
+            f"to_date={to_date!r}). 입력에 주어진 기간을 YYYY-MM-DD 그대로 쓰세요."
+        )
+    if end < start:
+        return (
+            f"Error: 시작일이 종료일보다 뒤입니다({from_date}~{to_date}). "
+            "입력에 주어진 기간을 그대로 쓰세요."
+        )
+    limit = get_settings().seller_period_max_days
+    if (end - start).days + 1 > limit:
+        return (
+            f"Error: 조회 기간이 상한({limit}일)을 넘습니다({from_date}~{to_date}). "
+            "입력에 주어진 기간을 그대로 쓰세요."
+        )
+    return None
+
+
+def _guard_period_args(
+    func: Callable[..., Awaitable[str]],
+) -> Callable[..., Awaitable[str]]:
+    """from_date/to_date 인자에 기간 규칙을 재적용하는 백스톱 (#346).
+
+    `functools.wraps` 가 `__wrapped__` 를 남기므로 `inspect.signature` 는 원 함수의
+    시그니처를 따라간다 — LangChain 이 만드는 도구 스키마는 바뀌지 않는다(_traced_tool
+    과 같은 규약).
+    """
+    signature = inspect.signature(func)
+
+    @wraps(func)
+    async def wrapped(*args: Any, **kwargs: Any) -> str:
+        bound = signature.bind_partial(*args, **kwargs)
+        error = _period_arg_error(bound.arguments.get("from_date"), bound.arguments.get("to_date"))
+        if error is not None:
+            _log.warning("도구 기간 인자 위반 — %s", error)
+            return error
+        return await func(*args, **kwargs)
+
+    return wrapped
 
 
 def _reference_note(from_date: str, to_date: str) -> str:
@@ -114,6 +174,7 @@ def _summarize_events(events: list[dict]) -> str:
 
 @tool
 @_traced_tool("tool.get_sales_timeseries")
+@_guard_period_args
 async def get_sales_timeseries(
     runtime: ToolRuntime[SellerContext],
     from_date: str,
@@ -250,6 +311,7 @@ def _format_seasonal_anomaly(anomaly) -> str:
 
 @tool
 @_traced_tool("tool.get_funnel")
+@_guard_period_args
 async def get_funnel(runtime: ToolRuntime[SellerContext], from_date: str, to_date: str) -> str:
     """구매전환 퍼널(조회→장바구니→결제→구매) 단계별 인원·전환율을 요약한다.
 
@@ -695,6 +757,7 @@ def _summarize_behavior(result: BehaviorEventsResult) -> str:
 
 @tool
 @_traced_tool("tool.get_behavior_events")
+@_guard_period_args
 async def get_behavior_events(
     runtime: ToolRuntime[SellerContext],
     from_date: str,
@@ -824,6 +887,7 @@ _PRODUCT_LOG_RULES_NOTE = (
 
 @tool
 @_traced_tool("tool.get_order_events")
+@_guard_period_args
 async def get_order_events(
     runtime: ToolRuntime[SellerContext],
     from_date: str,
@@ -929,6 +993,7 @@ async def get_order_events(
 
 @tool
 @_traced_tool("tool.get_product_change_logs")
+@_guard_period_args
 async def get_product_change_logs(
     runtime: ToolRuntime[SellerContext],
     from_date: str,
@@ -1067,6 +1132,7 @@ def _summarize_churn_signals(result, prev_result, *, top_k: int) -> str:
 
 @tool
 @_traced_tool("tool.get_churn_cohort")
+@_guard_period_args
 async def get_churn_cohort(
     runtime: ToolRuntime[SellerContext],
     from_date: str,
@@ -1224,6 +1290,7 @@ _ACCOUNT_EVENTS_GROUP_BY = ("eventType", "hour", "ip")
 
 @tool
 @_traced_tool("tool.get_account_events")
+@_guard_period_args
 async def get_account_events(
     runtime: ToolRuntime[SellerContext],
     from_date: str,
@@ -1363,6 +1430,7 @@ async def list_my_products(
 
 @tool
 @_traced_tool("tool.get_orders")
+@_guard_period_args
 async def get_orders(
     runtime: ToolRuntime[SellerContext],
     status: str | None = None,
@@ -1440,6 +1508,7 @@ async def get_orders(
 
 @tool
 @_traced_tool("tool.get_reviews")
+@_guard_period_args
 async def get_reviews(
     runtime: ToolRuntime[SellerContext],
     from_date: str | None = None,

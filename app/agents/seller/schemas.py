@@ -94,6 +94,14 @@ class AnalysisPlan(BaseModel):
             "해석 불가 여부와 되묻기 문구는 코드가 정한다 — 기간을 이유로 clarification 금지"
         ),
     )
+    comparison_expr: str = Field(
+        default="",
+        description=(
+            "판매자가 대조군을 함께 말했을 때만 그 표현을 그대로 옮겨적는다 "
+            "('지난달 대비'·'직전 동일 기간'·'작년 대비'). 비교 요청이 없으면 빈 문자열. "
+            "여기서도 날짜를 계산하지 않는다 — 환산·되묻기 문구는 코드 소관(이슈 #346)"
+        ),
+    )
     reason: str = Field(description="분석 선택 근거 한 문장 — 오분류 디버깅·회귀 테스트용")
     clarification: str = Field(
         default="",

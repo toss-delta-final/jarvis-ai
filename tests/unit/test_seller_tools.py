@@ -2197,3 +2197,69 @@ async def test_update_order_status_spring_failure_never_claims_success() -> None
 
     assert result.startswith("Error:")
     assert "반영 여부가 확인되지 않았습니다" in result
+
+
+# ─────────── 기간 인자 백스톱 가드 (이슈 #346) ───────────
+
+
+async def test_period_arg_guard_rejects_range_over_upper_limit() -> None:
+    """[#346] 상한 밖 기간은 Spring 을 부르기 전에 "Error:" 로 끊는다.
+
+    두 레인 모두 기간을 코드가 환산해 입력 메시지로 주지만, 그 값을 도구 인자로 옮기는
+    것은 LLM 이다 — 무시하고 제 손으로 날짜를 지어내면 period.py 의 상한(R4)이 통째로
+    비켜간다. 프롬프트 한 줄에 기대는 대신 호출 경계에서 한 번 더 막는다
+    (판정과 집행을 분리한다 — docs/lessons.md 2026-08-07).
+    """
+    fake = FakeSpringClient()
+
+    result = await _call_runtime_tool(
+        get_sales_timeseries, {"from_date": "2000-01-01", "to_date": "2026-01-01"}, fake
+    )
+
+    assert result.startswith("Error:")
+    assert "상한" in result
+    assert fake.recorded_brand_id is None, "가드가 걸렸는데 Spring 을 불렀다"
+
+
+async def test_period_arg_guard_rejects_reversed_range() -> None:
+    """역전 범위(from > to)도 호출 전에 끊는다 — 빈 결과를 정상 답으로 읽지 않게."""
+    fake = FakeSpringClient()
+
+    result = await _call_runtime_tool(
+        get_funnel, {"from_date": "2026-07-14", "to_date": "2026-07-01"}, fake
+    )
+
+    assert result.startswith("Error:")
+    assert fake.recorded_brand_id is None
+
+
+async def test_period_arg_guard_rejects_malformed_dates() -> None:
+    """YYYY-MM-DD 가 아닌 값은 Spring 400 을 기다리지 않고 즉시 되돌린다."""
+    fake = FakeSpringClient()
+
+    result = await _call_runtime_tool(
+        get_sales_timeseries, {"from_date": "지난달", "to_date": "2026-07-14"}, fake
+    )
+
+    assert result.startswith("Error:")
+    assert "형식" in result
+
+
+async def test_period_arg_guard_allows_valid_range() -> None:
+    """정상 범위는 그대로 통과한다 — 가드가 본래 경로를 막지 않는다(회귀 방지)."""
+    fake = FakeSpringClient()
+
+    await _call_runtime_tool(
+        get_sales_timeseries, {"from_date": "2026-07-01", "to_date": "2026-07-14"}, fake, brand_id=9
+    )
+
+    assert fake.recorded_brand_id == 9
+
+
+async def test_period_arg_guard_skips_optional_unset_period() -> None:
+    """기간이 선택 인자인 도구(I-29 주문 조회)는 미지정을 통과시킨다."""
+    fake = FakeSpringClient()
+
+    result = await _call_runtime_tool(get_orders, {}, fake)
+
+    assert not result.startswith("Error:")

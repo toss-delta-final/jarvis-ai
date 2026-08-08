@@ -58,8 +58,13 @@ from app.agents.seller.orchestrator import (
     run_analysis_pipeline,
     run_resolved_pipeline,
 )
-from app.agents.seller.period import parse_period_approval
-from app.agents.seller.pipeline import APPLY_GUIDE, parse_apply_message, split_report_summary
+from app.agents.seller.period import disclosure_text, parse_period_approval, resolve_from_message
+from app.agents.seller.pipeline import (
+    APPLY_GUIDE,
+    format_general_input,
+    parse_apply_message,
+    split_report_summary,
+)
 from app.agents.seller.schemas import DraftProposal
 from app.agents.seller.workers import build_general_agent, build_product_agent
 from app.api.deps import require_seller
@@ -301,6 +306,9 @@ async def _general_stream(
     - scope 선차단: 미들웨어(end 점프)가 주입하는 거절 메시지는 astream
       messages 모드에서 모델 청크로 흐르지 않으므로, 코드에서 같은 판정점
       (check_scope)으로 거절 문안을 직접 token emit 한다.
+    - [#346] 기간 선해결: 환산은 period.py 소관이고 프롬프트는 주어진 from/to 를 쓰기만
+      한다. 해석 불가 기간은 LLM·도구 호출 **앞에서** 되묻기로 끝난다 — 분석 레인의
+      resolve_plan 실패 → clarification 과 같은 자리다.
     - 출력 검사(§10-⑥): 요청 단위 StreamingOutputGuard가 Unicode 문맥과
       청크 경계 시크릿 prefix를 보류해 확정된 안전 조각만 내보낸다.
     - 오류: 스트림 내부 실패는 error 이벤트(LLM_TIMEOUT/INTERNAL) 후 종료(§2.7).
@@ -318,6 +326,27 @@ async def _general_stream(
         yield _token(refusal)
         yield _done("keep")
         return
+
+    # [#346] 기간 환산 — 프롬프트가 하던 일을 코드로 옮겼다. 여기서 끝내야 상한·0/음수
+    # 가드가 general 레인에도 걸리고("최근 999999일"), 분석 레인과 같은 (from, to) 가
+    # 나온다. 순수 계산이라 아래 레인 상한(seller_general_timeout_s) 밖이어도 무해하다.
+    settings = get_settings()
+    try:
+        resolution = resolve_from_message(
+            request.message,
+            today=date.today(),
+            recent_default_days=settings.seller_recent_days_default,
+            max_days=settings.seller_period_max_days,
+        )
+    except ValueError as exc:
+        # 되묻기 문구는 period.py 가 만든다(§4.2 문구 소유권) — 여기서 가공하지 않는다.
+        yield _token(str(exc))
+        yield _done("keep")
+        return
+    if resolution.any_confirmation_needed:
+        # 분석 레인처럼 확인 대기를 걸지 않고 **고지**만 한다 — 근거는
+        # period.disclosure_text docstring(오해석 비용 비대칭, DESIGN §7).
+        yield _token(disclosure_text(resolution) + "\n\n")
 
     queue: asyncio.Queue[object] = asyncio.Queue()
 
@@ -359,7 +388,13 @@ async def _general_stream(
                 first_text = True
                 with trace_span("llm.seller.general", "llm", _llm_metadata("worker")):
                     async for item in agent.astream(
-                        {"messages": [HumanMessage(content=request.message)]},
+                        {
+                            "messages": [
+                                HumanMessage(
+                                    content=format_general_input(request.message, resolution)
+                                )
+                            ]
+                        },
                         config=seller_thread.chat_config(context, request.thread_id),
                         context=context,
                         stream_mode="messages",

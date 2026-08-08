@@ -32,8 +32,35 @@
   전제가 사라지면 근거 없이 워커 민감도만 깎는다(`get_funnel` 보강 절차 자체는 유지). 폐기 어휘가
   LLM 주입 표면(도구 출력 3형 + 워커 프롬프트)에 없음을 어설션하는 **역방향 회귀 테스트**를 추가해
   같은 드리프트가 재발하지 않게 고정했다. 와이어 계약 불변(문자열 교체, 로직 변경 없음).
+- **기간 확인 대기 TTL 만료가 시계 분해능에 의존하던 문제** (#345 후속, #346 에서 발견).
+  `load_pending` 의 경과 시간 비교가 엄격 부등호(`>`)라 `ttl=0` 에서 "경과가 0보다 커야 만료"가
+  됐고, Windows 기본 타이머 틱(~15.6ms) 안에서 저장→조회가 끝나면 경과가 정확히 0 이라 만료가
+  서지 않았다(리눅스 CI 는 µs 분해능이라 늘 통과해 가려졌다). 경계를 포함(`>=`)으로 바꿨다 —
+  `ttl=0` 은 "즉시 만료"가 맞는 해석이고 운영 TTL(10분)에서는 결과가 같다.
+- **#346 — general·분석 레인의 기간 어휘 불일치 해소(#269 P2 앞부분)**. general 레인의 기간 환산이
+  `GENERAL_PROMPT_TEMPLATE` 산문에만 있어 `period.py` 와 갈라져 있었다 — 같은 `"이번 달"` 이
+  분석 레인에서는 당월 1일~어제(R1), general 레인에서는 당월 1일~오늘이었고, 더 나쁘게는
+  `seller_period_max_days` 상한·0/음수·자릿수 가드가 이 레인만 **통째로 비켜갔다**(`"최근 999999일"`
+  이 그대로 도구 인자가 될 수 있었다). 환산을 코드로 이관했다: `period.find_period_mentions`
+  (자유 발화에서 어휘 추출 — planner 없는 레인이라 LLM 0회로 훑는다) → `resolve_period` →
+  `pipeline.format_general_input` 이 `[조회 기간] from/to` 를 입력 메시지로 주입하고, 프롬프트는
+  주어진 값을 쓰기만 한다(워커 규약과 같은 문장). 어휘표 밖 표현(`"오늘"`·`"이번 주"`·`"7월"`)은
+  LLM·도구 호출 **전에** 되묻기로 끝나며, 문구는 종전대로 `period.py` 가 소유한다.
+  코드가 값을 보충한 해석은 확인 왕복 대신 `disclosure_text` 로 고지하고 실행한다(오해석 비용
+  비대칭 — DESIGN-SELLER-PERIOD §7.2). 백스톱으로 기간을 받는 조회 도구 9종에 인자 재검증
+  가드(`_guard_period_args`)를 걸어 LLM 이 날짜를 지어내도 상한·역전이 다시 새지 않게 했다.
+  와이어 계약 무변경.
 
 ### Added
+- **#346 — 비교(기준) 기간 어휘 양 레인 지원** (`직전 동일 기간`·`지난달 대비`·`전월 동기간`·
+  `작년 대비`·`전년 동기간`). `period.resolve_comparison(expr, base)` 가 본 기간을 받아 환산하고
+  (`직전 동일 기간` 은 보충값이 없어 확인 불필요 — `tools._previous_period` 와 같은 정의,
+  달력 시프트 2종은 정렬 방식을 코드가 고르므로 확인 대상), 확인 판정은 본 기간과의 **합집합**이다.
+  배선은 `AnalysisPlan.comparison_expr`(planner 는 표현만) → `ResolvedPlan.compare_from/to` →
+  입력 메시지 `[비교 기간]` 한 줄이며 **도구 시그니처·Spring 계약은 불변**이다 — 워커가 두 기간으로
+  같은 도구를 각각 호출한다. general 레인은 한 발화에서 비교 표현을 먼저 떼어내 본 기간과 함께
+  해석한다. 확인 대기 저장(`period_confirm`)에도 비교 기간을 실어 승인 재개가 대조군을 잃지 않게 했다.
+  (DESIGN-SELLER-PERIOD §2.5, 와이어 계약 무변경)
 - **#489 — I-13 `BehaviorProductRow` 신필드 5종** (api-spec §4.4, v0.29.3): `salesQuantity`(PAID
   `SUM(oi.quantity)`·아이템 `PENDING`/`CANCELLED`/`RETURNED` 제외 — I-6 `salesCount` 와 동일 산식)와
   체류시간 4종(`medianDwellSeconds`·`avgDwellSeconds`·`dwellSampleCount`·`dwellSource`). 전부

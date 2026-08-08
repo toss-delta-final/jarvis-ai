@@ -364,3 +364,203 @@ def test_approval_accepts_affirmatives(message: str) -> None:
 def test_approval_rejects_non_affirmatives(message: str) -> None:
     """승인이 아닌 발화는 전부 '새 질문'이다 — 수정 전용 경로를 두지 않는 근거(DESIGN §5.1)."""
     assert period.parse_period_approval(message) is False
+
+
+# ── 5. general 레인 진입점 (#346 — 자유 발화 스캔) ──────────────────────────────
+
+
+def _from_message(message: str, **overrides: object) -> period.PeriodResolution:
+    kwargs = {**_KWARGS, **overrides}
+    return period.resolve_from_message(message, **kwargs)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("message", "expected_expr"),
+    [
+        ("이번 달 매출 얼마야?", "이번 달"),
+        ("지난달 매출 알려줘", "지난달"),
+        ("최근 7일 주문 보여줘", "최근 7일"),
+        ("최근 3개월 매출 추이가 어때", "최근 3개월"),
+        ("최근 2주 전환율", "최근 2주"),
+        ("상반기 매출 정리해줘", "상반기"),
+        ("2026-06-01~2026-06-30 매출", "2026-06-01~2026-06-30"),
+        ("어제 주문 몇 건이야", "어제"),
+        ("최근 리뷰 보여줘", "최근"),
+    ],
+)
+def test_resolve_from_message_extracts_supported_vocab(message: str, expected_expr: str) -> None:
+    """어휘표의 표현이 문장 속에 있어도 잡힌다 — resolve_period 는 전체 매칭이라 못 하는 일."""
+    assert _from_message(message).expr == expected_expr
+
+
+def test_resolve_from_message_defaults_to_recent_when_no_period() -> None:
+    """기간 언급이 없으면 '최근' — planner 의 `[기간]` 절과 같은 규약이다.
+
+    이 기본값이 planner 와 어긋나면 "기간을 말하지 않은 같은 질문"이 레인에 따라 다른
+    기간을 쓰게 된다 — 이 이슈가 없애려는 바로 그 비대칭이다.
+    """
+    resolution = _from_message("재고 얼마 남았어?")
+    assert resolution.expr == "최근"
+    assert resolution.needs_confirmation is False
+    assert resolution.period == (TODAY - dt.timedelta(days=7), YESTERDAY)
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "오늘 매출 얼마야?",
+        "이번 주 매출 얼마야?",
+        "작년 여름 매출 어땠어",
+        "7월 매출 얼마야?",
+        "2025년 매출 보여줘",
+        "최근 한 달 매출",
+    ],
+)
+def test_resolve_from_message_asks_back_on_unsupported_period(message: str) -> None:
+    """기간처럼 보이지만 어휘표 밖이면 되묻는다 — **조용히 기본 7일로 답하지 않는다**.
+
+    스캐너가 이 표현들을 일부러 잡는 이유가 여기 있다. 안 잡으면 "기간 언급 없음"으로
+    읽혀 기본값이 적용되고, 판매자는 자기가 물은 기간과 다른 답을 받고도 알 방법이 없다
+    (#269 가 분석 레인에서 없앤 침묵 대체가 general 레인에서 재현되는 경로).
+    """
+    with pytest.raises(ValueError):
+        _from_message(message)
+
+
+def test_resolve_from_message_asks_back_on_mixed_expressions() -> None:
+    """지원·미지원이 섞이거나 표현이 둘이면 되묻는다(DESIGN §2.3 혼합 표현)."""
+    with pytest.raises(ValueError, match="여러 개"):
+        _from_message("이번 달 들어 최근 7일 매출")
+
+
+def test_resolve_from_message_applies_upper_bound_guard() -> None:
+    """[#346 완료 조건] general 레인에도 상한·0/음수 가드가 걸린다.
+
+    종전에는 이 환산이 프롬프트에만 있어 seller_period_max_days 가 전혀 걸리지 않았다.
+    """
+    with pytest.raises(ValueError, match="731일 이내"):
+        _from_message("최근 999999일 매출")
+    with pytest.raises(ValueError, match="1 이상"):
+        _from_message("최근 0일 매출")
+
+
+def test_find_period_mentions_ignores_period_free_questions() -> None:
+    """기간이 없는 질문에서 표현을 지어내지 않는다(오탐 시 엉뚱한 되묻기가 된다)."""
+    assert period.find_period_mentions("판매중인 상품 목록 보여줘") == []
+    assert period.find_period_mentions("재고 얼마 남았어?") == []
+
+
+def test_find_period_mentions_prefers_longest_vocab() -> None:
+    """'최근 3개월'을 '최근'으로 잘라 먹지 않는다 — 자르면 3개월 질문이 7일로 답해진다."""
+    assert period.find_period_mentions("최근 3개월 매출") == ["최근 3개월"]
+    assert period.find_period_mentions("6월 1일~6월 30일 매출") == ["6월 1일~6월 30일"]
+
+
+# ── 6. 해석 고지 문구 (#346 — general 레인) ─────────────────────────────────────
+
+
+def test_disclosure_text_shows_dates_not_vocabulary() -> None:
+    """고지는 어휘가 아니라 **환산된 날짜**를 보여준다 — 확인 문구와 같은 원칙(§4.3)."""
+    resolution = _from_message("이번 달 매출")
+    text = period.disclosure_text(resolution)
+
+    assert resolution.date_from.isoformat() in text
+    assert resolution.date_to.isoformat() in text
+    assert "이번 달" in text
+
+
+def test_disclosure_text_admits_clipping() -> None:
+    """R2 로 잘렸으면 그 사실을 밝힌다 — 자르고 말하지 않으면 조용한 대체다."""
+    resolution = _from_message("이번 달 매출")
+    assert resolution.clipped is True
+    assert "지나지 않은 날짜" in period.disclosure_text(resolution)
+
+
+def test_disclosure_text_omits_clip_note_when_not_clipped() -> None:
+    """절단이 없었으면 절단 문구도 없다 — 없는 사실을 알리지 않는다."""
+    resolution = _from_message("상반기 매출")
+    assert resolution.clipped is False
+    assert "지나지 않은 날짜" not in period.disclosure_text(resolution)
+
+
+# ── 7. 비교(기준) 기간 (#346 — DESIGN §2.5) ────────────────────────────────────
+
+
+def _compare(expr: str, base_expr: str) -> period.PeriodResolution:
+    return period.resolve_comparison(expr, _resolve(base_expr), max_days=731)
+
+
+def test_previous_adjacent_period_needs_no_confirmation() -> None:
+    """'직전 동일 기간'은 코드가 보충하는 값이 없다 — base 에서 길이·끝점이 다 나온다.
+
+    이 정의는 get_funnel·get_churn_cohort 가 이미 내부적으로 쓰는 것과 같다
+    (tools._previous_period) — 어휘로 노출하면서 정의가 갈라지면 같은 질문에 도구
+    자동 비교와 판매자 지정 비교가 다른 구간을 보게 된다.
+    """
+    base = _resolve("최근 7일")  # 2026-07-30 ~ 2026-08-05
+    comparison = _compare("직전 동일 기간", "최근 7일")
+
+    assert comparison.needs_confirmation is False
+    assert comparison.date_to == base.date_from - dt.timedelta(days=1)
+    assert (comparison.date_to - comparison.date_from) == (base.date_to - base.date_from)
+
+
+def test_previous_month_comparison_shifts_by_calendar() -> None:
+    """'지난달 대비'는 달력 1달 시프트다 — 30일 근사가 아니다(§2.4 와 같은 이유)."""
+    comparison = _compare("지난달 대비", "이번 달")  # base 2026-08-01~2026-08-05
+
+    assert comparison.period == (dt.date(2026, 7, 1), dt.date(2026, 7, 5))
+    assert comparison.needs_confirmation is True  # 정렬 방식을 코드가 골랐다
+
+
+def test_previous_year_comparison_shifts_by_year() -> None:
+    comparison = _compare("작년 대비", "지난달")  # base 2026-07-01~2026-07-31
+
+    assert comparison.period == (dt.date(2025, 7, 1), dt.date(2025, 7, 31))
+    assert comparison.needs_confirmation is True
+
+
+def test_unknown_comparison_expression_asks_back() -> None:
+    """비교 어휘도 어휘표 밖이면 되묻는다 — 코드가 대조군을 지어내지 않는다."""
+    with pytest.raises(ValueError, match="비교 기간"):
+        _compare("작년 여름 대비", "지난달")
+
+
+def test_comparison_mention_is_split_before_base_extraction() -> None:
+    """'지난달 대비' 의 '지난달' 이 본 기간으로 잡히면 비교 질문이 통째로 되묻기가 된다."""
+    remainder, comparison = period.find_comparison_mention("지난달 대비 이번 달 매출")
+
+    assert comparison == "지난달 대비"
+    assert period.find_period_mentions(remainder) == ["이번 달"]
+
+
+def test_resolve_from_message_fills_comparison() -> None:
+    """general 레인도 한 발화에서 본 기간·비교 기간을 함께 뽑는다."""
+    resolution = _from_message("지난달 대비 이번 달 매출 어때")
+
+    assert resolution.expr == "이번 달"
+    assert resolution.comparison is not None
+    assert resolution.comparison.period == (dt.date(2026, 7, 1), dt.date(2026, 7, 5))
+
+
+def test_any_confirmation_needed_covers_comparison_only_case() -> None:
+    """본 기간이 명시적이어도 비교 기간이 보충됐으면 확인 대상이다.
+
+    needs_confirmation 만 보면 이 경우가 조용히 지나간다 — 고지 없이 코드가 고른
+    대조군으로 답하게 되고, 그것이 P0 가 없앤 조용한 대체다.
+    """
+    resolution = _from_message("2026-06-01~2026-06-30 매출 작년 대비 어때")
+
+    assert resolution.needs_confirmation is False  # 명시 범위 — 보충 없음
+    assert resolution.comparison is not None and resolution.comparison.needs_confirmation is True
+    assert resolution.any_confirmation_needed is True
+
+
+def test_confirmation_and_disclosure_text_reveal_the_comparison_dates() -> None:
+    """확인·고지 문구가 비교 기간 날짜도 밝힌다 — 본 기간만 밝히면 확인이 절반이다."""
+    resolution = _from_message("지난달 대비 이번 달 매출")
+
+    for text in (period.confirmation_text(resolution), period.disclosure_text(resolution)):
+        assert resolution.comparison is not None
+        assert resolution.comparison.date_from.isoformat() in text
+        assert resolution.comparison.date_to.isoformat() in text
