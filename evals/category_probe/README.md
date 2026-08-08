@@ -56,15 +56,16 @@ canonical 이 그대로 `graph.py:636` 에서 Spring `category` 필터로 나간
 
 ## 앵커(정답지)
 
-`fixtures/anchors.json`(38셀) — `fixtures/manifest.json` 의 sha256 과 대조해 읽는다(불일치 →
+`fixtures/anchors.json`(46셀, v2) — `fixtures/manifest.json` 의 sha256 과 대조해 읽는다(불일치 →
 종료 코드 2). 외부 경로(`--fixture <path>`)는 대조를 건너뛰되 해시를 산출물에 기록한다.
 
 | slice | testType | 셀 수 | 내용 |
 |---|---|---|---|
-| single | MFT | 14 | 협소 단일 카테고리 발화. `#344` 실측에서 드롭됐던 협소 발화 유형(노트북·기저귀·
+| single | MFT | 22 | 협소 단일 카테고리 발화. `#344` 실측에서 드롭됐던 협소 발화 유형(노트북·기저귀·
   전기면도기 등)과 goldenset `category_mapping_failure` 9건 중 **8건**을 caseId 로 이어 포함
   (`buy-cmap-0001` "신라면 봉지라면 찾아줘"만 미승계 — 대응하는 leaf 가 카탈로그에 없어
-  `가공식품 > 컵라면`/`수입라면` 뿐인 taxonomy 라 단일 정답 셀로 부적합하다고 판단해 뺐다) |
+  `가공식품 > 컵라면`/`수입라면` 뿐인 taxonomy 라 단일 정답 셀로 부적합하다고 판단해 뺐다).
+  이 중 8셀(`instance-mft-*`)은 v2(#428)에서 추가한 **인스턴스형 앵커** — 아래 절 참조 |
 | single | INV | 8 (4그룹×2) | 색상 동의어(`#258`, "빨간"/"레드")·표기 변형(decompose 프롬프트가
   직접 예시하는 "청바지"/"데님 팬츠", "무선 이어폰"/"무선 블루투스 이어폰") — 같은 의미 다른
   표기는 같은 카테고리로 수렴해야 한다 |
@@ -73,8 +74,22 @@ canonical 이 그대로 `graph.py:636` 에서 Spring `category` 필터로 나간
 | notInCatalog | MFT | 5 | 카탈로그에 없는 카테고리 지목(사전 ILIKE 조회로 부재 확인 후 선정) —
   기대: legs 빈 배열. `expansionLeaves` 는 진단으로만 기록 |
 
-합계 38셀 × N=8 = 304 decompose 콜(+§4.4 택일 소량) — `evals/intent_probe` 기준선 런
+합계 46셀 × N=8 = 368 decompose 콜(+§4.4 택일 소량) — `evals/intent_probe` 기준선 런
 (424콜, $0.086)보다 작다.
+
+### v2(#428) — 인스턴스형 앵커
+
+v1 의 38셀은 전부 **카테고리 층위**(taxonomy leaf 이름과 발화가 겹치는) 앵커였다 — "바나나"
+같은 **인스턴스형**(leaf 의 한 사례를 부르는 표현) 앵커가 셋에 없어 `category_distance_max`
+가 0.19~0.21(leaf 이름 표면 근접)로 캘리브레이션됐고, 실제 인스턴스형 발화(0.27~0.33)가
+그 컷 밖에 있다는 사실이 드러나지 않았다(`docs/lessons.md` 참조). `instance-mft-001`~`005`
+(사과·바나나·오렌지·배·라면)는 그 실패 모드를 계측하기 위한 셀이고, **현재
+`category_distance_max=0.26` 초과로 드롭되는 것이 기대 동작이다** — `single` 슬라이스
+점수(`top1Single`·`topKInclusion`·baseline)가 `baselines/fast-2026-08-06`(38셀 기준) 대비
+떨어지는 것은 회귀가 아니라 **계측 범위 확대**다. `instance-mft-006`~`008`(계란·커튼·이불)은
+leaf 이름과 상품명이 문자 그대로 겹치는 대조군 — 인스턴스형 셀과 나란히 두어 두 축의 대비를
+드러낸다. `baselines/fast-2026-08-06/` 산출물 자체는 v1 38셀 기준으로 남겨 두고 수정하지
+않는다(재실행 없는 사후 비교의 기준선).
 
 **taxonomy 구조가 정당한 모호성을 만드는 셀**은 `expectedLegs[].accept` 에 해당 leaf 전부를
 열거한다 — 예: "노트북 사고 싶어"는 이 taxonomy 가 노트북을 브랜드별 잎(`노트북 > 삼성전자`·
@@ -88,16 +103,16 @@ taxonomy 자체의 구조이므로 accept 를 복수로 열어 정당한 모호�
 
 | axisId | 분자 | 분모(N=8) |
 |---|---|---|
-| `top1Single` | 최종 legs 에 기대 leg 의 accept 중 하나가 존재 | single 22셀×8 = 176 |
+| `top1Single` | 최종 legs 에 기대 leg 의 accept 중 하나가 존재 | single 30셀×8 = 240 |
 | `topKInclusion` | 기대 accept 중 하나가 이긴 앵커의 top-`category_top_k`(5) 후보(계측 hits
-  기준) 안에 존재. decompose 가 leg 자체를 안 냈으면 분자 불충족 | 같은 176 |
+  기준) 안에 존재. decompose 가 leg 자체를 안 냈으면 분자 불충족 | 같은 240 |
 | `multiCoverage` | 기대 leg 별로 accept ∈ legs (leg 단위 집계) | multi 6셀 × 기대 leg 수 × 8 |
 | `multiExactSet` | legs 집합이 기대 leg 집합과 정확히 일치(여분 leg 없음) | 6×8 = 48 |
 | `noneNoForce` | legs == [] | 5×8 = 40 |
 | `notInCatalogNoForce` | legs == [] (오답 canonical 강제 없음) | 5×8 = 40 |
 | `invAgreement` | 그룹 내 전 변형의 다수결 top-1 canonical 이 서로 동일하고 null 아님 | 4그룹 |
-| `baselineTop1Single` | trivial baseline top-1 ∈ accept | single 22셀(결정론 1회) |
-| `baselineTopK` | accept ∈ baseline top-5 | 22셀 |
+| `baselineTop1Single` | trivial baseline top-1 ∈ accept | single 30셀(결정론 1회) |
+| `baselineTopK` | accept ∈ baseline top-5 | 30셀 |
 
 진단 카운터(합불 아님): `intentSlipCount`(decompose 가 recommend 가 아닌 intent 를 내 버려진
 시도) · `noLegCount`(decompose 가 categoryQueries 를 못 낸 single/multi 표본 — **매핑 실패와
@@ -110,11 +125,11 @@ taxonomy 자체의 구조이므로 accept 를 복수로 열어 정당한 모호�
 ## 표본 사전 등록·산정 근거
 
 슬라이스별 목표 N 은 §328 공통 규약 4항(관측 분산에서 역산해 사전 등록)을 따른다. 주 지표
-`top1Single` 의 분모(single 22셀×8=176)에서 p̂=0.5(최대 분산 가정) 기준 95% CI 반폭은:
+`top1Single` 의 분모(single 30셀×8=240)에서 p̂=0.5(최대 분산 가정) 기준 95% CI 반폭은:
 
 ```
-SE = sqrt(0.5 × 0.5 / 176) ≈ 0.0377
-95% CI 반폭 = 1.96 × SE ≈ 0.074
+SE = sqrt(0.5 × 0.5 / 240) ≈ 0.0323
+95% CI 반폭 = 1.96 × SE ≈ 0.063
 ```
 
 즉 이 표본 크기는 **방향 판정용**(파이프라인이 명백히 개선/퇴행했는지)이지 **미세 차이

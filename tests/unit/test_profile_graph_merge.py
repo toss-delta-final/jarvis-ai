@@ -1,0 +1,1102 @@
+"""결정론적 병합 엔진 (SPEC-PROFILE-GRAPH-149 §6.2·§6.3, REQ-PGRAPH-003/004/015~018/020~022).
+
+`build_graph_document` 는 **순수 함수**다 — 인자에 llm·embed·store 가 없어 "병합·최신성·승격
+판정에 LLM 을 쓰지 않는다"(REQ-PROF-032/033)가 mock 단언이 아니라 **구조적으로** 보장된다.
+그 구조 자체를 회귀 가드로 고정한다.
+"""
+
+import inspect
+import logging
+
+import pytest
+
+from app.agents.profile.graph_merge import build_graph_document, empty_document
+from app.agents.profile.graph_models import GraphDocument, GraphEdge, GraphNode, make_edge_id
+from app.agents.profile.store import FactRecord
+from app.core.config import Settings
+
+NOW = "2026-08-06T00:00:00+00:00"
+
+
+@pytest.fixture
+def settings() -> Settings:
+    return Settings(_env_file=None)
+
+
+def _triple(
+    node_id: str = "brand:소니",
+    predicate: str = "likes",
+    *,
+    label: str = "소니",
+    node_type: str = "brand",
+    salience: float = 0.9,
+    verified: bool = False,
+    source: str = "conversation",
+) -> dict:
+    edge_key = f"{predicate}|{node_id}"
+    from app.agents.profile.graph_models import make_edge_id
+
+    return {
+        "node": {
+            "node_id": node_id,
+            "type": node_type,
+            "label": label,
+            "verified": verified,
+            "resolution": None,
+        },
+        "predicate": predicate,
+        "edge_key": edge_key,
+        "edge_id": make_edge_id(edge_key),
+        "salience": salience,
+        "source": source,
+    }
+
+
+def _fact(
+    key: str = "f1",
+    *,
+    fact: str = "소니 선호",
+    created_at: str = "2026-08-01T00:00:00+00:00",
+    triples: list[dict] | None = None,
+) -> FactRecord:
+    return FactRecord(
+        fact_key=key,
+        fact=fact,
+        created_at=created_at,
+        graph_triples=[_triple()] if triples is None else triples,
+    )
+
+
+def _edge_by_key(document: GraphDocument, edge_key: str) -> GraphEdge | None:
+    return next((e for e in document.edges if e.edge_key == edge_key), None)
+
+
+# ─────────── LLM 0회 — 구조적 보장 ───────────
+
+
+def test_merge_signature_has_no_llm_or_io_seam() -> None:
+    """병합에 LLM·임베딩·저장소를 넘길 자리가 없어야 한다(REQ-PROF-032/033).
+
+    누가 실수로 인자를 더하면 여기서 막힌다 — mock 으로 "안 불렸다"를 재는 것보다 강한 보장이다.
+    """
+    params = set(inspect.signature(build_graph_document).parameters)
+
+    assert params == {"facts", "existing", "settings", "now"}
+
+
+# ─────────── 재생 동일성 (REQ-PGRAPH-015) ───────────
+
+
+def test_replaying_same_observations_yields_identical_document(settings: Settings) -> None:
+    facts = [
+        _fact("f1", created_at="2026-08-01T00:00:00+00:00"),
+        _fact("f2", fact="이어폰 선호", created_at="2026-08-03T00:00:00+00:00"),
+    ]
+
+    first = build_graph_document(facts, existing=empty_document(NOW), settings=settings, now=NOW)
+    second = build_graph_document(facts, existing=empty_document(NOW), settings=settings, now=NOW)
+
+    assert first.model_dump(mode="json") == second.model_dump(mode="json")
+
+
+def test_observation_order_does_not_depend_on_input_order(settings: Settings) -> None:
+    """관측은 (observed_at, fact_key) 오름차순으로 처리한다 — 입력 순서가 결과를 바꾸지 않는다."""
+    a = _fact("f1", created_at="2026-08-01T00:00:00+00:00")
+    b = _fact("f2", created_at="2026-08-03T00:00:00+00:00")
+
+    forward = build_graph_document([a, b], existing=empty_document(NOW), settings=settings, now=NOW)
+    reverse = build_graph_document([b, a], existing=empty_document(NOW), settings=settings, now=NOW)
+
+    assert forward.model_dump(mode="json") == reverse.model_dump(mode="json")
+
+
+def test_decay_clock_is_one_snapshot_per_batch(settings: Settings) -> None:
+    """감쇠 시계는 배치당 1회 고정 — 관측별 현재시각을 쓰면 재생이 깨진다(REQ-PGRAPH-015).
+
+    **문서에 실리는 모든 edge를 검사한다** — 어떤 경로로 만들어졌든(신규 관측·이월 tombstone·
+    앞으로 생길 무엇이든) 시계가 다르면 여기서 걸린다. 시계가 갈리면 `_truncate` 의 확신도 정렬과
+    `_resolve_conflicts` 의 승자 판정이 **서로 다른 자로 잰 값을 비교**하게 된다(PR #410 리뷰).
+    이 단언이 그 계열 전체를 막는 구조적 가드다 — 표에 적은 것만 재는 방식이 아니다.
+    """
+    stale = "2026-01-01T00:00:00+00:00"  # 반감기를 여러 번 넘긴 옛 배치 시각
+    existing = _document_of(
+        [
+            _stored_edge(
+                "삼성",
+                status="suppressed",
+                suppressed_at=stale,
+                confidence=0.95,
+                decay_evaluated_at=stale,
+                last_observed_at=stale,
+            )
+        ]
+    )
+    facts = [
+        _fact("f1"),
+        _fact("f2", fact="다른 취향", triples=[_triple("brand:애플", label="애플")]),
+    ]
+
+    document = build_graph_document(facts, existing=existing, settings=settings, now=NOW)
+
+    assert len(document.edges) == 3  # 신규 2 + 이월 tombstone 1
+    assert {e.decay_evaluated_at for e in document.edges} == {NOW}
+
+
+def test_carried_tombstone_confidence_decays_to_the_batch_clock(settings: Settings) -> None:
+    """이월 tombstone 의 확신도는 **이번 배치 시각으로** 감쇠한다 — 옛 값이 박제되면 안 된다.
+
+    근거가 사라진 tombstone 은 계속 이월되는데, 확신도를 그대로 두면 반감기를 여러 번 넘긴 값이
+    방금 관측된 edge 와 같은 자로 비교된다 — `_truncate` 의 `-confidence` 정렬에서 7개월 묵은
+    0.95 가 방금 들어온 0.5 를 이기고 살아남는다. `decay_evaluated_at` 이 존재하는 이유가
+    "이 값이 언제 기준인가"를 남기기 위해서인데, 그걸 갱신하지 않으면 필드가 뜻을 잃는다.
+    """
+    stale = "2026-01-01T00:00:00+00:00"
+    existing = _document_of(
+        [
+            _stored_edge(
+                "삼성",
+                status="suppressed",
+                suppressed_at=stale,
+                confidence=0.95,
+                decay_evaluated_at=stale,
+                last_observed_at=stale,
+            )
+        ]
+    )
+
+    document = build_graph_document([], existing=existing, settings=settings, now=NOW)
+
+    carried = document.edges[0]
+    assert carried.status == "suppressed"  # 보존 자체는 그대로다(AC-PROF-31)
+    assert carried.confidence < 0.95  # 7개월치 감쇠가 반영됐다
+    assert carried.decay_evaluated_at == NOW
+    assert carried.last_observed_at == stale  # 관측 **사실**은 시간이 지나도 안 바뀐다
+
+
+# ─────────── 병합 (REQ-PGRAPH-015) ───────────
+
+
+def test_same_edge_key_merges_evidence(settings: Settings) -> None:
+    facts = [
+        _fact("f1", created_at="2026-08-01T00:00:00+00:00"),
+        _fact("f2", fact="소니 또 선호", created_at="2026-08-05T00:00:00+00:00"),
+    ]
+
+    document = build_graph_document(facts, existing=empty_document(NOW), settings=settings, now=NOW)
+
+    assert len(document.edges) == 1
+    edge = document.edges[0]
+    assert edge.evidence_count == 2
+    assert edge.evidence_by_source == {"conversation": 2}
+    assert sorted(edge.evidence_refs) == ["f1", "f2"]
+    assert edge.first_observed_at == "2026-08-01T00:00:00+00:00"
+    assert edge.last_observed_at == "2026-08-05T00:00:00+00:00"  # 최댓값
+
+
+def test_evidence_refs_respect_configured_cap(settings: Settings) -> None:
+    """참조 개수만 상한하고 카운트는 전부 센다 — 상한이 evidence_count 를 깎으면 확신도가 왜곡된다."""
+    tight = Settings(_env_file=None, graph_evidence_refs_max=2)
+    facts = [
+        _fact(f"f{i}", fact=f"소니 선호 {i}", created_at=f"2026-08-0{i + 1}T00:00:00+00:00")
+        for i in range(1, 5)
+    ]
+
+    document = build_graph_document(facts, existing=empty_document(NOW), settings=tight, now=NOW)
+
+    edge = document.edges[0]
+    assert edge.evidence_count == 4
+    assert edge.evidence_refs == ["f3", "f4"]  # 최신 관측을 남긴다
+
+
+def test_nodes_are_emitted_only_for_referenced_edges(settings: Settings) -> None:
+    """node 는 edge 의 파생물이다(§5.1) — 참조 없는 노드는 존재하지 않는다."""
+    document = build_graph_document(
+        [_fact()], existing=empty_document(NOW), settings=settings, now=NOW
+    )
+
+    assert [n.node_id for n in document.nodes] == ["brand:소니"]
+
+
+def test_facts_without_triples_only_count_as_unprojected(settings: Settings) -> None:
+    """트리플 없는 fact 는 문서에 싣지 않고 개수만 센다(REQ-PGRAPH-004)."""
+    facts = [_fact("f1"), _fact("f2", triples=[]), _fact("f3", triples=[])]
+
+    document = build_graph_document(facts, existing=empty_document(NOW), settings=settings, now=NOW)
+
+    assert document.unprojected_count == 2
+    assert len(document.edges) == 1
+
+
+def test_unprojected_count_is_recomputed_not_accumulated(settings: Settings) -> None:
+    existing = build_graph_document(
+        [_fact("f1", triples=[])], existing=empty_document(NOW), settings=settings, now=NOW
+    )
+    assert existing.unprojected_count == 1
+
+    document = build_graph_document(
+        [_fact("f1", triples=[])], existing=existing, settings=settings, now=NOW
+    )
+
+    assert document.unprojected_count == 1  # 누적이 아니라 매 배치 재계산
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("predicate", "hates"),  # Predicate Literal 밖
+        ("predicate", None),
+        ("edge_key", ""),
+        ("edge_id", ""),
+    ],
+)
+def test_corrupt_triple_field_is_dropped_not_raised(
+    settings: Settings, field: str, value: object
+) -> None:
+    """손상된 트리플은 그 fact 만 unprojected 로 빠진다 — 배치를 죽이지 않는다(REQ-PGRAPH-004).
+
+    `_Observation` 은 검증 없는 dataclass 라 `_observation` 이 통과시키면 한참 뒤 `_merge_edge` 의
+    `GraphEdge` 생성에서야 `ValidationError` 가 난다. 그 지점엔 잡는 코드가 없어
+    `finalizer` 의 최상위 `except Exception` 까지 새고, 손상 fact 가 저장소에 남아 있는 한
+    session-end 마다 같은 자리에서 RETRYABLE 만 반복된다(poison record).
+    """
+    broken = _triple()
+    broken[field] = value
+    facts = [
+        _fact("f1", triples=[broken]),
+        _fact("f2", triples=[_triple("brand:애플", label="애플")]),
+    ]
+
+    document = build_graph_document(facts, existing=empty_document(NOW), settings=settings, now=NOW)
+
+    assert document.unprojected_count == 1
+    assert [e.node_id for e in document.edges] == ["brand:애플"]  # 나머지 취향은 정상 반영
+
+
+# ─────────── 감쇠·승격 히스테리시스 (REQ-PGRAPH-016) ───────────
+
+
+def test_confidence_decays_with_elapsed_time(settings: Settings) -> None:
+    """오래 재확인되지 않은 취향은 내려앉는다 — 감쇠가 없으면 강등이 도달 불가하다."""
+    fresh = build_graph_document(
+        [_fact("f1", created_at=NOW)], existing=empty_document(NOW), settings=settings, now=NOW
+    )
+    stale = build_graph_document(
+        [_fact("f1", created_at="2026-01-01T00:00:00+00:00")],
+        existing=empty_document(NOW),
+        settings=settings,
+        now=NOW,
+    )
+
+    assert stale.edges[0].confidence < fresh.edges[0].confidence
+
+
+def test_timezone_mixed_timestamps_skip_decay_instead_of_killing_the_batch(
+    settings: Settings,
+) -> None:
+    """오프셋 없는 관측 시각이 섞여도 배치를 죽이지 않는다 — 감쇠를 포기할 뿐이다.
+
+    `datetime` 뺄셈은 naive-aware 혼합에서 `ValueError` 가 아니라 **`TypeError`** 를 낸다.
+    파싱 실패만 막는 가드는 이 경우를 놓쳐 consolidation 이 통째로 죽는다.
+    """
+    naive = "2026-08-01T00:00:00"  # 오프셋 없음 — `now` 는 aware 다
+
+    document = build_graph_document(
+        [_fact("f1", created_at=naive)], existing=empty_document(NOW), settings=settings, now=NOW
+    )
+
+    assert document.edges[0].confidence == pytest.approx(0.9)  # 추측 대신 감쇠 미적용
+
+
+def _between_thresholds(settings: Settings) -> float:
+    """승격 임계와 강등 임계 사이의 salience — 관측이 `now` 면 감쇠가 0이라 곧 confidence 다."""
+    promote = settings.profile_gate_threshold
+    demote = promote - settings.graph_demote_margin
+    assert demote < promote
+    return round((promote + demote) / 2, 4)
+
+
+def test_hysteresis_keeps_promoted_edge_between_thresholds(settings: Settings) -> None:
+    """이미 승격된 edge 는 승격 임계 아래로 내려가도 강등 임계 위면 유지한다(REQ-PGRAPH-016)."""
+    mid = _between_thresholds(settings)
+    existing = _document_with(promoted=True)
+
+    document = build_graph_document(
+        [_fact("f1", created_at=NOW, triples=[_triple(salience=mid)])],
+        existing=existing,
+        settings=settings,
+        now=NOW,
+    )
+
+    edge = document.edges[0]
+    assert edge.confidence == pytest.approx(mid)
+    assert edge.promoted is True
+
+
+def test_hysteresis_does_not_promote_new_edge_between_thresholds(settings: Settings) -> None:
+    """같은 confidence 라도 미승격 edge 는 승격 임계를 넘어야 한다 — 두 임계가 실제로 다르다."""
+    mid = _between_thresholds(settings)
+
+    document = build_graph_document(
+        [_fact("f1", created_at=NOW, triples=[_triple(salience=mid)])],
+        existing=empty_document(NOW),
+        settings=settings,
+        now=NOW,
+    )
+
+    edge = document.edges[0]
+    assert edge.confidence == pytest.approx(mid)
+    assert edge.promoted is False
+
+
+def test_edge_demotes_below_demote_threshold(settings: Settings) -> None:
+    low = settings.profile_gate_threshold - settings.graph_demote_margin - 0.05
+    existing = _document_with(promoted=True)
+
+    document = build_graph_document(
+        [_fact("f1", created_at=NOW, triples=[_triple(salience=low)])],
+        existing=existing,
+        settings=settings,
+        now=NOW,
+    )
+
+    assert document.edges[0].promoted is False
+
+
+def test_decay_alone_can_demote_a_promoted_edge(settings: Settings) -> None:
+    """감쇠가 없으면 강등이 구조적으로 도달 불가하다 — 게이트가 임계 이상만 저장하기 때문이다."""
+    existing = _document_with(promoted=True)
+    old = "2020-01-01T00:00:00+00:00"  # 반감기를 한참 넘긴 관측
+
+    document = build_graph_document(
+        [_fact("f1", created_at=old, triples=[_triple(salience=0.95)])],
+        existing=existing,
+        settings=settings,
+        now=NOW,
+    )
+
+    edge = document.edges[0]
+    assert edge.confidence < settings.profile_gate_threshold - settings.graph_demote_margin
+    assert edge.promoted is False
+
+
+def test_valid_from_is_kept_while_promotion_continues(settings: Settings) -> None:
+    """**승격이 이어지는 동안은** 갱신하지 않는다 — 언제부터 그 취향이었는지가 흐려진다."""
+    existing = _document_with(confidence=0.9, promoted=True, valid_from="2026-07-01T00:00:00+00:00")
+
+    document = build_graph_document([_fact("f1")], existing=existing, settings=settings, now=NOW)
+
+    assert document.edges[0].valid_from == "2026-07-01T00:00:00+00:00"
+
+
+def test_valid_from_clears_on_demotion(settings: Settings) -> None:
+    """강등되면 `valid_from` 은 비운다 — "승격 시각"인데 승격 상태가 아니면 값이 남을 이유가 없다.
+
+    강등은 흔하다. 감쇠 반감기 30일·강등 임계 0.4 에서 **약 40일 침묵이면 내려온다**(실측).
+    값이 남으면 `valid_from is not None` 이 "지금 승격됨"을 뜻하지 못하고, 아래 재승격 테스트의
+    문제로 이어진다(PR #410 리뷰).
+    """
+    low = settings.profile_gate_threshold - settings.graph_demote_margin - 0.1
+    existing = _document_with(confidence=0.9, promoted=True, valid_from="2026-01-01T00:00:00+00:00")
+
+    document = build_graph_document(
+        [_fact("f1", created_at=NOW, triples=[_triple(salience=low)])],
+        existing=existing,
+        settings=settings,
+        now=NOW,
+    )
+
+    edge = document.edges[0]
+    assert edge.promoted is False
+    assert edge.valid_from is None
+
+
+def test_valid_from_is_the_repromotion_time_not_the_first(settings: Settings) -> None:
+    """강등 뒤 재승격하면 **그때** 시각이다 — 최초 승격 시각을 물고 가지 않는다.
+
+    "1월에 좋아함 → 40일 침묵으로 강등 → 8월에 다시 좋아함" 에서 8월이 맞다. 1월을 유지하면
+    #150 이 이 값을 노출할 때 "1월부터 관심"이라고 보여주는데, 2~7월엔 프로필에서 빠져 있었다.
+    최초 관측 시각은 `first_observed_at` 이 이미 갖고 있어 의미가 겹치지도 않는다.
+    """
+    demoted = _document_with(
+        confidence=0.1,
+        promoted=False,
+        valid_from=None,  # 위 테스트대로 강등 시 비워진 상태
+        first_observed_at="2026-01-01T00:00:00+00:00",
+    )
+    repromoted_at = "2026-08-07T00:00:00+00:00"
+
+    document = build_graph_document(
+        [_fact("f1", created_at=repromoted_at, triples=[_triple(salience=0.95)])],
+        existing=demoted,
+        settings=settings,
+        now=repromoted_at,
+    )
+
+    edge = document.edges[0]
+    assert edge.promoted is True
+    assert edge.valid_from == repromoted_at
+    assert edge.first_observed_at == "2026-01-01T00:00:00+00:00"  # 최초 관측은 따로 보존된다
+
+
+def test_revision_ignores_evidence_fields_which_are_wire_invisible(settings: Settings) -> None:
+    """`evidence_*` 는 와이어 미노출이라 revision 을 움직이면 안 된다 (PR #410 리뷰).
+
+    `evidence_count` 는 api-spec v0.26.0 이 명시적으로 와이어에서 뺐고(REQ-PGRAPH-006 —
+    `profile_buffer_repeat_cap` 이 관측 횟수를 잘라 정확한 수를 셀 수 없다), `evidence_by_source`·
+    `evidence_refs` 도 §5.2 내부 전용이다. fact cap 트리밍으로 오래된 근거가 밀려나면 이 값들만
+    바뀌는데(`last_observed_at` 은 최댓값, `first_observed_at` 은 prior 승계라 그대로), 그때
+    revision 이 오르면 #150 의 `If-Match` 토큰이 와이어 무변경인데도 무효가 된다.
+    """
+    old = _fact("f1", created_at="2026-08-01T00:00:00+00:00")
+    new = _fact("f2", created_at="2026-08-05T00:00:00+00:00")
+
+    first = build_graph_document(
+        [old, new], existing=empty_document(NOW), settings=settings, now=NOW
+    )
+    second = build_graph_document([new], existing=first, settings=settings, now=NOW)  # f1 트리밍
+
+    assert second.edges[0].evidence_count != first.edges[0].evidence_count  # 실제로 달라졌다
+    assert second.edges[0].last_observed_at == first.edges[0].last_observed_at  # 와이어는 그대로
+    assert second.revision == first.revision
+
+
+# ─────────── 상태 보존 — 이 이슈의 존재 이유 ───────────
+
+
+def test_suppressed_edge_is_not_reactivated_by_new_evidence(settings: Settings) -> None:
+    """[HARD] 지운 취향은 재관측돼도 되살아나지 않는다(REQ-PGRAPH-022/023, AC-PROF-31)."""
+    existing = _document_with(status="suppressed", suppressed_at=NOW, promoted=True)
+
+    document = build_graph_document(
+        [_fact("f1"), _fact("f2", fact="소니 또", created_at="2026-08-05T00:00:00+00:00")],
+        existing=existing,
+        settings=settings,
+        now=NOW,
+    )
+
+    edge = document.edges[0]
+    assert edge.status == "suppressed"
+    assert edge.suppressed_at == NOW
+    assert edge.evidence_count == 2  # 근거는 계속 쌓인다 — 상태만 안 바뀐다
+
+
+def test_suppressed_edge_survives_when_evidence_disappears(settings: Settings) -> None:
+    """근거 fact 가 cap 트리밍으로 밀려나도 tombstone 은 남는다.
+
+    사라지면 같은 취향이 새 active edge 로 부활해 삭제가 조용히 무력화된다.
+    """
+    existing = _document_with(status="suppressed", suppressed_at=NOW)
+
+    document = build_graph_document([], existing=existing, settings=settings, now=NOW)
+
+    edge = _edge_by_key(document, "likes|brand:소니")
+    assert edge is not None
+    assert edge.status == "suppressed"
+    assert edge.evidence_count == 0
+
+
+def test_active_edge_without_evidence_is_dropped(settings: Settings) -> None:
+    """반대로 그냥 active 인 edge 는 근거가 없어지면 사라진다 — 보존은 tombstone 한정이다."""
+    existing = _document_with(status="active")
+
+    document = build_graph_document([], existing=existing, settings=settings, now=NOW)
+
+    assert document.edges == []
+
+
+def test_conflicting_relations_supersede_loser_without_deleting(settings: Settings) -> None:
+    """같은 node 에 likes vs avoids — 패자는 superseded 로 남고 삭제되지 않는다(REQ-PGRAPH-018)."""
+    facts = [
+        _fact("f1", created_at="2026-08-01T00:00:00+00:00", triples=[_triple(predicate="likes")]),
+        _fact("f2", created_at="2026-08-05T00:00:00+00:00", triples=[_triple(predicate="avoids")]),
+    ]
+
+    document = build_graph_document(facts, existing=empty_document(NOW), settings=settings, now=NOW)
+
+    winner = _edge_by_key(document, "avoids|brand:소니")  # recency-wins
+    loser = _edge_by_key(document, "likes|brand:소니")
+    assert winner is not None and loser is not None
+    assert winner.status == "active"
+    assert loser.status == "superseded"
+    assert loser.superseded_by == winner.edge_id
+
+
+@pytest.mark.parametrize(
+    ("positive", "node_id", "node_type", "label"),
+    [
+        ("prefers", "priceBand:30000-50000", "priceBand", "30000-50000"),  # priceBand·ratingBand
+        ("prefers", "attribute:방수", "attribute", "방수"),  # attribute
+        ("interestedIn", "situation:캠핑", "situation", "캠핑"),  # situation
+    ],
+)
+def test_any_positive_predicate_conflicts_with_avoids(
+    settings: Settings, positive: str, node_id: str, node_type: str, label: str
+) -> None:
+    """상충은 `likes` vs `avoids` 만이 아니다 — **부정 vs 임의의 긍정**이다(REQ-PGRAPH-018).
+
+    `resolver._POSITIVE_PREDICATE` 는 kind 마다 다른 긍정을 만든다(priceBand·ratingBand·
+    attribute → `prefers`, situation → `interestedIn`). 충돌 쌍을 `{likes, avoids}` 로
+    하드코딩하면 7개 kind 중 4개가 판정 밖에 남아, 모순된 두 취향이 **둘 다 active** 로 공존하고
+    요약 LLM 이 "선호한다 + 싫어한다"를 함께 받는다(PR #410 리뷰).
+    """
+    facts = [
+        _fact(
+            "f1",
+            created_at="2026-08-01T00:00:00+00:00",
+            triples=[_triple(node_id, positive, label=label, node_type=node_type)],
+        ),
+        _fact(
+            "f2",
+            created_at="2026-08-05T00:00:00+00:00",
+            triples=[_triple(node_id, "avoids", label=label, node_type=node_type)],
+        ),
+    ]
+
+    document = build_graph_document(facts, existing=empty_document(NOW), settings=settings, now=NOW)
+
+    winner = _edge_by_key(document, f"avoids|{node_id}")  # recency-wins
+    loser = _edge_by_key(document, f"{positive}|{node_id}")
+    assert winner is not None and loser is not None
+    assert winner.status == "active"
+    assert loser.status == "superseded"
+    assert loser.superseded_by == winner.edge_id
+
+
+def test_purchased_does_not_conflict_with_avoids(settings: Settings) -> None:
+    """구매 사실과 회피는 모순이 아니다 — 사고 나서 싫어질 수 있다.
+
+    `purchased` 의 원천은 질의 시점 구매 이력(I-19)이지 발화가 아니라서, 회피 발언이 구매
+    기록을 덮으면 이력이 취향 판정에 지워진다.
+    """
+    facts = [
+        _fact(
+            "f1",
+            created_at="2026-08-01T00:00:00+00:00",
+            triples=[_triple("product:12345", "purchased", label="12345", node_type="product")],
+        ),
+        _fact(
+            "f2",
+            created_at="2026-08-05T00:00:00+00:00",
+            triples=[_triple("product:12345", "avoids", label="12345", node_type="product")],
+        ),
+    ]
+
+    document = build_graph_document(facts, existing=empty_document(NOW), settings=settings, now=NOW)
+
+    assert {e.status for e in document.edges} == {"active"}
+
+
+def test_superseded_revives_when_its_winner_is_gone(settings: Settings) -> None:
+    """상대가 사라진 `superseded` 는 되살아난다 — 아니면 사용자가 취향을 되돌려도 복구 불가다.
+
+    `_carried_tombstones` 는 비대칭이다: `superseded` 는 근거 0건이어도 carry 되지만 승자였던
+    `active` edge 는 fact cap 트리밍으로 근거가 밀리면 후보 목록에서 통째로 빠진다. 그러면
+    `_resolve_conflicts` 는 "부정 없음"으로 보고 건너뛰고, `_merge_edge` 는 `prior.status` 를
+    승계하므로 패자는 새 관측이 아무리 쌓여도 **영구히 `superseded`** 다(PR #410 리뷰).
+    """
+    # 1) 충돌 → avoids 가 이기고 likes 가 superseded
+    first = build_graph_document(
+        [
+            _fact(
+                "f1", created_at="2026-08-01T00:00:00+00:00", triples=[_triple(predicate="likes")]
+            ),
+            _fact(
+                "f2", created_at="2026-08-05T00:00:00+00:00", triples=[_triple(predicate="avoids")]
+            ),
+        ],
+        existing=empty_document(NOW),
+        settings=settings,
+        now=NOW,
+    )
+    loser = _edge_by_key(first, "likes|brand:소니")
+    assert loser is not None and loser.status == "superseded"
+
+    # 2) 승자(avoids)의 근거 fact 가 cap 트리밍으로 사라지고, 사용자가 취향을 되돌려 다시 말한다
+    second = build_graph_document(
+        [_fact("f3", created_at="2026-08-09T00:00:00+00:00", triples=[_triple(predicate="likes")])],
+        existing=first,
+        settings=settings,
+        now=NOW,
+    )
+
+    revived = _edge_by_key(second, "likes|brand:소니")
+    assert revived is not None
+    assert revived.status == "active"
+    assert revived.superseded_by is None
+
+
+@pytest.mark.parametrize("bad", [5.0, -1.0, 1.5])
+def test_out_of_range_salience_cannot_distort_confidence(settings: Settings, bad: float) -> None:
+    """범위 밖 `salience` 가 EMA 를 망가뜨리지 않는다 — 경계에서 `[0,1]` 로 잡는다.
+
+    EMA 식 `confidence + (1-confidence)*salience` 는 양쪽이 `[0,1]` 이라는 전제로 쓰였다.
+    `salience=5` 면 관측 2건에서 `5 + (1-5)*5 = -15` 로 진동하고, 마지막 `max/min` 클램프는
+    **최종값만** 잡으므로 루프 중간 오염은 못 막는다 — 강하게 반복 언급한 취향이 confidence 0
+    으로 떨어져 승격에서 조용히 빠진다(PR #410 리뷰).
+
+    게이트는 `salience >= threshold` 만 보므로 상한 밖 값도 그대로 저장된다. 프롬프트의
+    "0.0~1.0" 은 강제되지 않는 소프트 제약이라, 읽는 쪽에서 잡는다(저장된 오염값도 함께 막힌다).
+    """
+    triples = [_triple(), _triple()]
+    for triple in triples:
+        triple["salience"] = bad
+    facts = [
+        _fact("f1", created_at="2026-08-01T00:00:00+00:00", triples=[triples[0]]),
+        _fact("f2", created_at="2026-08-02T00:00:00+00:00", triples=[triples[1]]),
+    ]
+
+    document = build_graph_document(facts, existing=empty_document(NOW), settings=settings, now=NOW)
+
+    edge = document.edges[0]
+    assert 0.0 <= edge.confidence <= 1.0
+    if bad > 1.0:
+        # 상한 밖 강한 신호는 "가장 강한 관측"으로 다뤄야 한다 — 진동해서 0 이 되면 안 된다.
+        assert edge.confidence > settings.profile_gate_threshold
+
+
+def test_corrupt_source_is_dropped_not_raised(settings: Settings) -> None:
+    """`source` 도 `GraphEdge.source_latest` Literal 이라 여기서 걸러야 한다 (PR #410 리뷰).
+
+    `predicate`·`edge_key`·`edge_id` 만 검증하고 `source` 를 빠뜨리면 같은 poison record 가
+    `source` 값 하나로 재현된다 — `_merge_edge` 의 `GraphEdge(source_latest=...)` 에서 터진다.
+    """
+    broken = _triple()
+    broken["source"] = "telepathy"  # Literal 밖
+    facts = [
+        _fact("f1", triples=[broken]),
+        _fact("f2", triples=[_triple("brand:애플", label="애플")]),
+    ]
+
+    document = build_graph_document(facts, existing=empty_document(NOW), settings=settings, now=NOW)
+
+    assert document.unprojected_count == 1
+    assert [e.node_id for e in document.edges] == ["brand:애플"]
+
+
+def test_supersede_does_not_touch_unrelated_nodes(settings: Settings) -> None:
+    facts = [
+        _fact("f1", triples=[_triple(predicate="likes")]),
+        _fact("f2", triples=[_triple("brand:애플", "avoids", label="애플")]),
+    ]
+
+    document = build_graph_document(facts, existing=empty_document(NOW), settings=settings, now=NOW)
+
+    assert {e.status for e in document.edges} == {"active"}
+
+
+# ─────────── 정렬·절단 ───────────
+
+
+def test_edges_are_sorted_by_total_order(settings: Settings) -> None:
+    """predicate 고정 순서 → last_observed_at 내림차순 → edge_id 오름차순(REQ-PGRAPH-003)."""
+    facts = [
+        _fact("f1", triples=[_triple("brand:a", "interestedIn", label="a", node_type="situation")]),
+        _fact("f2", triples=[_triple("brand:b", "prefers", label="b", node_type="attribute")]),
+        _fact("f3", triples=[_triple("brand:c", "likes", label="c")]),
+    ]
+
+    document = build_graph_document(facts, existing=empty_document(NOW), settings=settings, now=NOW)
+
+    assert [e.predicate for e in document.edges] == ["prefers", "likes", "interestedIn"]
+    assert [n.node_id for n in document.nodes] == sorted(n.node_id for n in document.nodes)
+
+
+def test_truncation_keeps_tombstones_first(settings: Settings) -> None:
+    """상한을 넘기면 자르되 tombstone 을 먼저 지킨다 — 절단으로 삭제가 되살아나면 안 된다."""
+    tight = Settings(_env_file=None, profile_graph_max_edges=1)
+    existing = _document_with(status="suppressed", suppressed_at=NOW)
+    facts = [_fact("f1", triples=[_triple("brand:애플", label="애플")])]
+
+    document = build_graph_document(facts, existing=existing, settings=tight, now=NOW)
+
+    assert len(document.edges) == 1
+    assert document.edges[0].status == "suppressed"
+
+
+def test_truncation_never_drops_user_deletions_even_past_the_cap(settings: Settings) -> None:
+    """사용자 삭제가 상한보다 많아도 하나도 잘리지 않는다 — 상한을 넘겨서라도 지킨다.
+
+    `_carried_tombstones` 는 **문서에 남아 있는** tombstone 만 보존할 수 있다. 절단이 tombstone
+    자체를 지우면 다음 배치에 같은 `edge_key` 가 새 `active` 로 살아난다(AC-PROF-31 회귀).
+    """
+    tight = Settings(_env_file=None, profile_graph_max_edges=2)
+    existing = _document_of(
+        [
+            _stored_edge("소니", status="suppressed", suppressed_at=NOW),
+            _stored_edge("애플", status="suppressed", suppressed_at=NOW),
+            _stored_edge("삼성", status="suppressed", suppressed_at=NOW),
+        ]
+    )
+    facts = [_fact("f1", triples=[_triple("brand:엘지", label="엘지")])]
+
+    document = build_graph_document(facts, existing=existing, settings=tight, now=NOW)
+
+    assert {e.edge_key for e in document.edges if e.status == "suppressed"} == {
+        "likes|brand:소니",
+        "likes|brand:애플",
+        "likes|brand:삼성",
+    }
+
+
+def test_deleted_preference_does_not_resurrect_after_truncation(settings: Settings) -> None:
+    """절단을 거친 다음 배치에서 지운 취향이 다시 언급돼도 `active` 로 부활하지 않는다.
+
+    앞 테스트가 "남는다"를 잰다면 이 테스트는 "남아서 실제로 막는다"를 잰다 — 억제 실효가
+    이 이슈의 존재 이유라 절단 경계에서 한 번 더 고정한다.
+    """
+    tight = Settings(_env_file=None, profile_graph_max_edges=2)
+    # 소니를 **맨 뒤**에 둔다 — 앞에 두면 상한 안에 우연히 들어가 절단을 통과해 버린다.
+    existing = _document_of(
+        [
+            _stored_edge("애플", status="suppressed", suppressed_at=NOW),
+            _stored_edge("삼성", status="suppressed", suppressed_at=NOW),
+            _stored_edge("소니", status="suppressed", suppressed_at=NOW),
+        ]
+    )
+    first = build_graph_document(
+        [_fact("f1", triples=[_triple("brand:엘지", label="엘지")])],
+        existing=existing,
+        settings=tight,
+        now=NOW,
+    )
+
+    second = build_graph_document(
+        [
+            _fact("f1", triples=[_triple("brand:엘지", label="엘지")]),
+            _fact("f2", triples=[_triple("brand:소니", label="소니")]),  # 지운 취향 재언급
+        ],
+        existing=first,
+        settings=tight,
+        now=NOW,
+    )
+
+    revived = _edge_by_key(second, "likes|brand:소니")
+    assert revived is not None
+    assert revived.status == "suppressed"
+
+
+def test_truncation_drops_machine_superseded_before_user_deletions(settings: Settings) -> None:
+    """`superseded` 는 잘려도 재파생으로 자기복구되지만 `suppressed` 는 복구 경로가 없다.
+
+    그래서 두 tombstone 을 같은 등급으로 두지 않는다 — 밀려나는 쪽은 항상 기계 판정이다.
+    문서 등장 순서가 아니라 확신도로 갈리는지도 함께 고정한다(순서 우연으로 통과하지 않게).
+    """
+    tight = Settings(_env_file=None, profile_graph_max_edges=2)
+    # 두 패자에게 **문서·근거 양쪽에 있는 승자**를 준다 — 상대가 없으면 `_revive_orphan_superseded`
+    # 가 둘 다 active 로 되살려, 이 테스트가 재려는 "superseded 등급 안의 우선순위"가 성립하지 않는다.
+    existing = _document_of(
+        [
+            _stored_edge(
+                "애플",
+                status="superseded",
+                superseded_by=make_edge_id("avoids|brand:애플"),
+                confidence=0.1,
+            ),
+            _stored_edge(
+                "삼성",
+                status="superseded",
+                superseded_by=make_edge_id("avoids|brand:삼성"),
+                confidence=0.9,
+            ),
+            _stored_edge("소니", status="suppressed", suppressed_at=NOW),
+        ]
+    )
+    facts = [
+        _fact("f1", triples=[_triple("brand:애플", "avoids", label="애플")]),  # 승자
+        _fact("f2", triples=[_triple("brand:삼성", "avoids", label="삼성")]),  # 승자
+    ]
+
+    document = build_graph_document(facts, existing=existing, settings=tight, now=NOW)
+
+    assert len(document.edges) == 2
+    sony = _edge_by_key(document, "likes|brand:소니")
+    assert sony is not None and sony.status == "suppressed"  # 사용자 삭제는 무조건 남고
+    assert _edge_by_key(document, "likes|brand:삼성") is not None  # 확신도 높은 쪽이 남고
+    assert _edge_by_key(document, "likes|brand:애플") is None  # 낮은 쪽이 밀린다
+
+
+def test_truncation_drops_active_before_superseded(settings: Settings) -> None:
+    """`active` 가 `superseded` 보다 **먼저** 밀린다 — 잃는 것이 서로 다르기 때문이다.
+
+    `active` 가 잘려도 그 fact 는 `_summary_input` 에 그대로 남지만(문서에 없는 edge_key 는
+    `active` 로 간주된다), `superseded` 가 잘리면 같은 규칙 때문에 **진 취향이 요약에 되살아난다.**
+    방향을 반대로 읽기 쉬운 지점이라(PR #410 리뷰) 순서 자체를 여기서 고정한다.
+    """
+    tight = Settings(_env_file=None, profile_graph_max_edges=1)
+    # 승자(avoids|brand:애플)를 문서·근거 양쪽에 둔다 — 상대가 없으면 병합이 패자를 되살려
+    # (`_revive_orphan_superseded`) 절단 순서를 재는 시나리오가 성립하지 않는다.
+    winner_key = "avoids|brand:애플"
+    existing = _document_of(
+        [
+            _stored_edge(
+                "애플", status="superseded", superseded_by=make_edge_id(winner_key), confidence=0.1
+            )
+        ]
+    )
+    # 새 active 는 확신도가 훨씬 높다 — 그래도 superseded 가 남아야 한다(확신도로 갈리지 않는다).
+    facts = [
+        _fact("f1", triples=[_triple("brand:애플", "avoids", label="애플")]),
+        _fact("f2", triples=[_triple("brand:엘지", label="엘지", salience=0.99)]),
+    ]
+
+    document = build_graph_document(facts, existing=existing, settings=tight, now=NOW)
+
+    assert [(e.edge_key, e.status) for e in document.edges] == [("likes|brand:애플", "superseded")]
+
+
+def test_truncated_flag_records_that_edges_were_dropped(settings: Settings) -> None:
+    """절단이 실제로 일어났으면 문서에 표식을 남긴다 (REQ-PGRAPH-005, PR #410 리뷰).
+
+    절단을 **쓰기 시점**으로 옮긴 결과, 읽는 쪽(#150 투영)은 저장된 edge 수가 상한 이하라
+    "절단 안 됨"으로 볼 수밖에 없다 — `len(edges) == limit` 로 추정하는 것도 "우연히 딱 상한인
+    정상 사용자"와 구분되지 않는다. 그래서 자른 쪽이 기록해야 한다.
+    """
+    tight = Settings(_env_file=None, profile_graph_max_edges=1)
+    facts = [
+        _fact("f1", triples=[_triple("brand:엘지", label="엘지", salience=0.9)]),
+        _fact("f2", triples=[_triple("brand:애플", label="애플", salience=0.2)]),
+    ]
+
+    document = build_graph_document(facts, existing=empty_document(NOW), settings=tight, now=NOW)
+
+    assert len(document.edges) == 1
+    assert document.truncated is True
+
+
+def test_truncated_flag_is_false_when_everything_fits(settings: Settings) -> None:
+    """상한 안이면 거짓이다 — 매 배치 참이면 표식이 신호 노릇을 못 한다."""
+    document = build_graph_document(
+        [_fact("f1")], existing=empty_document(NOW), settings=settings, now=NOW
+    )
+
+    assert document.truncated is False
+
+
+def test_truncated_flag_is_false_when_the_cap_is_exceeded_but_nothing_dropped(
+    settings: Settings,
+) -> None:
+    """사용자 삭제만으로 상한을 넘긴 경우는 **자른 게 아니다** — 넘긴 채 전부 보존했다.
+
+    `truncated` 의 뜻은 "상한을 넘었다"가 아니라 "**버린 게 있다**"이다. 여기서 참이면 사용자는
+    잘리지도 않은 목록을 보고 "일부만 표시됨"이라는 안내를 받는다.
+    """
+    tight = Settings(_env_file=None, profile_graph_max_edges=1)
+    existing = _document_of(
+        [
+            _stored_edge("소니", status="suppressed", suppressed_at=NOW),
+            _stored_edge("애플", status="suppressed", suppressed_at=NOW),
+        ]
+    )
+
+    document = build_graph_document([], existing=existing, settings=tight, now=NOW)
+
+    assert len(document.edges) == 2  # 상한(1)을 넘겨서라도 삭제는 지킨다
+    assert document.truncated is False  # 넘겼을 뿐 버리지 않았다
+
+
+def test_revision_bumps_when_only_truncated_flips(settings: Settings) -> None:
+    """`truncated` 만 달라져도 revision 은 오른다 — 와이어 응답이 바뀌기 때문이다.
+
+    이 필드를 지문에 넣은 것이 **중복이 아니라는** 근거다. 상한을 넘겨 잘린 배치와, 잘린 대상의
+    근거 fact 가 트리밍돼 절단이 사라진 다음 배치는 **남은 edge·node 가 완전히 동일**하다 —
+    지문에서 빼면 "일부만 표시됨 → 전부 표시됨"이라는 사용자가 보는 변화를 놓치고 #150 의
+    `If-Match` 토큰이 낡은 채로 유효해진다(PR #410 리뷰 대응에 딸린 판단).
+    """
+    tight = Settings(_env_file=None, profile_graph_max_edges=2)
+    keep = [
+        _fact("f1", triples=[_triple("brand:소니", label="소니", salience=0.95)]),
+        _fact("f2", triples=[_triple("brand:애플", label="애플", salience=0.90)]),
+    ]
+    dropped = _fact("f3", triples=[_triple("brand:삼성", label="삼성", salience=0.10)])
+
+    first = build_graph_document(
+        [*keep, dropped], existing=empty_document(NOW), settings=tight, now=NOW
+    )
+    second = build_graph_document(keep, existing=first, settings=tight, now=NOW)  # f3 트리밍
+
+    assert first.truncated is True and second.truncated is False
+    # 남은 것은 완전히 같다 — 그래서 truncated 가 유일한 차이다.
+    assert [e.model_dump(mode="json") for e in second.edges] == [
+        e.model_dump(mode="json") for e in first.edges
+    ]
+    assert second.revision == first.revision + 1
+
+
+def test_truncation_keeps_active_edges_within_the_remaining_budget(settings: Settings) -> None:
+    """tombstone 이 상한 안이면 남은 자리는 `active` 가 확신도 순으로 채운다.
+
+    tombstone 우선이 "이번 배치 반영 0건"을 뜻하지 않는다는 경계다.
+    """
+    tight = Settings(_env_file=None, profile_graph_max_edges=2)
+    existing = _document_of([_stored_edge("소니", status="suppressed", suppressed_at=NOW)])
+    facts = [
+        _fact("f1", triples=[_triple("brand:엘지", label="엘지", salience=0.9)]),
+        _fact("f2", triples=[_triple("brand:애플", label="애플", salience=0.2)]),
+    ]
+
+    document = build_graph_document(facts, existing=existing, settings=tight, now=NOW)
+
+    assert {e.edge_key for e in document.edges} == {"likes|brand:소니", "likes|brand:엘지"}
+
+
+def test_truncation_logs_when_user_deletions_alone_exceed_the_cap(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """상한을 넘겨 보존하는 것은 의도된 선택이므로 **조용히** 넘기지 않는다 — 정리 신호다."""
+    tight = Settings(_env_file=None, profile_graph_max_edges=1)
+    existing = _document_of(
+        [
+            _stored_edge("소니", status="suppressed", suppressed_at=NOW),
+            _stored_edge("애플", status="suppressed", suppressed_at=NOW),
+        ]
+    )
+
+    with caplog.at_level(logging.WARNING, logger="app.agents.profile.graph_merge"):
+        document = build_graph_document([], existing=existing, settings=tight, now=NOW)
+
+    assert len(document.edges) == 2  # 상한(1)을 넘겨서라도 삭제는 지킨다
+    assert "profile_graph_protected_over_cap" in caplog.text
+
+
+# ─────────── revision ───────────
+
+
+def test_revision_increases_on_substantive_change(settings: Settings) -> None:
+    existing = empty_document(NOW)
+
+    document = build_graph_document([_fact("f1")], existing=existing, settings=settings, now=NOW)
+
+    assert document.revision == existing.revision + 1
+
+
+def test_revision_ignores_node_resolution_which_is_wire_invisible(settings: Settings) -> None:
+    """`NodeResolution` 은 **와이어 미노출** 판정 근거다 — 그것만 달라지면 revision 은 그대로다.
+
+    edge 쪽에서 `confidence`·`decay_evaluated_at` 을 비교에서 뺀 것과 같은 규약이다(§5.1 —
+    `resolution` 은 임계 재측정용 내부값이라 FE 에 나가지 않는다). 지금은 `resolution` 이 바뀌는
+    경로가 항상 edge 변화를 동반해 이 규칙이 **우연히** 지켜지는데, 어휘 갱신 후 재파생(#150)이나
+    임계 재측정 후 재resolve(#344)가 들어오면 그 우연이 깨진다 — 그때 와이어에 안 보이는 변화로
+    #150 의 `If-Match` 토큰이 무효가 된다(PR #410 리뷰가 지적한 위험, 인과는 달랐다).
+    """
+    stale = _triple()
+    stale["node"]["resolution"] = {
+        "method": "no_vocabulary",
+        "anchor_phrase": "소니 좋아",
+        "resolved_at": "2026-08-01T00:00:00+00:00",
+    }
+    fresh = _triple()
+    fresh["node"]["resolution"] = {  # 같은 노드, 판정 근거만 새로 찍혔다
+        "method": "no_vocabulary",
+        "anchor_phrase": "소니 좋아",
+        "resolved_at": "2026-08-07T00:00:00+00:00",
+    }
+
+    first = build_graph_document(
+        [_fact("f1", triples=[stale])], existing=empty_document(NOW), settings=settings, now=NOW
+    )
+    second = build_graph_document(
+        [_fact("f1", triples=[fresh])], existing=first, settings=settings, now=NOW
+    )
+
+    assert second.nodes[0].resolution != first.nodes[0].resolution  # 실제로 달라졌다
+    assert second.revision == first.revision  # 그래도 와이어 내용은 그대로다
+
+
+def test_revision_is_stable_when_only_decay_moved_confidence(settings: Settings) -> None:
+    """감쇠로 confidence 소수점만 움직이면 올리지 않는다.
+
+    비교 단위는 원시 수치가 아니라 **와이어가 노출하는 3버킷 라벨**이다(§5.2). 시간이 흐르기만
+    해도 confidence 는 늘 흔들리므로, 그걸 실질 변경으로 세면 revision 이 매 배치 올라 #150 의
+    If-Match 토큰이 계속 무효가 된다.
+    """
+    first = build_graph_document(
+        [_fact("f1")], existing=empty_document(NOW), settings=settings, now=NOW
+    )
+
+    second = build_graph_document(
+        [_fact("f1")], existing=first, settings=settings, now="2026-08-07T00:00:00+00:00"
+    )
+
+    assert second.edges[0].confidence != first.edges[0].confidence  # 실제로 움직였다
+    assert second.revision == first.revision  # 그래도 버킷은 그대로다
+
+
+def test_revision_increases_when_confidence_crosses_a_bucket(settings: Settings) -> None:
+    """버킷이 바뀌면 사용자가 볼 라벨이 바뀐 것이라 실질 변경이다."""
+    low, high = settings.profile_graph_confidence_buckets
+    first = build_graph_document(
+        [_fact("f1", created_at=NOW, triples=[_triple(salience=high + 0.1)])],
+        existing=empty_document(NOW),
+        settings=settings,
+        now=NOW,
+    )
+
+    second = build_graph_document(
+        [_fact("f1", created_at=NOW, triples=[_triple(salience=low - 0.1)])],
+        existing=first,
+        settings=settings,
+        now=NOW,
+    )
+
+    assert second.revision == first.revision + 1
+
+
+def _document_with(**overrides: object) -> GraphDocument:
+    return _document_of([_stored_edge(**overrides)])
+
+
+def _document_of(edges: list[GraphEdge]) -> GraphDocument:
+    """이미 만든 edge 들로 기존 문서를 구성한다 — 노드는 edge 가 가리키는 것만 채운다."""
+    nodes = {
+        edge.node_id: GraphNode(
+            node_id=edge.node_id,
+            type="brand",
+            label=edge.node_id.split(":", 1)[1],
+            verified=False,
+        )
+        for edge in edges
+    }
+    return GraphDocument(
+        revision=1,
+        nodes=list(nodes.values()),
+        edges=edges,
+        unprojected_count=0,
+        truncated=False,
+        purged_at=None,
+        updated_at="2026-07-01T00:00:00+00:00",
+    )
+
+
+def _stored_edge(
+    label: str = "소니", *, predicate: str = "likes", **overrides: object
+) -> GraphEdge:
+    from app.agents.profile.graph_models import make_edge_id
+
+    node_id = f"brand:{label}"
+    edge_key = f"{predicate}|{node_id}"
+    base: dict = {
+        "edge_key": edge_key,
+        "edge_id": make_edge_id(edge_key),
+        "node_id": node_id,
+        "predicate": predicate,
+        "status": "active",
+        "promoted": False,
+        "origin": "machine",
+        "source_latest": "conversation",
+        "confidence": 0.5,
+        "evidence_count": 1,
+        "evidence_by_source": {"conversation": 1},
+        "evidence_refs": ["seed"],
+        "first_observed_at": "2026-07-01T00:00:00+00:00",
+        "last_observed_at": "2026-07-01T00:00:00+00:00",
+        "decay_evaluated_at": "2026-07-01T00:00:00+00:00",
+        "valid_from": None,
+        "superseded_by": None,
+        "suppressed_at": None,
+        "user_intent": None,
+        "challenge_count": 0,
+        "derived_from_sensitive": False,
+        "sensitive_topic": None,
+    }
+    base.update(overrides)
+    return GraphEdge(**base)

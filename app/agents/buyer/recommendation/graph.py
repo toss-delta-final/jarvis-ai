@@ -19,9 +19,11 @@ from uuid import uuid4
 
 from app.agents.buyer._frames import progress as progress_frame
 from app.agents.buyer._frames import sse
+from app.agents.buyer.cart.options import OptionHint
 from app.agents.buyer.recommendation.budget_sets import BudgetSet, BudgetSetPlan, build_budget_sets
 from app.agents.buyer.recommendation.need_priority import classify_need_priorities
 from app.agents.buyer.recommendation.no_condition import (
+    dedup_exposed_names,
     has_total_budget,
     rank_by_profile,
     within_budget,
@@ -46,6 +48,7 @@ from app.agents.buyer.recommendation.state import (
     build_condition_chips,
     get_repurchase_store,
 )
+from app.core.config import _rescue_chain_stage_counts
 from app.core.llm import LLMClient, LLMError, resolve_model_id
 from app.core.text import _strip_unsafe
 from app.core.tracing import current_request_trace, trace_span
@@ -467,9 +470,150 @@ async def stream_recommendation(
     # [#162] 미리 만들어 둔 취향 벡터(`read_profile_summary()["embedding"]`). 회원이면서 벡터가
     # 있을 때만 취향 랭킹 경로를 탄다 — 게스트·신규회원·구 요약(벡터 없음)은 인기 상품으로 간다.
     profile_vec: list[float] | None = None,
+    # [#427, DESIGN-SHARED-BUDGET-384 §3 D2] 스트림 시작 절대 시각(`open_stream` 의
+    # `loop.time()` 원점) — 구제 체인 공유 예산(`rescue_deadline`)의 원점이다. `None` 이면
+    # 예산 판정 전체가 무동작이다(아래 참조) — "없으면 지금을 원점으로" 폴백은 절대 금지다.
+    turn_started_at: float | None = None,
 ) -> AsyncIterator[str]:
     """추천 서브그래프 스트림. 프레임(SSE str)을 순서대로 산출한다."""
     popular_fn = popular_fn or spring_client.get_popular_products
+    # [#427, DESIGN-SHARED-BUDGET-384 §3 D2·D3] 구제 체인(F-1/#343/자동완화 probe)이 잔여
+    # 예산을 판정할 데드라인 — 함수 진입 시 **한 번만** 계산한다(재계산 금지: 매 단계에서
+    # 다시 계산하면 D2 가 고치려던 "새 창을 부여" 버그(F1)가 되살아난다). `turn_started_at`
+    # 이 None 이면(=open_stream 배선이 없는 호출부·구 테스트) `rescue_deadline` 도 None 이고
+    # 아래 예산 판정 헬퍼는 전부 "full"(무동작)만 반환한다 — **"없으면 지금 시각을 원점으로
+    # 잡는다"로 폴백하지 않는다**: 진짜 원점보다 늦은 시각을 원점으로 쓰면 `rescue_deadline`
+    # 이 스트림 실제 캡(`stream.py` 의 `deadline`)을 넘어갈 수 있다(D2 가 F1 로 기각한 바로 그
+    # 예산 초과 승인 버그).
+    rescue_deadline: float | None = (
+        None
+        if turn_started_at is None
+        else turn_started_at
+        + (settings.stream_total_timeout_buyer_s - settings.rescue_tail_reserve_s)
+    )
+    # 공유 계수 원천(D7) — 기동 검증기(`config.py::Settings.
+    # _require_search_retry_within_stream_budget`)와 이 함수의 "남은 단 수" 계산이 같은
+    # 함수에서 계수를 얻어야 한쪽만 고쳐지는 드리프트를 막는다.
+    _rescue_stage_counts = _rescue_chain_stage_counts(
+        relaxation_max_rounds=settings.relaxation_max_rounds,
+        auto_fields=settings.relaxation_auto_fields,
+        chip_fields=settings.relaxation_chip_fields,
+        category_expand_enabled=settings.category_expand_enabled,
+    )
+    # [#427 D7 관측 필드] observe 모드에서는 "집행했다면 이랬을 값"(반사실) — 아래
+    # `recommend_zero_result`/`recommend_pipeline` 로그가 `rescue_budget_mode` 와 함께 싣는다.
+    rescue_stage_narrowed_timeout_ms: int | None = None
+    rescue_stage_skipped_budget = False
+
+    def _stage_budget(remaining_stages: int, *, attempts: int) -> tuple[str, float]:
+        """이 단 진입 직전 잔여 예산 판정 (D3·D4). 반환은 (verdict, 이 단에 줄 수 있는 초).
+
+        verdict 는 `"full"`(좁히지 않는다) / `"narrow"`(좁혀서 시도) / `"skip"`(건너뛴다
+        — 호출부가 이 단의 skip 허용 여부에 따라 실제로 건너뛸지 narrow 로 강등할지 정한다).
+        남은 단 수로 균등 배분한다(D4) — 지금 단이 잔여를 통째로 쓰면 뒤에 남은 단이 곧바로
+        굶는다. `remaining_stages` 는 이 단을 포함해 이 턴에 이론상 남아 있는 단 수다.
+
+        [PR #452 리뷰 R2] `attempts` 는 이 단이 실제로 밟을 시도 횟수 —
+        `spring_client.search_products` 의 `attempts = 1 if _search_retry_suppressed.get()
+        else spring_max_retries + 1` 산출식과 **글자 그대로 같은 규칙**이어야 한다(호출부가
+        넘긴다, D7 — `config.py::_rescue_chain_serial_budget_s` 가 같은 비대칭을 기동 검증
+        쪽에서 모델링한다). 단 상한(`stage_cap`)은 `spring_search_timeout_s * attempts` 다 —
+        `"full"` 판정을 1 회분 상한으로 고정하면, 재시도가 있는 단은 그 배만큼 벽시계를 실제로
+        쓰는데도 좁히지 않고 통과시켜 `rescue_deadline` 을 과다 승인한다.
+        """
+        stage_cap = settings.spring_search_timeout_s * attempts
+        if rescue_deadline is None:
+            return "full", stage_cap
+        # [PR #452 리뷰 R1] `rescue_deadline` 의 원점은 `open_stream` 의 `loop.time()` 이다 —
+        # 데드라인과 비교하는 이 지점만 같은 시계(`asyncio.get_running_loop().time()`)를 써야
+        # D2 의 "원점 일치" 가 실측 우연이 아니라 증명이 된다(uvloop 는 `time.monotonic()` 과
+        # 같다는 보장이 언어 차원에 없다).
+        remaining = rescue_deadline - asyncio.get_running_loop().time()
+        n = max(remaining_stages, 1)
+        # 균등 배분(remaining / n)은 근사다 — 단별 상한(stage_cap)이 서로 달라 엄밀히는 가중
+        # 배분이 맞지만, 그 정밀화는 이 수정 범위 밖이다(R2 는 "full" 경계와 상한만 바꾼다).
+        granted = min(stage_cap, remaining / n)
+        if granted >= stage_cap:
+            return "full", stage_cap
+        if granted >= settings.rescue_stage_min_timeout_s:
+            return "narrow", granted
+        return "skip", granted
+
+    def _apply_stage_budget(
+        remaining_stages: int, *, allow_skip: bool, attempts: int
+    ) -> tuple[bool, float | None]:
+        """`_stage_budget` 판정을 관측 필드에 반영하고, `rescue_budget_mode` 에 따라
+        (건너뛸지, narrow 로 줄 budget_s) 를 반환한다 (D4).
+
+        판정·관측(`rescue_stage_narrowed_timeout_ms`/`rescue_stage_skipped_budget`)은 모드와
+        무관하게 항상 계산한다 — observe 모드에서는 이 값이 "집행했다면 이랬을 값"(반사실)이다.
+        실제 집행(좁히기/건너뛰기)만 모드로 가른다. `allow_skip=False`(본검색)는 `skip` 판정을
+        절대 skip 으로 실행하지 않는다 — narrow 로 강등한다(본검색을 건너뛰면 그 턴은 무조건
+        `SEARCH_FAILED` 라, 예산을 아끼려다 턴을 죽인다).
+
+        [리뷰 F1] **실제로 집행되는 narrow 예산은 항상 `rescue_stage_min_timeout_s` 이상으로
+        clamp 한다.** 데드라인이 이미 지난 턴(`remaining <= 0`)에서는 `_stage_budget` 의
+        `granted` 가 음수/0 일 수 있는데, 그 값을 그대로 `narrow_search_budget` 에 넘기면
+        `asyncio.wait_for(timeout=음수)` 가 즉시 만료돼 **HTTP 요청 자체가 나가지 않는다** —
+        `allow_skip=False`(본검색)가 정확히 막으려는 상황(요청 없이 실패)이 그대로 재현되고,
+        F-1/#343/자동완화 probe 는 `narrow` 모드에서 `relaxing` 등 progress 를 emit 해 놓고
+        아무 일도 하지 않는 거짓 신호(H4)가 된다. clamp 는 두 경로 모두에 적용한다 — 본검색의
+        `skip → narrow` 강등과, `narrow`(narrow_skip 아님) 모드에서 `skip` 판정을 그대로
+        집행하는 경로. 데드라인을 최대 `rescue_stage_min_timeout_s` 만큼 넘길 수 있지만 그건
+        `rescue_tail_reserve_s` 가 흡수한다 — 예산이 없다고 요청 자체를 안 보내는 것보다 낫다.
+
+        [PR #452 리뷰 R2] `narrow_search_budget()` 로 주입하는 `granted` 는 이미 **총시간
+        (재시도 포함) 상한**이다(`search_products` 가 override 를 그 의미로 쓴다) — 좁힐 때
+        `attempts` 를 다시 곱하지 않는다. `attempts` 는 오직 `_stage_budget` 의 `"full"`
+        경계·`min()` 상한에만 쓰인다.
+
+        [PR #452 리뷰 R5] **F1 하한 clamp(아래) 는 상한(`stage_cap`)으로 다시 씌운다.**
+        `RESCUE_STAGE_MIN_TIMEOUT_S >= stage_cap`(=`spring_search_timeout_s * attempts`)로
+        튜닝되면(기동 검증기가 이제 이 조합을 막는다 — `Settings.
+        _require_rescue_stage_min_timeout_below_search_budget` 참조) 하한 clamp 만 있는
+        코드는 "예산이 모자라 좁힌다"면서 안 좁힌 것보다 **더 큰** 값을 주입한다 — 좁히기의
+        취지와 정반대다. `stage_cap` 은 항상 양수(`spring_search_timeout_s > 0`,
+        `attempts >= 1`)이므로 이 상한 clamp 는 F1 의 "집행되는 예산이 음수/0 이 아니다"라는
+        성질과 양립한다(하한이 상한을 넘는 병적 설정은 기동 검증기가 별도로 막는다).
+        """
+        nonlocal rescue_stage_narrowed_timeout_ms, rescue_stage_skipped_budget
+        stage_cap = settings.spring_search_timeout_s * attempts
+        verdict, granted = _stage_budget(remaining_stages, attempts=attempts)
+        if verdict == "full":
+            return False, None
+        if verdict == "skip" and not allow_skip:
+            verdict = "narrow"  # 본검색은 절대 건너뛰지 않는다
+        # [리뷰 G1] 세 모드가 `rescue_stage_skipped_budget`/`rescue_stage_narrowed_timeout_ms` 에
+        # 기록하는 값: `narrow_skip` = 실제로 건너뜀(skipped_budget=True) / `observe` = 집행하지
+        # 않고 "skip 이었다면"의 반사실(skipped_budget=True) / `narrow` = skip 판정도 narrow 로
+        # 강등해 실제로 시도하므로 skipped_budget=False 로 남기고 clamp 된 하한값을
+        # narrowed_timeout_ms 에 남긴다(하한에 걸렸다는 신호).
+        if verdict == "skip":
+            if settings.rescue_budget_mode == "narrow_skip":
+                rescue_stage_skipped_budget = True
+                return True, None
+            if settings.rescue_budget_mode == "observe":
+                rescue_stage_skipped_budget = True
+                return False, None
+            # narrow 모드: skip 판정도 narrow 로 강등해 시도한다 — 아래 clamp 로 실제 집행.
+        elif settings.rescue_budget_mode == "observe":
+            # 반사실 — 집행하지 않되 "narrow 였다면 이랬을 값"을 clamp 후 남긴다.
+            # [리뷰 R5] 하한 clamp 뒤 상한(stage_cap)으로 다시 씌운다 — 안 좁힌 것보다 큰 값을
+            # "narrow 였다면 이랬을 값"이라고 반사실을 내면 그 자체로 모순이다.
+            ms = round(min(stage_cap, max(granted, settings.rescue_stage_min_timeout_s)) * 1000)
+            if rescue_stage_narrowed_timeout_ms is None or ms < rescue_stage_narrowed_timeout_ms:
+                rescue_stage_narrowed_timeout_ms = ms
+            return False, None
+        # 여기 도달하면 narrow 를 실제로 집행한다(verdict 는 원래 "narrow"이거나, allow_skip=True
+        # + narrow 모드로 강등 실행되는 "skip"이다) — [F1] 항상 최소 하한 이상으로 clamp 한다.
+        # [리뷰 R5] 하한 clamp 뒤 상한(stage_cap)으로 다시 씌운다 — 좁히기는 절대 안 좁힌
+        # 것보다 많이 주지 않는다(설정과 무관하게 항상 성립해야 하는 지역 불변식).
+        granted = min(stage_cap, max(granted, settings.rescue_stage_min_timeout_s))
+        ms = round(granted * 1000)
+        if rescue_stage_narrowed_timeout_ms is None or ms < rescue_stage_narrowed_timeout_ms:
+            rescue_stage_narrowed_timeout_ms = ms
+        return False, granted
+
     # [#51] keyword 드롭 판단은 **한 곳에서** 계산해 칩 표시(아래)와 leg 검색(_leg)이 같은 flag 를
     # 공유하게 한다 — 두 지점이 독립 판단하면 전제(leg 엔 항상 canonical)가 미래 리팩터에서 깨질 때
     # 표시-실제가 어긋날 수 있다(리뷰 반영). canonical category(= category_legs 존재) + config on 이면
@@ -549,6 +693,15 @@ async def stream_recommendation(
     suppress_deferred_search_retry = (
         may_auto_relax and not settings.search_retry_on_deferred_conditions
     )
+    # [PR #452 리뷰 R2] `_apply_stage_budget` 의 `attempts` 산출 — `spring_client.search_
+    # products` 의 `attempts = 1 if _search_retry_suppressed.get() else spring_max_retries +
+    # 1` 과 글자 그대로 같은 규칙이어야 한다(D7). 본검색·자동완화 probe 는
+    # `suppress_deferred_search_retry` 아래서만(`spring_client.suppress_search_retry()` 로
+    # 감싼 두 곳) 재시도를 끈다 — `_suppressed_search_attempts`. F-1/#343 재검색은 그 블록
+    # **밖**이라 항상 재시도한다(`config.py::_rescue_chain_serial_budget_s` 의 비대칭 모델과
+    # 동일) — `_full_retry_attempts`.
+    _full_retry_attempts = settings.spring_max_retries + 1
+    _suppressed_search_attempts = 1 if suppress_deferred_search_retry else _full_retry_attempts
     # [#393 A] 최종 payload 기준 최소 필터 가드 — **의도 판정이 아니라 payload 사실 판정**이다
     # ("이번 턴이 Spring 쿼리 파라미터 0개로 나가는가"만 본다). no_condition/underspecified 처럼
     # `prior is None`(첫 턴) 에 한정하지 않는다 — 그 둘은 "리파인/칩 제거/카테고리-무관 리셋"
@@ -796,7 +949,7 @@ async def stream_recommendation(
             profile_vec, exclude=profile_exclude, settings=settings
         )
         if profile_ranked is not None:
-            ranked_by_profile, profile_reason_by_id = profile_ranked
+            ranked_by_profile, profile_reason_by_id, profile_name_by_id = profile_ranked
             exposed = ranked_by_profile[: settings.expose_max]
             profile_entry = RecommendationListEntry(
                 list_id=uuid4().hex,
@@ -834,11 +987,34 @@ async def stream_recommendation(
                         list_ids=[profile_entry.list_id],
                     ).model_dump(by_alias=True),
                 )
-                # 담기 해소용 보관 — 이 경로는 **상품명을 모른다**(AI 인덱스에 원본 컬럼 없음).
-                # 빈 이름으로 넣어 id 기반 담기 가드(#118)는 살리고, 이름 지칭("그 이어폰")만
-                # 이 턴에서 해소되지 않는다.
+                # 담기 해소용 보관 — [#435] 이 경로도 이제 상품명을 싣는다(AI 인덱스에 원본
+                # 컬럼은 없지만, 임베딩 입력으로 이미 조립된 `search_doc` 첫 줄에서 최선노력
+                # 복원한다 — `no_condition.rank_by_profile` 참조). 추출 실패·노출 집합 내 중복
+                # (G2)이면 오늘처럼 빈 이름으로 degrade 하고, id 기반 담기 가드(#118)는 이름
+                # 유무와 무관하게 그대로 산다.
                 if cart_store is not None and thread_key is not None:
-                    await cart_store.set_last_reco(thread_key, [(pid, "") for pid in exposed])
+                    # [#435 리뷰 C1] G2 판정 범위를 이번 턴 노출 집합 → **스레드 누적 last_reco
+                    # 와의 합집합**으로 넓힌다. 이번 턴만 보면 못 잡는 경우가 남는다 — 이름 없는
+                    # 상품(name 미상)은 search_doc 첫 줄이 category 로 밀리는데(예: "생활용품"),
+                    # 턴 1 이 [101]→"생활용품"을 유일하게 저장하고 턴 3 이 [202]→"생활용품"도
+                    # 그 턴 안에서는 유일해 그대로 저장되면, 누적 `last_reco` 에 다른 productId
+                    # 둘이 같은 이름으로 남아 "생활용품 찜해줘"에 LLM 이 임의로 하나를 확정한다
+                    # (오확정). 누적 이름은 정상 경로(B, Spring 원본 이름)에서 온 것도 섞여 있어
+                    # 그쪽과 겹쳐도 같은 이유로 버린다 — 조회 실패는 이름 보강 없이 degrade한다
+                    # (선택 필드, §7 "실패해도 턴을 죽이지 않는다").
+                    try:
+                        accumulated_names = dict(await cart_store.get_last_reco(thread_key))
+                    except Exception as exc:  # noqa: BLE001 - 이름 보강 실패로 담기 흐름을 죽이지 않는다
+                        logger.warning(
+                            "profile_accumulated_names_failed", extra={"reason": str(exc)}
+                        )
+                        accumulated_names = {}
+                    exposed_names = dedup_exposed_names(
+                        exposed, profile_name_by_id, accumulated_names
+                    )
+                    await cart_store.set_last_reco(
+                        thread_key, [(pid, exposed_names.get(pid, "")) for pid in exposed]
+                    )
             else:
                 if trace := current_request_trace():
                     trace.mark_degraded("push_skipped")
@@ -1009,7 +1185,27 @@ async def stream_recommendation(
     # 미룬 턴은 첫 이벤트 앞 본 검색·자동 완화 probe만 재시도를 끈다(#277). conditions 뒤의
     # 완화 칩 probe는 첫 이벤트 예산 밖이라 제외하며, 이 with는 await 뒤 즉시 닫아 yield·다음
     # 턴으로 ContextVar가 새지 않게 한다. progress 이벤트가 계약에 생기면 이 스킵은 원복 가능하다.
-    with spring_client.suppress_search_retry() if suppress_deferred_search_retry else nullcontext():
+    # [#427 D4] 본검색 — 절대 건너뛰지 않는다(allow_skip=False). 남은 단 수는 본검색 자신(1) +
+    # 이 턴에 이론상 남은 구제 체인(rescue·auto_relax)이다.
+    # [PR #452 리뷰 R3] `_rescue_stage_counts.main` 은 이제 물리적 사실이라 항상 1 이다(#427
+    # D6 — 본검색은 `may_auto_relax` 와 무관하게 항상 돈다) — `max(..., 1)` 보정은 더 이상
+    # 필요 없다(옛 `_rescue_chain_stage_counts` 가 미룸 게이트로 조기 return 하던 시절의
+    # 방어였다). 그대로 두면 `RELAXATION_MAX_ROUNDS=0` 턴에서 F-1 몫을 셈에서 빠뜨린다.
+    # allow_skip=False 라 반환되는 skip 플래그는 항상 False — 버린다.
+    _, _main_narrow_budget = _apply_stage_budget(
+        _rescue_stage_counts.main + _rescue_stage_counts.rescue + _rescue_stage_counts.auto_relax,
+        allow_skip=False,
+        attempts=_suppressed_search_attempts,
+    )
+    _main_narrow_cm = (
+        spring_client.narrow_search_budget(_main_narrow_budget)
+        if _main_narrow_budget is not None
+        else nullcontext()
+    )
+    with (
+        spring_client.suppress_search_retry() if suppress_deferred_search_retry else nullcontext(),
+        _main_narrow_cm,
+    ):
         search_bundle, purchases = await asyncio.gather(
             _run_candidate_source(), _fetch_purchases_once()
         )
@@ -1099,23 +1295,40 @@ async def stream_recommendation(
             return None
 
     if decision.category_expanded and search_result.total_count == 0:
-        _f1_fallback_started_at = time.monotonic()
-        fallback_bundle = await _run_search_unfiltered()
-        _f1_fallback_elapsed_ms = round((time.monotonic() - _f1_fallback_started_at) * 1000)
-        rescue_elapsed_ms += _f1_fallback_elapsed_ms
-        if fallback_bundle is not None:
-            search_result, leg_of = fallback_bundle
-            # 무필터로 실제 되돌아갔으니 "중분류를 훑었다"는 확장 고지는 이제 거짓 고지다 —
-            # `decision.category_expanded` 자체는 건드리지 않는다(칩 억제는 그대로 유지해야
-            # 한다 — 실제로 안 쓴 확장 leg 8개를 카테고리 칩으로 보여주면 더 큰 거짓말이 된다).
-            category_expand_notice_suppressed = True
-            logger.info(
-                "category_expand_zero_fallback",
-                extra={
-                    "legs": len(decision.category_legs),
-                    "elapsed_ms": _f1_fallback_elapsed_ms,
-                },
+        # [#427 D4] F-1 구제 재검색 — 남은 단은 이 단(1) + 이 턴에 이론상 남은 자동완화 단.
+        # narrow_skip 모드에서만 실제로 건너뛴다(allow_skip=True).
+        # [PR #452 리뷰 R2] `suppress_search_retry()` 블록 밖이라 항상 재시도한다(위 주석
+        # 참조) — attempts=_full_retry_attempts.
+        _f1_skip, _f1_narrow_budget = _apply_stage_budget(
+            1 + _rescue_stage_counts.auto_relax, allow_skip=True, attempts=_full_retry_attempts
+        )
+        if _f1_skip:
+            logger.info("rescue_stage_skipped_budget", extra={"stage": "f1_fallback"})
+            fallback_bundle = None
+        else:
+            _f1_narrow_cm = (
+                spring_client.narrow_search_budget(_f1_narrow_budget)
+                if _f1_narrow_budget is not None
+                else nullcontext()
             )
+            _f1_fallback_started_at = time.monotonic()
+            with _f1_narrow_cm:
+                fallback_bundle = await _run_search_unfiltered()
+            _f1_fallback_elapsed_ms = round((time.monotonic() - _f1_fallback_started_at) * 1000)
+            rescue_elapsed_ms += _f1_fallback_elapsed_ms
+            if fallback_bundle is not None:
+                search_result, leg_of = fallback_bundle
+                # 무필터로 실제 되돌아갔으니 "중분류를 훑었다"는 확장 고지는 이제 거짓 고지다 —
+                # `decision.category_expanded` 자체는 건드리지 않는다(칩 억제는 그대로 유지해야
+                # 한다 — 실제로 안 쓴 확장 leg 8개를 카테고리 칩으로 보여주면 더 큰 거짓말이 된다).
+                category_expand_notice_suppressed = True
+                logger.info(
+                    "category_expand_zero_fallback",
+                    extra={
+                        "legs": len(decision.category_legs),
+                        "elapsed_ms": _f1_fallback_elapsed_ms,
+                    },
+                )
 
     # 최근 구매(윈도우·취소반품 필터) → exact 제외 + 소모품 카테고리 억제(결정 14-F).
     exclude_ids: set[int] = set()
@@ -1236,76 +1449,91 @@ async def stream_recommendation(
         and had_candidates
         and not category_expand_notice_suppressed
     ):
-        post_suppress_fallback_attempted = True
-        _post_suppress_fallback_started_at = time.monotonic()
-        fallback_bundle = await _run_search_unfiltered()
-        if fallback_bundle is not None:
-            refetched, _ = fallback_bundle  # leg_of 는 이 함수 계약상 항상 빈 dict
-            # [#363 R4] `_post_filter` 가 성공한 시점의 소요를 여기 잡아 두고, 아래 `finally`에서
-            # **정확히 1회만** `rescue_elapsed_ms`에 더한다 — `_post_filter` 성공 뒤(상태 대입·
-            # `logger.info`) 코드가 나중에 예외를 내도 이중 계상되지 않도록, try 본문 안에서
-            # 직접 누적하지 않는다.
-            _post_suppress_fallback_elapsed_ms: int | None = None
-            # 후보는 이미 0건으로 확정돼 있고 이 재판정은 구제라는 **부가 기능**이다 — 첫 번째
-            # `_post_filter(search_result)`(994행)와 달리 여기서 예외가 나도 후보 확정 자체는
-            # 이미 끝나 있어 raise 할 이유가 없다. 감싸지 않으면 재적용(`_post_filter` 자체는
-            # 이미 자기 예외를 삼키는 `_run_search_unfiltered` 와 달리 무방어라 이 try 의 주 보호
-            # 대상이다)이 실패한 순간 conditions 도 zero_result 안내도 없이 스트림이 죽는다 —
-            # `_probe`·relaxation 루프와 같은 "부가 기능 실패가 턴을 죽이지 않는다"(§7) 원칙.
-            try:
-                (
-                    refiltered,
-                    refiltered_suppressed_by_cat,
-                    refiltered_received,
-                    refiltered_had_candidates,
-                ) = _post_filter(refetched)
-                # [#363] 재검색 + `_post_filter` 재적용까지를 이 블록의 소요로 잰다 — 후속
-                # `_post_filter` 가 재검색 왕복만큼 무겁지 않다는 보장이 없어 왕복만 재면 과소
-                # 계상된다.
-                _post_suppress_fallback_elapsed_ms = round(
+        # [#427 D4] #343 억제-후 재판정 — F-1 과 상호배타(위 가드)이므로 "남은 단"은 F-1 과
+        # 같은 식(이 단(1) + 이 턴에 이론상 남은 자동완화 단)이다.
+        # [PR #452 리뷰 R2] F-1 과 같은 이유로 항상 재시도한다 — attempts=_full_retry_attempts.
+        _post_suppress_skip, _post_suppress_narrow_budget = _apply_stage_budget(
+            1 + _rescue_stage_counts.auto_relax, allow_skip=True, attempts=_full_retry_attempts
+        )
+        if _post_suppress_skip:
+            logger.info("rescue_stage_skipped_budget", extra={"stage": "post_suppress_fallback"})
+        else:
+            post_suppress_fallback_attempted = True
+            _post_suppress_narrow_cm = (
+                spring_client.narrow_search_budget(_post_suppress_narrow_budget)
+                if _post_suppress_narrow_budget is not None
+                else nullcontext()
+            )
+            _post_suppress_fallback_started_at = time.monotonic()
+            with _post_suppress_narrow_cm:
+                fallback_bundle = await _run_search_unfiltered()
+            if fallback_bundle is not None:
+                refetched, _ = fallback_bundle  # leg_of 는 이 함수 계약상 항상 빈 dict
+                # [#363 R4] `_post_filter` 가 성공한 시점의 소요를 여기 잡아 두고, 아래 `finally`에서
+                # **정확히 1회만** `rescue_elapsed_ms`에 더한다 — `_post_filter` 성공 뒤(상태 대입·
+                # `logger.info`) 코드가 나중에 예외를 내도 이중 계상되지 않도록, try 본문 안에서
+                # 직접 누적하지 않는다.
+                _post_suppress_fallback_elapsed_ms: int | None = None
+                # 후보는 이미 0건으로 확정돼 있고 이 재판정은 구제라는 **부가 기능**이다 — 첫 번째
+                # `_post_filter(search_result)`(994행)와 달리 여기서 예외가 나도 후보 확정 자체는
+                # 이미 끝나 있어 raise 할 이유가 없다. 감싸지 않으면 재적용(`_post_filter` 자체는
+                # 이미 자기 예외를 삼키는 `_run_search_unfiltered` 와 달리 무방어라 이 try 의 주 보호
+                # 대상이다)이 실패한 순간 conditions 도 zero_result 안내도 없이 스트림이 죽는다 —
+                # `_probe`·relaxation 루프와 같은 "부가 기능 실패가 턴을 죽이지 않는다"(§7) 원칙.
+                try:
+                    (
+                        refiltered,
+                        refiltered_suppressed_by_cat,
+                        refiltered_received,
+                        refiltered_had_candidates,
+                    ) = _post_filter(refetched)
+                    # [#363] 재검색 + `_post_filter` 재적용까지를 이 블록의 소요로 잰다 — 후속
+                    # `_post_filter` 가 재검색 왕복만큼 무겁지 않다는 보장이 없어 왕복만 재면 과소
+                    # 계상된다.
+                    _post_suppress_fallback_elapsed_ms = round(
+                        (time.monotonic() - _post_suppress_fallback_started_at) * 1000
+                    )
+                    if refiltered.products:
+                        result = refiltered
+                        suppressed_by_cat = refiltered_suppressed_by_cat
+                        received = refiltered_received
+                        had_candidates = refiltered_had_candidates
+                        candidates = result.products
+                        leg_of = {}  # leg 개념 없음 — 기존 F-1 과 동일 규약, split_by_need 자연 차단
+                        # 무필터로 실제 찾았으니 "중분류를 훑었다"는 확장 고지는 이제 거짓 고지다
+                        # (F-1 과 같은 원칙, 883행 참조). `decision.category_expanded` 자체는
+                        # 건드리지 않는다.
+                        category_expand_notice_suppressed = True
+                        logger.info(
+                            "category_expand_post_suppress_fallback",
+                            extra={
+                                "legs": len(decision.category_legs),
+                                "elapsed_ms": _post_suppress_fallback_elapsed_ms,
+                            },
+                        )
+                    # 재적용 후에도 0건이면 위에서 result·suppressed_by_cat·candidates 를 갱신하지
+                    # 않았으므로 원래(억제된) 상태가 그대로 유지된다 — 되돌리기 칩·안내 문구는 원래
+                    # 억제 기준으로 조립돼야 한다(재검색분으로 교체하면 안 된다).
+                except Exception as exc:  # noqa: BLE001 - 재판정 실패는 원래(억제된) 상태를 유지
+                    # CancelledError(BaseException)는 전파돼 협조적 취소가 보존된다.
+                    logger.warning(
+                        "category_expand_post_suppress_fallback_failed", extra={"reason": str(exc)}
+                    )
+                finally:
+                    # [#363 R4] 성공(사전 계산값 재사용) · `_post_filter` 자체 실패(여기서 재계산) ·
+                    # 성공 후 늦은 예외(사전 계산값 재사용, 재계산해 이중으로 재지 않는다) 세 경로 전부
+                    # 정확히 1회만 더한다.
+                    rescue_elapsed_ms += (
+                        _post_suppress_fallback_elapsed_ms
+                        if _post_suppress_fallback_elapsed_ms is not None
+                        else round((time.monotonic() - _post_suppress_fallback_started_at) * 1000)
+                    )
+            else:
+                # fallback_bundle 이 None(재검색 실패)이어도 같은 이유로 원래 상태를 그대로 둔다 —
+                # 시도 자체는 있었으니 [#363] 소요는 남긴다.
+                rescue_elapsed_ms += round(
                     (time.monotonic() - _post_suppress_fallback_started_at) * 1000
                 )
-                if refiltered.products:
-                    result = refiltered
-                    suppressed_by_cat = refiltered_suppressed_by_cat
-                    received = refiltered_received
-                    had_candidates = refiltered_had_candidates
-                    candidates = result.products
-                    leg_of = {}  # leg 개념 없음 — 기존 F-1 과 동일 규약, split_by_need 자연 차단
-                    # 무필터로 실제 찾았으니 "중분류를 훑었다"는 확장 고지는 이제 거짓 고지다
-                    # (F-1 과 같은 원칙, 883행 참조). `decision.category_expanded` 자체는
-                    # 건드리지 않는다.
-                    category_expand_notice_suppressed = True
-                    logger.info(
-                        "category_expand_post_suppress_fallback",
-                        extra={
-                            "legs": len(decision.category_legs),
-                            "elapsed_ms": _post_suppress_fallback_elapsed_ms,
-                        },
-                    )
-                # 재적용 후에도 0건이면 위에서 result·suppressed_by_cat·candidates 를 갱신하지
-                # 않았으므로 원래(억제된) 상태가 그대로 유지된다 — 되돌리기 칩·안내 문구는 원래
-                # 억제 기준으로 조립돼야 한다(재검색분으로 교체하면 안 된다).
-            except Exception as exc:  # noqa: BLE001 - 재판정 실패는 원래(억제된) 상태를 유지
-                # CancelledError(BaseException)는 전파돼 협조적 취소가 보존된다.
-                logger.warning(
-                    "category_expand_post_suppress_fallback_failed", extra={"reason": str(exc)}
-                )
-            finally:
-                # [#363 R4] 성공(사전 계산값 재사용) · `_post_filter` 자체 실패(여기서 재계산) ·
-                # 성공 후 늦은 예외(사전 계산값 재사용, 재계산해 이중으로 재지 않는다) 세 경로 전부
-                # 정확히 1회만 더한다.
-                rescue_elapsed_ms += (
-                    _post_suppress_fallback_elapsed_ms
-                    if _post_suppress_fallback_elapsed_ms is not None
-                    else round((time.monotonic() - _post_suppress_fallback_started_at) * 1000)
-                )
-        else:
-            # fallback_bundle 이 None(재검색 실패)이어도 같은 이유로 원래 상태를 그대로 둔다 —
-            # 시도 자체는 있었으니 [#363] 소요는 남긴다.
-            rescue_elapsed_ms += round(
-                (time.monotonic() - _post_suppress_fallback_started_at) * 1000
-            )
 
     # ── 0건/소량 조건 완화 (#113, api-spec §3.1 · SPEC-RECOMMEND-001 §6.6) ──
     # estCount 는 page-local 로 못 구한다 — priceMax·brand·color 는 Spring I-1 쿼리 파라미터라 탈락
@@ -1405,14 +1633,35 @@ async def stream_recommendation(
                 if rounds >= settings.relaxation_max_rounds:
                     break
                 rounds += 1
+                # [#427 D4·H4] 예산 판정을 (2)rounds+=1 과 (3)relaxing emit **사이**에 넣는다 —
+                # 예산 부족으로 이 라운드를 건너뛰면 relaxing 을 emit 하지 않는다(거짓 신호
+                # 금지). 남은 단 수는 이 단을 포함해 아직 남은 자동완화 라운드 수다.
+                _auto_relax_stages_left = max(_rescue_stage_counts.auto_relax - rounds + 1, 1)
+                # [PR #452 리뷰 R2] 본검색과 같은 억제 스코프(아래 `with` 가 같은 조건으로
+                # 감싼다) — attempts=_suppressed_search_attempts.
+                _relax_skip, _relax_narrow_budget = _apply_stage_budget(
+                    _auto_relax_stages_left, allow_skip=True, attempts=_suppressed_search_attempts
+                )
+                if _relax_skip:
+                    logger.info(
+                        "rescue_stage_skipped_budget",
+                        extra={"stage": "auto_relax", "round": rounds},
+                    )
+                    continue  # relaxing 을 emit 하지 않고 다음 후보로 — H4
                 if settings.progress_events_enabled and not relaxing_progress_emitted:
                     relaxing_progress_emitted = True
                     yield progress_frame("relaxing", settings.progress_relaxing_message)
+                _relax_narrow_cm = (
+                    spring_client.narrow_search_budget(_relax_narrow_budget)
+                    if _relax_narrow_budget is not None
+                    else nullcontext()
+                )
                 # conditions 전 자동 완화 probe까지만 억제한다. 아래 완화 칩 probe는 감싸지 않는다.
                 with (
                     spring_client.suppress_search_retry()
                     if suppress_deferred_search_retry
-                    else nullcontext()
+                    else nullcontext(),
+                    _relax_narrow_cm,
                 ):
                     outcome = await _probe(cand)
                 if outcome is None:
@@ -1612,6 +1861,13 @@ async def stream_recommendation(
                 # first-token 을 전혀 늦추지 않는다 — `recommend_pipeline`과 같은 근거로 여기도
                 # 싣는다(판정 시 True인 턴만 봐야 한다).
                 "may_auto_relax": may_auto_relax,
+                # [#427 D4·D7] 구제 체인 예산 판정 — 셋을 반드시 함께 싣는다. observe 모드
+                # (기본)에서는 narrowed/skipped 두 필드가 "집행했다면 이랬을 값"(반사실)이라,
+                # 이 필드(rescue_budget_mode)가 같은 줄에 없으면 읽는 사람이 실제로 좁혔다고
+                # 오해한다.
+                "rescue_stage_narrowed_timeout_ms": rescue_stage_narrowed_timeout_ms,
+                "rescue_stage_skipped_budget": rescue_stage_skipped_budget,
+                "rescue_budget_mode": settings.rescue_budget_mode,
             },
         )
         return
@@ -1970,6 +2226,10 @@ async def stream_recommendation(
             # [#363 R7] False면 conditions가 검색 이전에 이미 나가(545행) 위 소요가 first-token
             # 을 전혀 늦추지 않는다 — 이 필드 없이는 로그만으로 지연 여부를 가릴 수 없다.
             "may_auto_relax": may_auto_relax,
+            # [#427 D4·D7] 구제 체인 예산 판정 — `recommend_zero_result` 와 같은 반사실 규약.
+            "rescue_stage_narrowed_timeout_ms": rescue_stage_narrowed_timeout_ms,
+            "rescue_stage_skipped_budget": rescue_stage_skipped_budget,
+            "rescue_budget_mode": settings.rescue_budget_mode,
             # [#119] 회원/게스트 턴을 사후 분리해 깔때기(received·after_dedup)를 대조하기 위한
             # 조인 키. 개인화가 후보를 줄이면 회원 쪽 received 가 작게 나온다.
             "profile_present": bool(profile),
@@ -2300,8 +2560,18 @@ async def stream_recommendation(
         # push 실패로 카드가 노출되지 않았으면 저장하지 않아 "그거 담아줘"가 미노출 상품을 담지 않는다.
         if cart_store is not None and thread_key is not None:
             name_by_id = {p.product_id: p.name for p in candidates}
+            # I-1 옵션 힌트(이슈 #455) — 되물음 문구·자동 선택 정합 가드용. 이 경로만 실은 이유는
+            # SpringProduct 원본이 있는 유일한 push 경로라서다(프로필 랭킹 경로는 AI 인덱스라
+            # options/optionCount 가 없다 — 아래 힌트 없이 오늘 경로로 degrade).
+            option_hints = {
+                p.product_id: OptionHint(names=tuple(p.options or ()), total=p.option_count)
+                for p in candidates
+                if p.options or p.option_count is not None
+            }
             await cart_store.set_last_reco(
-                thread_key, [(pid, name_by_id.get(pid, "")) for pid in ranked_ids]
+                thread_key,
+                [(pid, name_by_id.get(pid, "")) for pid in ranked_ids],
+                option_hints=option_hints,
             )
     else:
         # push 실패 → products.ready 없음. rerank 코멘트가 "찾았다"고 했으니 목록 지연을 고지하고

@@ -345,6 +345,36 @@ AXES: tuple[AxisSpec, ...] = (
             "baselines/fast-2026-08-05-300-screen (이 축이 존재하지 않던 런)",
         ),
     ),
+    # [#386] 찜 목록 조회 축. `wishlist_view` intent 를 신설하면서 "보여줘" 계열이
+    # recommend·cart_view·wishlist_view 3파전이 됐다 — 새 규칙이 제 몫을 하는지(positive)와
+    # 남의 몫을 훔치지 않는지(noSteal)를 **갈라서** 센다. 한 숫자로 합치면 어느 쪽이 무너졌는지
+    # 알 수 없고, 이 이슈에서 무서운 것은 후자(기존 라우팅 회귀)다.
+    AxisSpec(
+        axis_id="wishlistViewPositive",
+        title="찜 조회 발화 → wishlist_view",
+        numerator='"내가 뭐 찜했지?"류 발화에서 intent == wishlist_view 인 표본 수',
+        denominator="찜 조회 양성 3발화 × none 컨텍스트 × N (N=8 이면 24)",
+        predicate=_intent_matches,
+        not_comparable_with=("커밋된 모든 기준선 (wishlist_view intent 자체가 없던 런)",),
+    ),
+    AxisSpec(
+        axis_id="wishlistViewNoSteal",
+        title="찜 조회 규칙이 남의 발화를 훔치지 않음",
+        numerator="음성 대조 발화에서 기대 intent(wishlist_view 가 **아닌** 값)와 일치한 표본 수 "
+        '— "보여줘" 단독은 recommend, "찜한 거 담아줘"는 cart_add, 부정 발화는 조회가 아니다',
+        denominator="찜 조회 음성 대조 3발화 × none 컨텍스트 × N (N=8 이면 24)",
+        predicate=_intent_matches,
+        not_comparable_with=("커밋된 모든 기준선 (wishlist_view intent 자체가 없던 런)",),
+    ),
+    AxisSpec(
+        axis_id="wishlistViewRouting",
+        title="찜 조회 라우팅 종합",
+        numerator="wishlistViewPositive·wishlistViewNoSteal 두 축의 합",
+        denominator="찜 조회 6발화 × none 컨텍스트 × N (N=8 이면 48)",
+        predicate=_intent_matches,
+        components=("wishlistViewPositive", "wishlistViewNoSteal"),
+        not_comparable_with=("커밋된 모든 기준선 (wishlist_view intent 자체가 없던 런)",),
+    ),
 )
 
 AXES_BY_ID = {spec.axis_id: spec for spec in AXES}

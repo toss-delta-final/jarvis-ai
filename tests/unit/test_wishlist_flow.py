@@ -1,8 +1,14 @@
 """찜 추가·해제 흐름 (이슈 #117, 패킷 §5.4) — `stream_wishlist_add`/`stream_wishlist_remove`
 대상 해소·오류 매핑·경로 B 가드·배선.
 
-Spring 이 아직 I-26/I-27/I-28 을 구현하지 않아 실호출 통합 테스트는 하지 않는다(상대가 없다).
-주입 fn 으로 단위 테스트한다(`test_cart_remove.py` 와 같은 패턴).
+주입 fn 으로 단위 테스트한다(`test_cart_remove.py` 와 같은 패턴) — 스트림 한 갈래를 그 갈래만
+태워 보는 데는 이게 가장 싸다.
+
+**[#386]** "Spring 이 아직 구현하지 않아 통합 테스트를 못 한다"는 이 파일의 옛 전제는 이제
+사실이 아니다(#436 실측 — BE main 에 I-26/I-27/I-28 구현됨). 찜 조회는
+`tests/integration/_stubs.py` 의 `GET /internal/wishlist` 라우트로 **실 HTTP 경계 e2e 도**
+갖췄다(`test_degrade_e2e.py`) — 여기 단위 테스트와 역할이 갈린다: 이 파일은 갈래별 판정을,
+저쪽은 어댑터·스트림·라우팅을 관통하는 경로를 잰다.
 """
 
 from __future__ import annotations
@@ -11,7 +17,11 @@ import json
 
 from app.agents.buyer.cart.graph import stream_cart_add
 from app.agents.buyer.cart.state import CartStateStore, PendingAdd
-from app.agents.buyer.cart.wishlist import stream_wishlist_add, stream_wishlist_remove
+from app.agents.buyer.cart.wishlist import (
+    stream_wishlist_add,
+    stream_wishlist_remove,
+    stream_wishlist_view,
+)
 from app.agents.buyer.recommendation.state import CartIntent
 from app.core.auth import Identity
 from app.core.config import get_settings
@@ -208,6 +218,35 @@ async def test_wishlist_add_unresolved_product_id_asks_and_skips_call() -> None:
     )
     assert _types(events) == ["token", "done"]
     assert not _actions(events)
+
+
+async def test_wishlist_add_unresolved_notice_is_byte_identical_without_last_reco() -> None:
+    """[#435 W4] `has_last_reco` 기본값(False)은 오늘 문구와 바이트 동일하다."""
+    events = await _collect(
+        stream_wishlist_add(
+            identity=_member(),
+            cart=CartIntent(product_id=None, quantity=1),
+            settings=get_settings(),
+        )
+    )
+    text = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert text == "어떤 상품을 찜할까요? 추천을 먼저 받아보시면 찜해 드릴게요."
+
+
+async def test_wishlist_add_unresolved_notice_mentions_naming_when_last_reco_present() -> None:
+    """[#435 W4] `has_last_reco=True` 면 "이미 추천을 받았다"는 사실을 반영한 문구로 바뀐다."""
+    events = await _collect(
+        stream_wishlist_add(
+            identity=_member(),
+            cart=CartIntent(product_id=None, quantity=1),
+            settings=get_settings(),
+            has_last_reco=True,
+        )
+    )
+    text = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert (
+        text == "어떤 상품을 찜할까요? 추천해 드린 상품 중에서 이름을 말씀해 주시면 찜해 드릴게요."
+    )
 
 
 async def test_wishlist_add_rejects_product_outside_allowed_ids() -> None:
@@ -1133,3 +1172,92 @@ async def test_stream_cart_add_delegates_to_wishlist_remove_clears_stale_pending
         )
     )
     assert await store.get_pending(thread_key) is None
+
+
+# ─────────── stream_wishlist_view (이슈 #386, I-28 §4.16) ───────────
+
+
+async def test_wishlist_view_guest_makes_zero_internal_calls() -> None:
+    """게스트 찜 목록 조회는 계약에 없다(회원 전용 I-26/I-27/I-28, M-4) — internal 호출 전에
+    로그인 안내로 끝낸다(api-spec §3.1 게스트 문단). `action` 은 내지 않는다."""
+
+    async def get_wishlist_fn(user_id):
+        raise AssertionError("게스트인데 get_wishlist_fn 이 호출됐다")
+
+    events = await _collect(
+        stream_wishlist_view(identity=_guest(), get_wishlist_fn=get_wishlist_fn)
+    )
+    assert _types(events) == ["token", "done"]
+    assert not _actions(events)
+    assert events[0]["data"]["text"] == "찜 목록 조회에는 로그인이 필요해요."
+
+
+async def test_wishlist_view_anon_makes_zero_internal_calls() -> None:
+    async def get_wishlist_fn(user_id):
+        raise AssertionError("익명인데 get_wishlist_fn 이 호출됐다")
+
+    events = await _collect(stream_wishlist_view(identity=_anon(), get_wishlist_fn=get_wishlist_fn))
+    assert _types(events) == ["token", "done"]
+    assert not _actions(events)
+
+
+async def test_wishlist_view_empty_is_guidance_not_error() -> None:
+    """0건은 오류가 아니다 — 기존 찜 해제 흐름과 같은 문구를 재사용한다."""
+    events = await _collect(stream_wishlist_view(identity=_member(), get_wishlist_fn=_wishlist()))
+    assert _types(events) == ["token", "done"]
+    assert events[0]["data"]["text"] == "찜한 상품이 없어요."
+
+
+async def test_wishlist_view_lists_names_with_purchase_state_labels() -> None:
+    """목록은 `token` 텍스트로만 답한다 — 상품 카드도 `action` 도 없다(경로 B, api-spec §4.16).
+
+    항목별 구매 가능 상태 라벨은 `state_suffix` 를 재사용한다(#310, 장바구니 조회와 같은 규칙).
+    다만 문단 끝 **행동 안내 문장**(`state_advice_lines`)은 붙이지 않는다 — 그 문구는 장바구니
+    어휘("다시 담을 수 있어요")이고, 예시로 드는 `'{품목} 빼줘'` 는 `intent_guard` 가 의도적으로
+    `cart_add` 로 떨어뜨리는 발화라(알려진 거짓음성) 답할 수 없는 안내가 된다.
+    """
+    items = (
+        WishlistItem(product_id=10, name="무선 이어폰", purchase_state="AVAILABLE"),
+        WishlistItem(product_id=20, name="가죽 크로스백", purchase_state="SOLD_OUT"),
+        WishlistItem(product_id=30, name="캠핑 랜턴", purchase_state="HIDDEN"),
+    )
+    events = await _collect(
+        stream_wishlist_view(identity=_member(), get_wishlist_fn=_wishlist(*items))
+    )
+    assert _types(events) == ["token", "done"]
+    assert not _actions(events)
+    text = events[0]["data"]["text"]
+    assert text == "찜한 상품이에요:\n무선 이어폰\n가죽 크로스백 (품절)\n캠핑 랜턴 (판매 종료)"
+    assert "다시 담을 수 있어요" not in text
+    assert "빼는 걸 추천" not in text
+
+
+async def test_wishlist_view_sanitizes_seller_supplied_names() -> None:
+    """상품명은 판매자 입력이라 반드시 `_strip_unsafe` 를 거친다(`remove.py` 와 같은 규약)."""
+    items = (WishlistItem(product_id=10, name="이어\n폰​", purchase_state="AVAILABLE"),)
+    events = await _collect(
+        stream_wishlist_view(identity=_member(), get_wishlist_fn=_wishlist(*items))
+    )
+    text = events[0]["data"]["text"]
+    assert "이어\n폰" not in text
+    assert "​" not in text
+
+
+async def test_wishlist_view_spring_unavailable_degrades_to_token_not_action() -> None:
+    """조회 실패는 `token` 안내 + 정상 `done` 이다 — `action` 을 내지 않는다.
+
+    `ActionData.type` 유니온(api-spec §3.1)에 조회 실패 어휘가 아예 없다. 형제
+    `stream_wishlist_remove` 가 `action(WISHLIST_REMOVE_FAILED)` 을 내는 것은 그쪽이 **변경 턴의
+    선행 조회**이기 때문이고, 이 턴은 상태를 바꾸지 않는다. 개별 처리하지 않으면 상위 스트림의
+    범용 catch-all 이 `error(INTERNAL)` 로 내보낸다(#368).
+    """
+
+    async def get_wishlist_fn(user_id):
+        raise SpringUnavailableError("wishlist down")
+
+    events = await _collect(
+        stream_wishlist_view(identity=_member(), get_wishlist_fn=get_wishlist_fn)
+    )
+    assert _types(events) == ["token", "done"]
+    assert not _actions(events)
+    assert events[0]["data"]["text"] == "찜 목록을 불러오지 못했어요. 잠시 후 다시 시도해 주세요."
