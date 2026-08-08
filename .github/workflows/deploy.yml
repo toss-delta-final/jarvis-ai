@@ -92,10 +92,10 @@ jobs:
             OPENAI_SMART_REASONING_EFFORT=${{ vars.OPENAI_SMART_REASONING_EFFORT }}
             APP_ENVIRONMENT=${{ vars.APP_ENVIRONMENT }}
             # [#258] 코드 기본값은 off(CI/로컬 DB 없는 환경 보호, 2026-08-08 CI hang 회귀).
-            # 운영에서 켜려면 두 저장소 변수(Settings → Variables 탭)를 반드시 "true" 로
-            # 등록해야 한다 — ⚠️ bool 필드라 빈 문자열은 기본값으로 폴백하지 않는다. 변수가
-            # 미등록인 채로 배포하면 빈 값이 들어가 pydantic bool 파싱 실패로 기동 자체가
-            # 죽는다(실측 확인: `Input should be a valid boolean ... input_value=''`).
+            # 운영에서 켜려면 두 저장소 변수(Settings → Variables 탭)를 "true" 로 등록한다.
+            # 미등록이면 빈 문자열이 들어가지만 기동은 죽지 않는다 —
+            # `_empty_color_synonym_gate_settings_use_default`(app/core/config.py, PR #447
+            # 리뷰)가 빈 값을 필드 기본값(off)으로 해석해 기능이 꺼진 채 정상 기동한다.
             COLOR_SYNONYM_EXPANSION_ENABLED=${{ vars.COLOR_SYNONYM_EXPANSION_ENABLED }}
             COLOR_SYNONYM_ARRAY_CONTRACT_READY=${{ vars.COLOR_SYNONYM_ARRAY_CONTRACT_READY }}
             # [2026-08-06] 클라이언트 IP 판별 — 도메인 전환 후 실측한 값이다.

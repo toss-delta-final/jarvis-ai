@@ -320,14 +320,32 @@ class Settings(BaseSettings):
     # 운영에서는 `.github/workflows/deploy.yml` 이
     # `COLOR_SYNONYM_EXPANSION_ENABLED`/`COLOR_SYNONYM_ARRAY_CONTRACT_READY` 를 `true` 로
     # 주입해 켠다. `color_synonym_array_contract_ready` 와 항상 함께 바꿔야 한다(기동 가드
-    # `_require_color_synonym_array_contract_gate`).
+    # `_require_color_synonym_array_contract_gate`). deploy.yml 은 이 두 값을 무조건 주입하므로
+    # 저장소 변수가 미등록이면 빈 문자열이 온다 — 아래
+    # `_empty_color_synonym_gate_settings_use_default` 가 그 빈 값을 필드 기본값(off)으로
+    # 해석해 기동이 죽지 않게 한다(PR #447 리뷰, `langsmith_trace_content` 폴백과 같은 관례).
     color_synonym_expansion_enabled: bool = False
     # 운영자가 api-spec §4.6의 `color: string[]` 개정과 이를 파싱하는 BE 배포 완료를 함께
     # 확인했다는 명시적 계약 게이트 — 위 근거(BE 배포·api-spec 동기화·운영 시드 적재)로
     # 2026-08-08 충족됐다. `color_synonym_expansion_enabled` 와 따로 값을 두면 기동 시점에
     # 거부한다. 코드 기본값은 위와 같은 이유(DB 없는 환경에서 연결 시도 누적 → CI hang)로
-    # off — 운영은 `deploy.yml` env 로 켠다.
+    # off — 운영은 `deploy.yml` env 로 켠다(미등록 시 빈 문자열 폴백은 위와 동일).
     color_synonym_array_contract_ready: bool = False
+
+    @field_validator(
+        "color_synonym_expansion_enabled", "color_synonym_array_contract_ready", mode="before"
+    )
+    @classmethod
+    def _empty_color_synonym_gate_settings_use_default(cls, value: object, info) -> object:
+        # deploy.yml 이 이 두 값을 무조건 주입하는데 저장소 변수가 미등록이면 빈 문자열이
+        # 온다 — bool 파싱 실패로 기동이 죽지 않게 빈 값은 필드 기본값(off)으로 해석한다
+        # (PR #447 리뷰, `_empty_trace_content_settings_use_default`(#326)와 같은 관례).
+        if isinstance(value, str) and value.strip() == "":
+            # Field 선언의 기본값을 그대로 참조한다 — 여기 값을 복제하면 선언만 바꿨을 때
+            # "미설정 → 빈 문자열" 경로가 조용히 어긋난다(PR #327 리뷰에서 지적된 함정).
+            return cls.model_fields[info.field_name].default
+        return value
+
     # 새 표기마다 임베딩 API+DB write가 I-17에 추가되고 테이블도 아직 미검수 상태이므로 기본 off.
     # 초기 검수 완료 뒤 운영 비용을 확인하고 켠다.
     color_synonym_batch_harvest_enabled: bool = False
