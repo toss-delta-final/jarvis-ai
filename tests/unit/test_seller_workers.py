@@ -274,14 +274,34 @@ def test_planner_prompt_covers_all_workers() -> None:
 
 
 def test_planner_prompt_period_vocabulary() -> None:
-    """기간 정규 어휘 4종 + 날짜 산수 금지(장치 ④) + 미지원 표현 되묻기(3-1 확정)."""
-    assert "지난달" in PLANNER_PROMPT
-    assert "최근 N일" in PLANNER_PROMPT
-    assert "어제" in PLANNER_PROMPT
-    assert "YYYY-MM-DD~YYYY-MM-DD" in PLANNER_PROMPT
-    assert "날짜를 직접 계산·추론하지 않는다" in PLANNER_PROMPT
-    assert "이번 달" in PLANNER_PROMPT  # 미지원 예시 명시 — 임의 변환 금지
+    """[#345] 기간 규약 — 원문 옮겨적기 + 날짜 산수 금지(장치 ④) + 표기 정규화 2종.
+
+    3-1 확정 당시에는 "정규 어휘 4종 외에는 clarification" 이었으나, P1 어휘 확장으로
+    **판정 자체가 코드로 넘어갔다**. planner 는 이제 어휘 목록을 알지 않는다.
+    """
+    assert "그대로 옮겨적는다" in PLANNER_PROMPT
+    assert "날짜를 계산·추론·환산하지 않는다" in PLANNER_PROMPT
+    assert "YYYY-MM-DD~YYYY-MM-DD" in PLANNER_PROMPT  # 표기 정규화 ①
+    assert "M월 D일~M월 D일" in PLANNER_PROMPT  # 표기 정규화 ② — 연도 없는 날짜
+    assert "최근" in PLANNER_PROMPT  # 기간 미언급 기본값
     assert "clarification" in PLANNER_PROMPT
+
+
+def test_planner_prompt_forbids_period_clarification() -> None:
+    """[#345] 기간 문구 소유권 — planner 는 기간을 이유로 되묻지 않는다(DESIGN §4.2).
+
+    이 문장이 사라지면 planner 가 다시 자기 clarification 을 써서, "예외 메시지가 곧
+    사용자 문구"라는 P0 보장이 조건부로 되돌아간다 — 되묻기 문구가 코드와 LLM 두 곳에서
+    나오던 #345 §3 의 상태다. 스키마 description(AnalysisPlan)과 한 쌍으로 지켜야 한다.
+    """
+    assert "기간을 이유로 clarification 을 쓰지 않는다" in PLANNER_PROMPT
+    assert "되묻기가 필요한지는 코드가 판단하고" in PLANNER_PROMPT
+
+    from app.agents.seller.schemas import AnalysisPlan
+
+    fields = AnalysisPlan.model_fields
+    assert "기간을 이유로 clarification 금지" in (fields["period_expr"].description or "")
+    assert "기간을 이유로는 쓰지 않는다" in (fields["clarification"].description or "")
 
 
 def test_planner_prompt_clarification_contract() -> None:
