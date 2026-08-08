@@ -132,7 +132,7 @@ async def test_first_token_timeout_returns_504(monkeypatch: pytest.MonkeyPatch) 
     s = get_settings()
     monkeypatch.setattr(s, "stream_first_token_timeout_s", 0.05)
 
-    async def slow():
+    async def slow(_turn_started_at=None):
         await asyncio.sleep(0.5)
         yield "data: x\n\n"
 
@@ -150,7 +150,7 @@ async def test_total_cap_truncates_with_done(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(s, "stream_total_timeout_s", 0.15)
     monkeypatch.setattr(s, "stream_disconnect_poll_s", 0.02)
 
-    async def slow():
+    async def slow(_turn_started_at=None):
         yield 'data: {"type":"token","data":{"text":"hi"}}\n\n'
         await asyncio.sleep(2.0)
         yield "data: never\n\n"
@@ -172,7 +172,7 @@ async def test_buyer_role_uses_buyer_total_cap(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(settings, "stream_total_timeout_s", 5.0)
     monkeypatch.setattr(settings, "stream_disconnect_poll_s", 0.01)
 
-    async def slow():
+    async def slow(_turn_started_at=None):
         yield 'data: {"type":"token","data":{"text":"hi"}}\n\n'
         await asyncio.sleep(1.0)
         yield "data: never\n\n"
@@ -199,7 +199,7 @@ async def test_non_buyer_role_keeps_stream_total_cap(
     monkeypatch.setattr(settings, "stream_total_timeout_s", 1.0)
     monkeypatch.setattr(settings, "stream_disconnect_poll_s", 0.01)
 
-    async def within_total_cap():
+    async def within_total_cap(_turn_started_at=None):
         yield 'data: {"type":"token","data":{"text":"hi"}}\n\n'
         await asyncio.sleep(0.1)
         yield "data: after-buyer-cap\n\n"
@@ -251,12 +251,17 @@ def test_buyer_stream_cap_cannot_be_shorter_than_first_token_cap() -> None:
             _env_file=None,
             stream_total_timeout_buyer_s=5.0,
             stream_first_token_timeout_s=10.0,
+            rescue_tail_reserve_s=0.0,
         )
 
+    # [#427] 기본 RESCUE_TAIL_RESERVE_S(15.0)는 STREAM_TOTAL_TIMEOUT_BUYER_S 보다 작아야
+    # 한다는 별개 검증기(_require_rescue_tail_reserve_within_buyer_cap)가 있다 — 이 경계
+    # 테스트는 그 값과 무관하게 first-token 경계만 겨누므로 0.0 으로 낮춰 무력화한다.
     Settings(
         _env_file=None,
         stream_total_timeout_buyer_s=10.0,
         stream_first_token_timeout_s=10.0,
+        rescue_tail_reserve_s=0.0,
     )
 
 
@@ -295,7 +300,7 @@ async def test_disconnect_before_first_token_releases_fast(monkeypatch: pytest.M
     monkeypatch.setattr(s, "stream_first_token_timeout_s", 5.0)
     monkeypatch.setattr(s, "stream_disconnect_poll_s", 0.02)
 
-    async def slow_first():
+    async def slow_first(_turn_started_at=None):
         await asyncio.sleep(2.0)  # 첫 이벤트 전 지연
         yield "data: never\n\n"
 
@@ -308,7 +313,7 @@ async def test_disconnect_before_first_token_releases_fast(monkeypatch: pytest.M
 async def test_in_stream_error_emits_error_event() -> None:
     """첫 이벤트 후 상류 예외는 in-stream error(INTERNAL) 프레임으로 마무리한다(§2.9 c/§3.1)."""
 
-    async def boom_after_first():
+    async def boom_after_first(_turn_started_at=None):
         yield 'data: {"type":"token","data":{"text":"hi"}}\n\n'
         raise RuntimeError("mid-stream boom")
 
@@ -330,7 +335,7 @@ async def test_in_stream_error_emits_error_event() -> None:
 async def test_first_frame_error_releases_registry() -> None:
     """첫 프레임 전 상류 오류(비-타임아웃) 시에도 레지스트리를 해제한다(§409 누수 방지)."""
 
-    async def boom():
+    async def boom(_turn_started_at=None):
         raise RuntimeError("upstream boom")
         yield  # pragma: no cover - 도달 불가
 
@@ -346,7 +351,7 @@ async def test_disconnect_cancels_stream(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setattr(s, "stream_total_timeout_s", 5.0)
     monkeypatch.setattr(s, "stream_disconnect_poll_s", 0.02)
 
-    async def slow():
+    async def slow(_turn_started_at=None):
         yield "data: first\n\n"
         await asyncio.sleep(2.0)
         yield "data: never\n\n"

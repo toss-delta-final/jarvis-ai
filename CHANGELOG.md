@@ -31,6 +31,17 @@
   별개 경로다. `color_synonym_expansion_enabled`/`color_synonym_array_contract_ready` 기본값
   (둘 다 `False`)과 I-1 질의 확장 배선(#273 기 반영)은 변경하지 않는다 — 런타임 동작 변화는
   이 PR 의 범위 밖이다.
+- **#427 — 검색 타임아웃을 턴 예산에서 파생시킨다(DESIGN-SHARED-BUDGET-384 §3 D1~D8)** — 고정
+  3s 검색 타임아웃이 성공했을 검색을 실패로 바꾸는 문제를, I-1 검색 전용 타임아웃
+  (`SPRING_SEARCH_TIMEOUT_S`, 기본 3.0 — 오늘 값 불변)을 AI→Spring 공용 타임아웃에서 분리하고,
+  구제 체인(F-1/#343/자동완화 probe)이 스트림 시작 시각(`open_stream` 의 실제 데드라인과 같은
+  원점)에서 파생한 잔여 예산으로 검색 타임아웃을 좁히거나(`RESCUE_BUDGET_MODE=narrow`) 최소
+  하한 미만이면 건너뛰는(`narrow_skip`, 본검색 제외) 3단 스위치로 푼다. 기본값은 `observe`
+  (판정만 계산·로그, 실제 집행 없음 — 오늘 동작 불변)이며, 기동 검증기(`_require_search_retry_
+  within_stream_budget`)와 런타임 좁히기가 같은 계수 함수(`_rescue_chain_stage_counts`/
+  `_rescue_chain_serial_budget_s`)에서 계수를 얻어 한쪽만 고쳐지는 드리프트를 구조적으로
+  막는다. 계약 무변경 — `docs/api-spec.md` 는 건드리지 않았다(§2.9(c) 개정은 별도 사람 승인
+  게이트).
 - **#455 — I-1 `options`·`optionCount` 소비로 옵션 되물음 단축(api-spec §4.6·§4.1, v0.28.3)** —
   사용자가 이번 발화에서 말한 조건으로 `CART_OPTION_REQUIRED` 후보가 정확히 1개로 좁혀지면
   되묻지 않고 같은 턴에 담고, 여러 개로만 좁혀지면 좁힌 목록으로 되묻는다(`optionId`는 여전히
