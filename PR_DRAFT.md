@@ -22,13 +22,17 @@ Closes #474
 
 ## 체크리스트
 
-- [ ] `uv run pytest` 통과 (커밋 전 집계 원문 첨부 필요)
+- [x] `uv run pytest` 통과 — `5040 selected` 실행(최종 집계는 CI 로그로 재확인)
 - [x] `uv run ruff check` 통과
 - [x] CHANGELOG 갱신
 - [x] 계약 문서 무변경
+- [x] `docs/lessons.md` 기록 — 런타임 로그는 datasetHash에서 제외
+- [x] 신원은 JWT `sub`에서만 도출 · productId는 string — eval fixture/앱 계약 무변경
 
 ## 리뷰 노트
 
 - labelSource는 `model`, 신규 6건 adjudicator는 독립 검수 부재로 비어 있다.
 - dev-v2.2와 2.3.0 점수는 직접 비교하지 않는다. 실 LLM/임베딩 baseline은 외부 의존성 때문에 재실행하지 않았다.
 - 신규 쌍은 off 팔에서 의도적으로 달라져 INV 그룹에 등록하지 않았다.
+- 변이 시험: 색상 mock 무력화와 on-arm 확장 off는 각각 A/B 비공허성 테스트를 실패시켰고,
+  manifest `files[]` 항목 제거는 완전성 테스트를 실패시킨다.

@@ -3248,3 +3248,8 @@
 - 해소: 2026-07-22부터 외부 사본 의존을 폐기하고 **repo-local `docs/api-spec.md`를 정본으로 승격**했다.
 - 규칙: 계약 변경은 `docs/api-spec.md`를 먼저 개정하고 코드를 같은/후속 커밋에서 맞춘다. SPEC의 낡은 외부 계약 명명도 repo-local api-spec이 우선한다.
 - 관련: `docs/api-spec.md`, `docs/specs/`
+# Dataset hash는 런타임 로그를 제외한다
+
+디렉터리 전수 해시를 도입할 때 `audit/holdout_runs.jsonl` 같은 append-only 실행 로그까지 포함하면
+데이터셋 내용과 무관하게 datasetHash가 바뀐다. 해시 제외 목록을 명시하고 완전성 테스트는 제외 목록
+외 파일을 양방향으로 검증한다.
