@@ -207,7 +207,12 @@ async def load_pending(context: SellerContext, thread_id: str) -> PendingPeriod 
         return None
 
     ttl = timedelta(minutes=get_settings().seller_period_confirm_ttl_minutes)
-    if datetime.now(UTC) - pending.created_at > ttl:
+    # 경계는 **포함**이다(>=). ttl=0 은 "즉시 만료" 로 읽는 것이 맞고, 엄격 부등호로 두면
+    # 판정이 시계 분해능에 걸린다 — Windows 의 기본 시스템 타이머 틱(~15.6ms)에서는
+    # 저장→조회가 같은 틱 안에 끝나 delta 가 정확히 0 이 되고, ttl=0 인데도 만료가 아니게
+    # 된다(리눅스 CI 는 µs 분해능이라 늘 통과해 이 차이가 안 보인다). 운영 TTL(10분)에서는
+    # 두 부등호가 같은 결과이므로 잃는 것이 없다.
+    if datetime.now(UTC) - pending.created_at >= ttl:
         await clear_pending(context, thread_id)
         return None
     return pending
