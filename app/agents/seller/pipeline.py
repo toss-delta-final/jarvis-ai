@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import get_args
 
-from app.agents.seller import calc
+from app.agents.seller import period as seller_period
 from app.agents.seller.schemas import (
     AnalysisFinding,
     AnalysisPlan,
@@ -39,12 +39,22 @@ class ResolvedPlan:
 
     analyses 는 tuple(불변) — AnalysisPlan validator 가 중복을 제거했고
     순서는 팬아웃에서 무의미하지만 진행 token 방출 순서로는 쓰인다.
+
+    [#345] period 3필드는 확인 흐름(DESIGN-SELLER-PERIOD §5)용 확장이다.
+    needs_confirmation 이 True 면 코드가 값을 보충한 해석이라 실행 전에 판매자
+    확인을 받는다 — 확인 대기에 이 ResolvedPlan 을 통째로 저장했다가 승인 시
+    그대로 재개하므로 planner 재호출이 0회가 된다(#269 완료 조건).
+    신규 필드는 전부 default 있는 keyword 로만 추가한다(frozen dataclass —
+    기존 생성부·픽스처의 positional 호환 유지, PipelineResult 와 같은 규약).
     """
 
     analyses: tuple[AnalysisType, ...]
     date_from: date
     date_to: date
     wants_chart: bool = False
+    needs_confirmation: bool = False
+    period_expr: str = ""
+    period_clipped: bool = False
 
 
 def resolve_plan(
@@ -58,12 +68,15 @@ def resolve_plan(
     """AnalysisPlan(LLM) → ResolvedPlan(코드) — 불성립은 전부 ValueError.
 
     - plan.clarification 이 있으면 계획 불성립: 되묻기 질문을 그대로 ValueError
-      메시지로 올린다(호출부가 token 으로 전달).
+      메시지로 올린다(호출부가 token 으로 전달). [#345] planner 는 **기간을 이유로**
+      clarification 을 쓰지 않는다 — 기간 문구의 소유자는 period.py 하나다
+      (PLANNER_PROMPT `[기간]` 절 + AnalysisPlan.period_expr description).
+      여기 남는 clarification 은 "어떤 분석을 원하는지 모를 때" 뿐이다.
     - analyses 가 비면 planner 오류로 간주하고 되묻기 처리.
-    - 기간 환산은 calc.normalize_period 소관 — 미지원 표현("이번 달"·"최근 3개월" 등)의
+    - 기간 환산은 period.resolve_period 소관 — 해석 불가 표현("작년 여름" 등)의
       ValueError 도 그대로 전파된다. 그 메시지는 판매자에게 그대로 노출되므로
-      calc 쪽에서 안내문 형태로 쓴다(#269).
-    - max_days 미지정이면 calc 이 Settings 에서 읽는다 — 상한 초과는 되묻기다.
+      period 쪽에서 안내문 형태로 쓴다(#269 P0 계약 승계).
+    - max_days 미지정이면 period 가 Settings 에서 읽는다 — 상한 초과는 되묻기다.
     - wants_chart = plan.wants_chart OR _CHART_RE(question) — LLM 판정과 코드
       키워드 검사의 OR(이슈 #242). question 은 키워드 기본값(""라 매칭 안 됨)
       이라 기존 호출부(question 미전달)는 LLM 판정만 반영해 하위 호환된다.
@@ -74,7 +87,7 @@ def resolve_plan(
         raise ValueError(
             "어떤 분석을 원하시는지 파악하지 못했습니다. 조금 더 구체적으로 알려주세요."
         )
-    date_from, date_to = calc.normalize_period(
+    resolution = seller_period.resolve_period(
         plan.period_expr,
         today=today,
         recent_default_days=recent_default_days,
@@ -83,9 +96,29 @@ def resolve_plan(
     wants_chart = plan.wants_chart or bool(_CHART_RE.search(question))
     return ResolvedPlan(
         analyses=tuple(plan.analyses),
-        date_from=date_from,
-        date_to=date_to,
+        date_from=resolution.date_from,
+        date_to=resolution.date_to,
         wants_chart=wants_chart,
+        needs_confirmation=resolution.needs_confirmation,
+        period_expr=resolution.expr,
+        period_clipped=resolution.clipped,
+    )
+
+
+def period_confirmation_text(plan: ResolvedPlan) -> str:
+    """확인 대기 문구 — 문구 생성은 period.py 소관이고 여기는 어댑터다(§4.2).
+
+    ResolvedPlan 은 확인 대기 저장·재개의 단위(DESIGN §6)라 PeriodResolution 을
+    따로 들고 다니지 않는다. 대신 필요한 3필드를 되돌려 문구를 만든다.
+    """
+    return seller_period.confirmation_text(
+        seller_period.PeriodResolution(
+            date_from=plan.date_from,
+            date_to=plan.date_to,
+            needs_confirmation=True,
+            expr=plan.period_expr,
+            clipped=plan.period_clipped,
+        )
     )
 
 
