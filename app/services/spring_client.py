@@ -121,6 +121,15 @@ _background_synonym_tasks: set[asyncio.Task[dict[str, list[str]]]] = set()
 # ContextVar로 SpringSearchBackend·EmbeddingRerankBackend·VectorSearchBackend와 search_catalog
 # 시그니처를 바꾸지 않고 호출 구간만 표시한다. gather 자식 태스크는 생성 시 컨텍스트를 복사한다.
 _search_retry_suppressed: ContextVar[bool] = ContextVar("search_retry_suppressed", default=False)
+# [#427, DESIGN-SHARED-BUDGET-384 §3 D3] 구제 체인 런타임 좁히기가 `search_products` 의 총시간
+# 예산(`budget_s`)을 잔여값으로 주입하는 통로 — `suppress_search_retry` 와 **정확히 같은 이유로**
+# ContextVar 다: 좁힌 값의 전달은 `graph.py → search_catalog → SearchBackend →
+# spring_client.search_products` 로 함수 경계를 넘어야 하고(D3 이 `rescue_deadline` 자체의
+# ContextVar 승격은 기각했다 — 그건 graph 로컬 판단이라서다), `SearchBackend` Protocol·
+# `search_catalog` 시그니처·테스트 fake 를 건드리지 않는 것이 이 선택의 실익이다.
+_search_budget_override: ContextVar[float | None] = ContextVar(
+    "search_budget_override", default=None
+)
 
 
 class SearchBudgetExceeded(TimeoutError):
@@ -181,6 +190,23 @@ def suppress_search_retry() -> Iterator[None]:
         yield
     finally:
         _search_retry_suppressed.reset(token)
+
+
+@contextmanager
+def narrow_search_budget(budget_s: float) -> Iterator[None]:
+    """현재 호출 컨텍스트의 I-1 검색 총시간 예산을 `budget_s` 로 좁힌다 (#427 D3·D4).
+
+    `search_products` 의 `asyncio.wait_for(..., timeout=budget_s)` 가 쓰는 총시간(재시도 포함)
+    상한을 override 한다 — httpx 스칼라 타임아웃은 손대지 않는다(`wait_for` 가 총시간을 이미
+    집행한다, #132). `suppress_search_retry` 와 **동일한 누수 방지 규율**을 따른다: 이 `with`
+    블록은 `await` 직후 즉시 닫아야 한다 — `yield` 를 그 안에 두면 다음 턴으로 ContextVar 가
+    샌다.
+    """
+    token = _search_budget_override.set(budget_s)
+    try:
+        yield
+    finally:
+        _search_budget_override.reset(token)
 
 
 def _color_synonym_limiter(dsn: str, max_concurrency: int) -> threading.BoundedSemaphore:
@@ -481,11 +507,16 @@ class OrderInvalidTransition(Exception):
     활성 클레임 포함) · 발송 후 역전이 일체 · MVP 미허용 전이."""
 
 
-def _client() -> httpx.AsyncClient:
+def _client(*, timeout: float | None = None) -> httpx.AsyncClient:
     """공용 httpx.AsyncClient 팩토리. base_url·서비스 토큰은 설정에서 주입한다.
 
     타임아웃 3s — api-spec §2.9 c (AI→Spring 콜백 통일 기준). 초과 시 각 계약의
     degrade 규칙 적용(조회 생략·담기 CART_ERROR·dedup 생략 등).
+
+    [#427] `timeout` 이 None 이면 종전대로 `settings.spring_timeout_s` 를 쓴다 — **`search_
+    products` 호출부만** 검색 전용 타임아웃(`settings.spring_search_timeout_s`)을 넘긴다. 다른
+    호출부(I-2 담기·I-3 인기·I-18/I-19 조회·I-21 push·판매자 레인)는 손대지 않는다(#394 가
+    기각된 "스칼라 하나를 공유해 전 구간이 함께 늘어난다" 실패 모드를 되풀이하지 않는다).
     """
     settings = get_settings()
     headers = (
@@ -493,7 +524,7 @@ def _client() -> httpx.AsyncClient:
     )
     return httpx.AsyncClient(
         base_url=settings.spring_base_url,
-        timeout=settings.spring_timeout_s,
+        timeout=timeout if timeout is not None else settings.spring_timeout_s,
         headers=headers,
     )
 
@@ -759,23 +790,29 @@ async def search_products(filters: ProductSearchFilters) -> ProductSearchResult:
             _log.warning("색상 동의어 확장 실패 — 원문 단수 color로 검색", exc_info=True)
     params = _search_query_params(filters, color_values=color_values)
     attempts = 1 if _search_retry_suppressed.get() else settings.spring_max_retries + 1
-    # [#132] 검색 1회의 **총시간** 상한. `spring_timeout_s` 는 httpx 에 스칼라로 주입돼
+    # [#132] 검색 1회의 **총시간** 상한. `spring_search_timeout_s` 는 httpx 에 스칼라로 주입돼
     # connect/read/write/pool 네 시계가 되는데 `read` 는 **청크 사이 간격** 상한이라, 바디가
     # 끊기지 않고 계속 오면 한 번도 물리지 않는다 — `size` 제거(전량 반환, §4.6)로 바디가 커진
-    # 뒤로는 "3s 안에 끝난다"가 보장이 아니다. config 는 이미 `spring_timeout_s × (재시도+1)` 을
-    # 검색 예산으로 **가정**하고 스트림 상한을 기동 검증하는데, 그 가정을 집행하는 코드가
-    # 없었다. 새 튜너블을 만들지 않고 같은 식을 쓴다 — 검증과 집행이 갈라지면 한쪽만 고쳐
-    # 놓고 지켜진다고 믿게 된다.
+    # 뒤로는 "3s 안에 끝난다"가 보장이 아니다. config 는 이미 `spring_search_timeout_s ×
+    # (재시도+1)` 을 검색 예산으로 **가정**하고 스트림 상한을 기동 검증하는데, 그 가정을
+    # 집행하는 코드가 없었다. 새 튜너블을 만들지 않고 같은 식을 쓴다 — 검증과 집행이 갈라지면
+    # 한쪽만 고쳐 놓고 지켜진다고 믿게 된다.
     # [#277 병합] 곱하는 값은 상수가 아니라 **실제 시도 수**(`attempts`)다 — 재시도를 끈 턴
     # (`suppress_search_retry`, 미룬 conditions 가 first-token 예산을 쓰는 경로)은 예산도 1회분으로
     # 함께 좁아져야 한다. `spring_max_retries + 1` 을 그대로 쓰면 억제한 턴이 억제 안 한 턴과
     # 같은 상한을 갖게 돼 #277 이 아낀 예산을 이 가드가 도로 늘려 준다.
-    budget_s = settings.spring_timeout_s * attempts
+    # [#427, DESIGN-SHARED-BUDGET-384 §3 D4] `narrow_search_budget()` 로 잔여 예산이 주입돼
+    # 있으면(구제 체인 좁히기) 그 값을 **총시간(재시도 포함)의 상한**으로 쓴다 — 재시도 루프는
+    # 그 안에서 돈다. 주입이 없으면(오늘 기본 `observe` 모드·비-검색 단계) 종전대로 계산한다.
+    override = _search_budget_override.get()
+    budget_s = override if override is not None else settings.spring_search_timeout_s * attempts
 
     async def _fetch_and_parse(span: TraceNode | None) -> ProductSearchResult:
         for attempt in range(1, attempts + 1):
             try:
-                async with _client() as client:
+                # [#427] search_products 만 검색 전용 타임아웃을 넘긴다 — 다른 호출부는
+                # 손대지 않는다(`_client` docstring 참조).
+                async with _client(timeout=settings.spring_search_timeout_s) as client:
                     resp = await client.get("/internal/products/search", params=params)
                     _record_spring_status(span, resp)
                     resp.raise_for_status()
@@ -1564,12 +1601,20 @@ class SpringClient:
 
     async def get_account_events(
         self,
+        brand_id: int,
         from_: str,
         to: str,
         event_type: str | None = None,
         group_by: str | None = None,
     ) -> AccountEventsResult:
-        """I-8 계정/보안 이벤트 집계 조회 (§4.4). ⚠️ brandId path 없음 — 전역·admin 소유 🔴.
+        """I-8 계정 이벤트 집계 조회 (§4.4) — 자사 코호트 스코프.
+
+        [#481, 노션 2026-08-06 개정] 전역 `/internal/account-events` →
+        `/internal/seller/{brandId}/account-events` 전환. admin 부재로 판매자
+        워커가 자사와 무관한 플랫폼 전체 신호를 소비하던 문제를 자사 코호트
+        (I-16 churn 과 동일 조인)로 해소했다 — 전역 구경로는 admin 용으로 BE 존치.
+        미존재 brandId 는 404 BRAND_NOT_FOUND(다른 판매자 집계 API 와 동일) —
+        전용 매핑 없이 SpringUnavailableError 로 degrade 한다(I-6·I-16 과 동일 취급).
 
         [#197] from/to 는 필수다(AnalysisPeriod.of — 누락 시 400 INVALID_PERIOD).
         groupBy 는 BE 화이트리스트 eventType(기본)|hour|ip 만 허용 — 그 외 400
@@ -1582,7 +1627,7 @@ class SpringClient:
             params["groupBy"] = group_by
         data = await self._request(
             "GET",
-            "/internal/account-events",
+            f"/internal/seller/{brand_id}/account-events",
             operation="get_account_events",
             params=params,
         )

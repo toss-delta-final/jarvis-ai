@@ -99,3 +99,121 @@ collation 무관한 codepoint 지문을 **추가**해 정본과 대조한다(`di
 5. **`category_distance_max` 재검토** — 재측정 결과로 임계를 다시 정할지 판단한다
    (`app/core/config.py` 해당 필드 주석에 재튜닝 조건이 적혀 있다). 이 이슈(#401) 자체는
    임계값을 바꾸지 않는다 — 근거 사전을 repo 로 편입할 뿐이다.
+
+---
+
+# 색상 동의어 사전 시드 (이슈 #258)
+
+I-1 색상 질의 확장(§4.6 제안, `docs/specs/PROPOSAL-I1-COLOR-ARRAY-258.md`)이 근거로 삼는
+색상 표기 동의어 사전의 정본과 적재 절차. 오프라인 구축 파이프라인(`app.pipelines.
+color_synonym_seed.build`, I-17 수확 → LLM 배정 → 검증)이 만든 검수 큐를 사람이 1차 검수한
+결과를 repo 에 고정한다.
+
+## 무엇이 정본인가
+
+정본은 **두 파일**로 나뉜다 — 하나는 손으로 유지하고, 하나는 그로부터 파생된다.
+
+- **`color_synonyms_review.json`**(사람이 유지) — 1차 검수 결과. `approved`(승인, `{term,
+  canonical, note}`)와 `rejected`(반려, `{term, note}`) 두 배열만 담는다. 지금은 46행이
+  승인됐고(`db/catalog/seed/color_synonyms.json` 의 789행 중), `rejected` 는 비어 있지만
+  스키마는 지원한다 — 향후 명백히 색상이 아닌 표기(오·탈자, 상품명 파편 등)를 사람이 반려로
+  확정할 때 쓴다.
+- **`color_synonyms.json`**(생성물, 789행) — `scripts/derive_color_synonym_seed.py` 가
+  라이브 pg-catalog `color_synonyms` 테이블(기계 산출: term/canonical/provenance/doc_count)
+  위에 `color_synonyms_review.json` 오버레이를 적용해 만든다. 각 행은 `term` / `canonical`
+  (nullable) / `status`(`approved`\|`pending_review`\|`rejected`) / `provenance` / `doc_count`.
+  **손으로 고치지 마라** — 재생성한다.
+
+**임베딩 벡터는 커밋하지 않는다.** 카테고리 사전(위 §)과 같은 이유 — 임베딩 모델이 바뀌면
+정본 자체를 재생성해야 하고, API 키 없이는 정본을 검증할 수도 없어진다.
+
+**원천 I-17(Spring) 은 현재(2026-08-07 실측, `scripts/check_spring_connection.py`) 도달
+불가**다. 재수확이 불가능하므로 라이브 pg-catalog `color_synonyms` 가 사실상 유일한 사본이고,
+그래서 이 시드는 카테고리 사전(위 §, MariaDB 덤프 파일 파싱)과 달리 **라이브 DB 에서 직접**
+파생한다.
+
+## 파생 절차
+
+```bash
+uv run python scripts/derive_color_synonym_seed.py [--dsn postgresql://...]
+# 커밋본과 같은지만 확인(쓰지 않음, 비0 종료 시 실패):
+uv run python scripts/derive_color_synonym_seed.py --check
+```
+
+`--dsn` 미지정 시 `app.core.config.get_settings().catalog_db_url`(기본
+`postgresql://jarvis:jarvis@localhost:5433/catalog`)을 쓴다. 스크립트는 오버레이 내부
+정합성(중복·교집합) → 하네스트 대비 존재성(`term`·`canonical` 이 수확 집합에 있는지) → 의미
+규칙(고아 승인 금지·2단계 체인/순환 금지·`_norm` 충돌 없음·오버레이가 DB 의 과거 사람 검수
+산출물(`provenance='human'`)을 전부 덮는지) 순으로 검증하고, 위반 시 어디가 문제인지 사람이
+읽을 수 있는 메시지로 실패한다(조용히 무시하지 않는다).
+
+**DB 를 잃었을 때도 재파생할 수 있다.** 이 시드가 존재하는 이유 자체가 "라이브 DB 를 날리면
+I-17 재수확이 불가능하다"는 것이므로, 재파생 절차가 라이브 DB 만 전제하면 정작 DB 를 잃은
+순간 오버레이를 고쳐도 재파생할 방법이 없다는 모순이 생긴다. 복원 경로는:
+
+```bash
+docker exec -i jarvis-ai-pg-catalog-1 psql -U jarvis -d catalog < db/catalog/init/05_color_synonyms_seed.sql
+uv run python scripts/derive_color_synonym_seed.py --check
+```
+
+이 왕복은 **바이트 안정**이다 — 복원된 `color_synonyms` 는 승인 46행이 `status='approved',
+provenance='human'` 그대로 다시 들어오지만, 오버레이가 그 46개 term 을 전부 덮고 있어
+재파생 결과 정본은 복원 전과 완전히 동일하다(실측 확인: 임시 DB 에 적재 → 재파생 →
+커밋본과 바이트 동일). 이 안정성은 **오버레이가 DB 의 human 행을 빠짐없이 덮는다**는 전제
+위에 서 있고, 그 전제는 위 검증(오버레이 누락 시 실패)이 기동 시점이 아니라 파생 시점에
+강제한다 — 검수를 철회하고 싶다면 오버레이에서 조용히 지우는 게 아니라 그 term 을
+`rejected` 로 옮기거나 새 `approved` 값으로 명시해야 한다.
+
+## 적재 절차
+
+① **fresh 볼륨** — `db/catalog/init/05_color_synonyms_seed.sql` 이
+`docker-entrypoint-initdb.d`(`03_color_synonyms.sql` 뒤 번호)로 자동 실행돼 `color_synonyms`
+행이 채워진다(embedding 은 아직 NULL).
+
+② **기존 볼륨**(이미 뜬 컨테이너) — init 스크립트는 재실행되지 않으므로 수동 적용한다:
+
+```bash
+docker exec -i jarvis-ai-pg-catalog-1 psql -U jarvis -d catalog < db/catalog/init/05_color_synonyms_seed.sql
+```
+
+③ **임베딩** — 행 생성과 임베딩 구축은 2단계로 분리돼 있다(`②` 직후엔 embedding 전부 NULL).
+`app.pipelines.color_synonym_seed.seed_from_file` 배치가 Gemini API 키로 각 표기를 임베딩해
+채운다. **`NON_COLOR_TERMS`(sentinel, 예: `혼합색상`·`기타`·`투명`) 는 임베딩하지 않는다.**
+
+```python
+from app.core.config import get_settings
+from app.pipelines.color_synonym_seed import seed_from_file
+
+settings = get_settings()
+seed_from_file(
+    "db/catalog/seed/color_synonyms.json",
+    dsn=settings.catalog_db_url,
+)
+```
+
+`seed_from_file` 은 파일의 `status`/`canonical`/`provenance`/`doc_count` 를 **항상 권위
+있게(authoritative) 반영**한다 — 기존 배치 수확 upsert(`UPSERT_COLOR_TERM_SQL`, 사람 검수
+결과를 보존하는 CASE 가드형)와는 다른 상수(`UPSERT_SEED_COLOR_TERM_SQL`)를 쓴다. 임베딩만
+`COALESCE`로 기존 벡터를 보존한다.
+
+## 검수 워크플로
+
+**검수는 `color_synonyms_review.json` 에 적고 재파생·재커밋한다.** DB `color_synonyms` 테이블을
+직접 `UPDATE` 해 `status`/`canonical` 을 바꾸면, 다음 `seed_from_file` 실행(또는 배포 재적재)
+때 정본 파일 값으로 **되돌아간다** — 검수 결과의 유일한 보존처는 오버레이 파일이다.
+
+새로운 표기를 승인하려면 `color_synonyms_review.json` 의 `approved` 배열에
+`{"term": "...", "canonical": "...", "note": "..."}` 를 추가하고(반려면 `rejected` 배열에
+`{"term": "...", "note": "..."}`), `derive_color_synonym_seed.py` 를 재실행해
+`color_synonyms.json`·`05_color_synonyms_seed.sql` 을 다시 만든 뒤 커밋한다.
+
+## 행 수·지문
+
+- 총 **789행**, 그중 승인(`approved`) **46행**(앵커 15 + 동의어 31), 나머지 743행은
+  `pending_review`(2026-08-07 기준, 승인 확대는 별도 검수 작업).
+- codepoint sha256 지문(term·canonical·status·provenance·doc_count 전 필드,
+  `scripts/derive_color_synonym_seed.py::row_fingerprint`):
+  `e1525ab0e7afa4da5ef6f90d3ce71599051e9ff400c2584a3fc361809d332c9a`
+- 사전이 갱신되면(재수확 또는 검수 확대) **`tests/unit/test_color_synonym_seed_data.py`** 의
+  `EXPECTED_ROW_COUNT`/`EXPECTED_CODEPOINT_SHA256`(및 관련 승인 수 상수)를 함께 갱신한다.
+  한쪽만 고치면 다른 쪽 테스트가 새 정본을 옛 지문과 비교해 실패한다.

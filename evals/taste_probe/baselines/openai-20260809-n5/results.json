@@ -1,0 +1,557 @@
+{
+  "axes": {
+    "falsePositiveRate": {
+      "axisId": "falsePositiveRate",
+      "definition": {
+        "denominator": "산출 트리플 총수(전체 슬라이스)",
+        "numerator": "어떤 기대 트리플과도 매칭 안 된 산출 트리플 수"
+      },
+      "denominator": 143,
+      "expectedDenominator": 143,
+      "exploratory": true,
+      "numerator": 59,
+      "ratio": 0.4125874125874126,
+      "title": "오탐율(전체)",
+      "unfilledSampleCount": 0
+    },
+    "missRate": {
+      "axisId": "missRate",
+      "definition": {
+        "denominator": "노이즈 제외 세션의 기대 트리플 수 × N",
+        "numerator": "1 - recall 의 분자(매칭 안 된 기대 트리플 수)"
+      },
+      "denominator": 115,
+      "expectedDenominator": 115,
+      "exploratory": true,
+      "numerator": 31,
+      "ratio": 0.26956521739130435,
+      "title": "미탐율",
+      "unfilledSampleCount": 0
+    },
+    "nodeIdAgreement": {
+      "axisId": "nodeIdAgreement",
+      "definition": {
+        "denominator": "매칭 트리플 수",
+        "numerator": "매칭 트리플 중 produced.node.node_id == expected.node_id"
+      },
+      "denominator": 84,
+      "expectedDenominator": 84,
+      "exploratory": false,
+      "numerator": 74,
+      "ratio": 0.8809523809523809,
+      "title": "nodeId 일치율(매칭 트리플 중)",
+      "unfilledSampleCount": 0
+    },
+    "noiseFalsePositiveRate": {
+      "axisId": "noiseFalsePositiveRate",
+      "definition": {
+        "denominator": "noise 세션 수 × N(표본 수 기준)",
+        "numerator": "noise 세션 표본에서 산출된 트리플 총수(표본당 0개 이상)"
+      },
+      "denominator": 50,
+      "expectedDenominator": 50,
+      "exploratory": false,
+      "numerator": 0,
+      "ratio": 0.0,
+      "title": "오탐 슬라이스 산출 트리플 수",
+      "unfilledSampleCount": 0
+    },
+    "recall": {
+      "axisId": "recall",
+      "definition": {
+        "denominator": "노이즈 제외 세션의 기대 트리플 수 × N",
+        "numerator": "매칭된 기대 트리플 수(최대 이분 매칭, §7 매칭 규칙, A-13)"
+      },
+      "denominator": 115,
+      "expectedDenominator": 115,
+      "exploratory": false,
+      "numerator": 84,
+      "ratio": 0.7304347826086957,
+      "title": "recall(미탐율의 반대)",
+      "unfilledSampleCount": 0
+    },
+    "sessionExactSet": {
+      "axisId": "sessionExactSet",
+      "definition": {
+        "denominator": "세션 수 × N",
+        "numerator": "산출 트리플 집합이 기대 집합과 정확히 일치(여분 0·누락 0)"
+      },
+      "denominator": 150,
+      "expectedDenominator": 150,
+      "exploratory": true,
+      "numerator": 92,
+      "ratio": 0.6133333333333333,
+      "title": "세션 집합 정확 일치",
+      "unfilledSampleCount": 0
+    }
+  },
+  "axesBySlice": {
+    "conflict": {
+      "axisId": "recall.conflict",
+      "definition": {
+        "denominator": "conflict 세션의 기대 트리플 수 × N",
+        "numerator": "매칭된 기대 트리플 수(최대 이분 매칭, A-13)"
+      },
+      "denominator": 15,
+      "expectedDenominator": 15,
+      "exploratory": true,
+      "numerator": 10,
+      "ratio": 0.6666666666666666,
+      "title": "recall — conflict 슬라이스",
+      "unfilledSampleCount": 0
+    },
+    "kindCoverage": {
+      "axisId": "recall.kindCoverage",
+      "definition": {
+        "denominator": "kindCoverage 세션의 기대 트리플 수 × N",
+        "numerator": "매칭된 기대 트리플 수(최대 이분 매칭, A-13)"
+      },
+      "denominator": 55,
+      "expectedDenominator": 55,
+      "exploratory": true,
+      "numerator": 39,
+      "ratio": 0.7090909090909091,
+      "title": "recall — kindCoverage 슬라이스",
+      "unfilledSampleCount": 0
+    },
+    "noise": {
+      "axisId": "recall.noise",
+      "definition": {
+        "denominator": "noise 세션의 기대 트리플 수 × N",
+        "numerator": "매칭된 기대 트리플 수(최대 이분 매칭, A-13)"
+      },
+      "denominator": 0,
+      "expectedDenominator": 0,
+      "exploratory": true,
+      "numerator": 0,
+      "ratio": null,
+      "title": "recall — noise 슬라이스",
+      "unfilledSampleCount": 0
+    },
+    "polarity": {
+      "axisId": "recall.polarity",
+      "definition": {
+        "denominator": "polarity 세션의 기대 트리플 수 × N",
+        "numerator": "매칭된 기대 트리플 수(최대 이분 매칭, A-13)"
+      },
+      "denominator": 30,
+      "expectedDenominator": 30,
+      "exploratory": true,
+      "numerator": 27,
+      "ratio": 0.9,
+      "title": "recall — polarity 슬라이스",
+      "unfilledSampleCount": 0
+    },
+    "repetition": {
+      "axisId": "recall.repetition",
+      "definition": {
+        "denominator": "repetition 세션의 기대 트리플 수 × N",
+        "numerator": "매칭된 기대 트리플 수(최대 이분 매칭, A-13)"
+      },
+      "denominator": 15,
+      "expectedDenominator": 15,
+      "exploratory": true,
+      "numerator": 8,
+      "ratio": 0.5333333333333333,
+      "title": "recall — repetition 슬라이스",
+      "unfilledSampleCount": 0
+    }
+  },
+  "baseline": {
+    "baselineFalsePositiveRate": {
+      "axisId": "baselineFalsePositiveRate",
+      "definition": {
+        "denominator": "baseline 산출 트리플 총수(정의상 항상 0)",
+        "numerator": "0(산출 트리플 자체가 없다)"
+      },
+      "denominator": 0,
+      "numerator": 0,
+      "ratio": null,
+      "title": "trivial baseline 오탐율"
+    },
+    "baselineNoiseFalsePositiveRate": {
+      "axisId": "baselineNoiseFalsePositiveRate",
+      "definition": {
+        "denominator": "noise 세션 수 × N — noiseFalsePositiveRate 와 같은 분모",
+        "numerator": "0(아무것도 안 뽑는다)"
+      },
+      "denominator": 50,
+      "numerator": 0,
+      "ratio": 0.0,
+      "title": "trivial baseline 오탐 슬라이스 산출 트리플 수"
+    },
+    "baselineRecall": {
+      "axisId": "baselineRecall",
+      "definition": {
+        "denominator": "노이즈 제외 세션의 기대 트리플 총수",
+        "numerator": "0(아무것도 안 뽑는다)"
+      },
+      "denominator": 23,
+      "numerator": 0,
+      "ratio": 0.0,
+      "title": "trivial baseline recall"
+    },
+    "baselineSessionExactSet": {
+      "axisId": "baselineSessionExactSet",
+      "definition": {
+        "denominator": "전체 세션 수",
+        "numerator": "기대 집합이 빈 세션(noise) 수 — baseline 출력([])과 우연히 일치"
+      },
+      "denominator": 30,
+      "numerator": 10,
+      "ratio": 0.3333333333333333,
+      "title": "trivial baseline 세션 집합 정확 일치"
+    },
+    "note": "baseline 은 오탐 축에서 정의상 완벽하고 미탐 축에서 정의상 최악이다 — 따라서 추출이 개선인지는 'recall 이 0보다 얼마나 큰가'를 '오탐을 얼마나 치렀나'와 함께 봐야 판정된다. 한 축만 보면 baseline 을 이기는 것이 자명하거나 불가능해 보인다."
+  },
+  "budget": {
+    "budgetExceeded": false,
+    "budgetExceededReason": null,
+    "callCount": 150,
+    "costGateStatus": "passed",
+    "limits": {
+      "maxCalls": 450,
+      "maxCostUsd": 20.0,
+      "maxTotalTokens": 30000000
+    },
+    "tokenGateStatus": "passed",
+    "totalCostUsd": 0.04462659999999995,
+    "totalTokens": 95643,
+    "unknownCostCallCount": 0,
+    "unknownTokenCallCount": 0
+  },
+  "confusion": [
+    {
+      "count": 52,
+      "expectedKind": "∅",
+      "producedKind": "attribute"
+    },
+    {
+      "count": 16,
+      "expectedKind": "category",
+      "producedKind": "∅"
+    },
+    {
+      "count": 10,
+      "expectedKind": "attribute",
+      "producedKind": "∅"
+    },
+    {
+      "count": 5,
+      "expectedKind": "∅",
+      "producedKind": "situation"
+    },
+    {
+      "count": 5,
+      "expectedKind": "situation",
+      "producedKind": "∅"
+    },
+    {
+      "count": 2,
+      "expectedKind": "∅",
+      "producedKind": "priceBand"
+    }
+  ],
+  "diagnostics": {
+    "bandLabelRejected": [],
+    "definition": {
+      "bandLabelRejected": "밴드 kind 인데 _resolve_band 가 드롭한 {kind,label} 목록",
+      "emittedDeltas": "LLM 이 낸 델타 수(채록한 원문을 extract_json 으로 관측, 판정 아님)",
+      "factDedupCollapsed": "promotedCount - fact 레코드 수(0 초과면 위 kind 귀속이 근사였다는 뜻)",
+      "gateRejected": "채록한 델타 중 should_promote(프로덕션 게이트)가 거절한 수",
+      "legacySchemaNoKind": "kind 없는 구스키마 조기 반환 수(정상 경로, resolver 실패 아님)",
+      "promotedCount": "generate_session_delta 의 반환값(승격 fact 목록) 길이 합 — 프로덕션 값",
+      "resolverDroppedByKind": "kind→건수. FactRecord.fact 문자열로 델타를 역매핑해 얻는다(추정 아님) — 같은 fact 문자열을 내는 델타가 여럿이면 첫 델타로 귀속하는 근사가 섞인다",
+      "resolverDroppedCount": "resolverDroppedByKind 값의 총합",
+      "schemaViolation": "extract_json 파싱 실패로 표본이 못 된 시도 수",
+      "transportError": "llm.complete() 예외로 표본이 못 된 시도 수(타입별)",
+      "unprojectedFacts": "resolverDroppedCount + legacySchemaNoKind(그래프 트리플이 안 붙은 fact 총수)",
+      "verifiedFalseCount": "산출 트리플 중 node.verified=false 인 수 (brand/attribute/situation 무어휘·product 는 항상 false, #357 비범위)"
+    },
+    "emittedDeltas": 171,
+    "factDedupCollapsed": 0,
+    "gateRejected": 2,
+    "legacySchemaNoKind": 0,
+    "promotedCount": 169,
+    "resolverDroppedByKind": {
+      "category": 26
+    },
+    "resolverDroppedCount": 26,
+    "schemaViolation": 0,
+    "transportError": {},
+    "unprojectedFacts": 26,
+    "verifiedFalseCount": 122
+  },
+  "dryRun": false,
+  "fixture": {
+    "name": "sessions.json",
+    "sha256": "e31dd78646bcfc8725796340dbb3b0517236031d6816faed41d9dfd2904b3d4e",
+    "version": "2026-08-08.2"
+  },
+  "modelConfig": {
+    "fastModel": "gpt-5-nano",
+    "fastReasoningEffort": "minimal",
+    "maxRetries": 0,
+    "provider": "openai",
+    "smartModel": "gpt-5.6-luna",
+    "smartReasoningEffort": "medium",
+    "timeoutS": 30.0
+  },
+  "n": 5,
+  "pacer": {
+    "acquireCount": 150,
+    "estimatedTokensPerCall": 2400,
+    "maxRpm": 45,
+    "maxTpm": 200000,
+    "maxWaitS": 1.863,
+    "totalWaitS": 18.365,
+    "waitCount": 19,
+    "windowS": 60.0
+  },
+  "predicateConfusion": [],
+  "promptSha12": "f1087ac09a78",
+  "sessionCount": 30,
+  "sessions": [
+    {
+      "attempts": 5,
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 5,
+      "sessionId": "conflict-attribute",
+      "sliceId": "conflict"
+    },
+    {
+      "attempts": 5,
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 5,
+      "sessionId": "conflict-brand",
+      "sliceId": "conflict"
+    },
+    {
+      "attempts": 5,
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 5,
+      "sessionId": "conflict-category",
+      "sliceId": "conflict"
+    },
+    {
+      "attempts": 5,
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 5,
+      "sessionId": "kc-attribute-01",
+      "sliceId": "kindCoverage"
+    },
+    {
+      "attempts": 5,
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 5,
+      "sessionId": "kc-attribute-02",
+      "sliceId": "kindCoverage"
+    },
+    {
+      "attempts": 5,
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 5,
+      "sessionId": "kc-brand-01",
+      "sliceId": "kindCoverage"
+    },
+    {
+      "attempts": 5,
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 5,
+      "sessionId": "kc-category-01",
+      "sliceId": "kindCoverage"
+    },
+    {
+      "attempts": 5,
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 5,
+      "sessionId": "kc-category-02",
+      "sliceId": "kindCoverage"
+    },
+    {
+      "attempts": 5,
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 5,
+      "sessionId": "kc-priceBand-01",
+      "sliceId": "kindCoverage"
+    },
+    {
+      "attempts": 5,
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 5,
+      "sessionId": "kc-priceBand-02",
+      "sliceId": "kindCoverage"
+    },
+    {
+      "attempts": 5,
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 5,
+      "sessionId": "kc-product-01",
+      "sliceId": "kindCoverage"
+    },
+    {
+      "attempts": 5,
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 5,
+      "sessionId": "kc-ratingBand-01",
+      "sliceId": "kindCoverage"
+    },
+    {
+      "attempts": 5,
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 5,
+      "sessionId": "kc-situation-01",
+      "sliceId": "kindCoverage"
+    },
+    {
+      "attempts": 5,
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 5,
+      "sessionId": "noise-account",
+      "sliceId": "noise"
+    },
+    {
+      "attempts": 5,
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 5,
+      "sessionId": "noise-cart-inquiry",
+      "sliceId": "noise"
+    },
+    {
+      "attempts": 5,
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 5,
+      "sessionId": "noise-delivery-complaint",
+      "sliceId": "noise"
+    },
+    {
+      "attempts": 5,
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 5,
+      "sessionId": "noise-general-question",
+      "sliceId": "noise"
+    },
+    {
+      "attempts": 5,
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 5,
+      "sessionId": "noise-greeting",
+      "sliceId": "noise"
+    },
+    {
+      "attempts": 5,
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 5,
+      "sessionId": "noise-order-inquiry",
+      "sliceId": "noise"
+    },
+    {
+      "attempts": 5,
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 5,
+      "sessionId": "noise-payment",
+      "sliceId": "noise"
+    },
+    {
+      "attempts": 5,
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 5,
+      "sessionId": "noise-refund",
+      "sliceId": "noise"
+    },
+    {
+      "attempts": 5,
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 5,
+      "sessionId": "noise-shipping-policy",
+      "sliceId": "noise"
+    },
+    {
+      "attempts": 5,
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 5,
+      "sessionId": "noise-smalltalk",
+      "sliceId": "noise"
+    },
+    {
+      "attempts": 5,
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 5,
+      "sessionId": "pol-attribute-avoid",
+      "sliceId": "polarity"
+    },
+    {
+      "attempts": 5,
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 5,
+      "sessionId": "pol-attribute-prefer",
+      "sliceId": "polarity"
+    },
+    {
+      "attempts": 5,
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 5,
+      "sessionId": "pol-brand-avoid",
+      "sliceId": "polarity"
+    },
+    {
+      "attempts": 5,
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 5,
+      "sessionId": "pol-brand-prefer",
+      "sliceId": "polarity"
+    },
+    {
+      "attempts": 5,
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 5,
+      "sessionId": "rep-attribute-varied",
+      "sliceId": "repetition"
+    },
+    {
+      "attempts": 5,
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 5,
+      "sessionId": "rep-category-varied",
+      "sliceId": "repetition"
+    },
+    {
+      "attempts": 5,
+      "failureCount": 0,
+      "filled": true,
+      "sampleCount": 5,
+      "sessionId": "rep-verbatim-repeat-cap",
+      "sliceId": "repetition"
+    }
+  ],
+  "unfilledSessions": []
+}

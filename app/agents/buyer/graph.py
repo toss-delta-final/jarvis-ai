@@ -26,6 +26,7 @@ from pydantic import ValidationError
 from app.agents.buyer._frames import progress as progress_frame
 from app.agents.buyer._frames import sse
 from app.agents.buyer.cart.graph import stream_cart_add, stream_cart_view
+from app.agents.buyer.cart.options import condition_terms as cart_condition_terms
 from app.agents.buyer.cart.remove import stream_cart_remove
 from app.agents.buyer.cart.state import get_cart_store
 from app.agents.buyer.cart.wishlist import (
@@ -46,6 +47,7 @@ from app.agents.buyer.recommendation.decompose import (
     prior_echo_tokens,
     resolve_category_action,
 )
+from app.agents.buyer.recommendation.needs_expansion import count_signal_legs
 from app.agents.buyer.recommendation.needs_expansion import detect_expansion_need
 from app.agents.buyer.recommendation.needs_expansion import expand_needs as _expand_needs
 from app.agents.buyer.recommendation.no_condition import is_no_condition_turn
@@ -277,7 +279,15 @@ def _relaxed_filters_from_offer(offer, base: ProductSearchFilters) -> ProductSea
 
 
 async def _map_or_empty(
-    mapper, queries, utterance, settings, llm, observer, *, select_max_calls: int | None = None
+    mapper,
+    queries,
+    utterance,
+    settings,
+    llm,
+    observer,
+    *,
+    select_max_calls: int | None = None,
+    sibling_expansion: bool = False,
 ) -> CategoryMapping:
     """매핑 1회 — 호출 자체의 예외는 **빈 결과**로 흡수한다(canonical-or-null 불변식).
 
@@ -314,6 +324,8 @@ async def _map_or_empty(
             # 택일 호출도 chat_request 모델 집계(§6.3)에 실어야 한다 — 기록은 모델을 실제로
             # 부르는 select_category 안에서 하므로 여기 책임은 seam 까지 전달하는 것뿐이다.
             observer=observer,
+            # [#428] 전개 후 재매핑에서만 True 로 넘어온다 — 매퍼의 대분류 합의 필터 게이트.
+            sibling_expansion=sibling_expansion,
         )
     except Exception as exc:  # noqa: BLE001 - 매핑 호출 자체의 예외(시그니처 불일치·버그 등)
         logger.warning("category_map_failed", extra={"reason": str(exc)})
@@ -468,6 +480,23 @@ async def _prepare_recommendation(
                         select_max_calls=max(
                             0, settings.category_select_max_calls - mapping.select_calls
                         ),
+                        # [#428] 이 leg 들은 전개(#217)가 **하나의 니즈**에서 낸 형제 아이템이다(위
+                        # `_expand_needs` 호출 결과) — 첫 매핑(원 발화의 서로 다른 니즈들)과 달리
+                        # 형제끼리 **최근접(top-1) 대분류 일치**로 서로를 검증할 수 있어 True 로
+                        # 넘긴다(리뷰 1차 F-1 — 후보 꼬리까지 세면 잡동사니 대분류가 승자가 된다).
+                        # 첫 매핑은 기본값 False 그대로 둔다(예: "캠핑용품이랑 낚시용품"은 대분류가
+                        # 갈리는 것이 정상이라 합의 필터를 적용하면 안 된다).
+                        # [#428 리뷰 5차 R5-1] 단, 원 발화가 이미 서로 다른 니즈를 2개 이상 명시했으면
+                        # ("이어폰이랑 노트북 추천해줘" — case=3 은 다중 상품도 포함한다,
+                        # decompose.py case 정의) `expand_needs` 는 발화 전체를 한 번에 전개하므로
+                        # 전개 산출도 그 니즈들에 걸쳐 섞인다. 그때는 동률 보존·R3-1 가드가 대개
+                        # 막지만, 니즈별 leg 수가 불균등하고 소수 니즈의 후보 tail 에 다수 니즈의
+                        # 승자 대분류가 우연히 끼어 있으면 뚫린다(Claude PR Review, PR #444 —
+                        # 실측 무재현은 "구조적으로 막혔다"를 증명하지 않는다). 값싼 구조적 게이트가
+                        # 있으므로 상류에서 끈다. `count_signal_legs` 는 `detect_expansion_need`
+                        # 의 D1 판정과 **같은 식**(규칙 한 벌, PR #203 리뷰 규약)이다. `#428` 턴은
+                        # `categoryQueries: []` 라 니즈 0개 → 게이트를 통과해 필터가 그대로 동작한다.
+                        sibling_expansion=count_signal_legs(decision.category_queries) < 2,
                     )
                     # **합집합**(§6) — 원 leg 을 **앞에** 둬 fanout_max 절단에서 사용자가 명시한
                     # 카테고리가 먼저 살아남게 한다. 종전 교체 배선은 전개가 트리거되면 성공한 leg
@@ -603,11 +632,17 @@ async def run_buyer_turn(
     popular_fn=None,
     observer=None,
     request_id: str | None = None,
+    turn_started_at: float | None = None,
 ) -> AsyncIterator[str]:
     """구매자 1턴을 SSE 프레임으로 스트리밍한다(open_stream 이 감싸는 inner).
 
     llm/search/push_fn/map_categories 미지정 시 라이브 기본값 — 테스트는 fake 를 주입한다.
     LLM 미구성(개발·CI)이면 네트워크 호출 없이 곧바로 LLM_UNAVAILABLE error 를 낸다.
+
+    [#427] `turn_started_at` 은 `open_stream` 이 잡은 스트림 시작 절대 시각(`loop.time()`)
+    이다 — 구제 체인 공유 예산(`stream_recommendation` 의 `rescue_deadline`)이 이 값을 원점으로
+    파생한다. 그대로 `stream_recommendation` 에 전달한다(새로 시각을 찍지 않는다 — 원점이
+    갈리면 D2 의 부등식 증명이 깨진다).
     """
     settings = get_settings()
     resolved_request_id = cast(
@@ -644,9 +679,44 @@ async def run_buyer_turn(
     thread_store = await get_thread_store()
     prior = await thread_store.get(thread_key)
     condition_actions = getattr(request, "condition_actions", None) or []
+    # [#442] buyer_chat_turn metadata(`SAFE_METADATA_KEYS`)에는 축 이름을 얹지 않는다 — 아래
+    # 결정 로그 한 줄로 이미 관측되고, 화이트리스트 개정은 트레이스 metadata 계약 표면을 넓힌다
+    # (관측 값어치 < 계약 표면 증가). 판단 재검토가 필요하면 이 코드가 아니라 이슈에서 다시 논의.
+    if condition_actions and prior is None:
+        # 칩이 떠 있었다면 prior 가 있어야 정상이라 이 조합 자체가 신호다(#442) — 스레드 만료·
+        # 첫 턴일 수 있어 동작은 바꾸지 않는다(지울 대상이 없으니 무시가 맞다). 레벨은 info
+        # (정상 경로일 수 있다).
+        logger.info(
+            "condition_actions_skipped_no_prior",
+            extra={
+                "requested_fields": [action.field for action in condition_actions],
+                "request_id": resolved_request_id,
+            },
+        )
     if prior is not None and condition_actions:
+        # 값(가격·브랜드·카테고리 문자열)은 싣지 않는다 — 이 파일의 기존 규약(#119 PII), 축은
+        # 계약상 6종으로 닫힌 열거값이라 이름만 실어도 안전하다.
+        # "실제로 비워진 축"은 요청 필드에서 예측하지 않는다(#442) — 호출 전/후 값을 비교해서
+        # 낸다. 예측식으로 짜면 _remove_condition_actions 가 통째로 죽어도 로그가 똑같이 나온다.
+        requested_fields = [action.field for action in condition_actions]
+        before = prior
         # conditionActions 반영 — 제거된 축을 prior 에서 실제로 비운다(§3.1).
         prior = _remove_condition_actions(prior, condition_actions)
+        cleared_fields = [
+            action.field
+            for action in condition_actions
+            if getattr(before, CONDITION_FIELD_TO_FILTER[action.field]) is not None
+            and getattr(prior, CONDITION_FIELD_TO_FILTER[action.field]) is None
+        ]
+        logger.info(
+            "condition_actions_applied",
+            extra={
+                "requested_fields": requested_fields,
+                "cleared_fields": cleared_fields,
+                "no_op": not cleared_fields,
+                "request_id": resolved_request_id,
+            },
+        )
         # 추천 외 intent 로 라우팅돼도 다음 턴에 제거한 칩이 되살아나지 않게 즉시 영속한다.
         await thread_store.put(thread_key, prior)
 
@@ -990,6 +1060,18 @@ async def run_buyer_turn(
         else set()
     )
     allowed = {pid for pid, _ in last_reco} | screen_product_ids
+    # [#435] last_reco 이름 커버리지 관측 — 이 이슈가 "미확정"으로 넘어온 이유는 그 턴의
+    # LAST_RECOMMENDATIONS 에 이름이 있었는지 운영 로그에서 알 수 없었기 때문이다(패킷 §3).
+    # 담기·찜 계열 턴에 한해 개수만 남긴다 — 상품명·발화 원문은 판매자 입력·PII 라 싣지 않는다.
+    has_last_reco = bool(last_reco)
+    if decision.intent in ("cart_add", "wishlist_add", "wishlist_remove"):
+        logger.info(
+            "last_reco_name_coverage",
+            extra={
+                "total": len(last_reco),
+                "named": sum(1 for _, name in last_reco if name),
+            },
+        )
 
     if decision.intent == "order_status":
         if trace := current_request_trace():
@@ -1109,6 +1191,10 @@ async def run_buyer_turn(
                 message=request.message,
                 allowed_product_ids=allowed,
                 screen_reason=screen_reason,
+                # [이슈 #455] 누적 필터(prior) 우선 + 이번 턴 산출(decision.filters) — 옵션 되물음
+                # 좁히기의 조건어 원천. 담기 흐름 밖의 다른 라우팅·프롬프트는 건드리지 않는다.
+                condition_terms=cart_condition_terms(prior, decision.filters),
+                has_last_reco=has_last_reco,
                 observer=observer,
             ):
                 yield frame
@@ -1146,6 +1232,7 @@ async def run_buyer_turn(
                 cart=cart_intent,
                 settings=settings,
                 allowed_product_ids=allowed,
+                has_last_reco=has_last_reco,
                 observer=observer,
             ):
                 yield frame
@@ -1220,5 +1307,6 @@ async def run_buyer_turn(
             # [#119] 개인화 off(A/B baseline arm)면 취향 랭킹도 함께 끈다 — rerank 주입과 같은
             # 스위치를 따라야 arm 이 "개인화 없음"으로 일관된다.
             profile_vec=(None if settings.profile_injection_scope == "off" else profile_vec),
+            turn_started_at=turn_started_at,
         ):
             yield frame

@@ -13,6 +13,582 @@
 
 ---
 
+## [2026-08-07] "얼마나 좁힐지" 계산에 하한만 걸고 "이미 지났으면" 을 안 걸면 좁히기가 음수를 낸다
+- 증상: #427 리뷰(오케스트레이터 직접 재현)가 `rescue_deadline` 이 이미 지난 턴(과거
+  `turn_started_at`)에서 `narrow_search_budget` 이 **음수 예산**을 받는 결함을 잡았다.
+  `_stage_budget` 은 `granted = min(spring_search_timeout_s, remaining / n)` 를 그대로
+  돌려주는데, `remaining = rescue_deadline - time.monotonic()` 이 음수면 `granted` 도 음수다.
+  `_apply_stage_budget` 의 skip→narrow 강등 두 경로(본검색의 `allow_skip=False`, `narrow`
+  모드의 skip 실행)가 그 음수를 검증 없이 그대로 실행에 넘겼다 — `asyncio.wait_for(timeout=
+  음수)` 가 즉시 만료돼 **HTTP 요청 자체가 나가지 않았다**. "본검색은 절대 건너뛰지 않는다"는
+  불변식이 이름만 남고 실제로는 건너뛴 것보다 나쁜 결과(요청 없이 실패)를 냈고, 자동완화
+  probe 는 `relaxing` progress 를 emit 해 놓고 아무 일도 안 하는 거짓 신호(H4)까지 재현했다.
+- 원인: `granted >= min_threshold` 형태의 하한 분기(`"narrow"` vs `"skip"` 판정)를 만들 때
+  "판정이 `narrow`" 와 "그 값이 실행 가능한 양수" 를 같은 조건으로 착각했다 — 실제로는
+  `min(x, remaining/n)` 의 `remaining` 이 음수일 수 있다는 걸 놓쳐 `granted < min_threshold`
+  분기(`"skip"`)만 하한 아래를 잡고, `"skip"` 을 다시 `"narrow"` 로 강등하는 경로에는 하한이
+  전혀 적용되지 않았다. **판정 임계값과 실행 임계값은 같은 변수를 참조해도 강제 지점이 다르면
+  분리해서 각각 확인해야 한다** — 하나는 분류용(threshold 비교), 하나는 집행용(clamp)이다.
+  테스트도 `search=` 에 fake 를 주입해 `narrow_search_budget` 이 **불렸다는 것만** 확인하고
+  그 인자 값이 실제로 유효한지, 끝단(`spring_client.search_products`)까지 살아있는지는 재지
+  않아 이 결함을 통과시켰다.
+- 규칙: "예산을 좁힌다/못 쓰게 건너뛴다" 류 로직에서 원본 시간축 계산(`deadline - now`)이
+  음수가 될 수 있는 경우(데드라인이 이미 지난 턴), **판정(분류)과 실제로 실행에 넘기는 값을
+  분리해서 각각 clamp 하라** — 판정은 "어느 분기인가"만 정하고, 그 분기가 무엇이든 실행 직전에
+  "이 값을 그대로 API 에 넘겨도 되는가"(양수·최소 유효값 이상)를 다시 확인한다. 테스트는
+  fake 를 주입해 "그 함수가 불렸다"만 보지 말고, 스파이가 **실제 함수를 통과시키면서** 인자
+  값을 기록하게 하거나(`with real_fn(x): yield` 형태), 최소한 그 값 자체에 대한 별도 어설션을
+  추가한다 — 호출 여부와 호출 값의 유효성은 다른 주장이다.
+- 관련: `app/agents/buyer/recommendation/graph.py::stream_recommendation` 의 `_stage_budget`/
+  `_apply_stage_budget`(D4) · `app/services/spring_client.py::narrow_search_budget` · #427
+
+## [2026-08-07] `open_stream` 의 `inner_factory` 시그니처를 바꾸면 테스트 전수가 조용히 깨진다
+- 증상: #427 에서 `open_stream(..., inner_factory: Callable[[], AsyncIterator[str]])` 를
+  `Callable[[float], AsyncIterator[str]]` 로 바꿨더니(D2 턴 시작 시각 플럼빙), `uv run pytest`
+  전체 실행에서 `tests/unit/test_observability.py`·`test_infra.py`·`test_recommendation.py`·
+  `test_buyer_tracing.py`·`test_seller_tracing.py`·`test_session_claim_api.py`·
+  `test_spring_search_budget_132.py`·`tests/integration/conftest.py`·`evals/scoring/adapter.py`·
+  `evals/model_eval/adapter.py`·`evals/metrics/harness.py`·`evals/first_event_budget/
+  measure_first_event.py` 에 걸쳐 `TypeError: <lambda>() got an unexpected keyword/positional
+  argument` 가 40건 넘게 났다 — 전부 `inner_factory` 로 넘기는 0-인자 로컬 함수/람다/클래스
+  (`async def slow(): ...`, `lambda: httpx.AsyncClient(...)`)였다.
+- 원인: `open_stream` 은 `app/services/spring_client.py::_client()` 처럼 프로덕션 코드
+  안쪽에만 있는 함수가 아니라, 테스트가 **직접 인자로 넘기는 콜백**의 시그니처 계약이다.
+  그런 함수는 `grep -rn "open_stream(" tests/` 로도 호출부만 보이고 실제 깨지는 지점(그 호출에
+  넘긴 콜백의 정의부)은 별도로 찾아야 한다 — 콜백 정의가 호출부와 수십~수백 줄 떨어져 있거나
+  다른 파일(`tests/integration/conftest.py` 의 공유 fixture, `evals/*/adapter.py` 의 하네스)에
+  있으면 놓치기 쉽다. `spring_client._client()` 도 같은 패턴이라 `timeout=` 키워드 인자를
+  추가했을 때 `lambda: httpx.AsyncClient(...)` 로 patch 한 fake 들이 같은 이유로 깨졌다.
+- 규칙: 테스트가 **콜백으로 주입하는** 함수(래퍼가 시그니처를 정의하고 호출부가 인자를 받아
+  넘기는 패턴 — `open_stream(inner_factory)`, `_client()` 등)의 시그니처를 바꿀 때는
+  `grep -rn "<함수명>(" tests/ evals/` 로 호출부만 보지 말고, 그 호출에 넘겨지는 각 인자
+  (변수명)의 **정의부**를 별도로 찾아 전수 갱신한다. 새 인자는 가능하면 키워드 전용 +
+  기본값(`*, timeout: float | None = None`)으로 추가해 fake 들이 무시해도 무해하게 만들되,
+  위치 인자가 필수면(D2 의 `turn_started_at` 처럼 값 자체를 검증해야 하는 경우) 콜백 시그니처를
+  전수 갱신하고 `uv run pytest`(전체, 개별 파일 단위가 아니라)로 결과를 확인한다 — 개별 파일만
+  돌리면 다른 파일의 같은 패턴을 놓친다.
+- 관련: `app/core/stream.py::open_stream`(D2) · `app/services/spring_client.py::_client`(§1) ·
+  #427
+
+## [2026-08-07] 두 정상 설계의 이음매는 어느 쪽 코드를 봐도 결함으로 안 보인다 — 적용 범위를 문서에 적어라
+- 증상: #435 "추천 카드를 이름으로 지목한 찜/담기가 실패한다"가 여러 라운드 동안 "미확정"
+  으로 남아 있었다. `screen_reference.py`(화면 지시어 결정적 해소기)를 보면 정상 설계고,
+  `no_condition.rank_by_profile`(프로필 벡터 추천)를 봐도 정상 설계다 — 어느 쪽도 단독으로는
+  결함이 아니다.
+- 원인: FE 위조방지 설계(추천 카드는 서버가 `listId` 로 이미 알아 `screen` 에서 의도적으로
+  제외)와 AI 상품명 공백(AI 카탈로그 인덱스에는 원본 컬럼이 없어 프로필 경로가 상품명을
+  모른다)이 **서로 다른 시점에 각자 옳게 결정된 설계**인데, 그 둘이 만나는 지점(추천 카드
+  턴의 이름 지목)에 아무도 적어두지 않았다. `screen_reference.py` 를 진단하는 사람은 "이
+  모듈은 `screen.products` 가 있을 때만 돈다"만 보고 추천 카드 턴이 왜 안 되는지 모르고,
+  `no_condition.py` 를 진단하는 사람은 "이름을 모른다"만 보고 그게 이음매 반대편에서 되물음
+  문구·찜 실패로 이어지는 줄 모른다. 각 모듈 안에서는 완결된 근거가, 모듈을 넘어서는 인과를
+  가리지 못했다.
+- 규칙: 두 설계가 서로의 전제를 깨는 지점(A 가 의도적으로 비운 것을 B 가 의도적으로 요구하는
+  경우)을 발견하면, 그 교차점을 **양쪽 모듈 docstring 모두에** 적어라(한쪽에만 적으면 반대편
+  진단자가 여전히 못 찾는다). "이 결함처럼 보이는 동작은 설계의 귀결이다"라고 명시적으로
+  적어야 다음 추적 라운드가 같은 두 모듈을 또 오가며 낭비되지 않는다.
+- 관련: `app/agents/buyer/screen_reference.py`(모듈 docstring) ·
+  `app/agents/buyer/recommendation/no_condition.py::rank_by_profile` ·
+  `docs/api-spec.md` §3.1 v0.28.1 · #435
+## [2026-08-08] 낡은 코드 주석이 **회귀의 심각도 판단을 뒤집었다** — 심각도 근거는 주석이 아니라 정본에서 가져와라
+- 증상: #430 이 `screenExactPick` 회귀를 만났을 때, `decompose.py` 의 screen 절 주석
+  ("FE 는 아직 screen 을 보내지 않으므로 그쪽이 절대다수 경로다")을 근거로 **"휴면 경로라 심각도가
+  낮다"** 는 판단이 한 라운드 동안 유지됐다. 정본을 직접 열어 보니 틀렸다 —
+  `docs/api-spec.md` §3.1 은 "**현재 UI로 실제 오는 값은 3종**이다 — `chat`(구매자 인기상품
+  패널)·`seller_orders`·`seller_products`"라고 적고 있고, §3.1 은 **v0.20.3(2026-08-04)에서
+  `screen` 수신 구현으로 개정**됐다. 즉 살아 있는 경로였고, 그 주석은 개정 전에 쓰여 그대로 남아
+  있었다.
+- 원인: 계약이 개정될 때 **정본(`docs/api-spec.md`)은 갱신되고 그 계약을 소비하는 코드의 산문
+  주석은 갱신되지 않는다.** 주석은 테스트도 린트도 지키지 않으므로 낡아도 아무것도 붉어지지
+  않는다. 그리고 주석은 코드 옆에 있어서 **정본보다 먼저 읽히기 때문에** 틀렸을 때 비용이 크다 —
+  이번엔 "고칠까 말까"를 가르는 심각도 판단의 입력이 됐다.
+- 규칙: **회귀의 심각도를 "그 경로는 안 쓰인다"로 낮추려거든 근거를 코드 주석이 아니라 정본
+  (`docs/api-spec.md` 해당 § + 그 §의 개정 이력 행)에서 가져와라.** 주석은 단서일 뿐 근거가
+  아니다. 그리고 계약 § 을 개정하는 PR 은 그 § 을 인용하는 코드 주석을 `grep` 으로 찾아 함께
+  고쳐라(`grep -rn "§3.1" app/` 수준이면 충분하다).
+- 관련: #430 · #118 · `app/agents/buyer/recommendation/decompose.py` screen 절 주석(이 항목과
+  같은 커밋에서 정정) · `docs/api-spec.md` §3.1 `pageType` 어휘 절 · v0.20.3(2026-08-04) 개정 행
+
+## [2026-08-07] **병합이 측정물을 바꾼다** — 프롬프트를 고치는 PR 은 병합 직후 `_SYSTEM` sha 를 다시 확인해야 한다
+- 증상: #430 은 `decompose._SYSTEM` 을 고치고 전/후 각 2런으로 채택 판정까지 끝낸 뒤 PR 을 열고
+  `origin/dev` 를 병합했다. 그런데 **#386(PR #441, 커밋 `3547e43`, `wishlist_view` 의도 신설)이
+  같은 `_SYSTEM` 에 548자를 더해 놓았다** —
+  `_SYSTEM` sha 가 `81e3770e1340`(내가 잰 판) → `f99a98867e4a`(병합 결과 = 실제로 출고될 판)로
+  바뀌었다. 즉 **채택 기준 "출고물 == 측정물"이 코드 한 줄 안 고치고 병합만으로 깨졌다.**
+  재측정해 보니 형식 문제가 아니었다: `falseAlarmRate` 가 1.9 → 3.8 → 4.8% 로 **단조 상승**해
+  사전 등록 상한(3.6%)을 3런 중 2런에서 넘겼다.
+- 원인: 프롬프트는 **레인 간 공유 자산**인데 diff 상으로는 서로 다른 줄을 건드리므로 충돌이
+  나지 않는다. Git 은 조용히 병합하고, 두 레인이 각자 자기 축만 재고 넘어가면 **합쳐진 문면을
+  아무도 재지 않은 채** 출고된다. 이 리포는 이미 "문면을 더하면 다른 축이 깎인다"를 실측해
+  뒀는데(#430 자신이 +268자로 `screenExactPick` −3.5 를 쟀다), 그 지식이 **병합**에는 적용되지
+  않고 있었다.
+- 규칙: **`_SYSTEM`(또는 공유 프롬프트)을 건드리는 PR 은 병합 직후 sha 를 다시 계산하고, 채택
+  근거로 쓴 산출물의 `run_manifest.prompt.sha256` 과 대조하라.** 다르면 그 산출물은 더 이상
+  근거가 아니다 — **재측정한다.** PR 을 열기 전에 `git log origin/dev -- <프롬프트 파일>` 로
+  다른 레인이 같은 파일을 건드렸는지 먼저 보는 것이 더 싸다. 그리고 채택 산출물 디렉터리에는
+  잰 프롬프트의 sha 를 반드시 적어 둬라 — 그래야 다음 사람이 대조할 수 있다.
+- 규칙 2(귀속): **병합이 무엇을 바꿨는지 귀속할 때 `origin/dev` 의 최신 커밋을 범인으로 적지
+  마라 — `git log <base>..origin/dev -- <파일>` 로 그 파일을 실제로 건드린 커밋을 찾아라.**
+  이 항목의 초판은 병합 시점 `origin/dev` 의 최신 커밋(#428, `af32255`)만 보고 귀속했다가,
+  실제 원인(**#386**, PR #441, 커밋 `3547e43`)과 다른 번호를 문서·커밋 메시지·후속 이슈 4건에
+  퍼뜨렸다. `git log 7272822..origin/dev -- app/agents/buyer/recommendation/decompose.py` 는
+  커밋을 **하나**만 돌려준다 — 그 한 줄이면 끝났을 일이다. "최신 커밋"과 "그 파일을 바꾼 커밋"은
+  다른 질문이고, 귀속은 **후자**로만 답해야 한다.
+- 관련: #430 · #386(PR #441, 커밋 `3547e43`) ·
+  `evals/underspecified_probe/baselines/fast-2026-08-07-430-merged-{1,2,3}/`(병합판 3런 —
+  이 인과의 근거) · `.../fast-2026-08-07-430-after-1/README.md`
+
+## [2026-08-07] "최소 델타면 안전하다"는 틀렸다 — **10자가 3개 축을 −3 시켰다**
+- 증상: 위 병합 사고를 수습하려고 비움 트리거의 단서 목록에 브랜드·색상을 더했다 —
+  `의미(종류·용도·상황·목적)` → `단서(종류·용도·상황·목적·브랜드·색상)`, 순증 **10자**
+  (`_SYSTEM` 7828 → 7838자, 0.13%). 목표는 달성했다(`falseAlarmRate` 1.9·2.9% 로 상한 복귀).
+  그런데 같은 픽스처에서 **이 10자만 다른** `evals/intent_probe` 대조에서 `categoryClear` 가
+  **31·31 → 28·28**, `demonstrative`·`mainIntent` 도 각 **−3** 이었다. 팔 내부 분산이 0이라
+  노이즈로 볼 수 없다.
+- 원인: 델타의 **크기**가 아니라 **무엇을 규칙의 술어에 넣었는가**가 문제다. 색상·브랜드는
+  `filters.color`/`filters.brand` 로 가는 축인데 그것을 비움 트리거의 **단서**로 격상시키면,
+  그 어휘가 등장하는 다른 판정(카테고리 리셋·지시대명사 해소)도 함께 흔들린다. 같은 −3 이 세
+  축에 동시에 찍힌 것이 "한 원인이 여러 축에 비친다"는 신호다. 이 캠페인은 앞서 **길이 가설도
+  반증**했다(+268자 → +161자 → +110자로 줄여도 `screenExactPick` 이 회복되지 않았고, 오히려
+  **더 긴** +143자 판이 가장 좋았다). 즉 문면 비용은 길이의 함수가 아니다.
+- 규칙: **프롬프트 델타의 안전성을 글자 수로 판단하지 마라.** 규칙의 술어에 새 어휘를 넣을
+  때는 "그 어휘가 이 프롬프트의 **다른 판정**에도 등장하는가"를 먼저 찾고, 등장하면 그 축들을
+  **같은 표에서 함께 재라.** 그리고 델타가 아무리 작아도 **타축 측정을 생략하지 마라** —
+  10자로 3축이 움직였다.
+- 관련: #430 · `evals/intent_probe/baselines/fast-2026-08-07-430-v6-{merged,adopted}-*/`
+  (같은 픽스처·10자만 다른 귀속 대조) · [2026-08-07] 「새 프롬프트 규칙의 비용은 길이가 아니라
+  기존 규칙과의 문면 충돌이다」 항목(길이 가설 반증 궤적)
+
+## [2026-08-07] "플래그 뒤에 있는 줄 알았던" 산출 신호에 **플래그 없는 두 번째 소비자**가 있었다
+- 증상: #430 은 `decompose` 프롬프트를 고쳐 `semantic_query_is_fallback` 이 정직해지게 만든
+  작업이고, 이슈·패킷 모두 그 효과를 **`underspecified_reask_enabled`(기본 False)로 게이트된
+  #336 되물음**으로만 서술했다. 그런데 `grep semantic_query_is_fallback app/` 를 돌리면
+  소비자가 둘이다 — `underspecified.is_underspecified_turn`(플래그 있음, 오늘 무동작)과
+  **`no_condition.is_no_condition_turn`(#162, api-spec §4.17 — 플래그가 없다. 오늘 켜져 있다)**.
+  즉 "플래그를 켜지 않았으니 운영 동작은 그대로"라는 전제가 틀렸다. 산출물로 재보니
+  `semanticQueryIsFallback=true` 표본이 1/240 → 163~164/240 이었고, 그중 더 엄격한
+  `is_no_condition_turn` 조건까지 통과하는 `no_condition` 슬라이스가 39~40/40 이었다.
+- 원인: 게이트는 **신호 생산자**가 아니라 **소비자마다** 따로 걸려 있다. 신호를 고치면
+  게이트 없는 소비자는 즉시 영향을 받는데, 이슈 제목·설계 문서가 한 소비자만 이름 붙여
+  부르면 나머지가 시야에서 사라진다. 이번엔 결과가 좋은 방향(#162 가 문서상 "계약 위반"이라
+  부르던 무필터 I-1 호출이 멈춘다)이었지만, 그건 운이지 설계가 아니다.
+- 규칙: **산출 신호(플래그·불리언·판정 축)를 고칠 때는 `grep` 으로 소비자를 전부 세고, 각
+  소비자의 게이트 유무를 표로 적어라.** "이 변경은 플래그 뒤에 있다"는 주장은 소비자 목록
+  없이는 하지 마라. 그리고 게이트 없는 소비자가 있으면 그 영향 규모를 **같은 산출물에서
+  수치로** 재서 PR 본문에 전용 절로 싣는다 — 사람이 머지 판단할 때 놓치면 안 되는 사실이다.
+- 관련: #430 · #162 · #336 · `app/agents/buyer/recommendation/no_condition.py` ·
+  `app/agents/buyer/recommendation/underspecified.py` ·
+  `evals/underspecified_probe/baselines/fast-2026-08-07-430-after-1/README.md`
+
+## [2026-08-07] 안 먹히는 프롬프트 지시는 문구가 나빠서가 아니라 **같은 절 뒤쪽의 무조건 긍정 명령에 져서**다
+- 증상: `decompose._SYSTEM` 은 `- recommend:` 불릿 **첫 문장**에서 이미 "정확한 수치 제약은
+  filters 에 넣고 semanticQuery 로 근사하지 마세요"라고 지시하고 있었는데, 실측
+  (`evals/underspecified_probe` 2026-08-06 기준선)은 정확히 그 반대였다 —
+  `"5만원 이하로 아무거나 추천해줘"` → `semanticQuery = "5만원 이하 아무거나"` 가 **8/8**.
+  #430 은 처음에 이 문장을 고치는 것을 「할 일」로 받았다.
+- 원인: 같은 불릿의 **마지막 문장**이 `"semanticQuery 는 동의어·상위어를 함께 담은 의미 중심
+  자연어로 쓰세요"` 라는 **무조건 긍정 명령**이었다. 앞의 금지형("~하지 마세요")은 "대신 무엇을
+  쓰라"가 없어 대안이 되지 못하고, 뒤의 긍정 명령이 "이 필드는 항상 풍부하게 채운다"로 읽힌다.
+  **모델이 어느 문장을 읽고 있었는지가 산출물에 직접 찍혀 있었다** — `semanticQuery` 산출로
+  `'의미 중심 자연어'`(기준선 `under-nc-0003`) · `'무엇을 살지에 대한 의미 중심의 일반 추천'`
+  (후보 런)처럼 **그 문장의 문면을 그대로 에코**한 표본이 나왔다.
+  실측이 이 인과를 두 방향으로 뒷받침한다: ① 금지형 문장은 **손대지 않은 채** 같은 불릿
+  **끝에** "발화에 찾는 상품의 의미가 하나도 없으면 빈 문자열로 두라"를 덧붙이자 `missRate`
+  99.1% → 17.0%(수치 에코도 함께 줄었다). ② 반대로 금지형 문장을 긍정형으로 **재작성**한
+  두 후보는 수치 에코를 줄이지 못하고 primary 를 깎았다(17.0% → 23.2% / 48.2%).
+  즉 수치 에코는 그 문장의 어휘 문제가 아니라 **"이 필드는 비울 수 없다"가 유효 규칙이었기
+  때문**이고, 비울 수 있게 하자 부수적으로 사라졌다.
+- 규칙: 프롬프트 지시가 "이미 있는데 안 먹힌다"면 **그 문장을 고치기 전에** 같은 절 뒤쪽에
+  같은 필드를 **무조건 채우라고 시키는 문장**이 있는지부터 찾아라. 그리고 실측 산출물에서
+  **프롬프트 문면이 그대로 에코된 표본**을 찾아라 — 그게 "모델이 어느 문장을 읽고 있는가"의
+  직접 증거이고, 산문 추측보다 강하다. 안 먹히는 지시의 수정은 **채택 여부와 진단이 별개**다:
+  진단해서 원인을 적되, 재작성이 primary 축을 깎으면 반려하는 것이 근거 있는 결론이다.
+- 관련: #430(PR 진행 중) · `app/agents/buyer/recommendation/decompose.py::_SYSTEM` ·
+  `evals/underspecified_probe/baselines/fast-2026-08-07-430-after-1/README.md`(후보 선별표)
+
+## [2026-08-07] 새 프롬프트 규칙의 비용은 **길이가 아니라 기존 규칙과의 문면 충돌**이다 — 길이 가설을 세우고 3후보로 반증했다
+- 증상: #430 이 `decompose._SYSTEM` 에 "찾는 상품의 의미가 **발화에** 없으면 `semanticQuery` 는
+  빈 문자열" 규칙을 넣자 목표 축은 크게 좋아졌는데(`missRate` 99.1% → 약 10%)
+  `evals/intent_probe` 의 **`screenExactPick` 이 32/32·32/32 → 30·27** 로 깎이고 진단
+  `screenOutOfListConfirmCount`(화면 목록 **밖** productId 를 확정하려 든 횟수)가 0·0 → 2·5 로 올랐다.
+- 반증 궤적(이게 이 항목의 핵심이다): 처음 세운 가설은 **"긴 프롬프트에 문면을 더한 것 자체가
+  비용(주의 경쟁)"** 이었다. 그래서 추가 문면을 줄여 가며 3후보를 각 2런씩 쟀다 —
+  +268자 `screenExactPick` 평균 **28.5** → +161자 **30.0** → +110자(가장 짧음) **30.0**.
+  **가장 짧은 판이 나아지지 않았다 → 길이 가설은 반증됐다.**
+- 원인(반증 뒤에 선 가설): `_SYSTEM` 에는 이미 "상품명 없는 지시대명사는
+  PRIOR_FILTERS.semanticQuery 또는 LAST_RECOMMENDATIONS 맥락의 **상품**을 가리킵니다"가 있다.
+  screen 셀의 발화("이거 담아줘"·"3번째 거")는 **발화 자체에는 상품 의미가 없고 맥락에만 있다** —
+  두 규칙의 교집합이 정확히 이 입력이다. 모델이 새 규칙의 "발화에 없으면 비워라·지어내지 마라"를
+  **"맥락에서 끌어와 해소하는 것도 하지 마라"** 로 일반화하면 관측(`screenExactPick` 하락 +
+  목록 밖 확정 시도 증가)과 부합한다. 트리거를 **"발화에도 PRIOR_FILTERS·LAST_RECOMMENDATIONS·
+  SCREEN 맥락에도 없으면"** 으로 좁힌 판(+143자 — 반증된 최단판보다 **길다**)이 31·31·29(평균
+  30.33)로 가장 나았다. 좁힘은 회귀 회피용 임기응변이 아니라 **코드 의미와 일치**한다 —
+  `semantic_query_is_fallback = not (llm_sq or cat_signal or prior_sq)` 이라 맥락이 있으면
+  플래그는 어차피 False 이고 판정은 `prior is None` 첫 턴 한정이다. 넓게 쓴 문면이 코드보다
+  넓게 말하고 있었던 것이다. 다만 **완전히 회복되지는 않았다**(잔여 −1.67) — 약 −2 는 이 규칙에
+  내재하는 비용으로 보인다.
+- 규칙: **긴 프롬프트에 규칙을 더할 때는, 그 규칙이 기존 규칙과 겹치는 입력이 무엇인지 먼저
+  찾고 그 교집합에서 두 규칙이 서로 반대를 지시하지 않는지 확인한다.** 새 규칙의 트리거는
+  **코드가 실제로 보는 조건과 같은 넓이**로 써라 — 코드보다 넓게 쓰면 코드가 안 보는 입력까지
+  끌려간다. 회귀가 나면 "문면을 줄이면 낫겠지"부터 시도하지 말고 **줄여 보고 반증하라**(싸다).
+  그리고 회귀 축은 **하위축 합인지 독립 축인지** 먼저 가려라 — `screenResolution` 은
+  `screenExactPick`+`screenNoHallucination`+`screenReask` 의 합이라 "두 축이 깎였다"로 쓰면
+  같은 사실을 두 번 센 것이 된다.
+- 곁가지(같이 잰 것): 같은 취지를 **상단 JSON 스키마 줄**에만 적은 판은 `missRate` 24.1%,
+  **규칙 절 불릿**으로 적은 판은 17.0% 였다 — 스키마 줄은 값의 **형식**을 말하는 자리라 행동
+  규칙의 무게가 실리지 않는다. 또 같은 취지를 두 군데에 서로 다른 말로 적으면 **인용 가능한
+  문면이 두 개**가 돼 모델이 빈 문자열 대신 그 말을 적는다(실측 산출 `'상품 의미'` ·
+  `'상품의 의미를 추출하지 못해 빈 문자열'`, `missRate` 17.0% → 48.2%). 규칙은 **행동을
+  지시하는 절에 한 군데만** 적는다.
+- 관련: #430 · `evals/underspecified_probe/baselines/fast-2026-08-07-430-after-1/README.md`
+  (후보 선별표 — sha12 로 재현 가능) ·
+  `evals/intent_probe/baselines/fast-2026-08-07-430-after-1/README.md`(타축 대조표) ·
+  [2026-08-07] 「안 먹히는 프롬프트 지시는…」 항목
+
+## [2026-08-07] `evals/intent_probe --prompt` 는 screen 축을 **재지 못한다** — 후보를 리포에 넣고 재야 한다
+- 증상: #430 에서 `--prompt <후보파일>` 로 before 팔을 잰 뒤 after(리포 `_SYSTEM`)와 대조했더니
+  screen 축이 어긋났다. 같은 before 프롬프트인데 진단 `screenPromptLayerHitCount` 가
+  `--prompt` 런 16·18 대 리포 런 21·28 로 갈렸다 — 프롬프트가 같은데 값이 다르면 계측이 틀린 것이다.
+- 원인: `SystemPromptOverrideLLM`(`evals/intent_probe/client.py`)은 통과하는 decompose
+  `complete` 의 system 을 후보 텍스트로 갈아끼우는데, **screen 이 실린 셀은 프로덕션에서
+  `_SYSTEM_WITH_SCREEN`**(= `_SYSTEM` + `_SCREEN_CART_RULE`)을 쓴다. 오버라이드가 그 문면까지
+  평평한 후보 텍스트로 덮어 화면 지목 규칙이 통째로 빠진 채 측정된다. `PASSTHROUGH_SYSTEMS` 는
+  보조 분류기만 보호하고 이 변형은 보호하지 않는다.
+- 규칙: **screen 축(`screenExactPick`·`screenResolution`·`screenNoHallucination`·`screenReask`
+  와 두 screen 진단)이 걸린 후보는 `--prompt` 로 재지 마라** — 후보를 리포 `_SYSTEM` 에 넣고
+  `--prompt` 없이 돌려 `prompt.source == "repo:_SYSTEM"` 으로 만든다(before 팔도 파일을 되돌려
+  같은 방식으로). `--prompt` 런을 **통째로 버리지는 마라** — 비-screen 축에서는 프롬프트
+  문자열이 리포 판과 같아 여전히 유효하다. 어느 축에 어느 런을 썼는지 산출물 README 에 적어라.
+- 관련: #430 · `evals/intent_probe/README.md` 「⚠️ `--prompt`/`--prompt-rev` 런은 screen 축을
+  재지 못한다」절 · `evals/intent_probe/baselines/fast-2026-08-07-430-after-1/README.md`
+## [2026-08-07] 변이 검증 원복에 `git checkout --` 을 쓰면 **미커밋 신규 테스트가 함께 날아간다**
+- 증상: 수정이 효력 있는지 보려고 코드를 일시 변이시킨 뒤 `git checkout -- tests/...` 로 되돌렸다.
+  그런데 그 테스트 파일에는 **아직 커밋 안 한 신규 테스트**가 들어 있었고, checkout 이 HEAD 상태로
+  되돌리면서 통째로 삭제됐다. 그대로 커밋했으면 "회귀 테스트를 붙였다"는 커밋 메시지와 달리
+  **코드 수정만 들어가고 테스트는 없는 커밋**이 나갈 뻔했다(`git show --stat` 이 파일 1개만
+  보여줘서 알아챘다). 복원하며 이미 있던 테스트를 다시 붙여 **중복까지 만들었다**.
+- 원인: 변이 검증의 원복 수단으로 **작업 트리 기준(checkout)** 을 썼다. 변이는 "지금 상태"에서
+  일시적으로 벗어났다 돌아오는 것인데, checkout 의 기준점은 "지금"이 아니라 HEAD 다. 미커밋
+  변경이 있으면 두 기준이 어긋난다.
+- 규칙: 변이 검증 원복은 **파일 사본**으로 한다(`cp file bak` → 변이 → `cp bak file`). git 명령을
+  원복에 쓰지 않는다. 그리고 변이 검증이 끝나면 **`git status`·`git show --stat` 으로 의도한
+  파일이 전부 들어갔는지 확인**한 뒤 커밋한다 — 특히 "테스트를 추가했다"고 적은 커밋에 테스트
+  파일이 없으면 그 자체가 신호다.
+- 관련: 이슈 #356 / PR #410, `tests/unit/test_profile_resolver.py`
+
+---
+
+## [2026-08-07] 같은 계열 지적이 반복되면 **그 건이 아니라 계열을 막는 가드**를 세운다
+- 증상: PR #410 리뷰가 20건 나왔는데 절반이 두 뿌리였다. ① **LLM 출력을 경계에서 안 막음**
+  (`predicate`·`source` Literal → `salience` 범위 → `anchor_phrase` 길이 → 상품 id 표기 →
+  숫자 크기, 6건) ② **낡은 값과 새 값을 같은 자로 비교**(저장 상한 `evidence_refs` 로 요약 판정 →
+  지문의 `resolution`·`evidence_*` → 이월 tombstone 의 confidence 박제, 4건). 매번 **지적된 한
+  건만** 고쳐서 다음 인스턴스를 리뷰가 계속 찾아냈다 — 두더지잡기였다.
+- 원인: 수정 단위를 "리뷰가 가리킨 줄"로 잡았다. 같은 계열이 두 번 나온 시점에 **그 계열의 표면
+  전체**를 훑었어야 했는데, 매번 국소 수정으로 닫으니 리뷰만이 전수 조사 역할을 했다.
+- 규칙: **같은 계열 지적이 2회 이상이면 국소 수정을 멈추고 (a) 그 계열의 표면을 전수 정리하고
+  (b) 새 인스턴스가 자동으로 걸리는 가드를 만든다.** 가드는 "표에 적은 것만 검사"가 아니라
+  **산출물 전체를 훑는 불변식**이어야 한다 — 이번 ②의 가드
+  `{e.decay_evaluated_at for e in document.edges} == {now}` 는 어떤 경로로 만들어진 edge 든
+  걸리지만, ①의 적대적 입력 표는 표에 없는 새 필드를 못 잡는다(그건 가드가 아니라 회귀 테스트다).
+  전수 불변식을 못 세우는 계열은 그 한계를 **명시**하고 넘어간다.
+- 덧: 리뷰 대응에는 **멈추는 기준**도 필요하다. 재현되고 영향 있으면 고치고, 잠재+저비용이면
+  고치고, 설계 논쟁이거나 이미 근거를 적어둔 지점의 재지적이면 **회신만 하고 코드는 두는 것**이
+  정당한 마무리다(이번 `product` `verified=False` 가 그 사례).
+- 관련: `app/agents/profile/graph_merge.py::_carried_tombstones`,
+  `tests/unit/test_profile_graph_merge.py::test_decay_clock_is_one_snapshot_per_batch`,
+  `tests/unit/test_profile_resolver.py::test_numeric_labels_are_bounded_by_domain_range`,
+  이슈 #356 / PR #410
+
+---
+
+## [2026-08-07] 선례를 옮길 때는 **tier·모델이 같은지** 먼저 본다 — 값이 모델 종속이면 그대로 400 이 된다
+- 증상: #356 델타 추출이 `max_tokens=800` 하드코딩 탓에 출력 예산 소진으로 죽는 걸 프로브가 잡아,
+  #325(enrichment) 선례를 그대로 옮겨 `max_tokens` 상향 + `reasoning_effort="minimal"` 고정을
+  넣었다. 그러자 프로브가 **8/8 전부 실패**했다 — `400 Unsupported value: 'reasoning_effort'
+  does not support 'minimal' with this mode`. #325 는 **fast tier(gpt-5-nano)** 이고 델타 추출은
+  **smart tier(gpt-5.6-luna)** 라, 같은 문자열이 한쪽에선 되고 한쪽에선 거절된다. 이 모델은
+  이미 `openai_tool_reasoning_incompatible_models` 에 올라 있었는데 확인하지 않았다.
+- 원인 둘: (1) "같은 함정 → 같은 대응"으로 선례를 통째 복사했다. 함정(출력 예산)은 같아도 대응
+  일부(effort 값)는 **모델 능력에 종속**이라 이식 대상이 아니었다. (2) 애초에 effort 고정은
+  **측정된 문제를 푸는 데 필요 없었다** — 실패 원인은 예산이었고 `max_tokens` 만으로 0건이 됐다.
+  필요 없는 노브를 얹었다가 그 노브가 전부를 깨뜨렸다.
+- 규칙: 다른 이슈의 대응을 옮길 때는 **어떤 값이 모델·tier 종속인지 먼저 가른다**(`max_tokens`
+  는 이식 가능, `reasoning_effort`·모델 id·tool 지원 여부는 아니다). 그리고 **측정이 요구하지
+  않은 노브는 넣지 않는다** — 측정으로 확인한 최소 변경부터 적용하고, 그것으로 해결되면 거기서
+  멈춘다. 이번엔 노브를 빼자 테스트 fake 5개 파일 수정도 통째로 불필요해졌다.
+- 관련: `app/core/config.py::profile_delta_max_tokens`, `app/agents/profile/builder.py`,
+  `openai_tool_reasoning_incompatible_models`, 이슈 #356 / #325 / PR #410
+
+---
+
+## [2026-08-07] 프로브가 프로덕션 호출을 **복제**하면, 이미 고친 결함을 계속 "실패"로 보고한다
+- 증상: `scripts/probe_delta_prompt_356.py` 가 `llm.complete(..., max_tokens=800)` 로 프로덕션
+  호출을 베껴 두고 있었다. 그 800 이 원인이라 `builder` 쪽을 config 주입(2048)으로 고쳤는데,
+  프로브를 다시 돌려도 **똑같이 2건 실패**로 나왔다. 프로브가 자기 하드코딩을 계속 쓰고 있어서다.
+  "고쳤는데 왜 그대로지"로 한참 헤맬 뻔했다.
+- 원인: 프로브의 목적은 **프로덕션이 무엇을 하는지 재는 것**인데, 호출 파라미터를 프로덕션에서
+  읽지 않고 손으로 옮겨 적었다. 그 순간 프로브는 프로덕션이 아니라 "예전의 프로덕션"을 잰다.
+- 규칙: 계측 스크립트는 **프로덕션 코드를 부르거나 프로덕션 설정을 읽는다.** 파라미터·정규식·
+  임계를 스크립트에 베껴 쓰지 않는다(같은 이유로 이 프로브의 밴드 라벨 검사도 정규식을 복제하지
+  않고 `_resolve_band` 를 직접 부른다). 베낀 값이 하나라도 있으면 그 값이 갈리는 순간 프로브
+  결과는 근거가 아니라 오해가 된다.
+- 관련: `scripts/probe_delta_prompt_356.py::run_prompt`·`_band_accepted`,
+  `app/agents/profile/builder.py::generate_session_delta`, 이슈 #356 / PR #410
+
+---
+
+## [2026-08-07] 명세의 "예: A vs B"를 목록으로 옮기면, 예시가 규칙이 되어 나머지가 조용히 빠진다
+- 증상: #356 `_resolve_conflicts` 가 상충 쌍을 `_CONFLICTING = {{"likes", "avoids"}}` 하나로
+  하드코딩했다. 그런데 `resolver._POSITIVE_PREDICATE` 는 kind 마다 다른 긍정을 만든다
+  (`priceBand`·`ratingBand`·`attribute` → `prefers`, `situation` → `interestedIn`). 그래서
+  "3만원대를 선호한다" + "3만원대는 싫다" 가 **둘 다 `active` 로 공존**하고, `_summary_input` 은
+  non-active 만 거르므로 모순된 두 fact 가 요약 LLM 입력에 **함께** 들어갔다(실측 재현:
+  `['30000-50000 를 선호한다', '30000-50000 를 싫어한다']`). 7개 kind 중 4개가 구멍이었다.
+  Claude PR 리뷰가 잡았다.
+- 원인: SPEC REQ-PGRAPH-018 이 "상충하는 관계(`likes` vs `avoids` 같은 node 대상)"라고 **예시**로
+  적은 것을, 구현이 **열거해야 할 목록**으로 읽었다. 예시를 자료구조로 옮기는 순간 그 예시가
+  규칙이 되고, 예시에 없던 경우는 "빠뜨렸다"가 아니라 "원래 대상이 아니다"처럼 보인다.
+- 규칙: 명세가 "예: A" 로 쓴 것을 코드에 옮길 때는 **A 를 등록하지 말고 A 를 만들어내는 성질을
+  구현한다.** 여기서는 쌍 3개를 등록하는 대신 "부정 vs 임의의 긍정"으로 판정을 바꿨다 —
+  긍정 predicate 가 하나 더 생겨도 자동으로 따라온다. 옮긴 뒤에는 **명세 쪽에 그 성질을 명시**해
+  다음 사람이 같은 오독을 하지 않게 한다(v0.2.3 명확화). 열거가 불가피하면 열거 대상을 만드는
+  원본(여기서는 `resolver._POSITIVE_PREDICATE`)과 **한 테스트에서 대조**한다.
+- 관련: `app/agents/profile/graph_merge.py::_resolve_conflicts`(`_NEGATIVE_PREDICATE`·
+  `_POSITIVE_PREDICATES`), `app/agents/profile/resolver.py::_POSITIVE_PREDICATE`,
+  SPEC-PROFILE-GRAPH-149 REQ-PGRAPH-018(v0.2.3), 이슈 #356 / PR #410
+
+---
+
+## [2026-08-07] 직관과 반대인 설계는 **근거**를 테스트로 잠근다 — 안 그러면 다음 사람이 버그로 읽고 뒤집는다
+- 증상: #356 `_truncate` 는 절단 시 `active`(살아 있는 취향)를 `superseded`(충돌에서 진 취향)보다
+  **먼저** 버린다. 리뷰가 이를 "정렬 방향이 뒤집혔다"는 버그로 읽고 부등호를 뒤집으라고 제안했다.
+  실제로 뒤집어 돌려 보니 요약 입력이 `['소니를 싫어한다', '애플을 좋아한다']` 에서
+  `['소니를 좋아한다', '소니를 싫어한다', ...]` 로 바뀌었다 — **진 취향이 부활**한다.
+- 원인 둘: (1) docstring 을 "등급이 낮은 쪽부터 밀린다"로 써서 1/2/3 번호를 반대로 읽을 여지를
+  남겼다. **방향을 서술어로 쓰지 않고 등급 번호에 맡긴 것**이 잘못이다. (2) 더 중요하게,
+  이 순서를 정당화하는 **비대칭이 테스트에 없었다** — `builder._summary_input` 이 문서에 없는
+  `edge_key` 를 `active` 로 간주하므로, active 가 잘려도 그 fact 는 요약에 남지만 superseded 가
+  잘리면 진 취향의 원문이 통과한다. 이 비대칭이 순서의 유일한 근거인데 어디에도 안 적혀 있었다.
+- 규칙: 설계가 **직관과 반대 방향**이면 (a) 방향을 문장으로 명시하고("먼저 밀려나는 순서: A → B"),
+  (b) **왜 그 방향인지의 근거 자체를 테스트로 잠근다.** 결과만 잠그면 다음 사람이 "이게 왜
+  이렇지?" 하고 뒤집을 때 테스트가 함께 고쳐질 뿐이다. 리뷰가 방향을 반대로 읽었다면 그건
+  리뷰어의 오독이기 전에 **코드가 방향을 설명하지 못한 증거**다.
+- 관련: `app/agents/profile/graph_merge.py::_truncate`,
+  `tests/unit/test_profile_consolidate_graph.py::test_truncated_superseded_edge_lets_the_losing_preference_back_into_summary`,
+  이슈 #356 / PR #410
+
+---
+
+## [2026-08-07] 검증 없는 dataclass 를 경유하면 스키마 위반이 **한참 뒤에** 터져 배치를 죽인다
+- 증상: #356 `graph_merge._observation` 이 저장 payload 를 읽으면서 `node` 만
+  `GraphNode.model_validate` 로 검증하고 `predicate`·`edge_key`·`edge_id` 는 그대로 통과시켰다.
+  받는 그릇 `_Observation` 이 **검증 없는 plain dataclass** 라 아무 값이나 실린다. 그래서
+  `predicate="hates"` 같은 손상 payload 는 "모양이 깨진 항목은 조용히 버린다"는 그 함수의
+  docstring 을 통과하고, 한참 뒤 `_merge_edge` 의 `GraphEdge(...)` 생성에서야 처음으로
+  `ValidationError` 를 냈다. 그 지점엔 잡는 코드가 없어 `finalizer` 최상위 `except Exception`
+  까지 새고, 손상 fact 는 저장소에서 자동으로 안 지워지므로 **session-end 마다 같은 자리에서
+  RETRYABLE 만 반복**된다(poison record). REQ-PGRAPH-004 의 degrade("못 만든 fact 는 개수만
+  센다")를 우회한 셈이다. Claude PR 리뷰가 잡았다.
+- 원인: "검증했다"를 **필드 단위가 아니라 객체 단위**로 셌다 — payload 안에 pydantic 모델
+  필드(`node`)가 하나 있으니 검증이 걸렸다고 여겼다. 나머지 필드는 나중에 pydantic 모델로
+  들어가긴 하지만, 그 "나중"이 **degrade 경계 밖**이라는 것이 문제였다.
+- 규칙: **경계에서 들어오는 payload 는 뒤에서 강제될 제약을 그 경계에서 미리 건다.** 중간에
+  검증 없는 dataclass·`TypedDict`·`dict` 를 경유한다면, 그 지점이 곧 검증 공백이다. 특히
+  "여기서 걸러 degrade 한다"고 docstring 에 적은 함수는 **적은 만큼 실제로 거르는지** 손상값
+  파라미터라이즈 테스트로 확인한다. 방어를 호출부(배치 전체)로 올리는 선택지는 마지막이다 —
+  거기서 잡으면 손상 1건 때문에 배치 전체가 버려진다.
+- 관련: `app/agents/profile/graph_merge.py::_observation`(`_PREDICATES`),
+  `::_merge_edge`, `app/agents/profile/finalizer.py:171`, 이슈 #356 / PR #410
+
+---
+
+## [2026-08-06] `datetime` 뺄셈은 naive-aware 혼합에서 `ValueError` 가 아니라 `TypeError` 다
+- 증상: #356 `graph_merge._elapsed_days` 가 "파싱 불가 타임스탬프로 감쇠를 추측하지 않는다"며
+  `except ValueError` 로 감쌌는데, 오프셋 없는 관측 시각이 하나라도 섞이면
+  `TypeError: can't subtract offset-naive and offset-aware datetimes` 로 **가드를 통과해**
+  consolidation 배치가 통째로 죽는다. 현재 소스는 양쪽 다 aware 라(`_now_iso` ·
+  store 의 `created_at TIMESTAMP WITH TIME ZONE`) 재현되지 않는 잠재 결함이었고, PR #410
+  전체 점검에서 코드를 읽다 찾았다.
+- 원인: `datetime.fromisoformat` 의 실패(`ValueError`)만 떠올리고 **뺄셈 자체의 실패**를 빼놓았다.
+  방어 코드를 쓸 때 "무엇이 실패하나"를 함수 단위가 아니라 **식(expression) 단위**로 세지 않았다.
+- 규칙: 시각 연산 방어는 `except (ValueError, TypeError)` 로 잡는다. 더 일반적으로, `try` 안에
+  **연산이 두 개 이상 있으면 각각의 예외 타입을 따로 확인**한다 — 파싱과 연산은 다른 예외를 낸다.
+  tz 혼합을 "우리 코드에선 안 생긴다"로 넘기지 않는다(전제가 깨지는 비용이 배치 전멸이다).
+- 관련: `app/agents/profile/graph_merge.py::_elapsed_days`, 이슈 #356 / PR #410
+
+---
+
+## [2026-08-06] 방어용 상한과 HARD 불변식이 같은 자료를 두고 만나면, 우선순위를 안 적은 쪽이 조용히 진다
+- 증상: #356 `_truncate` 는 "tombstone 을 먼저 지킨다"고 docstring 에 적고 `(protected + rest)[:limit]`
+  로 구현했다. `protected` 가 `profile_graph_max_edges`(200)를 **넘는 순간** 그 슬라이스는
+  protected 자체의 꼬리를 잘라내, 지킨다고 적힌 tombstone 이 사라진다. tombstone 이 없어지면
+  `_carried_tombstones` 가 보존할 대상을 잃고 같은 `edge_key` 가 다음 배치에 새 `active` 로
+  파생돼 **지운 취향이 부활**한다(AC-PROF-31 — 이 이슈의 존재 이유가 무력화된다).
+  기존 테스트는 `protected(1) <= limit(1)` 만 재고 있어 경계를 못 잡았고, PR #410 Claude 리뷰가 잡았다.
+- 원인: 상한(저장 폭주 방어)과 불변식(삭제 실효, HARD)이 **같은 리스트를 두고 충돌**하는데 둘의
+  우선순위를 코드에도 SPEC 에도 안 적었다. 안 적으면 자료구조 연산(여기서는 슬라이스)의 우연한
+  성질이 대신 결정한다 — 그리고 그 결정은 대개 "먼저 쓴 쪽"이 아니라 "나중에 자르는 쪽"이 이긴다.
+- 규칙: **상한을 다루는 코드는 "무엇을 먼저 자르는가"를 명시**하고, 상한 안에 든 경우와 **넘는
+  경우를 따로 테스트**한다(`n <= limit` 만 재는 테스트는 상한 코드를 검증하지 않은 것이다).
+  HARD 불변식과 방어용 상한이 부딪히면 **불변식이 이기고, 상한 초과는 로그로 드러낸다** — 조용히
+  넘기지도, 조용히 지우지도 않는다. 복구 경로가 있는 항목(`superseded`: 재파생으로 자기복구)과
+  없는 항목(`suppressed`: 사용자 삭제)을 한 등급으로 묶지 않는다.
+- 관련: `app/agents/profile/graph_merge.py::_truncate`, `app/core/config.py::profile_graph_max_edges`,
+  SPEC-PROFILE-GRAPH-149 REQ-PGRAPH-005(v0.2.2 절단 우선순위), 이슈 #356 / PR #410
+
+---
+
+## [2026-08-06] 워크트리의 `docker compose ps` 가 비어도 컨테이너는 떠 있다 — "DB 없음"을 가정하지 마라
+
+- 증상: `#356` 시드 스크립트를 돌리기 전 `docker compose ps` 로 확인했더니 서비스가 하나도 없어
+  "InMemory 폴백으로 돌겠구나" 하고 실행했는데, 실제로는 **실 pg-profile 에 연결**돼
+  `EmbeddingError: google_api_key 미구성` 으로 죽었다. 스크립트 docstring 에는 그 반대로
+  "GOOGLE_API_KEY 가 없으면 category 노드만 드롭되고 나머지는 정상 생성된다"고 적혀 있었다.
+- 원인 두 가지가 겹쳤다.
+  (1) **compose 프로젝트 이름은 디렉터리마다 다르다.** 메인 체크아웃에서 띄운
+      `jarvis-ai-final-pg-profile-1` 은 워크트리의 `docker compose ps` 목록에 안 잡히지만
+      호스트 포트 5434 는 그대로 열려 있어 `profile_db_url` 이 그냥 붙는다. 워크트리는 코드만
+      격리하고 **호스트 포트는 공유**한다.
+  (2) `add_fact` 는 store 의 semantic 인덱스(`fields: ["fact"]`, REQ-PROF-070/071)를 타므로
+      **fact 를 하나 넣을 때마다 실 임베딩 API 를 부른다.** 실 pg-profile 을 쓰는 한
+      GOOGLE_API_KEY 는 선택이 아니라 필수인데, 임베딩을 "category 어휘 스냅에만 쓴다"고
+      착각해 전제를 잘못 적었다.
+- 규칙:
+  - 워크트리에서 인프라 유무를 판단할 때는 `docker compose ps` 가 아니라 **`docker ps`** 로 본다.
+    폴백 경로를 전제한 스크립트·테스트는 특히 그렇다(로컬에 떠 있는 실 Spring 을 유닛 테스트가
+    잡아 결과가 뒤집힌 2026-08-05 항목과 같은 부류다 — 주입하지 않은 기본값은 하네스 경계 밖이다).
+  - 스크립트 docstring 의 `전제`·`비용` 절은 **한 번 실행해 보고 적는다.** 추측으로 적으면 그
+    문장이 다음 사람에게 그대로 틀린 근거가 된다.
+  - "이 기능은 임베딩을 쓰는가"를 판단할 때 내가 직접 부르는 곳만 보지 말고 **저장소 인덱스
+    설정(`index=`)** 도 확인한다. 쓰기 한 번이 곧 임베딩 한 번인 경로가 있다.
+- 관련: `scripts/seed_profile_graph_356.py`, `app/agents/profile/store.py`(`_pg_index_config`),
+  `app/pipelines/embedding.py:84`, 이슈 #356
+
+---
+
+## [2026-08-07] PR 이 리뷰 워크플로 자신을 고치면 Claude 리뷰는 그 PR 에서 돌지 않는다
+- 증상: PR #459(`.github/workflows/claude-review.yml` 을 수정하는 PR)의 review run
+  (`gh run view 31169027311`)에 `##[warning]Skipping action due to workflow validation:
+  Workflow validation failed. The workflow file must exist and have identical content to the
+  version on the repository's default branch.` 가 찍히며 액션이 통째로 건너뛰어졌다. **체크는
+  초록(success)이라 겉보기엔 리뷰가 끝난 것처럼 보이는데 실제로는 리뷰가 0줄도 돌지 않았다** —
+  "리뷰 통과"로 오독하기 쉽다. 액션이 `execution_file` 을 만들지 않으므로, 그 파일로 성공을
+  판정하는 후속 스텝(`save-state`)도 "미완료"로 본다. 대조 근거: 같은 시각 워크플로를 건드리지
+  않은 다른 PR 의 run(`31168319751`)에는 이 경고가 0건이고
+  `Log saved to /home/runner/work/_temp/claude-execution-output.json` 이 정상적으로 찍혔다.
+- 원인: `anthropics/claude-code-action@v1` 자체의 보호장치 — 워크플로 파일이 **기본 브랜치
+  버전과 바이트 단위로 동일**해야만 실행된다(PR 이 워크플로를 고쳐 시크릿을 빼돌리는 것을 막는
+  장치). 이 저장소의 기본 브랜치는 `dev` 다(`gh repo view --json defaultBranchRef` 실측).
+- 규칙: 리뷰 워크플로(`.github/workflows/claude-review.yml`)를 바꾸는 PR 은 **그 PR 자체로는
+  Claude 리뷰를 받을 수 없다** — 사람 리뷰나 별도 교차 리뷰로 대체하고, PR 본문에 그 사실을
+  적는다. 그런 PR 에서 review 체크가 초록인 것을 "리뷰 통과"로 읽지 마라. Actions 로그에서
+  `Skipping action due to workflow validation` 유무를 확인한다. 워크플로 변경의 실제 동작 검증은
+  **기본 브랜치에 병합된 다음** 첫 PR 들에서 한다.
+- 관련: #457, PR #459, `.github/workflows/claude-review.yml`, run 31169027311(경고 발생) ·
+  run 31168319751(정상 실행 대조)
+
+## [2026-08-07] `git diff` 출력을 정규식으로 파싱하면 파일이 조용히 사라진다
+- 증상: 비-ASCII(한글) 경로가 있으면 git 이 기본값(`core.quotePath=true`)으로 따옴표 인코딩해
+  `diff --git "a/app/\355\225\234..." "b/..."` 형태로 내는데, `^diff --git a/(.*) b/(.*)$` 류
+  정규식이 이 줄을 못 잡아 그 파일이 파싱 결과(지문 딕셔너리)에서 **통째로 빠졌다**(#457 프로브
+  실측: keys 에 아예 없음). 빠진 파일은 "변경 없음"으로 오판돼 리뷰 없이 통과한다. 반대 방향
+  실수도 같이 나왔다 — 바이너리 파일은 `index <sha>..<sha>` 줄이 유일한 내용 신호인데, 그 줄을
+  "잡음"으로 보고 정규화(제거)하면 서로 다른 바이너리 내용이 같은 지문이 된다(실측으로 지문
+  일치를 직접 확인).
+- 원인: git 산출물(diff·경로 목록)을 파이썬 정규식으로 파싱할 때, git 의 기본 인코딩/이스케이프
+  동작을 신뢰하지 않고 "보통은 이렇게 나온다"는 가정으로 정규식을 짰다. 또한 diff 안의 각 줄이
+  "잡음"인지 "유일한 내용 신호"인지를 그 줄이 사라졌을 때 어떤 정보가 없어지는지로 따지지 않고
+  일괄로 정규화했다.
+- 규칙: git 산출물을 파싱할 때는 (a) `-c core.quotePath=false` 로 원문 경로를 그대로 받고,
+  (b) `git diff --name-only -z` 처럼 **권위 있는 목록과 대조하는 불변식**을 걸어 파싱 결과와
+  어긋나면 조용히 넘어가지 말고 안전 방향으로 fail-safe 하며, (c) 특정 줄을 정규화(제거)하기
+  전에 "그 줄을 지우면 어떤 정보가 사라지는가"를 먼저 묻는다(바이너리의 `index` 줄처럼 유일한
+  신호일 수 있다).
+- 관련: #457, `.github/scripts/review_mode.py`(`split_patch_by_file`·
+  `_validate_fingerprint_coverage`·`_normalize_for_fingerprint`)
+
+## [2026-08-07] PUBLIC 저장소의 PR 코멘트는 신뢰 저장소가 아니다 — 작성자를 확인해야 한다
+- 증상: CI 상태(Claude 리뷰의 "마지막 성공 리뷰" 지점)를 PR 코멘트 마커에 저장하면서 작성자를
+  확인하지 않았다 — 아무 GitHub 사용자나 같은 마커가 든 코멘트를 위조해 올리면 다음 실행이 그걸
+  "마지막 성공 리뷰"로 믿어 **코드리뷰 게이트를 통째로 끌 수 있는** 경로가 생겼다(`gh repo view`
+  실측: 이 저장소는 PUBLIC 이라 아무나 코멘트를 달 수 있다).
+- 원인: "코멘트에 마커가 있으면 우리가 쓴 것"이라고 암묵적으로 가정했다 — 신원(작성자)과 형식
+  (마커 문자열)을 구분하지 않았다. 설계 단계에서 "이 상태 저장소를 외부 입력이 조작할 수 있는가"
+  를 묻지 않았다.
+- 규칙: GitHub 코멘트/이슈 본문처럼 **누구나 쓸 수 있는 곳**에 CI 가 읽는 상태를 둘 때는
+  마커/형식뿐 아니라 **작성자(`user.login`+`user.type`)를 반드시 검증**하고, 신뢰할 수 있는
+  작성자의 것이 없으면 "상태 없음"으로 취급해 안전한 방향(재검사·재실행)으로 떨어진다. 새 저장
+  메커니즘을 설계할 때는 "외부 입력만으로 이 게이트를 끌 수 있는가"를 가장 먼저 묻는다.
+- 관련: #457, `.github/scripts/review_mode.py`(`filter_trusted_state_comments`)
+
+## [2026-08-07] 카테고리 임베딩은 "소속"이 아니라 "경로 문자열과의 표면 근접"을 잰다
+- 증상: "과일 추천해줘"류 발화가 전개(#217)로 "바나나·사과·배·오렌지"를 냈는데 재매핑에서
+  "배"가 여성가방·신생아의류·실버용품·유아목욕용품 같은 무관 카테고리로 흩어졌다(#428). 거리컷
+  (`category_distance_max=0.26`)을 올려서 살리려 해봤자, 그 구간엔 이미 오답
+  `'배' → 여성가방 > 백팩`(0.3184)이 들어와 있어 오답을 통과시켜야 정답도 통과했다(임계 축은
+  #344 가 이미 캘리브레이션해 기각됨).
+- 원인: leaf 이름과 상품명이 **문자 그대로 겹치면** 임베딩 거리가 0.19~0.21 로 짧게 나와
+  거리컷을 여유 있게 통과하지만, 상품이 그 카테고리의 **인스턴스일 뿐**이면(바나나 ∈
+  과일 > 국산과일) 0.27~0.33 으로 컷 턱걸이거나 넘는다(실측: 사과 0.2732 · 바나나 0.2908 ·
+  라면 0.2676 · 배 0.3184~0.3358, `evals/category_probe/fixtures/anchors.json`
+  `instance-mft-*` 셀). 카테고리 임베딩이 "이 상품이 이 카테고리에 속하는가"를 재는 게
+  아니라 "이 텍스트가 이 카테고리 **경로 문자열**과 표면적으로 얼마나 가까운가"를 재기
+  때문이다 — `decompose`·`map_categories` 프롬프트 예시가 우연히 leaf 이름과 겹치는 발화만
+  써 왔다면(예: "청바지"↔`청바지`, "커튼"↔`커튼`) 이 실패 모드가 가려진 채 정상 동작하는
+  것처럼 보인다.
+- 규칙: **전개·매핑 프롬프트 예시가 leaf 이름과 우연히 겹치는 발화만으로 검증하지 말 것** —
+  임계·프롬프트를 튜닝할 때는 leaf 이름 리터럴 발화(대조군)와 **인스턴스형 표본**(leaf 의
+  구체 사례를 부르는 발화)을 나란히 넣어 대비를 측정한다. 카테고리별 실패를 임계 상향으로
+  고치려 하기 전에, 그 구간에 이미 들어와 있는 오답이 없는지 먼저 확인한다(임계는 만능이
+  아니다 — 여기서는 재매핑 leaf 선정 경로의 결함이었지 임계 문제가 아니었다, #428 이 도입한
+  대분류 합의 필터 참조).
+- 규칙(추가, 리뷰 1차 F-1 — 합의 필터 초판 자체의 결함): 형제 합의 같은 교차 검증 신호는
+  **각자의 최선 답**에서만 세야 한다 — 후보 꼬리까지 세면 어느 발화에나 조금씩 가까운
+  **잡동사니 대분류**가 다수결을 이겨, 정답 후보를 버리고 엉뚱한 대분류만 남긴다(실측:
+  `집들이 선물` 전개가 향수·조명·주방잡화를 버리고 `주얼리` 만 남겼다). 규칙: **한 케이스로
+  검증한 휴리스틱은 반대 성질의 케이스(이질적 전개)로 반드시 반증 시도할 것.** #428 합의
+  필터 초판은 과일 케이스 하나로만 검증됐고 그 케이스에서만 우연히 잘 들었다.
+- 관련: `app/agents/buyer/recommendation/category_mapping.py::_consensus_filter` ·
+  `evals/category_probe/fixtures/anchors.json`(`instance-mft-*`) · #344 · #428
+- 리뷰 2차(Claude PR Review, PR #444) 추가: 새 후처리 단계를 기존 격리 `try/except` **밖**에
+  붙이면 그 모듈이 지켜 온 부분 성공 보존 불변식이 조용히 깨진다 — 격리 규약이 있는 모듈에
+  단계를 추가할 때는 그 규약 안쪽에 넣었는지 먼저 확인할 것.
+- 리뷰 3차(Claude PR Review, PR #444) 추가: 교차 검증 신호(합의·다수결)를 쓸 때는 "합의에서
+  벗어난 소수"와 "정당하게 다른 항목"을 가르는 **별도 근거**가 필요하다 — 지지 개수·비율만으로는
+  둘을 구분 못 한다(리뷰어가 제안한 과반 임계도 `#428` 본체를 깨 기각). 여기서는 "그 대분류가
+  그 형제의 후보 목록에 아예 없는가"가 그 근거였다(우연히 겹친 2개가 세 번째를 지우던 실측:
+  신학기 전개에서 책가방·필통이 `여성가방`에서 겹쳐 물통을 통째로 삭제할 뻔했다).
+- 리뷰 5차(Claude PR Review, PR #444) 추가: 휴리스틱의 전제를 **실측 무재현**으로 방어하지
+  말 것 — 값싼 **구조적 게이트**가 있으면 그걸 건다. 실측은 "이 케이스에서 안 걸렸다"만
+  증명하지 "걸릴 수 없다"를 증명하지 않는다(#444 리뷰가 이 논증을 정확히 짚었다 — 직전
+  라운드에서 "정작 이 이슈가 고치려는 턴엔 그 신호가 없다"는 기각 논증이 틀렸음을 인정하고
+  번복했다: 신호 0개 = 게이트 통과 = 필터 켠 채 유지이지, 게이트 무력화가 아니었다).
+
+## [2026-08-07] "대역이 흉내 낼 수 없다"고 선언하기 전에 대역을 한 층 아래로 내려 봐라
+- 증상: `evals/combo_matrix` 하네스가 하드필터 8축 중 3축(`keyword`·`color`·`attr_conditions`)을
+  "대역이 표현할 수 없는 축"으로 선언하고 `observed.unappliedSearchFilters` 에 이름만 기록하고
+  있었다(#381 D1). 정직한 기록이었지만 그 축들은 present/absent 가 결과에 아무 차이를 만들지
+  않아, **앱 코드가 망가져도 하네스는 초록불**이었다. 실제로 대역이 재구현해 둔 `rating_min` 은
+  앱과 의미가 반대였는데(대역 `rating is not None and rating >= min` vs 앱 "반증된 것만 제거")
+  아무도 못 봤고, `attr_conditions` 판정 코드(축별 완화 재시도 포함)는 하네스에서 **한 번도
+  실행된 적이 없었다**.
+- 원인: 대역이 선 자리가 잘못됐다. `run_buyer_turn(search=...)` 주입은 `search_catalog` 를
+  **통째로** 대체해, 그 안의 dedup·`rating_min`·`attr_conditions` 사후필터 단계까지 같이
+  삼켰다. 사라진 단계를 대역이 손으로 메꾸다 보니 (a) 앱 판정을 재구현하게 되고(규약 위반)
+  (b) 재구현이 앱과 어긋나고 (c) 어긋난 사실이 드러날 경로가 없었다. "대역이 흉내 낼 수 없다"는
+  결론은 **그 자리에서만** 참이었다 — 한 층 아래 `SearchBackend`(실제 네트워크 경계)로 내리면
+  배포 코드가 그대로 돌아서 흉내 낼 필요 자체가 없어진다.
+- 규칙: 대역이 "이 축은 표현 불가"라고 선언하려 할 때, **그 선언을 문서·데이터에 적기 전에 대역이
+  선 자리(seam)를 한 층 아래로 내려서 같은 결론이 나오는지 먼저 확인한다.** 판단 기준은
+  `fakes.py` 규약 그대로 — 대역은 **네트워크를 건너가는 경계**에만 서고, 그 안쪽은 배포 코드가
+  돌아야 한다. 대역이 앱 내부 함수를 대체하고 있으면 그건 이미 자리가 잘못된 신호다.
+  덧붙여 **하네스가 "이 축을 관측한다"고 적어 둔 축은 present/absent 로 관측값이 실제로 갈리는지
+  변이 시험으로 확인한다** — 안 갈리면 그 축은 재고 있는 게 아니다.
+- 관련: 이슈 #426(#381 후속) · `evals/combo_matrix/fakes.py`(`SpringWhereCatalogBackend`) ·
+  `evals/filter_axes/probe.py:83-125`(같은 패턴의 선례가 이미 repo 에 있었는데 참조되지 않았다) ·
+  `evals/combo_matrix/README.md` "필터링 검색 대역의 성격"
+
 ## [2026-08-06] 사용자 대면 문구의 생성 지점이 둘이면 "예외 메시지가 곧 사용자 문구"는 보장이 아니라 조건부다
 - 증상: #269 P0(PR #284)는 `calc.normalize_period` 의 `ValueError` 메시지를 "그대로 판매자에게
   노출되는 문구"로 설계하고 그렇게 주석까지 달았다. 그런데 dev 실측 응답이 코드 원문과 달랐다 —
@@ -179,6 +755,10 @@
 - 관련: `evals.metrics.run_manifest.build_run_manifest`(`commitSha`·`dirty`) ·
   `evals.metrics.report.normalize_artifacts` ·
   `evals.personalization.cli.normalize_paired_artifacts` · #380
+- **후속(#413)**: 정규화가 `commitSha`·`dirty` 축을 정본으로 걷어내 이 함정 자체는 사양으로
+  해소됐다(`evals.metrics.run_manifest.strip_volatile_manifest_keys`). 남은 위험은 `hashes`
+  축뿐 — `uv run pytest` 도중 uv.lock·goldenset·decompose.py·rerank.py·config.py 를 편집하면
+  여전히 실패한다(의도된 계약).
 
 ## [2026-08-06] `ruff format`/`--fix` 는 쓰기 명령이다 — `ruff check` 와 같은 감각으로 전체 스코프에 돌리면 안 된다
 - 증상: #380 리뷰 라운드 1 작업 중 `uv run ruff format .` 을 스코프 없이 전체 리포에 돌렸다.

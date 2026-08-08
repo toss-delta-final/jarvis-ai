@@ -54,6 +54,21 @@ _SYSTEM = """당신은 커머스 어시스턴트의 쇼핑 목록 작성기입�
   {"items": ["행거", "수납 박스", "커튼", "이불"]}"""
 
 
+def count_signal_legs(legs: Sequence[CategoryQuery]) -> int:
+    """ "신호 있는 leg" 개수 — 저장소 규약대로 **`raw_category or query`** 로 본다(PR #203 리뷰).
+
+    `detect_expansion_need` 의 D1(`no_legs`) 판정식과 **동일 식**을 이 함수 하나로 통일한다
+    (규칙은 한 벌 — `resolve_category_action`·`has_new_category_signal` 등에서 이 저장소가
+    지켜 온 규약과 같다). `graph.py` 가 전개 후 재매핑의 `sibling_expansion` 게이트(#428 리뷰
+    5차 R5-1)에도 이 식을 그대로 쓴다 — 판정을 두 벌로 만들면 그래프와 이 모듈이 갈라진다.
+    """
+    return sum(
+        1
+        for q in legs
+        if (q.raw_category and q.raw_category.strip()) or (q.query and q.query.strip())
+    )
+
+
 def detect_expansion_need(
     legs: Sequence[CategoryQuery],
     *,
@@ -98,12 +113,7 @@ def detect_expansion_need(
     if case != 3:
         return None
 
-    signals = [
-        q
-        for q in legs
-        if (q.raw_category and q.raw_category.strip()) or (q.query and q.query.strip())
-    ]
-    if not signals:
+    if count_signal_legs(legs) == 0:
         return "no_legs"
 
     # 매핑이 canonical 을 못 낸 leg 이 하나라도 있으면 전개한다. **전부**를 요구하지 않는 이유:

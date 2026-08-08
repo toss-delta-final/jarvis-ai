@@ -21,13 +21,17 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
+from datetime import datetime
 from weakref import WeakValueDictionary
 
 from langgraph.store.base import BaseStore
 from langgraph.store.memory import InMemoryStore
+from pydantic import ValidationError
 
 from app.agents.profile import processed_events, session_activity
+from app.agents.profile.graph_models import GraphDocument
 from app.core.config import get_settings
 from app.core.pg_resilience import (
     hardened_pg_conninfo,
@@ -42,8 +46,24 @@ logger = logging.getLogger(__name__)
 _PROFILE_NS_ROOT = "profile"
 _FACTS_NS_ROOT = "facts"
 _SESSION_NS_ROOT = "session_ctx"
+_GRAPH_NS_ROOT = "graph"
 _SUMMARY_KEY = "summary"
 _SESSION_KEY = "buffer"
+# 그래프는 사용자당 항목 **1개**다(SPEC-PROFILE-GRAPH-149 §7.1) — per-user advisory 잠금이 별도
+# 연결 풀에서 잡혀 store 트랜잭션과 결합되지 않아 다중 항목 원자성이 없고, N개로 쪼개면 전부
+# 찢어진 쓰기 상태를 만든다. 키를 "v1" 로 고정하는 것이 그 단일성의 표현이다.
+_GRAPH_KEY = "v1"
+
+
+def _as_iso(value: object) -> str:
+    """store item 의 created_at 을 ISO-8601 문자열로 — 백엔드가 datetime/str 중 무엇을 줘도 같게.
+
+    InMemoryStore 와 AsyncPostgresStore 가 같은 타입을 준다는 보장이 없는데, 병합이 이 값을
+    정렬 키로 쓰므로(REQ-PGRAPH-015) 타입이 섞이면 비교 자체가 터진다.
+    """
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return str(value)
 
 
 def _normalize_utterance(text: str) -> str:
@@ -114,6 +134,24 @@ def _summary_lock(key: str) -> asyncio.Lock:
     return lock
 
 
+# user_id 별 asyncio.Lock — 그래프 문서(단일 jsonb)의 read-modify-write 를 직렬화한다 (#356).
+#
+# 락 키를 facts·summary 와 분리하는 이유는 #323 과 같다: RMW 대상 상태가 겹치지 않는다.
+# **그래프 락을 쥔 채 set_summary 를 부르지 않는다** — set_summary 는 스스로 summary 락을
+# 잡으므로(#323) 중첩하면 advisory 풀(전역 state_store_pool_max_size)에서 커넥션을 동시에
+# 둘 점유하게 되고, 동시 세션 종료 몇 건이면 풀이 말라 구매자 턴 경로(append_session_ctx)까지
+# 3초 타임아웃으로 죽는다. consolidate() 는 그래프 락을 놓은 뒤 요약을 쓴다.
+_graph_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
+
+
+def _graph_lock(key: str) -> asyncio.Lock:
+    lock = _graph_locks.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _graph_locks[key] = lock
+    return lock
+
+
 def _fake_embed(texts: list[str]) -> list[list[float]]:
     """InMemoryStore 폴백 전용 — 실 임베딩 API 호출 없는 결정론적 벡터(배선만 유지).
 
@@ -176,6 +214,24 @@ class ProfileSummary:
     markdown: str
     generated_at: str  # ISO-8601
     embedding: list[float] | None = None
+
+
+@dataclass
+class FactRecord:
+    """승격된 fact 하나 + 그래프 병합에 필요한 메타 (#356).
+
+    `get_facts()` 가 돌려주는 `list[str]` 로는 그래프를 만들 수 없다:
+      - `fact_key` — `GraphEdge.evidence_refs` 가 **fact key 참조**다(SPEC-PROFILE-GRAPH-149 §5.2).
+      - `created_at` — 병합이 관측을 `(observed_at, fact_key)` 오름차순으로 처리한다(REQ-PGRAPH-015).
+      - `graph_triples` — 쓰기 시점에 resolver 가 확정한 트리플. 배치마다 다시 resolve 하면
+        거리 임계·통제 어휘가 바뀔 때 같은 fact 가 다른 node_id 로 붙어 tombstone 을 우회한다
+        (REQ-PGRAPH-010, SPEC-PROFILE-001 REQ-PROF-086 v0.7.1 보강).
+    """
+
+    fact_key: str
+    fact: str
+    created_at: str  # ISO-8601
+    graph_triples: list[dict]
 
 
 class ProfileStore:
@@ -247,15 +303,41 @@ class ProfileStore:
 
     # ── 장기 fact (승격 결과·consolidation 입력) — fact 1개 = store item 1개(semantic 인덱스) ──
     async def get_facts(self, user_id: str) -> list[str]:
+        return [record.fact for record in await self.get_fact_records(user_id)]
+
+    async def get_fact_records(self, user_id: str) -> list[FactRecord]:
+        """fact + key·생성 시각·확정 트리플 (#356).
+
+        `get_facts()` 를 깨지 않고 더한다 — 호출부 대부분이 문자열만 필요하고, 시그니처를 바꾸면
+        회귀 표면만 넓어진다. 정렬은 `created_at` 오름차순이라 병합의 관측 순서와 같다
+        (REQ-PGRAPH-015).
+        """
         settings = get_settings()
         limit = settings.profile_max_facts + settings.profile_facts_query_margin
         items = await run_with_query_timeout(
             self._store.asearch((_FACTS_NS_ROOT, user_id), limit=limit)
         )
         items.sort(key=lambda it: it.created_at)
-        return [it.value["fact"] for it in items]
+        return [
+            FactRecord(
+                fact_key=it.key,
+                fact=it.value["fact"],
+                created_at=_as_iso(it.created_at),
+                # 구 fact(전환 이전 저장분)에는 이 필드가 없다 — 없는 것이 정상이고
+                # 투영되지 않은 채 unprojected_count 로만 집계된다(REQ-PGRAPH-004).
+                graph_triples=list(it.value.get("graph_triples") or []),
+            )
+            for it in items
+        ]
 
-    async def add_fact(self, user_id: str, fact: str, *, cap: int | None = None) -> None:
+    async def add_fact(
+        self,
+        user_id: str,
+        fact: str,
+        *,
+        cap: int | None = None,
+        graph_triples: list[dict] | None = None,
+    ) -> None:
         if not fact:
             return
         settings = get_settings()
@@ -277,10 +359,31 @@ class ProfileStore:
             # session finalizer 재처리(clear_session_ctx_upto 실패·I-20 재전송·다음 idle sweep)로 같은
             # 델타가 다시 뽑혀도 중복 fact 가 안 쌓이게 하는데, dedup 을 cap 분기 안에만 두면 새
             # 호출부가 cap 인자를 실수로 빠뜨렸을 때 이 보호가 조용히 무력화된다(PR #47 후속 리뷰).
-            if any(it.value["fact"] == fact for it in items):
+            existing = next((it for it in items if it.value["fact"] == fact), None)
+            if existing is not None:
+                # **트리플이 비어 있으면 채운다** — resolver 는 임베딩 백엔드 장애를 예외 전파
+                # 대신 드롭으로 처리하므로(그래야 배치가 영구 RETRYABLE 이 안 된다) 장애 중에는
+                # 트리플 없는 fact 가 저장된다. 여기서 무조건 return 하면 복구 후 같은 취향이
+                # 다시 승격돼도 새 트리플이 버려져 **일시적 장애가 영구 손실**이 되고, 그 취향은
+                # 계속 unprojected 로만 잡혀 그래프에 영영 안 실린다(PR #410 리뷰).
+                # 채우는 것은 값뿐이고 항목은 그대로라, 중복 방지(PR #47)는 유지된다.
+                if graph_triples and not existing.value.get("graph_triples"):
+                    await run_with_query_timeout(
+                        self._store.aput(
+                            (_FACTS_NS_ROOT, user_id),
+                            existing.key,
+                            {**existing.value, "graph_triples": graph_triples},
+                        )
+                    )
                 return
+            # fact 항목은 증거 저장소로 유지하고 **값에 필드만 더한다**(SPEC-PROFILE-GRAPH-149
+            # §7.1) — fact 쪽 스키마 마이그레이션은 없다. 트리플이 없으면 키를 아예 넣지 않아
+            # 기존 항목과 모양이 같다(구 fact 와 신 fact 를 저장 레벨에서 구분하지 않는다).
+            value: dict = {"fact": fact}
+            if graph_triples:
+                value["graph_triples"] = graph_triples
             await run_with_query_timeout(
-                self._store.aput((_FACTS_NS_ROOT, user_id), uuid.uuid4().hex, {"fact": fact})
+                self._store.aput((_FACTS_NS_ROOT, user_id), uuid.uuid4().hex, value)
             )
             # cap 트리밍은 cap 이 지정된 경우에만 — 방금 추가분 포함 초과 시 최신 cap 개만 유지.
             if cap and cap > 0 and len(items) + 1 > cap:
@@ -289,6 +392,48 @@ class ProfileStore:
                     await run_with_query_timeout(
                         self._store.adelete((_FACTS_NS_ROOT, user_id), stale.key)
                     )
+
+    # ── 개인화 그래프 문서 (#356, SPEC-PROFILE-GRAPH-149 §5.3·§7.1) ──
+    def graph_lock(self, user_id: str) -> AbstractAsyncContextManager[None]:
+        """그래프 문서 RMW 직렬화 잠금.
+
+        **이 잠금을 쥔 채 `set_summary` 를 부르지 않는다** — 그쪽도 자기 잠금을 잡으므로(#323)
+        중첩하면 advisory 풀에서 커넥션을 동시에 둘 점유한다. 풀은 전역
+        `state_store_pool_max_size` 하나이고 구매자 턴의 `append_session_ctx` 도 같은 풀을 쓴다.
+        """
+        return mutation_lock(self._store, f"profile:graph:{user_id}", _graph_lock(user_id))
+
+    async def get_graph(self, user_id: str) -> GraphDocument | None:
+        """사용자 그래프 문서. 없으면 None(첫 배치 전 정상 상태)."""
+        if not user_id:
+            return None
+        item = await run_with_query_timeout(self._store.aget((_GRAPH_NS_ROOT, user_id), _GRAPH_KEY))
+        if item is None:
+            return None
+        try:
+            return GraphDocument.model_validate(item.value)
+        except ValidationError:
+            # 스키마가 안 맞는 문서(구 형식·손상)로 배치를 죽이지 않는다 — 없는 것으로 보고
+            # 다음 병합이 fact 증거에서 다시 만든다. fact 가 정본 증거라 복원이 가능하다.
+            logger.warning("profile_graph_document_invalid")
+            return None
+
+    async def set_graph(self, user_id: str, document: GraphDocument) -> None:
+        """문서 전체를 재작성한다 — 버전 단위가 사용자당 그래프 전체다(REQ-PGRAPH-041).
+
+        `index=False`: 그래프 문서는 semantic 인덱스 대상이 아니다(REQ-PROF-071 — facts 전용).
+        명시하지 않으면 인덱스 설정의 `fields` 가 바뀌는 순간 조용히 임베딩 대상이 된다.
+        """
+        if not user_id:
+            return
+        await run_with_query_timeout(
+            self._store.aput(
+                (_GRAPH_NS_ROOT, user_id),
+                _GRAPH_KEY,
+                document.model_dump(mode="json"),
+                index=False,
+            )
+        )
 
     # ── transient 세션 버퍼 (승격 전 격리, REQ-PROF transient) ──
     async def append_session_ctx(
@@ -540,3 +685,4 @@ def reset_profile_store() -> None:
     _session_locks.clear()
     _fact_locks.clear()
     _summary_locks.clear()
+    _graph_locks.clear()

@@ -583,7 +583,7 @@ async def test_general_disconnect_cancels_and_awaits_provider_producer(
     response = await open_stream(
         _DisconnectRequest(),
         "seller:general-disconnect",
-        lambda: seller_api._seller_stream(
+        lambda _turn_started_at: seller_api._seller_stream(
             request,
             Identity(
                 user_id="7",
@@ -640,7 +640,7 @@ async def test_analysis_disconnect_cancels_and_awaits_pipeline_task(
     response = await open_stream(
         _DisconnectRequest(),
         "seller:analysis-disconnect",
-        lambda: seller_api._seller_stream(
+        lambda _turn_started_at: seller_api._seller_stream(
             request,
             Identity(
                 user_id="7",
@@ -1466,7 +1466,7 @@ async def test_all_seller_spring_operations_trace_timeout_without_changing_mappi
             "spring.get_account_events",
             "GET",
             lambda: client.get_account_events(
-                "2026-06-01", "2026-07-31", event_type="private-event"
+                71727374757677, "2026-06-01", "2026-07-31", event_type="private-event"
             ),
         ),
         (

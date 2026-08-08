@@ -25,6 +25,7 @@ import json
 from types import SimpleNamespace
 
 from app.agents.buyer.recommendation.needs_expansion import (
+    count_signal_legs,
     detect_expansion_need,
     expand_needs,
 )
@@ -124,6 +125,31 @@ def test_blank_and_null_queries_are_ignored_as_signal() -> None:
     assert _detect([None]) == "no_legs"
     assert _detect(["   "]) == "no_legs"
     assert _detect([None, "디퓨저"]) is None
+
+
+# ── #428 리뷰 5차 R5-1 — `count_signal_legs` 헬퍼 (판정식 단일화) ────────────────
+
+
+def test_count_signal_legs_matches_signal_rule() -> None:
+    """[#428 리뷰 5차 R5-1] `count_signal_legs` 는 위 신호 판정(`raw_category or query`, 공백
+    trim)과 **같은 식**이다 — `graph.py` 의 `sibling_expansion` 게이트(원 발화 니즈 개수로
+    합의 필터를 끄는 판정, #444 Claude 리뷰)가 이 함수를 그대로 재사용하므로, 여기서 규칙이
+    갈리면 그래프와 이 모듈의 D1 판정이 어긋난다(규칙은 한 벌 — `resolve_category_action`·
+    `has_new_category_signal` 과 같은 저장소 규약)."""
+    assert count_signal_legs([]) == 0
+    assert count_signal_legs([CategoryQuery(None, None)]) == 0
+    assert count_signal_legs([CategoryQuery(None, "   ")]) == 0  # 공백-only 는 신호 아님
+    assert count_signal_legs([CategoryQuery("음향가전", None)]) == 1  # raw 만
+    assert count_signal_legs([CategoryQuery(None, "디퓨저")]) == 1  # query 만
+    assert (
+        count_signal_legs([CategoryQuery("음향가전", "이어폰"), CategoryQuery(None, "노트북")]) == 2
+    )
+    assert (
+        count_signal_legs(
+            [CategoryQuery(None, None), CategoryQuery(None, "  "), CategoryQuery(None, "디퓨저")]
+        )
+        == 1
+    )
 
 
 # ── D1 신호 없음 ────────────────────────────────────────────────────────────

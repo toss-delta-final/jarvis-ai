@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from langgraph.store.base import BaseStore
 from langgraph.store.memory import InMemoryStore
 
+from app.agents.buyer.cart.options import OptionHint
 from app.core import pg_store
 from app.core.config import get_settings
 from app.core.pg_resilience import BoundedLRUCache, run_with_query_timeout
@@ -37,6 +38,12 @@ _LAST_ADD_KEY = "last_add"
 # 추천/담기가 다른 인스턴스에 걸리거나 LRU miss가 나면 이름만 ""로 degrade하고, pg-profile의
 # productId 허용 목록은 그대로 유지한다.
 _last_reco_names: BoundedLRUCache[str, dict[int, str]] = BoundedLRUCache(
+    max_entries=get_settings().state_store_local_cache_max_entries
+)
+
+# I-1(§4.6) 옵션 힌트(이슈 #455) — 옵션명도 상품 원본 컬럼 사본이라 위 _last_reco_names 와 같은
+# 이유로 pg-profile 에 저장하지 않는다. thread key → {productId: OptionHint} 휘발성 캐시.
+_last_reco_options: BoundedLRUCache[str, dict[int, OptionHint]] = BoundedLRUCache(
     max_entries=get_settings().state_store_local_cache_max_entries
 )
 
@@ -82,7 +89,13 @@ class CartStateStore:
     def _ns(self, key: str) -> tuple[str, str]:
         return (_NAMESPACE_ROOT, key)
 
-    async def set_last_reco(self, key: str, items: list[tuple[int, str]]) -> None:
+    async def set_last_reco(
+        self,
+        key: str,
+        items: list[tuple[int, str]],
+        *,
+        option_hints: dict[int, OptionHint] | None = None,
+    ) -> None:
         """이번 턴 추천을 **스레드 누적 목록에 합류**시킨다 (#118 — 담기 가드의 시간 축 보존).
 
         덮어쓰기였을 때 이 시나리오가 깨졌다: 추천 A(101·102·103) → "101 방수야?" → 추천 B
@@ -146,6 +159,15 @@ class CartStateStore:
         kept = {pid for pid, _ in capped}
         _last_reco_names[key] = {pid: name for pid, name in names.items() if pid in kept}
 
+        # 옵션 힌트도 같은 규칙으로 병합한다(이슈 #455) — **키워드 인자 추가만**이라 기본값
+        # `None` 인 기존 호출부(예: 프로필 랭킹 경로)는 한 줄도 안 바뀐다. 힌트가 안 온 pid 의
+        # 기존 힌트는 지우지 않고(부분 갱신), capped 에 남은 pid 로만 정리한다 — 위 이름 캐시와
+        # 같은 어조("빈 이름으로 덮지 않는다"의 옵션 버전).
+        hints = dict(_last_reco_options.get(key) or {})
+        if option_hints:
+            hints.update(option_hints)
+        _last_reco_options[key] = {pid: hint for pid, hint in hints.items() if pid in kept}
+
     async def get_last_reco(self, key: str) -> list[tuple[int, str]]:
         """누적 추천 목록(최근 언급 순). 담기 가드가 쓰는 목록이다."""
         return (await self.get_last_reco_state(key)).items
@@ -171,6 +193,11 @@ class CartStateStore:
         )
         turn_count = raw_turn_count if usable else len(items)
         return LastReco(items=items, turn_count=turn_count)
+
+    async def get_option_hint(self, key: str, product_id: int) -> OptionHint | None:
+        """이슈 #455 — I-1 옵션 힌트 조회. 캐시 미스면 `None`(재시작·다중 인스턴스는 오늘 경로로
+        degrade — 정상 동작이다)."""
+        return (_last_reco_options.get(key) or {}).get(product_id)
 
     async def set_pending(self, key: str, pending: PendingAdd) -> None:
         await run_with_query_timeout(
@@ -237,9 +264,12 @@ async def get_cart_store() -> CartStateStore:
 
 
 def reset_cart_store() -> None:
-    """테스트 격리용 — 공유 pg-profile store(InMemoryStore)와 휘발성 이름 캐시를 비운다."""
-    global _last_reco_names
+    """테스트 격리용 — 공유 pg-profile store(InMemoryStore)와 휘발성 이름·옵션힌트 캐시를 비운다."""
+    global _last_reco_names, _last_reco_options
     pg_store.reset_store()
     _last_reco_names = BoundedLRUCache(
+        max_entries=get_settings().state_store_local_cache_max_entries
+    )
+    _last_reco_options = BoundedLRUCache(
         max_entries=get_settings().state_store_local_cache_max_entries
     )

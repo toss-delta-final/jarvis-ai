@@ -77,12 +77,12 @@ BEHAVIOR_TOOLS = [
     seller_tools.search_analysis_guide,
 ]
 
-# get_account_events 는 보조 소스(I-8 admin 소유 🔴) — 실패해도 주 소스로 계속(프롬프트).
+# [#481] I-8 은 2026-08-06 자사 코호트 전환으로 abuse 전용 보조 소스가 됐다 —
+# churn 은 더 쓰지 않는다(WITHDRAW 는 member 에 탈퇴 필드가 없어 원래부터 상시 0건).
 CHURN_TOOLS = [
     seller_tools.get_churn_cohort,
     seller_tools.get_order_events,
     seller_tools.get_product_change_logs,
-    seller_tools.get_account_events,
     seller_tools.search_analysis_guide,
 ]
 

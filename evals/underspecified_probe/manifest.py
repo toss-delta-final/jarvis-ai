@@ -36,6 +36,7 @@ def build_underspecified_probe_manifest(
     cell_ids: list[str],
     axis_definitions: dict[str, Any],
     dry_run: bool,
+    union: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """`build_run_manifest` 위에 이 프로브 고유의 지문을 얹는다.
 
@@ -79,6 +80,8 @@ def build_underspecified_probe_manifest(
         "singleRunNotAVerdict": "단일 실행은 채택 판정이 아니다 — 독립 2~3회 분포로 판정한다. "
         "이 실측은 underspecified_reask_enabled 기본값을 전환하지 않는다.",
     }
+    if union is not None:
+        manifest["underspecifiedProbe"]["union"] = union
     hashes = manifest["hashes"]
     assert isinstance(hashes, dict)
     hashes["anchorFixture"] = _sha256(anchor_path)

@@ -74,7 +74,12 @@ class ProductSearchFilters(CamelModel):
     # 의미검색용 자연어(#101) — AI 내부 필드. keyword(상품명 LIKE)와 분리되며 Spring 에 안 나가고
     # EmbeddingRerankBackend(방식2)가 pgvector 재정렬의 query 임베딩 입력으로 쓴다(§4.8 방식2).
     semantic_query: str | None = None
-    color: str | None = None  # 색상 조건(#100 P1) — BE I-1 attributes LIKE 로 필터
+    # 색상 조건(#100 P1) — 내부 모델: decompose 가 사용자 발화에서 표기 하나만 뽑아 담는다.
+    # 와이어로 나갈 때 app.pipelines.color_synonyms.expand_color 가 동의어 묶음으로 펼쳐
+    # 반복 파라미터 리스트가 된다(api-spec §4.6, #258) — 여기 타입이 str 인 건 드리프트가
+    # 아니라 의도다. BE 매칭은 attributes 전문 LIKE 가 아니라 json_extract 로 색상 키만
+    # 좁힌 뒤 regexp_instr 부분 일치다(#258, BE 2026-08-03 개정).
+    color: str | None = None
     # 명시 속성조건(PR②, api-spec §4.6 "2차 압축 속성 매칭 대상") — 축→희망값(예 {소재:린넨, 핏:오버핏}).
     # AI 내부 필드(Spring 에 안 나감) — search_catalog 가 SpringProduct.attributes 와 관대 하드 매칭한다.
     # 사용자 명시 조건만 담는다(하드). 추측 선호(소프트)는 rerank(원문+attributes)가 판단(별도 필드 없음).
@@ -749,13 +754,25 @@ class OrderEventsResult(SellerAggregateModel):
     (= "주문 상태 전이 0건")으로 새던 버그의 원인이었다.
 
     shape 3형이 한 모델에 겹친다 — 채워지는 필드:
-      - 목록(기본)        : rows(Row: orderId/fromStatus/toStatus/actorType/reason/
-                            buyerMemberId/createdAt) + total
+      - 목록(기본)        : rows(Row: orderId/orderItemId/fromStatus/toStatus/
+                            actorType/reason/customerLabel/createdAt) + total
       - stats=true        : byStatus + cancelReasonsTop (rows 없음)
-      - groupBy=memberId  : rows(MemberRow: buyerMemberId/orderCount/cancelCount/
+      - groupBy=memberId  : rows(MemberRow: customerLabel/orderCount/cancelCount/
                             cancelRatio/maxOrdersPerHour/isSuspicious) + total
     rows 는 groupBy 에 따라 이형(異形)이라 dict 유지 — kv 요약(_summarize_events)이
     양쪽 모두 소화한다. rows 는 limit(기본 100) 절단본, 전수는 total.
+
+    [개정 2026-08-06, #481] ① buyerMemberId(Long) → customerLabel(String, HMAC 6자
+    사례번호) 교체 — orderId+memberId 를 S-2 화면과 대조하면 회원이 재식별되는
+    프라이버시 문제. 같은 회원=같은 라벨(반복 패턴 표현), 브랜드별 상이, 역산 불가.
+    ② rows[].orderItemId 신설 — 아이템 전이(SHIPPING/DELIVERED/CANCELLED/RETURNED)만
+    값이 채워지고 주문 전이(PENDING/PAID/PAYMENT_FAILED)는 null. 같은 orderId 행
+    복수 = 아이템별 전이(중복 아님). ③ 브랜드 스코프 축소 — orderItemId 가 있는
+    행은 자사 아이템만 포함(행 수·byStatus 감소는 회귀가 아니라 타사 노출 제거).
+    ④ 단위 — byStatus 는 상태별 층위 상이(SHIPPING·DELIVERED=아이템 수,
+    PAID·PAYMENT_FAILED=주문 수), cancelReasonsTop.count 는 아이템 수. MemberRow 의
+    orderCount·cancelRatio·isSuspicious·maxOrdersPerHour 는 DISTINCT 기반 불변
+    (I-14 의 isSuspicious 는 브랜드 스코프가 원래라 I-8 과 달리 유지).
 
     구매자 fetch_product_changes(I-8·§4.8)와 무관한 별개 계약(혼동 금지, §4.4 주)."""
 
@@ -847,21 +864,29 @@ class ChurnResult(SellerAggregateModel):
     members: list[ChurnMember] = Field(default_factory=list)
 
 
-# ── I-8 계정/보안 이벤트 집계 (전역, brandId 없음) (§4.4) ──
+# ── I-8 계정 이벤트 집계 (자사 코호트, §4.4 — 2026-08-06 브랜드 스코프 전환) ──
 
 
 class AccountEventsResult(SellerAggregateModel):
-    """I-8 GET /internal/account-events 응답(AccountEventAggregateResponse 실측) —
-    전역(브랜드 스코프 아님)·IP 마스킹·집계 전용, admin 소유 🔴.
+    """I-8 GET /internal/seller/{brandId}/account-events 응답 — 자사 코호트 스코프
+    (#481, 노션 2026-08-06 개정)·IP 마스킹·집계 전용.
+
+    [개정 2026-08-06] 전역 → 자사 코호트 전환에 따른 ip rows 개정 —
+    isSuspicious(브랜드 스코프에선 임계 도달 불가 → 상시 false 오보 위험이라
+    재정의가 아니라 제거)·failCount(동일 사유, 총량은 eventCount 대체)·
+    nullMemberRatio(member 조인 코호트에선 상시 0) 제거.
+    suspiciousMemberCount(해당 IP 코호트 회원 중 I-14 어뷰징 기준 해당 **회원
+    수** — 서버가 SQL 교차, 회원 키는 주지 않는다)·scope("brand" 에코) 신설.
 
     [수정 #197] 구 events 필드 폐기 — Spring 은 rows 를 내려보낸다. extra="allow"
     탓에 검증이 조용히 통과해 항상 "0건 집계됨"으로 새던 I-14/I-15(#194)와 동일
     패턴. rows 는 groupBy 별 이형(異形) — eventType|hour: Bucket{key, count} /
-    ip: IpRow{ipMasked, failCount, distinctMembers, nullMemberRatio, isSuspicious,
-    firstSeen, lastSeen}(무차별 대입 신호) — 이라 dict 유지, kv 요약이 소화한다.
+    ip: IpRow{ipMasked, distinctMembers, suspiciousMemberCount, eventCount,
+    firstSeen, lastSeen} — 이라 dict 유지, kv 요약이 소화한다.
     응답의 groupBy 에코는 서버가 실제 적용한 집계 기준 고지용."""
 
     group_by: str | None = None
+    scope: str | None = None  # "brand" 에코(2026-08-06) — 구버전(전역) 응답 오독 차단
     rows: list[dict] = Field(default_factory=list)
 
 

@@ -96,11 +96,12 @@ WORKERS = [
         CHURN_TOOLS,
         CHURN_PROMPT,
         build_churn_agent,
+        # [#481] I-8 자사 코호트 전환(2026-08-06)으로 churn 은 get_account_events 를
+        # 더 쓰지 않는다 — WITHDRAW 는 member 에 탈퇴 필드가 없어 원래부터 상시 0건.
         {
             "get_churn_cohort",
             "get_order_events",
             "get_product_change_logs",
-            "get_account_events",
             "search_analysis_guide",
         },
     ),
@@ -160,11 +161,15 @@ def test_prompt_required_elements(analysis_type, tools, prompt, builder, expecte
     assert prompt.endswith(WORKER_COMMON_RULES)  # 공통 규칙이 말미에 결합됨
 
 
-def test_secondary_source_rule_in_churn_abuse() -> None:
-    """I-8 보조 소스 규약(HANDOFF §3) — 보조 실패는 degrade 사유가 아님을 명시한다."""
-    for prompt in (CHURN_PROMPT, ABUSE_PROMPT):
-        assert "get_account_events 는 보조 소스" in prompt
-        assert "주 소스 결과만으로 계속" in prompt
+def test_secondary_source_rule_in_abuse() -> None:
+    """I-8 보조 소스 규약 — 보조 실패는 degrade 사유가 아님을 명시한다.
+
+    [#481] I-8 자사 코호트 전환으로 소비 워커는 abuse 하나다 — churn 프롬프트에는
+    get_account_events 절차가 없어야 한다(배정표와 프롬프트의 정합).
+    """
+    assert "get_account_events 는 보조 소스" in ABUSE_PROMPT
+    assert "주 소스 결과만으로 계속" in ABUSE_PROMPT
+    assert "get_account_events" not in CHURN_PROMPT
 
 
 def test_common_rules_content() -> None:
