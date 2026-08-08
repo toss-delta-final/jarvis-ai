@@ -91,6 +91,13 @@ jobs:
             OPENAI_FAST_REASONING_EFFORT=${{ vars.OPENAI_FAST_REASONING_EFFORT }}
             OPENAI_SMART_REASONING_EFFORT=${{ vars.OPENAI_SMART_REASONING_EFFORT }}
             APP_ENVIRONMENT=${{ vars.APP_ENVIRONMENT }}
+            # [#258] 코드 기본값은 off(CI/로컬 DB 없는 환경 보호, 2026-08-08 CI hang 회귀).
+            # 운영에서 켜려면 두 저장소 변수(Settings → Variables 탭)를 반드시 "true" 로
+            # 등록해야 한다 — ⚠️ bool 필드라 빈 문자열은 기본값으로 폴백하지 않는다. 변수가
+            # 미등록인 채로 배포하면 빈 값이 들어가 pydantic bool 파싱 실패로 기동 자체가
+            # 죽는다(실측 확인: `Input should be a valid boolean ... input_value=''`).
+            COLOR_SYNONYM_EXPANSION_ENABLED=${{ vars.COLOR_SYNONYM_EXPANSION_ENABLED }}
+            COLOR_SYNONYM_ARRAY_CONTRACT_READY=${{ vars.COLOR_SYNONYM_ARRAY_CONTRACT_READY }}
             # [2026-08-06] 클라이언트 IP 판별 — 도메인 전환 후 실측한 값이다.
             #   브라우저 → Cloudflare → ALB → FastAPI 경로라 XFF 가 2개
             #   (사용자IP, Cloudflare IP)로 도착한다. 오른쪽에서 2번째가 사용자.

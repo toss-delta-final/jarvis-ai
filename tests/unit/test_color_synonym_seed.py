@@ -495,6 +495,8 @@ def test_upsert_transports_failed_evaluation_canonical_preservation_flag() -> No
 def test_seed_connection_pool_is_reused_per_dsn(monkeypatch) -> None:
     import psycopg_pool
 
+    from app.core import pg_resilience
+
     created: list[tuple[str, dict]] = []
 
     class Pool:
@@ -505,6 +507,9 @@ def test_seed_connection_pool_is_reused_per_dsn(monkeypatch) -> None:
     monkeypatch.setattr(psycopg_pool, "ConnectionPool", Pool)
     monkeypatch.setattr(color_synonyms, "_pools", {})
     monkeypatch.setattr(config, "get_settings", lambda: settings)
+    # 이 테스트는 dsn 별 풀 재사용(캐시 키)을 확인한다 — hardened_pg_conninfo 가 실제 접속
+    # 문자열에 무엇을 병합하는지는 app/core/test_pg_resilience.py 소관이라 항등으로 둔다.
+    monkeypatch.setattr(pg_resilience, "hardened_pg_conninfo", lambda dsn: dsn)
     assert seed._get_pool("postgresql://same") is seed._get_pool("postgresql://same")
     assert len(created) == 1
     assert created[0][0] == "postgresql://same"
@@ -576,8 +581,13 @@ def test_batch_harvest_upserts_only_unknown_terms_as_pending_proposals(monkeypat
 
     import psycopg_pool
 
+    from app.core import pg_resilience
+
     monkeypatch.setattr(psycopg_pool, "ConnectionPool", Pool)
     monkeypatch.setattr(color_synonyms, "_pools", {})
+    # ConnectionPool 이 모킹돼 있어 실제 접속 문자열 형식은 이 테스트의 관심사가 아니다 —
+    # 항등으로 두어 dsn 리터럴 "dsn"이 hardened_pg_conninfo 의 conninfo 파서를 타지 않게 한다.
+    monkeypatch.setattr(pg_resilience, "hardened_pg_conninfo", lambda dsn: dsn)
     captured = []
     monkeypatch.setattr(
         seed,

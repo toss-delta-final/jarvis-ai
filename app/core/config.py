@@ -305,21 +305,29 @@ class Settings(BaseSettings):
     catalog_store_query_timeout_s: float = Field(default=2.5, gt=0.0)
 
     # ── 색상 동의어 확장 (이슈 #258) ──
-    # 선행 조건이 전부 충족돼(BE 배포 — jarvis-backend 머지 `1e0ce150` 2026-08-04·운영 배포
+    # 선행 조건은 전부 충족됐다(BE 배포 — jarvis-backend 머지 `1e0ce150` 2026-08-04·운영 배포
     # 2026-08-08 확인, api-spec §4.6 `color: string` → `string[]` 사본 동기화 — v0.28.3,
-    # 운영 pg-catalog 색상 동의어 시드 적재 — 2026-08-08, 789행/승인 46행) 기본 on 으로
-    # 전환했다. 되돌리려면 이 값 하나만 False 로 — 그러면 승인 사전 DB 조회를 아예 하지
-    # 않고 현행 단수 `color` 와이어로 돌아간다. `color_synonym_array_contract_ready` 와
-    # 항상 함께 바꿔야 한다(기동 가드 `_require_color_synonym_array_contract_gate`).
-    # **주의**: 이 튜너블은 `.github/workflows/deploy.yml` env 목록에 없어 운영이 이
-    # 기본값을 그대로 쓴다 — env 로 켜는 경로가 아니라 이 기본값 자체가 운영 동작이다.
-    color_synonym_expansion_enabled: bool = True
+    # 운영 pg-catalog 색상 동의어 시드 적재 — 2026-08-08, 789행/승인 46행). 다만 **기본값은
+    # off** 로 둔다 — 이 기능은 pg-catalog 에 의존하는데 CI·로컬 등 DB 없는 환경에서 기본
+    # on 이면 색상 검색마다 실패하는 연결을 재시도한다. 원인은 psycopg_pool `connection()`
+    # 획득의 기본 타임아웃(30초)이다 — `get_synonym_map` 이 성공했을 때만 캐시해 DB 가 없는
+    # 환경에서는 색상 경로를 타는 검색마다 30초를 새로 물었고, 그 비용이 스위트 전역에 흩어진
+    # 색상 경로 테스트들에 누적돼 CI `Test (pytest)` 가 1시간+ 미완료가 됐다(2026-08-08 실측,
+    # `0a86e3c`·`c59f7d4` — 같은 시간대 다른 브랜치는 전부 success 라 Actions 인프라가 아니었다).
+    # 지금은 negative caching(`get_synonym_map`)+`hardened_pg_conninfo`(`_get_pool`)로 TTL
+    # 창당 연결 시도 1회로 유계화했지만, **기본값을 off 로 두는 이유는 여전히 유효하다** —
+    # DB 없는 환경에서 이 기능은 무의미하고(빈 사전 → 원문 그대로) 연결 시도만 남기 때문이다.
+    # 운영에서는 `.github/workflows/deploy.yml` 이
+    # `COLOR_SYNONYM_EXPANSION_ENABLED`/`COLOR_SYNONYM_ARRAY_CONTRACT_READY` 를 `true` 로
+    # 주입해 켠다. `color_synonym_array_contract_ready` 와 항상 함께 바꿔야 한다(기동 가드
+    # `_require_color_synonym_array_contract_gate`).
+    color_synonym_expansion_enabled: bool = False
     # 운영자가 api-spec §4.6의 `color: string[]` 개정과 이를 파싱하는 BE 배포 완료를 함께
     # 확인했다는 명시적 계약 게이트 — 위 근거(BE 배포·api-spec 동기화·운영 시드 적재)로
-    # 2026-08-08 충족돼 True 로 전환했다. `color_synonym_expansion_enabled` 와 따로 값을
-    # 두면 기동 시점에 거부한다. 이 튜너블도 `deploy.yml` env 목록에 없어 운영이 이
-    # 기본값을 그대로 쓴다.
-    color_synonym_array_contract_ready: bool = True
+    # 2026-08-08 충족됐다. `color_synonym_expansion_enabled` 와 따로 값을 두면 기동 시점에
+    # 거부한다. 코드 기본값은 위와 같은 이유(DB 없는 환경에서 연결 시도 누적 → CI hang)로
+    # off — 운영은 `deploy.yml` env 로 켠다.
+    color_synonym_array_contract_ready: bool = False
     # 새 표기마다 임베딩 API+DB write가 I-17에 추가되고 테이블도 아직 미검수 상태이므로 기본 off.
     # 초기 검수 완료 뒤 운영 비용을 확인하고 켠다.
     color_synonym_batch_harvest_enabled: bool = False
