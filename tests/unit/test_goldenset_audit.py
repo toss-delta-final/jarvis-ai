@@ -12,6 +12,7 @@ import evals.goldenset.audit as goldenset_audit
 from app.core.config import get_settings
 from evals.goldenset.audit import dataset_hash, run_audit
 from evals.goldenset.loader import _load_labeled_holdout_for_audit
+from evals.goldenset.refresh_manifest import HASH_EXCLUDED_PATHS
 from evals.goldenset.schema import GoldenCase
 
 ROOT = Path("evals/goldenset")
@@ -24,6 +25,16 @@ def test_manifest_file_hashes_match_committed_files() -> None:
         assert entry["sha256"] == hashlib.sha256(payload).hexdigest()
         assert entry["bytes"] == len(payload)
     assert manifest["datasetHash"] == dataset_hash(manifest["files"])
+
+
+def test_manifest_covers_every_non_runtime_goldenset_file() -> None:
+    manifest = json.loads((ROOT / "manifest.json").read_text())
+    actual = {
+        path.relative_to(ROOT).as_posix()
+        for path in ROOT.rglob("*")
+        if path.is_file() and path.name != "manifest.json" and "__pycache__" not in path.parts
+    }
+    assert actual - HASH_EXCLUDED_PATHS == {entry["path"] for entry in manifest["files"]}
 
 
 def test_committed_dataset_has_required_counts_and_slice_coverage() -> None:

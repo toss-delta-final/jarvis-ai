@@ -72,6 +72,8 @@ def test_color_synonym_on_arm_sends_expanded_repeated_color_params() -> None:
     case = next(case for case in load_cases("dev") if case.case_id == "buy-colr-0001")
     adapter = OfflineBuyerAdapter(color_expansion=True)
     adapter(case, load_evaluation_fixtures())
-    request = next(item for item in adapter.last_requests if item["path"] == "/internal/products/search")
+    request = next(
+        item for item in adapter.last_requests if item["path"] == "/internal/products/search"
+    )
     assert len(request["query"]["color"]) >= 2
     assert "네이비" in request["query"]["color"]

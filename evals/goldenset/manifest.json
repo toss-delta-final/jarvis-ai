@@ -71,7 +71,7 @@
     "total": 133
   },
   "createdAt": "2026-08-02",
-  "datasetHash": "2622a6ed125429d8e5292afe979b4dc493b48dcac4bbd153d72fe99f4736da58",
+  "datasetHash": "675520d999dc1fbf0a4b32e13914205bc61c606c9adc2f65833eb67fc133ae50",
   "datasetName": "buyer-goldenset",
   "datasetVersion": "2.3.0",
   "files": [
@@ -82,10 +82,10 @@
       "sha256": "1998ef36e8859f95cfff6f272ddd96e7ab40d75716d88682346eb77d63c3f1b8"
     },
     {
-      "bytes": 29206,
+      "bytes": 29409,
       "path": "GUIDE.md",
       "records": 0,
-      "sha256": "c0148617b19c37e2630ad8ca6055465ca160a64ba3baa758e7215dab53d8f2b5"
+      "sha256": "1f38f32cbbfeb2a9d6ea2cf8543436292fd67c2f0b03ba78a930ee2840bfb40d"
     },
     {
       "bytes": 7863,
@@ -100,22 +100,16 @@
       "sha256": "f3752f48ee915e79685ff539e71941fb3a6a37853ffd063cd10b8b4ee8289e2b"
     },
     {
-      "bytes": 5417,
+      "bytes": 5579,
       "path": "add_color_synonym_cases.py",
       "records": 0,
-      "sha256": "6a25b7ff5d44323eb98ac86bd76a3b025e17800b0a44894247ef863a10a2415e"
+      "sha256": "36566c0195d2844df4c7fa45765252657be49bf842f96eb0e6d2aed13229edee"
     },
     {
       "bytes": 12089,
       "path": "audit.py",
       "records": 0,
       "sha256": "bf7b866628694e2a2d27ffb5243b94c6aa6538d2291859e2b84983258b606555"
-    },
-    {
-      "bytes": 0,
-      "path": "audit/holdout_runs.jsonl",
-      "records": 0,
-      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
       "bytes": 6336,
@@ -142,10 +136,10 @@
       "sha256": "e359a4b795df6187512d66af05a084af934ef7174ac926ba6ebcb0640a719129"
     },
     {
-      "bytes": 148611,
+      "bytes": 149349,
       "path": "cases/buyer_dev.jsonl",
       "records": 109,
-      "sha256": "fae11e2354c7b3420f719ab2653e33f5f0b00c4061b133459c8dd7315bb979cd"
+      "sha256": "a98e1b03de19598df8ad6f3fb2e60f8a03675bc5981edc0abd1d9ad428537b2b"
     },
     {
       "bytes": 22815,
@@ -202,10 +196,10 @@
       "sha256": "1073256fe6495f4113940581952cdbb0017f33d15c1ab069c8abdafb9b02d390"
     },
     {
-      "bytes": 1861,
+      "bytes": 2215,
       "path": "refresh_manifest.py",
       "records": 0,
-      "sha256": "0e274be7e7f1523c761acceb409dc32ba68c0dd5877385c8a9d9cefa8004021c"
+      "sha256": "96eed6df64632fab79443aa1878e183d4ad723b6b7aa9a95e1011c9a1affe304"
     },
     {
       "bytes": 30674,

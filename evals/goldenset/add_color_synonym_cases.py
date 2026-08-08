@@ -42,10 +42,13 @@ def _case(case_id: str, query: str, color: str, fixture_id: str, relevant: list[
         "labeler": "labeler-03",
         "adjudicator": None,
         "createdAt": "2026-08-09",
-        "notes": "injected-relevant-approved: #474 색상 동의어 확장 A/B MFT; INV 그룹에 등록하지 않는다.",
+        "notes": (
+            "injected-relevant-approved: #474에서는 adjudicator 승인이 아니라 정본 색상 일치로 "
+            "설계상 정답으로 선정한 오프라인 후보를 뜻한다(adjudicator 없음)."
+        ),
         "labelSource": "model",
         "labeledAt": "2026-08-09",
-        "labelRationale": "catalog_snapshot의 정본 색상 표기 상품만 정답으로 라벨링했다.",
+        "labelRationale": "catalog_snapshot의 정본 색상 표기 상품만 설계상 정답으로 라벨링했으며 독립 adjudicator는 없다.",
         "testType": "MFT",
         "behaviorGroupId": None,
         "behaviorKind": None,
