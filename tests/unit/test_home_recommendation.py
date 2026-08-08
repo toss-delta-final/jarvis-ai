@@ -1015,6 +1015,13 @@ def test_log_records_outcome_and_counts(
 # ── [#469] I-22 요청 트레이스 ──
 
 
+def _fake_http_request():
+    """requestId 상관관계용 http_request 더블 — get_request_id 는 state 만 읽는다."""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(state=SimpleNamespace(request_id="rid-469-test"))
+
+
 async def test_home_trace_exports_stage_spans_and_outcome() -> None:
     """콘텐츠 모드에서 I-22 가 루트+단계 span 을 export 한다(finish 는 fire-and-forget)."""
     import asyncio
@@ -1041,7 +1048,7 @@ async def test_home_trace_exports_stage_spans_and_outcome() -> None:
     )
     try:
         request = HomeRecommendationRequest.model_validate(_body())
-        response = await home_recommendations(request, None)
+        response = await home_recommendations(request, _fake_http_request(), None)
         assert response.outcome == "PERSONALIZED"
         for _ in range(50):  # 분리 finish 태스크가 export 를 마칠 때까지
             if exporter.exported:
@@ -1060,6 +1067,8 @@ async def test_home_trace_exports_stage_spans_and_outcome() -> None:
         # memberId 원값은 어디에도 없다 — conversation_id 는 지문(sessionFp)으로만.
         assert "123" not in str(root.metadata.get("sessionFp"))
         assert root.metadata["terminalReason"] == "personalized"
+        # 미들웨어가 심은 requestId 와 동일해야 §2.4 오류 봉투·X-Request-Id 와 상관된다(PR #470 리뷰).
+        assert root.metadata["requestId"] == "rid-469-test"
         assert "signals" in root.inputs
         assert "PERSONALIZED" in root.outputs["message"]
     finally:
@@ -1075,7 +1084,7 @@ async def test_home_trace_disabled_leaves_endpoint_untouched() -> None:
     set_trace_factory(TraceFactory(exporter=NoopTraceExporter(), enabled=False, sampling_rate=1.0))
     try:
         request = HomeRecommendationRequest.model_validate(_body())
-        response = await home_recommendations(request, None)
+        response = await home_recommendations(request, _fake_http_request(), None)
         assert response.outcome == "PERSONALIZED"
         assert len(response.items) >= 1
     finally:

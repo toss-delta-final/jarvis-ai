@@ -10,11 +10,11 @@ from __future__ import annotations
 import asyncio
 import json
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.api.deps import verify_service_token
 from app.core.config import get_settings
-from app.core.errors import new_request_id
+from app.core.errors import get_request_id
 from app.core.tracing import bind_request_trace, start_request_trace_safely
 from app.schemas.recommendations import HomeRecommendationRequest, HomeRecommendationResponse
 from app.services.home_recommendation import rank_home
@@ -42,6 +42,7 @@ def _finish_trace_detached(trace, *, status: str, error_type: str | None, termin
 @router.post("/internal/recommendations/home", response_model=HomeRecommendationResponse)
 async def home_recommendations(
     request: HomeRecommendationRequest,
+    http_request: Request,
     _token: None = Depends(verify_service_token),
 ) -> HomeRecommendationResponse:
     """홈 "OO님을 위한 추천"(P-5)의 개인화 랭킹 — I-22 (§3.7).
@@ -54,9 +55,12 @@ async def home_recommendations(
     RequestTrace 가 peppered 지문(sessionFp)으로만 남긴다(§3.7 [HARD] 준수). 단계별 span 은
     rank_home 내부의 trace_span 이 만든다.
     """
+    # requestId 는 errors.request_context_middleware 가 부여한 값 — §2.4 오류 봉투·응답 헤더
+    # (X-Request-Id)와 상관되어 Spring 쪽 실패 로그와 트레이스를 맞댈 수 있다(chat.py 와 동일 관례,
+    # PR #470 리뷰).
     trace = start_request_trace_safely(
         name="home_recommendation",
-        request_id=new_request_id(),
+        request_id=get_request_id(http_request),
         conversation_id=str(request.member_id),
         thread_id="",
         lane="home",
