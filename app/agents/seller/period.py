@@ -20,7 +20,7 @@ from __future__ import annotations
 import calendar
 import re
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, timedelta
 
 from app.core.config import get_settings
@@ -80,11 +80,27 @@ class PeriodResolution:
     needs_confirmation: bool
     expr: str
     clipped: bool = False
+    # [#346] 비교(기준) 기간 — "지난달 대비" 처럼 판매자가 대조군을 함께 말한 경우에만 채워진다.
+    # 중첩 구조로 둔 이유: 비교 기간도 어휘·경계 규칙·확인 판정이 본 기간과 **완전히 같고**,
+    # 평평한 4필드(compare_from/to/expr/confirm)로 펴면 그 동일성이 코드에서 사라진다.
+    comparison: PeriodResolution | None = None
 
     @property
     def period(self) -> tuple[date, date]:
         """(from, to) 튜플 — 구 normalize_period 반환형과 같은 모양."""
         return self.date_from, self.date_to
+
+    @property
+    def any_confirmation_needed(self) -> bool:
+        """본 기간·비교 기간 중 하나라도 코드가 값을 보충했는가.
+
+        호출부의 확인·고지 판정은 이 값을 봐야 한다 — `needs_confirmation` 만 보면
+        본 기간이 명시적이고 비교 기간만 보충된 경우("2026-06-01~2026-06-30 을 작년 대비")
+        보충 사실이 조용히 지나간다.
+        """
+        return self.needs_confirmation or (
+            self.comparison is not None and self.comparison.needs_confirmation
+        )
 
 
 def _echo(text: str) -> str:
@@ -314,6 +330,104 @@ def _bare_date_range(match: re.Match[str], *, today: date, yesterday: date) -> t
     return date(today.year, from_month, from_day), date(today.year, to_month, to_day)
 
 
+# ── 비교(기준) 기간 (DESIGN-SELLER-PERIOD §2.5 — 이슈 #346) ────────────────────
+
+# 비교 기간은 **본 기간에 상대적**이라 단독으로 환산할 수 없다. 그래서 어휘도 본 기간과
+# 분리해 두고(아래 표), 환산은 resolve_comparison(expr, base) 가 base 를 받아서 한다.
+#
+# "직전 동일 기간" 만 확인이 필요 없다 — 코드가 보충하는 값이 없고(길이도 끝점도 base 에서
+# 결정된다), 이미 get_funnel·get_churn_cohort 가 내부적으로 쓰는 정의와 같다(tools._previous_period).
+# 반면 "지난달 대비"·"작년 대비" 는 **정렬 방식을 코드가 고른다**(달력 시프트) — 판매자가
+# "지난달 전체"를 뜻했는지 "지난달의 같은 날짜 구간"을 뜻했는지 알 수 없으므로 확인 대상이다.
+_PREV_ADJACENT_EXPRS = frozenset({"직전 동일 기간", "직전 기간", "직전 동일기간", "이전 기간"})
+_PREV_MONTH_EXPRS = frozenset({"지난달 대비", "전월 대비", "전월 동기간", "지난달 동기간"})
+_PREV_YEAR_EXPRS = frozenset({"작년 대비", "전년 대비", "전년 동기간", "작년 동기간"})
+
+_COMPARISON_GUIDE = "직전 동일 기간 / 지난달 대비 / 작년 대비 처럼 말씀해 주세요"
+
+# 판정은 공백 제거형으로 한다 — 스캐너 정규식이 "직전동일기간"·"지난 달 대비" 를 모두
+# 잡으므로, 리터럴 표기 그대로 비교하면 잡아 놓고 해석하지 못하는 어긋남이 생긴다.
+_PREV_ADJACENT_COMPACT = frozenset(e.replace(" ", "") for e in _PREV_ADJACENT_EXPRS)
+_PREV_MONTH_COMPACT = frozenset(e.replace(" ", "") for e in _PREV_MONTH_EXPRS)
+_PREV_YEAR_COMPACT = frozenset(e.replace(" ", "") for e in _PREV_YEAR_EXPRS)
+
+# 자유 발화 스캐너용 — 본 기간 스캐너보다 **먼저** 돌려 매치 구간을 걷어낸다.
+# 안 그러면 "지난달 대비 이번 달" 의 '지난달' 이 본 기간 표현으로 잡혀, 표현이 둘이라는
+# 이유로 되묻기가 된다(비교 질문이 통째로 막힌다).
+_COMPARISON_MENTION_SOURCES: tuple[str, ...] = (
+    r"직전\s*동일\s*기간",
+    r"직전\s*기간",
+    r"이전\s*기간",
+    r"지난\s?달\s*(?:대비|동기간)",
+    r"전월\s*(?:대비|동기간)",
+    r"작년\s*(?:대비|동기간)",
+    r"전년\s*(?:대비|동기간)",
+)
+_COMPARISON_MENTION_PATTERN = re.compile(
+    "|".join(f"(?:{source})" for source in _COMPARISON_MENTION_SOURCES)
+)
+
+
+def resolve_comparison(
+    expr: str,
+    base: PeriodResolution,
+    *,
+    max_days: int | None = None,
+) -> PeriodResolution:
+    """비교 기간 표현 + 본 기간 → 대조군 PeriodResolution. 해석 불가는 ValueError.
+
+    - `직전 동일 기간`: base 바로 앞의 **같은 길이** 구간. 확인 불필요(보충값 없음).
+    - `지난달 대비`·`전월 동기간`: base 를 달력 1달 뒤로 민 구간(§2.4 와 같은 말일 보정).
+    - `작년 대비`·`전년 동기간`: base 를 1년 뒤로 민 구간.
+
+    달력 시프트를 N×30일 근사로 바꾸지 않는 이유는 §2.4 와 같다 — 판매자는 월 단위로
+    생각하고, 근사는 월별 비교에서 경계가 미끄러진다.
+    """
+    text = " ".join(unicodedata.normalize("NFKC", expr).split())
+    limit = max_days if max_days is not None else get_settings().seller_period_max_days
+    length_days = (base.date_to - base.date_from).days
+    # 공백 이형 흡수 — 스캐너가 잡은 "직전동일기간"·"지난 달 대비" 도 같은 어휘다.
+    compact = text.replace(" ", "")
+
+    if compact in _PREV_ADJACENT_COMPACT:
+        end = base.date_from - timedelta(days=1)
+        start = _days_before(end, length_days, limit=limit)
+        confirm = False
+    elif compact in _PREV_MONTH_COMPACT:
+        start = _shift_months(base.date_from, 1, limit=limit)
+        end = _shift_months(base.date_to, 1, limit=limit)
+        confirm = True
+    elif compact in _PREV_YEAR_COMPACT:
+        start = _shift_months(base.date_from, 12, limit=limit)
+        end = _shift_months(base.date_to, 12, limit=limit)
+        confirm = True
+    else:
+        raise ValueError(f"'{_echo(text)}' 비교 기간을 이해하지 못했습니다. {_COMPARISON_GUIDE}.")
+
+    if start > end:
+        # 달력 시프트가 순서를 뒤집는 경우(말일 보정) — 조용히 뒤집어 쓰지 않는다.
+        raise ValueError(
+            f"'{_echo(text)}' 로 비교할 기간을 만들지 못했습니다. {_COMPARISON_GUIDE}."
+        )
+    if (end - start).days + 1 > limit:
+        raise _too_long(limit)
+    return PeriodResolution(date_from=start, date_to=end, needs_confirmation=confirm, expr=text)
+
+
+def find_comparison_mention(message: str) -> tuple[str, str | None]:
+    """발화에서 비교 기간 표현을 떼어낸다 → (남은 발화, 비교 표현 or None).
+
+    본 기간 스캐너보다 **먼저** 돌려야 한다 — "지난달 대비 이번 달" 의 '지난달' 이 본 기간
+    표현으로 잡히면 표현이 둘이라는 이유로 비교 질문이 통째로 되묻기가 된다.
+    """
+    text = " ".join(unicodedata.normalize("NFKC", message).split())
+    match = _COMPARISON_MENTION_PATTERN.search(text)
+    if match is None:
+        return text, None
+    remainder = f"{text[: match.start()]} {text[match.end() :]}"
+    return " ".join(remainder.split()), " ".join(match.group(0).split())
+
+
 # ── general 레인 진입점 (DESIGN-SELLER-PERIOD §7 — 이슈 #346) ──────────────────
 
 # 기간 미언급일 때 쓰는 표현. planner 의 `[기간]` 절과 **같은 규약**이다("기간 언급이
@@ -405,22 +519,43 @@ def resolve_from_message(
       쓰지 않을 뿐 해가 없다.
     - 표현 2개 이상("이번 달 들어 최근 7일"): 되묻는다 — 어느 쪽을 뜻하는지 코드가
       고르면 그 선택이 곧 조용한 대체다(DESIGN §2.3 혼합 표현 규칙과 같은 결론).
+    - 비교 표현("지난달 대비")이 섞여 있으면 먼저 떼어내 `comparison` 으로 채운다(§2.5).
     """
-    mentions = find_period_mentions(message)
+    # 비교 표현을 **먼저** 떼어낸다 — "지난달 대비 이번 달" 의 '지난달' 이 본 기간으로
+    # 잡히면 표현이 둘이라는 이유로 비교 질문이 통째로 되묻기가 된다.
+    remainder, comparison_expr = find_comparison_mention(message)
+    mentions = find_period_mentions(remainder)
     if len(mentions) > 1:
         listed = " / ".join(_echo(mention) for mention in mentions[:3])
         raise ValueError(
             f"기간 표현이 여러 개 보입니다({listed}). 어느 기간을 말씀하시는지 하나만 알려주세요."
         )
     expr = mentions[0] if mentions else _NO_MENTION_EXPR
-    return resolve_period(
+    base = resolve_period(
         expr, today=today, recent_default_days=recent_default_days, max_days=max_days
     )
+    if comparison_expr is None:
+        return base
+    return replace(base, comparison=resolve_comparison(comparison_expr, base, max_days=max_days))
 
 
 # ── 확인 문구 (DESIGN §4.3 — 기간 문구의 유일한 생성 지점) ──────────────────────
 
 _CONFIRM_CLIPPED_NOTE = "(아직 지나지 않은 날짜는 제외해 어제까지만 봅니다.)"
+
+
+def _comparison_line(comparison: PeriodResolution) -> str:
+    """비교 기간을 확인·고지 문구에 붙이는 한 줄 — 본 기간과 같은 형식으로 날짜를 밝힌다.
+
+    비교 기간도 코드가 정렬 방식을 고른 해석이다("지난달 대비" → 달력 시프트).
+    본 기간만 밝히고 대조군을 감추면 확인의 의미가 절반만 성립한다(§2.5).
+    """
+    return (
+        f"비교 기준은 '{_echo(comparison.expr)}' — {comparison.date_from.isoformat()} ~ "
+        f"{comparison.date_to.isoformat()} 입니다."
+    )
+
+
 _CONFIRM_ASK = (
     '이대로 진행할까요? 맞으면 "응" 이라고 답해 주시고, '
     "다른 기간이면 원하시는 기간을 말씀해 주세요."
@@ -439,6 +574,8 @@ def confirmation_text(resolution: PeriodResolution) -> str:
     ]
     if resolution.clipped:
         lines.append(_CONFIRM_CLIPPED_NOTE)
+    if resolution.comparison is not None:
+        lines.append(_comparison_line(resolution.comparison))
     lines.append(_CONFIRM_ASK)
     return "\n".join(lines)
 
@@ -460,10 +597,13 @@ def disclosure_text(resolution: PeriodResolution) -> str:
     무관한 고지가 매번 따라붙는다.
     """
     note = _DISCLOSURE_CLIPPED_NOTE if resolution.clipped else ""
-    return (
+    text = (
         f"'{_echo(resolution.expr)}' 을 {resolution.date_from.isoformat()} ~ "
         f"{resolution.date_to.isoformat()} 기간으로 봤습니다.{note}"
     )
+    if resolution.comparison is not None:
+        text = f"{text}\n{_comparison_line(resolution.comparison)}"
+    return text
 
 
 # ── 승인 판정 (DESIGN §5.3 — 코드 선판정, LLM 0회) ──────────────────────────────

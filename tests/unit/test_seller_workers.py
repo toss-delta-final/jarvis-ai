@@ -404,3 +404,16 @@ def test_graph_prompt_principles() -> None:
     assert "bar" in GRAPH_PROMPT
     assert "1개만" in GRAPH_PROMPT
     assert "charts=[]" in GRAPH_PROMPT  # 억지 차트 금지
+
+
+def test_planner_prompt_comparison_vocabulary() -> None:
+    """[#346] 비교 기간도 planner 는 표현만 옮겨적는다 — 환산·되묻기는 코드 소관."""
+    assert "comparison_expr" in PLANNER_PROMPT
+    assert "직전 동일 기간" in PLANNER_PROMPT
+    assert "period_expr 에 섞어 적지 않는다" in PLANNER_PROMPT
+
+
+def test_worker_common_rules_cover_comparison_period() -> None:
+    """워커는 [비교 기간] 을 받으면 두 기간을 각각 조회한다 — 차이를 직접 산술하지 않는다."""
+    assert "[비교 기간]" in WORKER_COMMON_RULES
+    assert "각각 호출" in WORKER_COMMON_RULES

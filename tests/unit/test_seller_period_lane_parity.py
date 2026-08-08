@@ -63,9 +63,14 @@ _ASK_BACK_PAIRS = [
 ]
 
 
-def _analysis_lane(period_expr: str) -> pipeline.ResolvedPlan:
+def _analysis_lane(period_expr: str, comparison_expr: str = "") -> pipeline.ResolvedPlan:
     """분석 레인 경로 — planner 산출(AnalysisPlan) → resolve_plan."""
-    plan = AnalysisPlan(analyses=["sales_anomaly"], period_expr=period_expr, reason="대조 테스트")
+    plan = AnalysisPlan(
+        analyses=["sales_anomaly"],
+        period_expr=period_expr,
+        comparison_expr=comparison_expr,
+        reason="대조 테스트",
+    )
     return pipeline.resolve_plan(
         plan,
         today=TODAY,
@@ -130,3 +135,60 @@ def test_both_lanes_ask_back_with_identical_wording(period_expr: str, message: s
         _general_lane(message)
 
     assert str(general_error.value) == str(analysis_error.value)
+
+
+# ── 비교(기준) 기간 대조 (#346 완료 조건 ③) ────────────────────────────────────
+
+# (period_expr, comparison_expr, 판매자가 general 레인에 치는 발화)
+_COMPARISON_TRIPLES = [
+    ("이번 달", "지난달 대비", "지난달 대비 이번 달 매출 어때"),
+    ("최근 7일", "직전 동일 기간", "최근 7일 매출을 직전 동일 기간과 비교해줘"),
+    ("지난달", "작년 대비", "지난달 매출 작년 대비 어때"),
+    ("최근 30일", "전월 동기간", "전월 동기간 대비 최근 30일 매출"),
+]
+
+
+@pytest.mark.parametrize(("period_expr", "comparison_expr", "message"), _COMPARISON_TRIPLES)
+def test_both_lanes_resolve_the_same_comparison_range(
+    period_expr: str, comparison_expr: str, message: str
+) -> None:
+    """[완료 조건 ③] 비교 기간 표현도 두 레인에서 같은 (from, to) 로 해석된다.
+
+    도달 경로가 다르다 — 분석 레인은 planner 가 `comparison_expr` 필드를 따로 채우고,
+    general 레인은 코드가 한 발화에서 비교 표현을 떼어낸다. 그 둘이 같은 구간에
+    도달하는지는 여기서만 재진다.
+    """
+    analysis = _analysis_lane(period_expr, comparison_expr)
+    general = _general_lane(message)
+
+    assert general.comparison is not None
+    assert (general.comparison.date_from, general.comparison.date_to) == (
+        analysis.compare_from,
+        analysis.compare_to,
+    )
+
+
+@pytest.mark.parametrize(("period_expr", "comparison_expr", "message"), _COMPARISON_TRIPLES)
+def test_both_lanes_keep_the_base_period_intact_with_comparison(
+    period_expr: str, comparison_expr: str, message: str
+) -> None:
+    """비교 표현이 붙어도 본 기간 해석은 흔들리지 않는다.
+
+    general 레인은 비교 표현을 먼저 떼어낸 뒤 본 기간을 찾는다 — 이 순서가 뒤집히면
+    "지난달 대비 이번 달" 의 '지난달' 이 본 기간으로 잡혀 두 레인이 갈라진다.
+    """
+    analysis = _analysis_lane(period_expr, comparison_expr)
+    general = _general_lane(message)
+
+    assert (general.date_from, general.date_to) == (analysis.date_from, analysis.date_to)
+
+
+@pytest.mark.parametrize(("period_expr", "comparison_expr", "message"), _COMPARISON_TRIPLES)
+def test_both_lanes_agree_on_confirmation_need_with_comparison(
+    period_expr: str, comparison_expr: str, message: str
+) -> None:
+    """확인 판정도 **합집합**으로 같다 — 비교 기간만 보충된 경우를 놓치지 않는다."""
+    analysis = _analysis_lane(period_expr, comparison_expr)
+    general = _general_lane(message)
+
+    assert general.any_confirmation_needed == analysis.needs_confirmation

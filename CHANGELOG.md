@@ -9,6 +9,17 @@
 
 ## [Unreleased]
 
+### Added
+- **#346 — 비교(기준) 기간 어휘 양 레인 지원** (`직전 동일 기간`·`지난달 대비`·`전월 동기간`·
+  `작년 대비`·`전년 동기간`). `period.resolve_comparison(expr, base)` 가 본 기간을 받아 환산하고
+  (`직전 동일 기간` 은 보충값이 없어 확인 불필요 — `tools._previous_period` 와 같은 정의,
+  달력 시프트 2종은 정렬 방식을 코드가 고르므로 확인 대상), 확인 판정은 본 기간과의 **합집합**이다.
+  배선은 `AnalysisPlan.comparison_expr`(planner 는 표현만) → `ResolvedPlan.compare_from/to` →
+  입력 메시지 `[비교 기간]` 한 줄이며 **도구 시그니처·Spring 계약은 불변**이다 — 워커가 두 기간으로
+  같은 도구를 각각 호출한다. general 레인은 한 발화에서 비교 표현을 먼저 떼어내 본 기간과 함께
+  해석한다. 확인 대기 저장(`period_confirm`)에도 비교 기간을 실어 승인 재개가 대조군을 잃지 않게 했다.
+  (DESIGN-SELLER-PERIOD §2.5, 와이어 계약 무변경)
+
 ### Security
 - **#487 — I-16 이탈 코호트가 원시 `memberId` 를 판매자 LLM 표면에 싣던 재식별 경로 차단**
   (api-spec §4.4, v0.29.1). `get_churn_cohort` 요약이 이탈 회원을 `[41] 마지막 활동 …` 형태로

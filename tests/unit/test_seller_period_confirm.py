@@ -310,3 +310,52 @@ def _route_analysis(question, context, recent_turns=(), screen=None):
         return RouteDecision(category="analysis", reason="stub", confidence=0.9)
 
     return _decide()
+
+
+# ── 비교(기준) 기간 저장 (#346) ────────────────────────────────────────────────
+
+
+def test_pending_roundtrip_preserves_comparison_period() -> None:
+    """[#346] 비교 기간도 대기에 실린다.
+
+    빠지면 승인 재개가 **대조군 없는 다른 분석**을 돌린다 — 확인 문구에는 두 기간이 다
+    적혀 있으므로 판매자는 자기가 승인한 것과 다른 게 돌았다는 사실을 알 수 없다.
+    """
+    plan = ResolvedPlan(
+        analyses=("sales_anomaly",),
+        date_from=dt.date(2026, 8, 1),
+        date_to=dt.date(2026, 8, 5),
+        needs_confirmation=True,
+        period_expr="이번 달",
+        period_clipped=True,
+        comparison_expr="지난달 대비",
+        compare_from=dt.date(2026, 7, 1),
+        compare_to=dt.date(2026, 7, 5),
+    )
+
+    async def run():
+        assert await seller_period_confirm.save_pending(
+            _CONTEXT, _THREAD, question="지난달 대비 이번 달 매출 분석해줘", plan=plan
+        )
+        return await seller_period_confirm.load_pending(_CONTEXT, _THREAD)
+
+    pending = asyncio.run(run())
+    assert pending is not None
+    assert pending.plan.comparison_expr == "지난달 대비"
+    assert pending.plan.compare_from == dt.date(2026, 7, 1)
+    assert pending.plan.compare_to == dt.date(2026, 7, 5)
+
+
+def test_pending_roundtrip_without_comparison_stays_empty() -> None:
+    """비교가 없던 계획은 재개 후에도 비어 있다 — 없던 대조군을 만들어내지 않는다."""
+
+    async def run():
+        assert await seller_period_confirm.save_pending(
+            _CONTEXT, _THREAD, question="이번 달 매출 분석해줘", plan=_PLAN
+        )
+        return await seller_period_confirm.load_pending(_CONTEXT, _THREAD)
+
+    pending = asyncio.run(run())
+    assert pending is not None
+    assert pending.plan.comparison_expr == ""
+    assert pending.plan.compare_from is None and pending.plan.compare_to is None

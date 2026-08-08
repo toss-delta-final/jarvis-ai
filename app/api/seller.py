@@ -343,7 +343,7 @@ async def _general_stream(
         yield _token(str(exc))
         yield _done("keep")
         return
-    if resolution.needs_confirmation:
+    if resolution.any_confirmation_needed:
         # 분석 레인처럼 확인 대기를 걸지 않고 **고지**만 한다 — 근거는
         # period.disclosure_text docstring(오해석 비용 비대칭, DESIGN §7).
         yield _token(disclosure_text(resolution) + "\n\n")
