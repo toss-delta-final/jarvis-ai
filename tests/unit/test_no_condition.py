@@ -12,8 +12,11 @@ import pytest
 
 from app.agents.buyer.recommendation.decompose import decompose
 from app.agents.buyer.recommendation.no_condition import (
+    _extract_name_from_search_doc,
+    dedup_exposed_names,
     has_total_budget,
     is_no_condition_turn,
+    rank_by_profile,
     within_budget,
 )
 from app.agents.buyer.recommendation.state import CategoryQuery, RouteDecision
@@ -360,3 +363,129 @@ async def test_multi_item_utterance_is_not_a_no_condition_turn() -> None:
     assert decision.semantic_query_is_fallback is True  # ③ 은 통과한다
     assert decision.category_legs == []  # 매핑 전이라 legs 도 비어 있다
     assert is_no_condition_turn(decision, prior=None) is False  # 그래도 트리거되면 안 된다
+
+
+# ─────────── [#435] 프로필 벡터 경로 이름 복원 — 추출·중복 가드 ───────────
+
+
+def test_extract_name_from_search_doc_reads_first_line() -> None:
+    """[G1] `build_search_doc` 왕복 — name 이 있으면 첫 줄이 곧 그 name 이다.
+
+    이 커플링(`("name", "category", "brand", "description")` 순 결합)이 깨지면 이 테스트가
+    먼저 실패한다 — `build_search_doc` 필드 순서를 바꾸는 PR 은 이 테스트를 함께 봐야 한다.
+    """
+    from app.pipelines.embedding import build_search_doc
+
+    doc = build_search_doc(
+        {"name": "무선 이어폰", "category": "전자기기", "brand": "브랜드", "description": "설명"}
+    )
+    assert _extract_name_from_search_doc(doc) == "무선 이어폰"
+
+
+def test_extract_name_from_search_doc_category_fallback_is_a_risk_not_a_feature() -> None:
+    """[#435 리뷰 C1] name 이 없으면 첫 줄이 category 로 밀린다 — **이 폴백은 바람직한 동작이
+    아니라, 이 함수가 판정 없이 그대로 통과시키는 위험한 입력이다.** 여러 상품이 같은 카테고리
+    문자열을 공유할 수 있어(예: "생활용품"), 그 위험을 실제로 받아내는 것은 이 함수가 아니라
+    호출부의 상위 가드(`dedup_exposed_names`, 노출 집합 + 스레드 누적 범위)다."""
+    from app.pipelines.embedding import build_search_doc
+
+    doc = build_search_doc({"category": "생활용품"})
+    assert _extract_name_from_search_doc(doc) == "생활용품"
+
+
+def test_extract_name_from_search_doc_empty_doc_degrades_to_blank() -> None:
+    """빈 `search_doc`(이름·카테고리 등 전부 없음)이면 빈 문자열 — 예외를 던지지 않는다(G4)."""
+    assert _extract_name_from_search_doc("") == ""
+
+
+def test_dedup_exposed_names_drops_names_shared_by_multiple_exposed_products() -> None:
+    """[G2] 노출 집합 안에서 같은 이름이 2건이면 **둘 다** 버린다 — 모호하면 확정하지 않는다."""
+    name_by_id = {101: "바디로션", 102: "바디로션", 103: "샴푸"}
+    assert dedup_exposed_names([101, 102, 103], name_by_id) == {103: "샴푸"}
+
+
+def test_dedup_exposed_names_keeps_unique_names() -> None:
+    """중복이 없으면 전부 그대로 남는다."""
+    name_by_id = {201: "무선 이어폰", 202: "노트북"}
+    assert dedup_exposed_names([201, 202], name_by_id) == {
+        201: "무선 이어폰",
+        202: "노트북",
+    }
+
+
+def test_dedup_exposed_names_ignores_duplicates_outside_the_exposed_set() -> None:
+    """노출되지 않은 후보와만 겹치는 이름은 모호함이 실제로 발생하지 않아 그대로 남는다."""
+    name_by_id = {301: "무선 이어폰", 302: "무선 이어폰"}
+    assert dedup_exposed_names([301], name_by_id) == {301: "무선 이어폰"}
+
+
+def test_dedup_exposed_names_drops_names_colliding_with_accumulated_other_product() -> None:
+    """[#435 리뷰 C1] 이번 턴 안에서는 유일해도 **스레드 누적**의 다른 productId 와 이름이
+    겹치면 버린다 — 카테고리 폴백 이름이 턴을 넘어 중복되는 재현 시나리오(턴1 [101]→"생활용품"
+    누적됨, 턴3 [202]→"생활용품")의 턴3 쪽을 고정한다."""
+    name_by_id = {202: "생활용품"}
+    accumulated_names = {101: "생활용품"}  # 턴 1 이 이미 누적에 남긴 이름(다른 productId)
+    assert dedup_exposed_names([202], name_by_id, accumulated_names) == {}
+
+
+def test_dedup_exposed_names_accumulated_collision_also_applies_to_path_b_names() -> None:
+    """[#435 리뷰 C1] 누적 이름에는 정상 경로(B, Spring 원본 이름)에서 온 것도 섞여 있다 —
+    그쪽과 겹쳐도 같은 이유로 버린다(경로 출처를 가리지 않는다)."""
+    name_by_id = {202: "무선 이어폰"}
+    accumulated_names = {999: "무선 이어폰"}  # 정상 경로 B 유래라고 가정
+    assert dedup_exposed_names([202], name_by_id, accumulated_names) == {}
+
+
+def test_dedup_exposed_names_same_product_id_reexposed_is_not_a_collision() -> None:
+    """같은 productId 가 누적에도 있고 이번 턴에도 노출되면 자기 자신과의 비교이므로 겹침이
+    아니다 — 이름이 그대로 유지된다."""
+    name_by_id = {101: "생활용품"}
+    accumulated_names = {101: "생활용품"}
+    assert dedup_exposed_names([101], name_by_id, accumulated_names) == {101: "생활용품"}
+
+
+def test_dedup_exposed_names_without_accumulated_names_behaves_as_before() -> None:
+    """`accumulated_names` 를 생략하면(기본값 None) 이번 턴 노출 집합만 보는 종전 동작과
+    바이트 동일하다 — 호출부가 조회 실패로 빈 dict/누락을 넘기는 경로의 안전망."""
+    name_by_id = {201: "무선 이어폰", 202: "노트북"}
+    assert dedup_exposed_names([201, 202], name_by_id) == dedup_exposed_names(
+        [201, 202], name_by_id, None
+    )
+
+
+async def test_rank_by_profile_fetches_artifacts_only_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """[#435 리뷰 C2] 이름 추출과 `build_reasons`(근거)가 **같은 store.get_many 결과**를
+    재사용한다 — 실 store 의 `get_many` 호출은 정확히 1회여야 한다(고치기 전엔 2회였다).
+    """
+    from app.core.config import get_settings
+    from app.pipelines import artifact_store
+    from app.pipelines.artifact_store import CatalogArtifact, CatalogArtifactStore
+
+    class _CountingStore(CatalogArtifactStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.get_many_calls = 0
+
+        def get_many(self, product_ids):  # noqa: ANN001
+            self.get_many_calls += 1
+            return super().get_many(product_ids)
+
+    store = _CountingStore()
+    for i, pid in enumerate((301, 302)):
+        store.upsert(
+            CatalogArtifact(
+                product_id=pid,
+                search_doc=f"상품 {pid}",
+                embedding=[1.0 - (i + 1) * 0.05, (i + 1) * 0.05, 0.0],
+                extras={"review_pros": [f"{pid} 리뷰 장점"]},
+            )
+        )
+    monkeypatch.setattr(artifact_store, "get_catalog_store", lambda: store)
+
+    result = await rank_by_profile([1.0, 0.0, 0.0], exclude=set(), settings=get_settings())
+
+    assert result is not None
+    ranked, reasons, names = result
+    assert ranked  # 랭킹이 실제로 나왔는지(그렇지 않으면 아래 호출 수 단언이 공허해진다)
+    assert names  # 이름도 실제로 채워졌는지(공허 통과 방지)
+    assert store.get_many_calls == 1

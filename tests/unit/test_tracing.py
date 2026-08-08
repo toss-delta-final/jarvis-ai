@@ -991,3 +991,35 @@ def test_agent_transcript_keeps_numeric_canaries() -> None:
     ]
     with pytest.raises(UnsafeTelemetryError):
         validate_export_payload(payload, allow_content=True)
+
+
+def test_extra_inputs_are_strict_content() -> None:
+    """[#469] conditionActions·signals 등 extra_inputs 키는 lenient 를 얻지 못한다."""
+    payload = [
+        {
+            "inputs": {"conditionActions": '[{"action":"remove","value":"010-1234-5678"}]'},
+            "outputs": {},
+            "extra": {"metadata": {}},
+        }
+    ]
+    with pytest.raises(UnsafeTelemetryError):
+        validate_export_payload(payload, allow_content=True)
+
+
+async def test_record_request_content_extra_inputs_lands_on_root() -> None:
+    exporter = FakeTraceExporter()
+    factory = TraceFactory(
+        exporter=exporter,
+        enabled=True,
+        sampling_rate=1.0,
+        payload_validator=lambda p: validate_export_payload(p, allow_content=True),
+        capture_content=True,
+        content_max_chars=20000,
+    )
+    trace = _start_trace(factory)
+    trace.record_request_content(
+        input_text="", extra_inputs={"conditionActions": '[{"action":"remove","field":"price"}]'}
+    )
+    await trace.finish(status="COMPLETED", error_type=None, terminal_reason="done")
+    root = exporter.exported[0][0]
+    assert "remove" in root.inputs["conditionActions"]

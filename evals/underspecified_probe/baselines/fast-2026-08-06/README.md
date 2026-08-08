@@ -163,3 +163,29 @@ off 롤백 경로, 셀 제외)·`buy-under-0006`(멀티턴 게이트)의 실측 
 SPEC-UNDERSPECIFIED-336 §7.3 게이트 잔여 항목 1을 고정 데이터셋 위에서 수치화하는 것이다 —
 **`underspecified_reask_enabled` 기본값 전환은 이 실측만으로 결정하지 않는다**(그 결정은 별도
 이슈의 몫이다).
+
+## 추기 (#433) — 이제 n=3 이다, 그리고 이 family 는 #430 after 의 대조 상대가 아니다
+
+위 경고("단일 실행은 채택 판정이 아니다")를 지우지 않고 이 절만 덧붙인다 — 이 런의 원본
+수치·표는 개변하지 않는다.
+
+`run2`(`../fast-2026-08-06-run2/`)·`run3`(`../fast-2026-08-06-run3/`) 을
+`--prompt-rev 798f0a965385bfdedbe20646c3e8a07ba73ea08b` 로 재현해 이 family 를 n=3 으로
+채웠다. 세 판 모두 같은 `prompt.sha12`(`11c6fe3bfa0c`) · 같은 `hashes.anchorFixture`.
+
+| 런 | `missRate` | `falseAlarmRate` | `judgmentAccuracy` |
+|---|---|---|---|
+| run1(이 문서, 커밋된 기준선) | 112/112 (100.0%) | 0/104 (0.0%) | 104/216 (48.1%) |
+| run2 | 112/112 (100.0%) | 0/104 (0.0%) | 104/216 (48.1%) |
+| run3 | 112/112 (100.0%) | 0/104 (0.0%) | 104/216 (48.1%) |
+
+세 판이 소수점까지 완전히 일치한다 — 편차 0%p. 상세·`blockingAxes` 조합 분포는
+`../README.md`(기준선 색인) 참조.
+
+**⚠️ 이 family(prompt `11c6fe3bfa0c`)는 pre-#386 프롬프트 세대(세대 1/3)다.** `app/agents/
+buyer/recommendation/decompose.py::_SYSTEM` 은 커밋 `3547e43`(#386 `wishlist_view` intent
+신설)로 세대 2(`e62fd0f6e03d`)가, 커밋 `55d93bd`(#430, PR #460)로 세대 3(`865ed6fd771e`,
+**현행**)이 바뀌었다 — 이 family 를 `#430`(프롬프트 수정)의 after 판과 대조하면 안 된다.
+`#430` before·`#431` 전환 판단의 정본은 `../fast-2026-08-08-run1~3`(세대 2 `e62fd0f6e03d`,
+착수 당시 현행이었으나 #430 back-merge 로 지금은 아니다) 이다. 자세한 내용·세대 계보는
+`../README.md`(기준선 색인)의 G-1 을 봐라.

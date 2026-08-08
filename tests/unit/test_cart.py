@@ -823,6 +823,47 @@ async def test_route_wishlist_add(monkeypatch: pytest.MonkeyPatch) -> None:
     assert action["type"] == "WISHLIST_ADDED"
 
 
+async def test_route_cart_add_unresolved_notice_reflects_has_last_reco() -> None:
+    """[#435 리뷰 C4] `app/agents/buyer/graph.py` 의 **직접 분기**(cart_add)가 `has_last_reco`
+    를 `stream_cart_add` 에 실제로 전달하는지 그래프 레벨로 고정한다. `cart/graph.py` 2선 위임
+    경로는 이미 테스트로 박혀 있었지만(`test_stream_cart_add_wishlist_add_delegation_forwards_
+    has_last_reco`), 주 경로인 이 직접 호출부는 인자를 지워도 잡히는 테스트가 없었다 —
+    `run_buyer_turn` 의 `stream_cart_add(...)` 호출에서 `has_last_reco=has_last_reco` 를 지우면
+    이 테스트가 옛 기본 문구로 실패한다(변이 시험으로 실측 확인, 보고 참조)."""
+    from app.agents.buyer.cart.state import get_cart_store
+    from tests._fakes import FakeLLM
+
+    request = _req(message="음... 아무거나", thread_id="t-435-c4-cart-add")
+    store = await get_cart_store()
+    key = await _thread_key(request, _member())
+    # last_reco 를 비어 있지 않게 시드 — `has_last_reco=True` 조건.
+    await store.set_last_reco(key, [(101, "이어폰")])
+    # productId=null 이면 담기 가드가 항상 미해소로 떨어진다(allowed 와 무관).
+    llm = FakeLLM(decompose={"intent": "cart_add", "cart": {"productId": None, "quantity": 1}})
+    events = await _collect(run_buyer_turn(request, _member(), llm=llm))
+    text = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert (
+        text == "어떤 상품을 담을까요? 추천해 드린 상품 중에서 이름을 말씀해 주시면 담아드릴게요."
+    )
+
+
+async def test_route_wishlist_add_unresolved_notice_reflects_has_last_reco() -> None:
+    """[#435 리뷰 C4] 같은 배선을 wishlist_add 직접 분기에도 고정한다."""
+    from app.agents.buyer.cart.state import get_cart_store
+    from tests._fakes import FakeLLM
+
+    request = _req(message="음... 아무거나 찜해줘", thread_id="t-435-c4-wishlist-add")
+    store = await get_cart_store()
+    key = await _thread_key(request, _member())
+    await store.set_last_reco(key, [(101, "이어폰")])
+    llm = FakeLLM(decompose={"intent": "wishlist_add", "cart": {"productId": None}})
+    events = await _collect(run_buyer_turn(request, _member(), llm=llm))
+    text = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert (
+        text == "어떤 상품을 찜할까요? 추천해 드린 상품 중에서 이름을 말씀해 주시면 찜해 드릴게요."
+    )
+
+
 async def test_route_wishlist_remove(monkeypatch: pytest.MonkeyPatch) -> None:
     """[라운드 24] decompose 가 직접 wishlist_remove 를 산출하면 stream_wishlist_remove 로 위임된다."""
     from tests._fakes import FakeLLM
@@ -3070,6 +3111,37 @@ async def test_non_pending_turn_prompt_carries_the_accumulated_list(
         line for line in llm.user.splitlines() if line.startswith("LAST_RECOMMENDATIONS:")
     )
     assert "9001" in reco_line and "301" in reco_line
+
+
+async def test_pending_cart_option_answer_unaffected_by_has_last_reco(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#435 W6] 옵션 되물음(PENDING_CART) 진행 중 턴은 `has_last_reco`(#435 신호)가 True 여도
+    상품 전환·옵션 해소 조건이 그대로다 — 새 이름 공급·새 문구 배선은 되물음 흐름에 관여하지 않는다.
+    """
+    from app.agents.buyer.cart.state import get_cart_store
+
+    request = _req(thread_id="t-pending-435", message="1번이요")
+    key = await _thread_key(request, _member())
+    store = await get_cart_store()
+    # `last_reco` 가 비어 있지 않아 `has_last_reco=True` 가 되는 조건을 만든다.
+    await store.set_last_reco(key, [(101, "세탁 세제")])
+    await store.set_pending(
+        key,
+        PendingAdd(product_id=101, quantity=1, options=[CartOption(option_id=1001, name="일반형")]),
+    )
+
+    async def add_fn(req):
+        return AddToCartResult(success=True, cart_item_id=42)
+
+    monkeypatch.setattr("app.services.spring_client.add_to_cart", add_fn)
+    monkeypatch.setattr("app.services.spring_client.get_cart", _empty_cart())
+
+    llm = _PromptCapturingLLM({"cart": {"productId": None, "optionId": 1001, "quantity": 1}})
+    events = await _collect(run_buyer_turn(request, _member(), llm=llm))
+
+    assert next(e for e in events if e["type"] == "action")["data"]["type"] == "CART_ADDED"
+    assert await store.get_pending(key) is None
 
 
 async def test_missing_turn_count_degrades_to_todays_behaviour() -> None:
