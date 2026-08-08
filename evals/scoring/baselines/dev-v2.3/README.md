@@ -1,7 +1,7 @@
 # dev-v2.3 paired baseline
 
 - command: `uv run python -m evals.scoring --out evals/scoring/baselines/dev-v2.3`
-- dataset hash: `eb0fa6d9c5b8676248ca103d5ca6ddb3d14531ffab7b2c0bd4851a4b0ce37565` (v2.3.0)
+- dataset hash: `675520d999dc1fbf0a4b32e13914205bc61c606c9adc2f65833eb67fc133ae50` (v2.3.0)
 - ranking cases: 68/109
 
 ## dev-v2.2와의 관계

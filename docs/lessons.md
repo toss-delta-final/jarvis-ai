@@ -13,6 +13,15 @@
 
 ---
 
+## [2026-08-09] datasetHash 규칙을 바꾸면 연결된 baseline을 즉시 재생성한다
+- 증상: `audit/holdout_runs.jsonl`을 해시 대상에서 제외한 뒤 datasetHash는 바뀌었지만,
+  `dev-v2.3`와 `trivial_empty` baseline은 이전 hash를 계속 가리켰다.
+- 원인: 재현 가능한 파일 목록을 고친 후 baseline 산출물의 `datasetHash` 연결을 재검증하지 않았다.
+- 규칙: datasetHash 입력·제외 규칙을 바꾼 커밋에서는 모든 현재 baseline을 재생성하고, 산출물의
+  hash가 manifest와 같은지 확인한다. append-only 런타임 로그는 해시에서 제외한다.
+- 관련: `evals/goldenset/refresh_manifest.py::HASH_EXCLUDED_PATHS` ·
+  `tests/unit/test_goldenset_audit.py` · #474
+
 ## [2026-08-07] "얼마나 좁힐지" 계산에 하한만 걸고 "이미 지났으면" 을 안 걸면 좁히기가 음수를 낸다
 - 증상: #427 리뷰(오케스트레이터 직접 재현)가 `rescue_deadline` 이 이미 지난 턴(과거
   `turn_started_at`)에서 `narrow_search_budget` 이 **음수 예산**을 받는 결함을 잡았다.
@@ -3248,8 +3257,3 @@
 - 해소: 2026-07-22부터 외부 사본 의존을 폐기하고 **repo-local `docs/api-spec.md`를 정본으로 승격**했다.
 - 규칙: 계약 변경은 `docs/api-spec.md`를 먼저 개정하고 코드를 같은/후속 커밋에서 맞춘다. SPEC의 낡은 외부 계약 명명도 repo-local api-spec이 우선한다.
 - 관련: `docs/api-spec.md`, `docs/specs/`
-# Dataset hash는 런타임 로그를 제외한다
-
-디렉터리 전수 해시를 도입할 때 `audit/holdout_runs.jsonl` 같은 append-only 실행 로그까지 포함하면
-데이터셋 내용과 무관하게 datasetHash가 바뀐다. 해시 제외 목록을 명시하고 완전성 테스트는 제외 목록
-외 파일을 양방향으로 검증한다.

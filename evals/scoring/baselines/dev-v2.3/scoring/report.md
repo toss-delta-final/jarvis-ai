@@ -1,6 +1,6 @@
 # 구매자 추천 품질 평가
 
-- dataset: `2.3.0` / `eb0fa6d9c5b8676248ca103d5ca6ddb3d14531ffab7b2c0bd4851a4b0ce37565`
+- dataset: `2.3.0` / `675520d999dc1fbf0a4b32e13914205bc61c606c9adc2f65833eb67fc133ae50`
 - algorithm/config: `buyer-metrics-v1` / `buyer-eval-config-v1`
 - model config: `{"decompose":"expectedFilters","provider":"scripted","recentPurchaseWindowDays":90,"referenceDate":"2026-08-02","rerank":"deterministicScoringBaseline","weights":{"diversity_bonus":0.1,"popularity":0.15,"profile_match":0.15,"recency":0.05,"recent_purchase_penalty":0.2,"semantic":0.55}}`
 - 기본 scripted adapter는 expectedFilters를 decompose 출력으로 사용하므로 Filter Accuracy 1.0이 구조적으로 기대됩니다(#144에서 실모델로 교체).
