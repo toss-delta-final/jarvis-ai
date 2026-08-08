@@ -851,9 +851,9 @@ def test_duplicate_signal_ids_do_not_inflate_the_query_vector(
             for i in client.post(_URL, json=_body(limit=10, signals=signals)).json()["items"]
         ]
 
-    assert ranking([9001, 9002]) == ranking(
-        [9001, 9002, 9002, 9002, 9002]
-    ), "중복 9002 가 벡터를 지배하면 순위가 달라진다"
+    assert ranking([9001, 9002]) == ranking([9001, 9002, 9002, 9002, 9002]), (
+        "중복 9002 가 벡터를 지배하면 순위가 달라진다"
+    )
 
 
 def test_reason_falls_back_to_review_pro(store: CatalogArtifactStore) -> None:
@@ -996,12 +996,108 @@ def test_log_has_fixed_safe_key_set_only(
 def test_log_records_outcome_and_counts(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """장애 관측에 필요한 유계 코드는 남긴다 — outcome·후보 수·소요."""
+    """장애 관측에 필요한 유계 코드는 남긴다 — outcome·후보 수·소요.
+
+    [#469] 필드는 `extra` 가 아니라 **JSON 메시지**에 실린다 — extra 는 기본 포맷터가 출력하지
+    않아 실 로그(docker logs)에서 증발했다(운영 실측 2026-08-08).
+    """
     with caplog.at_level(logging.INFO, logger=svc.logger.name):
         client.post(_URL, json=_body())
     rec = next(r for r in caplog.records if r.name == svc.logger.name)
-    assert rec.outcome == "PERSONALIZED"
-    assert isinstance(rec.candidateCount, int)
-    assert isinstance(rec.returnedCount, int)
-    assert isinstance(rec.elapsedMs, int)
-    assert rec.reasonSource in {"extras", "none"}
+    payload = json.loads(rec.getMessage())
+    assert payload["outcome"] == "PERSONALIZED"
+    assert isinstance(payload["candidateCount"], int)
+    assert isinstance(payload["returnedCount"], int)
+    assert isinstance(payload["elapsedMs"], int)
+    assert payload["reasonSource"] in {"extras", "none"}
+
+
+# ── [#469] I-22 요청 트레이스 ──
+
+
+def _fake_http_request():
+    """requestId 상관관계용 http_request 더블 — get_request_id 는 state 만 읽는다."""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(state=SimpleNamespace(request_id="rid-469-test"))
+
+
+async def test_home_trace_exports_stage_spans_and_outcome() -> None:
+    """콘텐츠 모드에서 I-22 가 루트+단계 span 을 export 한다(finish 는 fire-and-forget)."""
+    import asyncio
+
+    from app.api.internal import home_recommendations
+    from app.core.tracing import (
+        FakeTraceExporter,
+        TraceFactory,
+        set_trace_factory,
+        validate_export_payload,
+    )
+    from app.schemas.recommendations import HomeRecommendationRequest
+
+    exporter = FakeTraceExporter()
+    set_trace_factory(
+        TraceFactory(
+            exporter=exporter,
+            enabled=True,
+            sampling_rate=1.0,
+            payload_validator=lambda p: validate_export_payload(p, allow_content=True),
+            capture_content=True,
+            content_max_chars=20000,
+        )
+    )
+    try:
+        request = HomeRecommendationRequest.model_validate(_body())
+        response = await home_recommendations(request, _fake_http_request(), None)
+        assert response.outcome == "PERSONALIZED"
+        for _ in range(50):  # 분리 finish 태스크가 export 를 마칠 때까지
+            if exporter.exported:
+                break
+            await asyncio.sleep(0.01)
+        nodes = exporter.exported[0]
+        names = {node.name for node in nodes}
+        assert {
+            "home_recommendation",
+            "home.profile",
+            "home.query_vector",
+            "home.rank",
+            "home.reasons",
+        } <= names
+        root = next(node for node in nodes if node.parent_id is None)
+        # memberId 원값은 어디에도 없다 — conversation_id 는 지문(sessionFp)으로만.
+        assert "123" not in str(root.metadata.get("sessionFp"))
+        assert root.metadata["terminalReason"] == "personalized"
+        # 미들웨어가 심은 requestId 와 동일해야 §2.4 오류 봉투·X-Request-Id 와 상관된다(PR #470 리뷰).
+        assert root.metadata["requestId"] == "rid-469-test"
+        assert "signals" in root.inputs
+        assert "PERSONALIZED" in root.outputs["message"]
+    finally:
+        set_trace_factory(None)
+
+
+async def test_home_trace_disabled_leaves_endpoint_untouched() -> None:
+    """트레이스 비활성(Noop)에서도 응답 계약이 동일하다 — 지연·본문 영향 0."""
+    from app.api.internal import home_recommendations
+    from app.core.tracing import NoopTraceExporter, TraceFactory, set_trace_factory
+    from app.schemas.recommendations import HomeRecommendationRequest
+
+    set_trace_factory(TraceFactory(exporter=NoopTraceExporter(), enabled=False, sampling_rate=1.0))
+    try:
+        request = HomeRecommendationRequest.model_validate(_body())
+        response = await home_recommendations(request, _fake_http_request(), None)
+        assert response.outcome == "PERSONALIZED"
+        assert len(response.items) >= 1
+    finally:
+        set_trace_factory(None)
+
+
+def test_home_reco_log_carries_outcome_in_message(caplog: pytest.LogCaptureFixture) -> None:
+    """[#469] outcome·개수가 로그 **메시지**에 실린다 — extra 는 포맷터가 버리던 결함의 핀."""
+    with caplog.at_level(logging.INFO, logger="app.services.home_recommendation"):
+        response = client.post(_URL, json=_body())
+    assert response.status_code == 200
+    records = [r.getMessage() for r in caplog.records if "home_reco_request" in r.getMessage()]
+    assert records, "home_reco_request 로그가 없다"
+    payload = json.loads(records[-1])
+    assert payload["outcome"] == "PERSONALIZED"
+    assert payload["returnedCount"] >= 1

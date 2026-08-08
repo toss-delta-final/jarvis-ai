@@ -19,6 +19,7 @@ from uuid import uuid4
 
 from app.agents.buyer._frames import progress as progress_frame
 from app.agents.buyer._frames import sse
+from app.agents.buyer.cart.options import OptionHint
 from app.agents.buyer.recommendation.budget_sets import BudgetSet, BudgetSetPlan, build_budget_sets
 from app.agents.buyer.recommendation.need_priority import classify_need_priorities
 from app.agents.buyer.recommendation.no_condition import (
@@ -2559,8 +2560,18 @@ async def stream_recommendation(
         # push 실패로 카드가 노출되지 않았으면 저장하지 않아 "그거 담아줘"가 미노출 상품을 담지 않는다.
         if cart_store is not None and thread_key is not None:
             name_by_id = {p.product_id: p.name for p in candidates}
+            # I-1 옵션 힌트(이슈 #455) — 되물음 문구·자동 선택 정합 가드용. 이 경로만 실은 이유는
+            # SpringProduct 원본이 있는 유일한 push 경로라서다(프로필 랭킹 경로는 AI 인덱스라
+            # options/optionCount 가 없다 — 아래 힌트 없이 오늘 경로로 degrade).
+            option_hints = {
+                p.product_id: OptionHint(names=tuple(p.options or ()), total=p.option_count)
+                for p in candidates
+                if p.options or p.option_count is not None
+            }
             await cart_store.set_last_reco(
-                thread_key, [(pid, name_by_id.get(pid, "")) for pid in ranked_ids]
+                thread_key,
+                [(pid, name_by_id.get(pid, "")) for pid in ranked_ids],
+                option_hints=option_hints,
             )
     else:
         # push 실패 → products.ready 없음. rerank 코멘트가 "찾았다"고 했으니 목록 지연을 고지하고
