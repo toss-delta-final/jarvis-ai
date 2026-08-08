@@ -839,11 +839,20 @@ class ChurnMember(SellerAggregateModel):
 
     preChurnEvent: 클레임 있으면 "RETURNED(상품불량)" 형식(최신 1건), 없으면 마지막
     행동 이벤트 타입. 서버가 CHURN_LIST_CAP=50 으로 절단해 내려보낸다(별도 total
-    없음 — 이탈 전수는 cohortSize×churnRate 로 유추)."""
+    없음 — 이탈 전수는 cohortSize×churnRate 로 유추).
 
-    member_id: int | None = None
+    [개정 2026-08-06, #487 — #481 잔여분] memberId(Long) → customerLabel(HMAC-SHA256
+    앞 6자 Base32 사례번호)로 교체하고 lastLoginAt 을 제거한다. 원시 memberId 는
+    가명이 아니라 재식별 키라 S-2(orderId+수령인 실명) 대조로 회원이 특정된다 —
+    I-14 개정(#481)과 같은 근거가 I-16 에만 적용되지 않고 있었다. lastLoginAt 은
+    계정 보안 정보라 판매자에게 회원 단위로 줄 이유가 없다(요약에서 읽히지도 않던 사문).
+
+    ※ 필드 제거는 배포 순서와 무관하게 안전하다 — SellerAggregateModel 이
+    extra="allow" 라 BE 미배포 구간의 구응답 memberId/lastLoginAt 은 예외 없이
+    model_extra 로 흡수되고, 표시 계층이 읽지 않으므로 노출만 끊긴다."""
+
+    customer_label: str | None = None  # HMAC 익명 라벨(사례번호) — 구 memberId 대체
     last_activity_at: str | None = None
-    last_login_at: str | None = None  # 로그인 이벤트가 없으면 null
     # to_camel("sessions_30d") 은 "sessions30D"(숫자 뒤 접미 대문자화)라 와이어 키
     # "sessions30d" 와 어긋난다 — 명시 alias 로 고정한다(#197, 테스트로 회귀 방지).
     sessions_30d: int | None = Field(default=None, alias="sessions30d")

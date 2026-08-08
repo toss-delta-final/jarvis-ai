@@ -670,6 +670,15 @@ async def _point_spike_note(brand_id: int, from_date: str, to_date: str, series:
     )
 
 
+# customerLabel 규약 문구 (I-14·I-16 공용, #487 — 노션 2026-08-06 개정).
+# I-14 기록 규칙 안에 섞여 있던 것을 상수로 뽑았다 — 복붙본이 갈라지면 한쪽 경로의
+# 규약만 낡는다(#487 이 고친 결함이 정확히 "I-16 만 미반영"이었다).
+_CUSTOMER_LABEL_NOTE = (
+    "※ customerLabel은 개인정보 보호용 사례번호(회원 키 아님) — 실명·연락처 추정, "
+    "orderId 대조 유도, IP와 개별 고객 직접 연결 금지. 조치가 필요하면 "
+    "'사례번호 XXXXXX로 관리자 문의'로 안내."
+)
+
 # I-14/I-15 기록 규칙 주의 문구 (REALIGN ②-4 — schema.sql D32/D34 확정 반영).
 # 도구 출력에 상시 부착해 워커가 로그 부재를 '데이터 이상'으로 오해석하는 것을 막는다.
 _ORDER_LOG_RULES_NOTE = (
@@ -678,10 +687,7 @@ _ORDER_LOG_RULES_NOTE = (
     "(orderItemId 값 있음) — 같은 orderId 행 복수는 아이템별 전이(중복 아님). "
     "주문 전이(PENDING/PAID/PAYMENT_FAILED)는 orderItemId null이며 "
     "개정(2026-08-06) 이전 로그도 null일 수 있음. "
-    "※ customerLabel은 개인정보 보호용 사례번호(회원 키 아님) — 실명·연락처 추정, "
-    "orderId 대조 유도, IP와 개별 고객 직접 연결 금지. 조치가 필요하면 "
-    "'사례번호 XXXXXX로 관리자 문의'로 안내."
-)
+) + _CUSTOMER_LABEL_NOTE
 _PRODUCT_LOG_RULES_NOTE = (
     "※ 기록 규칙: 주문에 의한 재고 차감은 미기록(수동 조정·품절/재입고 전환만). "
     "품절 신호 = STOCK 변경의 new_value 0 (SOLD_OUT 상태는 없음)."
@@ -949,6 +955,12 @@ async def get_churn_cohort(
     로그가 아이템 단위가 되며 숫자가 커질 수 있고 순위는 대체로 유지).
     cancelCount 는 DISTINCT 주문 수 그대로라 두 신호의 단위가 다르다 — 합산 금지.
 
+    [개정 2026-08-06 해석 규칙, #487 — #481 잔여분]
+    - 이탈 회원 노출은 customerLabel(사례번호, 문자열)뿐이다 — 구 memberId(Long)·
+      lastLoginAt 은 제거됐다. 같은 브랜드에서 같은 회원이면 같은 라벨이라 I-14
+      집계와 대조가 되지만, 실명·연락처 추정과 orderId 대조 유도는 금지다.
+    - 라벨 미수신(구응답 구간)은 "[?]"로 떨어진다 — 원시 회원 키로 되돌아가지 않는다.
+
     Args:
         from_date: 코호트 기간 시작일(YYYY-MM-DD, 필수).
         to_date: 코호트 기간 종료일(YYYY-MM-DD, 필수).
@@ -1050,8 +1062,11 @@ async def get_churn_cohort(
     if result.members:
         # [#197 리뷰] I-16 전용 상한 — I-14 kv 상한(seller_summary_max_events)과 분리.
         shown = result.members[: settings.seller_churn_member_max]
+        # [#487] 라벨 결측(BE 미배포 구간)은 '?' 로 떨어뜨린다 — memberId 폴백을 두면
+        # 이번에 막으려는 원시 회원 키 노출이 조용히 되살아난다(I-8 "404 시 구경로
+        # 폴백 금지"와 같은 원칙).
         member_lines = "; ".join(
-            f"[{m.member_id if m.member_id is not None else '?'}] "
+            f"[{m.customer_label or '?'}] "
             f"마지막 활동 {m.last_activity_at or '?'}"
             f"·최근30일 세션 {m.sessions_30d if m.sessions_30d is not None else '?'}"
             f"·이탈 전 이벤트 {m.pre_churn_event or '-'}"
@@ -1069,7 +1084,8 @@ async def get_churn_cohort(
         members_note = ""
     return (
         f"{head}{signals_note}{members_note} "
-        f"{_CHURN_SIGNAL_RULES_NOTE} {_reference_note(from_date, to_date)}"
+        f"{_CHURN_SIGNAL_RULES_NOTE} {_CUSTOMER_LABEL_NOTE} "
+        f"{_reference_note(from_date, to_date)}"
     )
 
 

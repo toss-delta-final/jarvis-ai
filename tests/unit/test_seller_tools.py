@@ -1494,12 +1494,12 @@ async def test_churn_tool_summarizes_signals_and_members() -> None:
         ),
         members=[
             ChurnMember(
-                member_id=103,
+                customer_label="A3F29C",
                 last_activity_at="2026-06-15T10:00:00+09:00",
                 sessions_30d=0,
                 pre_churn_event="RETURNED(상품불량)",
             ),
-            ChurnMember(member_id=104, last_activity_at="2026-06-01T09:00:00+09:00"),
+            ChurnMember(customer_label="B71D04", last_activity_at="2026-06-01T09:00:00+09:00"),
         ],
     )
 
@@ -1511,8 +1511,71 @@ async def test_churn_tool_summarizes_signals_and_members() -> None:
     assert "사이즈 불만(2건)" in result
     assert "가격인상 노출 2명" in result
     assert "이탈 회원 2명" in result
-    assert "[103]" in result and "RETURNED(상품불량)" in result
+    # [#487] 회원 노출은 customerLabel(사례번호)뿐 — 구 memberId 표기는 폐기.
+    assert "[A3F29C]" in result and "RETURNED(상품불량)" in result
+    assert "[B71D04]" in result
     assert "쓰지 말 것" in result  # _CHURN_SIGNAL_RULES_NOTE 상시 부착
+
+
+async def test_churn_tool_never_exposes_raw_member_id_from_legacy_response() -> None:
+    """[#487] 구응답(memberId 포함·customerLabel 부재)을 먹여도 요약에 원시 회원 키가
+    등장하지 않는다 — 라벨 결측은 "[?]"로만 떨어진다.
+
+    ChurnMember 는 SellerAggregateModel(extra="allow") 상속이라 BE 미배포 구간의
+    구응답이 와도 ValidationError 없이 model_extra 로 흡수된다. 이 테스트가 지키는
+    것은 "흡수된 값이 표시 계층으로 새지 않는다"는 것 — memberId 폴백을 되살리면
+    여기서 깨진다(#487 이 고친 결함 그 자체).
+    """
+    fake = FakeSpringClient()
+    # 코호트 규모·비율·날짜와 우연히 겹치지 않도록 6자리 구분값을 쓴다.
+    fake.churn_result = ChurnResult.model_validate(
+        {
+            "cohortSize": 5,
+            "churnRate": 0.6,
+            "preChurnSignals": {},
+            "members": [
+                {
+                    "memberId": 987654,
+                    "lastActivityAt": "2026-06-15T10:00:00+09:00",
+                    "lastLoginAt": "2026-06-10T10:00:00+09:00",
+                    "sessions30d": 0,
+                    "preChurnEvent": "RETURNED(상품불량)",
+                }
+            ],
+        }
+    )
+
+    result = await _call_runtime_tool(
+        get_churn_cohort, {"from_date": "2026-06-01", "to_date": "2026-07-31"}, fake
+    )
+
+    assert "987654" not in result  # 원시 회원 키가 LLM 표면에 실리지 않는다
+    assert "[?]" in result  # 라벨 미수신은 '?' 로만 떨어진다
+    assert "이탈 회원 1명" in result  # 흡수 자체는 성공 — 항목이 사라지는 게 아니다
+
+
+async def test_customer_label_note_attached_to_both_order_and_churn_outputs() -> None:
+    """[#487] 사례번호 규약 문구는 상수 1벌(_CUSTOMER_LABEL_NOTE)로 I-14·I-16 양쪽
+    출력에 붙는다 — 복붙본이 갈라져 한쪽 경로의 규약만 낡는 것을 막는다."""
+    from app.agents.seller.tools import _CUSTOMER_LABEL_NOTE, _ORDER_LOG_RULES_NOTE
+
+    # I-14 기록 규칙 노트는 같은 문구를 같은 자리(맨 끝)에 그대로 유지한다(무회귀).
+    assert _ORDER_LOG_RULES_NOTE.endswith(_CUSTOMER_LABEL_NOTE)
+
+    fake = FakeSpringClient()
+    # rows 가 비면 "0건" 조기 반환 경로라 기록 규칙 노트가 붙지 않는다 — 목록 경로로 태운다.
+    fake.order_events_result = OrderEventsResult(
+        rows=[{"orderId": 5001, "toStatus": "CANCELLED", "customerLabel": "A3F29C"}], total=1
+    )
+    order_result = await _call_runtime_tool(
+        get_order_events, {"from_date": "2026-07-01", "to_date": "2026-07-31"}, fake
+    )
+    churn_result = await _call_runtime_tool(
+        get_churn_cohort, {"from_date": "2026-07-01", "to_date": "2026-07-31"}, fake
+    )
+
+    assert _CUSTOMER_LABEL_NOTE in order_result
+    assert _CUSTOMER_LABEL_NOTE in churn_result
 
 
 async def test_churn_tool_reports_missing_rate_as_unreceived_not_zero() -> None:
@@ -1562,7 +1625,7 @@ async def test_churn_tool_caps_member_lines_by_settings() -> None:
         churn_rate=0.5,
         cohort_size=cap * 4,
         pre_churn_signals=PreChurnSignals(),
-        members=[ChurnMember(member_id=i) for i in range(cap + 3)],
+        members=[ChurnMember(customer_label=f"L{i:05d}") for i in range(cap + 3)],
     )
 
     result = await _call_runtime_tool(
