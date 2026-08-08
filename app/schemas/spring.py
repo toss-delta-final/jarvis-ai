@@ -731,8 +731,13 @@ class BehaviorEventsResult(SellerAggregateModel):
       - product(기본) : rows (+ total)
       - eventType     : counts
       - date          : series (date + camelCase 이벤트 카운트, 키 동적 → dict 유지)
-    ⚠️ purchaseComplete 는 이벤트 기준(주문 완료 페이지 발사) — 매출·주문수의
-    권위는 I-6/I-14(order 기준)다(명세 집계 규칙 — 워커 해석 주의).
+    ⚠️ purchaseComplete 는 **주문 기준** 집계다 — order_item × product × brand 의
+    PAID(paid_at) 건을 COUNT(DISTINCT order_id) 한 값으로 I-7 퍼널 4단과 같은
+    정본이며, 이벤트 유실과 무관하고 과거 구간도 소급 복구된다. 건수이지 수량이
+    아니고(한 주문에 같은 상품 여러 개여도 1), 상품별 합이 eventType 합계보다
+    클 수 있으며(한 주문에 자사 상품 여러 종), 조회·담기 없이 구매만 있는 상품도
+    rows 에 등장한다. 구 "이벤트 기준·권위는 I-6/I-14" 규정은 2026-07-31 개정
+    (jarvis-backend#62)으로 폐기(#488).
     """
 
     group_by: str = "product"
