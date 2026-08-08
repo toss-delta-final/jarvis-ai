@@ -373,11 +373,28 @@ def normalize_paired_artifacts(output_dir: Path) -> dict[str, bytes]:
     return normalized
 
 
+def _rows_with_metrics(results: dict[str, Any]) -> list[dict[str, Any]]:
+    """지표 계산에 쓸 수 있는 행만 — 이득·활성화가 **같은 행 집합**을 보게 하는 단일 술어.
+
+    `run_repeats` 는 예산이 실행 도중 소진되면 `metrics=None`·`rankedProductIds=[]` 인
+    `failureReason="budgetExceeded"` 행을 남긴다. 이 행은 측정 결과가 아니라 **측정이 중단된
+    자리**다.
+
+    술어를 한 곳에 두는 이유(PR #485 리뷰): 이득 지표는 이 필터를 거치는데 활성화 지표가
+    raw `caseResults` 를 읽으면, 예산이 소진된 그 행이 baseline 의 정상 행과 짝지어져
+    `setChanged` 로 잡힌다 — **예산 소진이 프로필 효과로 둔갑한다.** 두 곳에 같은 조건을
+    복붙하면 한쪽만 고쳐질 때 같은 어긋남이 조용히 되살아나므로 함수로 고정한다.
+
+    adapter 예외로 생긴 `hardFailure` 행은 **거르지 않는다** — 그쪽은 `evaluate` 가 정상적으로
+    metrics 를 산출하므로 두 지표에 똑같이 들어가고, 빈 노출도 실제 산출 결과다.
+    """
+    return [row for row in results["caseResults"] if isinstance(row.get("metrics"), dict)]
+
+
 def _live_metric_report(results: dict[str, Any], *, k_list: tuple[int, ...]) -> dict[str, Any]:
     grouped: dict[str, list[dict[str, Any]]] = {}
-    for row in results["caseResults"]:
-        if isinstance(row.get("metrics"), dict):
-            grouped.setdefault(row["caseId"], []).append(row["metrics"])
+    for row in _rows_with_metrics(results):
+        grouped.setdefault(row["caseId"], []).append(row["metrics"])
     cases = []
     for case_id, rows in sorted(grouped.items()):
         first = rows[0]
@@ -545,11 +562,12 @@ def run_tier_l(
     # [#482] 활성화 지표 — 프로필이 노출을 **실제로 바꿨는가**. 이득 지표(위 `paired`)만으로는
     # "아무것도 안 바꿔서 0" 과 "바꿨는데 좋지 않아서 0" 이 구분되지 않는데, 두 상태의 처방이
     # 정반대다(`activation` 모듈 docstring). 기준선은 paired 와 **같은 arm** 을 쓴다 — 두 지표가
-    # 다른 기준을 보면 같은 표에서 읽을 수 없다.
+    # 다른 기준을 보면 같은 표에서 읽을 수 없다. 행 집합도 `_rows_with_metrics` 로 맞춘다 —
+    # raw `caseResults` 를 읽으면 예산 소진 행이 프로필 효과로 둔갑한다(그쪽 docstring 참조).
     ranking_change_by_arm = {
         arm_name: ranking_change(
-            results_by_arm[LIVE_BASELINE_ARM]["caseResults"],
-            results_by_arm[arm_name]["caseResults"],
+            _rows_with_metrics(results_by_arm[LIVE_BASELINE_ARM]),
+            _rows_with_metrics(results_by_arm[arm_name]),
         )
         for arm_name in arm_names
         if arm_name != LIVE_BASELINE_ARM

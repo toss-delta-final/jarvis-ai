@@ -5,10 +5,11 @@ from __future__ import annotations
 import pytest
 
 from evals.personalization.activation import ranking_change
+from evals.personalization.cli import _rows_with_metrics
 
 
 def _row(case_id: str, ranked: list[int], *, repeat: int = 0) -> dict:
-    return {"caseId": case_id, "repeat": repeat, "rankedProductIds": ranked}
+    return {"caseId": case_id, "repeat": repeat, "rankedProductIds": ranked, "metrics": {}}
 
 
 def test_classifies_same_order_and_set_changes() -> None:
@@ -87,3 +88,52 @@ def test_empty_input_yields_zero_rate_not_division_error() -> None:
     result = ranking_change([], [])
     assert result["pairedCount"] == 0
     assert result["changeRate"] is None
+
+
+def test_budget_exceeded_row_is_not_counted_as_a_ranking_change() -> None:
+    """예산 소진 행(`metrics=None`·빈 노출)이 프로필 효과로 둔갑하면 안 된다 (PR #485 리뷰).
+
+    `run_repeats` 는 실행 도중 예산이 소진되면 `metrics=None`·`rankedProductIds=[]` 인
+    `failureReason="budgetExceeded"` 행을 남긴다. 이득 지표는 그 행을 거르는데 활성화 지표가
+    raw 행을 읽으면 baseline 의 정상 행과 짝지어져 `setChanged` 로 잡힌다.
+    """
+    baseline = {"caseResults": [_row("a", [1, 2]), _row("b", [3, 4])]}
+    arm = {
+        "caseResults": [
+            _row("a", [1, 2]),
+            {
+                "caseId": "b",
+                "repeat": 0,
+                "metrics": None,
+                "rankedProductIds": [],
+                "hardFailure": True,
+                "failureReason": "budgetExceeded",
+            },
+        ]
+    }
+
+    naive = ranking_change(baseline["caseResults"], arm["caseResults"])
+    assert naive["setChanged"] == 1  # 거르지 않으면 예산 소진이 '변화' 로 잡힌다
+
+    filtered = ranking_change(_rows_with_metrics(baseline), _rows_with_metrics(arm))
+    assert filtered["setChanged"] == 0
+    assert filtered["pairedCount"] == 1
+    assert filtered["unpairedBaseline"] == 1  # 측정이 중단된 자리는 분모에서 빠지고 개수로 남는다
+
+
+def test_rows_with_metrics_keeps_hard_failure_rows_that_have_metrics() -> None:
+    """adapter 예외로 빈 노출이 된 행은 실제 산출 결과이므로 거르지 않는다."""
+    results = {
+        "caseResults": [
+            {
+                "caseId": "a",
+                "repeat": 0,
+                "metrics": {},
+                "rankedProductIds": [],
+                "hardFailure": True,
+            },
+            {"caseId": "b", "repeat": 0, "metrics": None, "rankedProductIds": []},
+            {"caseId": "c", "repeat": 0, "rankedProductIds": [1]},
+        ]
+    }
+    assert [row["caseId"] for row in _rows_with_metrics(results)] == ["a"]
