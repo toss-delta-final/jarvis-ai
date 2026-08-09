@@ -4,6 +4,7 @@ import pytest
 
 from evals.goldenset.loader import load_cases
 from evals.metrics.runner import assert_pr_gate, critical_cases, evaluate
+from evals.metrics.color_expansion import evaluate_color_expansion
 
 
 @pytest.mark.eval
@@ -47,3 +48,32 @@ def test_pr_gate_catches_price_violation_when_decompose_drops_price_axis() -> No
         row for row in report["violations"] if row["constraint"] in report["prGateConstraints"]
     ]
     assert gated  # 주입된 price_violation 후보가 실제로 노출·검출됐다
+
+
+@pytest.mark.eval
+def test_color_synonym_expansion_ab_channel_is_not_vacuous() -> None:
+    """#474: 색상 mock·확장 와이어가 꺼지면 고유어 정답이 실제로 사라져야 한다."""
+    report = evaluate_color_expansion()
+    rows = report["cases"]
+    native = [row for row in rows if not row["isCanonical"]]
+    canonical = [row for row in rows if row["isCanonical"]]
+
+    assert all(row["recallAt10"]["on"] > row["recallAt10"]["off"] for row in native)
+    assert all(set(row["offProductIds"]).isdisjoint(row["relevantProductIds"]) for row in native)
+    assert all(row["onProductIds"] == row["offProductIds"] for row in canonical)
+
+
+@pytest.mark.eval
+def test_color_synonym_on_arm_sends_expanded_repeated_color_params() -> None:
+    """#474: recall 회복은 color가 사라진 우연이 아니라 배열 확장의 결과여야 한다."""
+    from evals.metrics.harness import OfflineBuyerAdapter
+    from evals.metrics.runner import load_evaluation_fixtures
+
+    case = next(case for case in load_cases("dev") if case.case_id == "buy-colr-0001")
+    adapter = OfflineBuyerAdapter(color_expansion=True)
+    adapter(case, load_evaluation_fixtures())
+    request = next(
+        item for item in adapter.last_requests if item["path"] == "/internal/products/search"
+    )
+    assert len(request["query"]["color"]) >= 2
+    assert "네이비" in request["query"]["color"]

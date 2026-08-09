@@ -257,6 +257,7 @@ async def _load_color_synonym_map(settings) -> dict[str, list[str]] | None:
             return color_synonyms.get_synonym_map(
                 settings.catalog_db_url,
                 ttl_s=settings.color_synonym_cache_ttl_s,
+                warn_if_empty=settings.color_synonym_expansion_enabled,
             )
         finally:
             # wait_for가 먼저 끝나도 실제 worker 종료 전에는 풀 크기 슬롯을 반환하지 않는다.
@@ -1474,7 +1475,13 @@ class SpringClient:
     async def get_sales(
         self, brand_id: int, from_: str, to: str, granularity: str = "daily"
     ) -> SalesResult:
-        """I-6 매출 시계열 조회 (§4.4). granularity: daily/weekly/monthly/summary."""
+        """I-6 매출 시계열 조회 (§4.4). granularity: daily/weekly/monthly/summary.
+
+        [#489] series[].salesCount(판매 **수량**, SUM(oi.quantity) · CANCELLED/
+        RETURNED 제외)를 수신한다 — 구현에는 처음부터 있었으나 스키마에 필드가
+        없어 파싱되지 않고 버려지던 드리프트 정정(2026-08-06). granularity=summary
+        응답에는 수량 필드가 없어 nullable 이다.
+        """
         data = await self._request(
             "GET",
             f"/internal/seller/{brand_id}/sales",
@@ -1504,8 +1511,13 @@ class SpringClient:
     ) -> BehaviorEventsResult:
         """I-13 행동 이벤트 집계 조회 (§4.4 — 07/17 BE 확정, REALIGN ②-3).
 
-        eventType 은 상품 연계 4종 복수 선택(미지정 = 4종 전체), groupBy 는
-        product(기본)/eventType/date. 실패 코드: INVALID_PERIOD/INVALID_GROUP_BY(400).
+        eventType 은 상품 연계 **5종** 복수 선택(미지정 = 5종 전체) — product_view /
+        add_to_cart / **remove_from_cart** / checkout_start / purchase_complete.
+        [2026-08-06 개정, #489] remove_from_cart 편입으로 4종 → 5종이며, 5종 밖의
+        값은 400 INVALID_GROUP_BY 다(session_start/login/search/page_view 는 상품
+        귀속 경로가 없어 이 엔드포인트 스코프 밖).
+        groupBy 는 product(기본)/eventType/date. 실패 코드:
+        INVALID_PERIOD/INVALID_GROUP_BY(400).
         """
         params: dict = {"from": from_, "to": to}
         if event_type:
@@ -1810,11 +1822,17 @@ class SpringClient:
         from_: str | None = None,
         to: str | None = None,
         product_id: int | None = None,
+        rating: str | None = None,
     ) -> SellerReviewStats:
         """I-31 리뷰 집계 조회 — stats=true 모드 (§4.20).
 
         totalCount/averageRating/distribution(P-3 형태)/byProduct. 0건이면
         averageRating 은 null(I-16 churnRate 규칙과 동일 — 평점 0점 오독 금지).
+
+        [#494] from/to·rating·productId 는 **집계에도 전부 적용**된다(I-31 확정) —
+        rating 을 안 실으면 전 별점 합산 순위가 200 으로 조용히 돌아와, 명세가 대표
+        사용례로 든 "1–2점이 어느 상품에 몰렸어?"가 '그냥 리뷰가 가장 많은 상품'을
+        지목한다. sort/limit/offset 만 미전송이 맞다(집계 모드에는 rows 가 없다).
         """
         params: dict = {"stats": "true"}
         if from_:
@@ -1823,6 +1841,8 @@ class SpringClient:
             params["to"] = to
         if product_id is not None:
             params["productId"] = product_id
+        if rating:
+            params["rating"] = rating
         data = await self._request(
             "GET",
             f"/internal/seller/{brand_id}/reviews",

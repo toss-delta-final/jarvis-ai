@@ -25,7 +25,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from app.schemas.recommendations import LIMIT_MAX as HOME_RECO_LIMIT_MAX
 from app.schemas.spring import LIST_MAX_PRODUCTS, MAX_LISTS
 
-LLMProvider = Literal["openai", "anthropic"]
+LLMProvider = Literal["openai", "anthropic", "scripted"]
 # 검색 백엔드 선택(#101) — spring: Spring 위임만(방식1 이전 MVP, 운영 롤백), embedding_rerank:
 # Spring 전량 → pgvector 의미 재정렬(방식2, MVP 기본), vector: 방식1 오프라인 비교 전용
 # (운영 사용 금지, #32 미채택, C-17 기각).
@@ -282,9 +282,12 @@ class Settings(BaseSettings):
             return cls.model_fields[info.field_name].default
         return value
 
-    # ── LLM provider 토글 (이슈 #40) ──
-    # "openai"(기본) | "anthropic". 호출부는 tier("fast"|"smart")로 부르고 provider 가 모델을 해석한다.
-    # 실행 오버라이드: .env / OS 환경변수 LLM_PROVIDER 가 이 기본값을 덮는다(pydantic-settings).
+    # ── LLM provider 토글 (이슈 #40, #438) ──
+    # "openai"(기본) | "anthropic" | "scripted". 호출부는 tier("fast"|"smart")로 부르고 provider 가
+    # 모델을 해석한다. 실행 오버라이드: .env / OS 환경변수 LLM_PROVIDER 가 이 기본값을 덮는다(pydantic-settings).
+    # "scripted"(#438): 결정론 스텁(app/core/llm_scripted.py::LoadTestLLM)으로 실 LLM 호출을 대신해
+    # 부하 테스트를 비용 없이 돌린다. local/test 환경에서만 허용 — 아래 _forbid_scripted_outside_local
+    # 이 그 밖의 환경에서 기동을 막는다.
     llm_provider: LLMProvider = "openai"
 
     # ── Anthropic 2-tier LLM (fast=haiku / smart=sonnet) ──
@@ -556,8 +559,12 @@ class Settings(BaseSettings):
     seller_summary_max_events: int = 5  # I-14 이벤트 kv 나열 상한(건)
     # [#197 PR 리뷰] I-16 이탈 회원 나열 상한 — I-14 용 max_events(위)와 분리 신설.
     # 같은 값 공유 시 I-14 요약 상세도 조정이 이탈 회원 노출 건수까지 바꾸는 결합이
-    # 생긴다(#196 의 max_products 분리와 같은 취지). 서버 절단 상한은 별도로 50.
+    # 생긴다(#196 의 max_products 분리와 같은 취지). 서버 절단 상한은 아래 별도 키다.
     seller_churn_member_max: int = 5  # I-16 members 상세 나열 상한(명)
+    # [#495] I-16 members 서버 절단 상한(BE CHURN_LIST_CAP 실측, #197) — 판매자에게
+    # 보이는 고지 문구에 실린다. I-16 명세에 없는 구현 실측값이라 BE 가 바꾸면 고지가
+    # 거짓이 된다 — 문자열 하드코딩 대신 여기서 주입하고 BE 에 명세화를 요청한다(#495).
+    seller_churn_server_list_cap: int = 50  # I-16 members 서버 절단 상한(명)
     # [#196] I-13 상품별 rows 상세 상한 — I-14 용(위)과 분리. 구 공용 상한 5는
     # 시드 브랜드 상품 7종보다 작아 하위 2종이 상시 잘렸다. 상한 초과분은
     # _summarize_behavior 가 꼬리 합계로 남긴다(정보 소실 없음).
@@ -1837,6 +1844,29 @@ class Settings(BaseSettings):
     def _normalize_llm_provider(cls, value: object) -> object:
         """기존 환경변수 호환을 위해 provider 값의 ASCII 대소문자를 정규화한다."""
         return value.lower() if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def _forbid_scripted_outside_local(self) -> "Settings":
+        """G1(#438): `llm_provider=scripted` 는 local/test 밖에서 기동 자체를 막는다.
+
+        스텁이 켜진 채 뜨면 사용자에게 **정상 200 으로 가짜 응답**이 나간다 — 이건 오류가
+        아니라 조용한 degrade다(#401 과 같은 실패 성질). #401 의 사전 가드가 기본 `log`(경고만,
+        기동은 허용)인 것과 판단이 갈리는 이유는 **오탐 가능성**이다: #401 은 DB 도달 불가를
+        구성 오류와 구분할 수 없어 오탐이 정상 서비스를 죽일 수 있지만, 여기서는 "운영에서
+        provider=scripted" 가 오탐일 수 없다(설정값이 곧 사실이다). 하방(local·test 밖에서는
+        스텁이 필요 없다)이 유계이므로 `fail` 이 적정하다.
+        staging 도 거부한다 — staging 에는 실 FE 가 붙을 수 있다(`tests/unit/test_progress_event.py`
+        R5-1 이 그 전제를 명시한다). 무료 부하 측정은 로컬 타깃으로 한다.
+        """
+        if self.llm_provider == "scripted" and self.app_environment not in ("local", "test"):
+            raise ValueError(
+                "LLM_PROVIDER=scripted is only allowed when APP_ENVIRONMENT is 'local' or "
+                f"'test' (got {self.app_environment!r}). Scripted responses are deterministic "
+                "fakes, not real LLM output — running them outside local/test would silently "
+                "serve fake 200 OK answers to real users. Fix: unset LLM_PROVIDER (defaults to "
+                "openai) or set it to 'openai'/'anthropic' for this environment."
+            )
+        return self
 
     @model_validator(mode="after")
     def _require_valid_benchmark_settings(self) -> "Settings":

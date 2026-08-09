@@ -15,6 +15,7 @@ if not ("smoke" in " ".join(sys.argv) and "not smoke" not in " ".join(sys.argv))
     os.environ["OPENAI_API_KEY"] = ""
     os.environ["ANTHROPIC_API_KEY"] = ""
     os.environ["GOOGLE_API_KEY"] = ""
+    os.environ["INTERNAL_API_TOKEN"] = ""
 
 from app.agents.buyer.cart.state import reset_cart_store
 from app.agents.buyer.graph import reset_thread_store
