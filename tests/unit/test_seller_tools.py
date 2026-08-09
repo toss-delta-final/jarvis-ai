@@ -143,8 +143,9 @@ class FakeSpringClient:
         self._maybe_fail("get_churn")
         return self.churn_result
 
-    async def get_account_events(self, from_, to, event_type=None, group_by=None):
-        self.recorded_account_args = (from_, to, event_type, group_by)
+    async def get_account_events(self, brand_id, from_, to, event_type=None, group_by=None):
+        # [#481] 브랜드 스코프 전환 — brand_id 가 첫 인자로 필수다(자사 코호트 경로).
+        self.recorded_account_args = (brand_id, from_, to, event_type, group_by)
         self._maybe_fail("get_account_events")
         return self.account_events_result
 
@@ -991,8 +992,8 @@ async def test_behavior_tool_passes_filters_to_client() -> None:
     assert fake.recorded_event_args == (["product_view", "add_to_cart"], 101, "date")
 
 
-async def test_behavior_tool_summarizes_product_rows_with_authority_note() -> None:
-    """groupBy=product — 상품별 카운트 요약 + purchaseComplete 권위 주의 문구."""
+async def test_behavior_tool_summarizes_product_rows_with_purchase_rules_note() -> None:
+    """groupBy=product — 상품별 카운트 요약 + purchaseComplete 집계 규칙 문구."""
     fake = FakeSpringClient()
     fake.behavior_result = BehaviorEventsResult(
         group_by="product",
@@ -1020,9 +1021,10 @@ async def test_behavior_tool_summarizes_product_rows_with_authority_note() -> No
     assert "[101] 에어 러너 2" in result
     assert "조회 1820" in result and "담기 240" in result
     assert "13.2%" in result  # viewToCartRate 백분율 표기
-    assert "권위는 매출 조회(I-6)" in result  # 이벤트≠주문 권위(명세 집계 규칙)
-    # [#196] purchaseComplete 미귀속 경고 — 0 을 '구매 전무'로 오해석 금지 문구.
-    assert "구매 전무" in result and "0 집계될 수 있다" in result
+    # [#488] purchaseComplete 집계 규칙 노트 — 권위 위임이 아니라 단위 고지다.
+    assert "주문 기준 집계" in result
+    assert "건수이지 수량이 아니" in result  # ① 수량 오용 차단
+    assert "합계(eventType 집계)보다 클 수 있다" in result  # ② 상품별 합 > 합계
 
 
 def _behavior_row(pid: int, view: int, cart: int, checkout: int, purchase: int):
@@ -1059,7 +1061,7 @@ async def test_behavior_tool_appends_cluster_labels_for_product_rows() -> None:
     assert "행동 군집" in result and "실루엣" in result
     assert "카트이탈형" in result
     assert "담기율" in result and "결제진입률" in result
-    assert "권위는 매출 조회(I-6)" in result  # 기존 노트 유지
+    assert "주문 기준 집계" in result  # 기존 노트(#488 교체분) 유지
 
 
 async def test_behavior_tool_skips_clustering_for_few_products_with_reason() -> None:
@@ -1192,10 +1194,9 @@ def test_abuse_prompt_mandates_date_group_by_for_point_track() -> None:
     assert "Point 트랙" in ABUSE_PROMPT
 
 
-async def test_account_events_hour_group_reports_night_share(monkeypatch) -> None:
+async def test_account_events_hour_group_reports_night_share() -> None:
     """[#290 abuse Collective 트랙] hour-groupBy 는 심야(0~6시) 활동 비중을 계산해
     붙인다 — 심야 편중은 봇 신호(Tan & Kumar)다."""
-    _enable_account_events(monkeypatch)
     fake = FakeSpringClient()
     fake.account_events_result = AccountEventsResult(
         group_by="hour",
@@ -1209,16 +1210,17 @@ async def test_account_events_hour_group_reports_night_share(monkeypatch) -> Non
     assert "심야(0~6시) 활동 비중 50.0%(500/1000건)" in result
 
 
-async def test_account_events_ip_group_sorts_by_fail_count(monkeypatch) -> None:
-    """[#290 abuse Collective 트랙] ip-groupBy 는 failCount 내림차순으로 정렬해 무차별
-    대입 신호를 상단에 노출하고 isSuspicious 건수를 요약한다."""
-    _enable_account_events(monkeypatch)
+async def test_account_events_ip_group_sorts_by_suspicious_member_count() -> None:
+    """[#290 abuse Collective 트랙, #481 개정] ip-groupBy 는 suspiciousMemberCount
+    내림차순으로 정렬해 다계정 정황을 상단에 노출하고 합계를 요약한다 —
+    구 failCount·isSuspicious 는 2026-08-06 개정으로 응답에서 제거됐다."""
     fake = FakeSpringClient()
     fake.account_events_result = AccountEventsResult(
         group_by="ip",
+        scope="brand",
         rows=[
-            {"ipMasked": "1.2.3.*", "failCount": 2, "isSuspicious": False},
-            {"ipMasked": "9.9.9.*", "failCount": 42, "isSuspicious": True},
+            {"ipMasked": "1.2.3.*", "suspiciousMemberCount": 0, "distinctMembers": 2},
+            {"ipMasked": "9.9.9.*", "suspiciousMemberCount": 5, "distinctMembers": 7},
         ],
     )
 
@@ -1226,8 +1228,9 @@ async def test_account_events_ip_group_sorts_by_fail_count(monkeypatch) -> None:
         {"from_date": "2026-07-01", "to_date": "2026-07-31", "group_by": "ip"}, fake
     )
 
-    assert result.index("9.9.9.*") < result.index("1.2.3.*")  # failCount 상위 우선
-    assert "isSuspicious(코드 판정) 1건" in result
+    assert result.index("9.9.9.*") < result.index("1.2.3.*")  # suspiciousMemberCount 상위 우선
+    assert "교차 회원 합계 5명" in result
+    assert "특정 회원 지목 불가" in result
 
 
 async def test_behavior_tool_shows_all_seed_products_within_cap() -> None:
@@ -1284,8 +1287,141 @@ async def test_behavior_tool_caps_product_rows_with_tail_totals() -> None:
 
     assert "상품별 10건" in result  # 상한 = seller_summary_max_products
     assert "[209] 상품9" in result and "[210]" not in result  # 11번째부터 접힘
-    # 꼬리 = 11·12번째 행 합계: 조회 20+10, 담기 2+1, 결제시작 2+2, 구매 0.
-    assert "외 2건(저활동) 합계: 조회 30 담기 3 결제시작 4 구매 0" in result
+    # 꼬리 = 11·12번째 행 합계: 조회 20+10, 담기 2+1, 삭제 0, 결제시작 2+2, 구매 0.
+    # [#489] removeFromCart 편입으로 4종 → 5종 — 키 목록은 _BEHAVIOR_COUNT_KEYS 단일 출처.
+    assert "외 2건(저활동) 합계: 조회 30 담기 3 삭제 0 결제시작 4 구매 0" in result
+    # 전 행 salesQuantity=None(미조회) 이면 수량 꼬리 합계는 아예 붙지 않는다 —
+    # null 을 0 으로 섞어 "0개 팔림"으로 오독시키지 않는다.
+    assert "판매 0개(" not in result
+
+
+async def test_behavior_tool_shows_new_row_fields() -> None:
+    """[#489] 상품 행에 removeFromCart·salesQuantity·체류시간이 함께 실린다.
+
+    개정 전에는 AI 가 판매 수량에 도달할 경로가 하나도 없었다 — 수신만 하고 표기하지
+    않으면 데드 필드라 이슈 목적이 절반만 달성된다.
+    """
+    fake = FakeSpringClient()
+    fake.behavior_result = BehaviorEventsResult(
+        group_by="product",
+        rows=[
+            BehaviorProductRow(
+                product_id=101,
+                product_name="에어 러너 2",
+                counts={
+                    "productView": 1820,
+                    "addToCart": 240,
+                    "removeFromCart": 35,
+                    "checkoutStart": 96,
+                    "purchaseComplete": 61,
+                },
+                sales_quantity=74,
+                median_dwell_seconds=42.0,
+                avg_dwell_seconds=71.3,
+                dwell_sample_count=1180,
+                dwell_source="next_event",
+                view_to_cart_rate=0.132,
+                unique_visitors=1503,
+            )
+        ],
+        total=1,
+    )
+
+    result = await _call_runtime_tool(
+        get_behavior_events, {"from_date": "2026-07-01", "to_date": "2026-07-14"}, fake
+    )
+
+    assert "삭제 35" in result  # 4종 → 5종 편입분
+    assert "판매 74개" in result  # 수량 — 구매 61건과 단위가 다르다
+    assert "체류 중앙 42초·평균 71초(n=1180)" in result  # median 이 주 지표라 앞
+    # dwellSource 한계는 행마다 반복하지 않고 요약 말미에 1회 각주로.
+    assert result.count("세션의 마지막 조회가 표본에서 빠진다") == 1
+    # 수량 권위 문구 — purchaseComplete 경고가 신설 지표까지 싸잡아 불신시키지 않게.
+    # [#488 병합] 권위 노트가 주문 기준 규칙으로 교체됐다 — ① 항이 수량 질문을
+    # 막기만 하지 않고 salesQuantity 로 보내는지 확인한다.
+    assert "수량은 같은 행의 salesQuantity" in result
+
+
+async def test_behavior_tool_distinguishes_zero_and_null_sales_quantity() -> None:
+    """[#489] salesQuantity 0("안 팔림")과 null("미조회")을 절대 뭉개지 않는다.
+
+    `x or '-'` 같은 falsy 축약을 쓰면 0 이 '-' 로 뭉개져 churn_rate 에서 잡았던
+    silent-mismatch(#197)를 그대로 재도입한다. 이 테스트가 그 회귀를 잡는다.
+    """
+    fake = FakeSpringClient()
+    fake.behavior_result = BehaviorEventsResult(
+        group_by="product",
+        rows=[
+            BehaviorProductRow(product_id=101, product_name="안팔린상품", sales_quantity=0),
+            BehaviorProductRow(product_id=102, product_name="미조회상품", sales_quantity=None),
+        ],
+        total=2,
+    )
+
+    result = await _call_runtime_tool(
+        get_behavior_events, {"from_date": "2026-07-01", "to_date": "2026-07-14"}, fake
+    )
+
+    sold_none, unmeasured = result.split("[102]")[0], result.split("[102]")[1]
+    assert "판매 0개" in sold_none  # 조회했고 값이 0 = 안 팔림
+    assert "판매수량 -(미조회)" in unmeasured  # BE 가 계산조차 안 함
+    assert "판매수량 -(미조회)" not in sold_none
+
+
+async def test_behavior_tool_hides_dwell_without_sample_count() -> None:
+    """[#489] dwellSampleCount 없이 평균·중앙값만 내보내지 않는다.
+
+    명세: 표본 없이 해석 금지(conversion 워커 유의성 판정 원칙과 동일). 표본이 0/None
+    이면 수치가 실려 와도 감추고 사유만 남겨 LLM 이 표본 1건짜리 중앙값을 근거로
+    쓰지 않게 한다.
+    """
+    fake = FakeSpringClient()
+    fake.behavior_result = BehaviorEventsResult(
+        group_by="product",
+        rows=[
+            BehaviorProductRow(
+                product_id=101,
+                product_name="표본없음",
+                median_dwell_seconds=42.0,
+                avg_dwell_seconds=71.3,
+                dwell_sample_count=0,
+            )
+        ],
+        total=1,
+    )
+
+    result = await _call_runtime_tool(
+        get_behavior_events, {"from_date": "2026-07-01", "to_date": "2026-07-14"}, fake
+    )
+
+    assert "체류 -(표본 없음)" in result
+    assert "42초" not in result and "71초" not in result
+
+
+async def test_behavior_tool_tail_totals_sum_measured_sales_quantity_only() -> None:
+    """[#489] 꼬리 수량 합계는 null(미조회) 행을 0 으로 섞지 않고 집계 건수를 밝힌다."""
+    fake = FakeSpringClient()
+    fake.behavior_result = BehaviorEventsResult(
+        group_by="product",
+        rows=[
+            BehaviorProductRow(
+                product_id=200 + i,
+                product_name=f"상품{i}",
+                counts={"productView": 120 - i * 10, "removeFromCart": 1},
+                # 11번째만 수량이 있고 12번째는 미조회 — 합계는 5, 표기는 1/2건.
+                sales_quantity=5 if i == 10 else None,
+            )
+            for i in range(12)
+        ],
+        total=12,
+    )
+
+    result = await _call_runtime_tool(
+        get_behavior_events, {"from_date": "2026-07-01", "to_date": "2026-07-14"}, fake
+    )
+
+    assert "삭제 2" in result.split("외 2건(저활동) 합계:")[1]  # 꼬리 5종 합계
+    assert "판매 5개(1/2건 집계)" in result
 
 
 async def test_behavior_tool_summarizes_event_type_counts() -> None:
@@ -1340,10 +1476,20 @@ async def test_behavior_tool_empty_result() -> None:
 
 
 async def test_order_events_output_includes_log_rules_note() -> None:
-    """전이가 있으면 기록 규칙 주의(완료만 기록·주문 단위 1행)가 함께 나간다."""
+    """전이가 있으면 기록 규칙 주의(완료만 기록·아이템 단위 행·customerLabel
+    사례번호 규약, #481 개정)가 함께 나간다."""
     fake = FakeSpringClient()
     fake.order_events_result = OrderEventsResult(
-        rows=[{"orderId": 5001, "toStatus": "CANCELLED", "actorType": "USER"}], total=1
+        rows=[
+            {
+                "orderId": 5001,
+                "orderItemId": 5551,
+                "toStatus": "CANCELLED",
+                "actorType": "USER",
+                "customerLabel": "A3F29C",
+            }
+        ],
+        total=1,
     )
 
     result = await _call_runtime_tool(
@@ -1351,7 +1497,9 @@ async def test_order_events_output_includes_log_rules_note() -> None:
     )
 
     assert "구매확정·클레임 신청은 로그에 없음" in result
-    assert "아이템 수로 해석 금지" in result
+    assert "같은 orderId 행 복수는 아이템별 전이(중복 아님)" in result
+    assert "customerLabel은 개인정보 보호용 사례번호" in result
+    assert "사례번호 XXXXXX로 관리자 문의" in result
 
 
 async def test_product_change_logs_output_includes_log_rules_note() -> None:
@@ -1479,12 +1627,12 @@ async def test_churn_tool_summarizes_signals_and_members() -> None:
         ),
         members=[
             ChurnMember(
-                member_id=103,
+                customer_label="A3F29C",
                 last_activity_at="2026-06-15T10:00:00+09:00",
                 sessions_30d=0,
                 pre_churn_event="RETURNED(상품불량)",
             ),
-            ChurnMember(member_id=104, last_activity_at="2026-06-01T09:00:00+09:00"),
+            ChurnMember(customer_label="B71D04", last_activity_at="2026-06-01T09:00:00+09:00"),
         ],
     )
 
@@ -1496,8 +1644,71 @@ async def test_churn_tool_summarizes_signals_and_members() -> None:
     assert "사이즈 불만(2건)" in result
     assert "가격인상 노출 2명" in result
     assert "이탈 회원 2명" in result
-    assert "[103]" in result and "RETURNED(상품불량)" in result
+    # [#487] 회원 노출은 customerLabel(사례번호)뿐 — 구 memberId 표기는 폐기.
+    assert "[A3F29C]" in result and "RETURNED(상품불량)" in result
+    assert "[B71D04]" in result
     assert "쓰지 말 것" in result  # _CHURN_SIGNAL_RULES_NOTE 상시 부착
+
+
+async def test_churn_tool_never_exposes_raw_member_id_from_legacy_response() -> None:
+    """[#487] 구응답(memberId 포함·customerLabel 부재)을 먹여도 요약에 원시 회원 키가
+    등장하지 않는다 — 라벨 결측은 "[?]"로만 떨어진다.
+
+    ChurnMember 는 SellerAggregateModel(extra="allow") 상속이라 BE 미배포 구간의
+    구응답이 와도 ValidationError 없이 model_extra 로 흡수된다. 이 테스트가 지키는
+    것은 "흡수된 값이 표시 계층으로 새지 않는다"는 것 — memberId 폴백을 되살리면
+    여기서 깨진다(#487 이 고친 결함 그 자체).
+    """
+    fake = FakeSpringClient()
+    # 코호트 규모·비율·날짜와 우연히 겹치지 않도록 6자리 구분값을 쓴다.
+    fake.churn_result = ChurnResult.model_validate(
+        {
+            "cohortSize": 5,
+            "churnRate": 0.6,
+            "preChurnSignals": {},
+            "members": [
+                {
+                    "memberId": 987654,
+                    "lastActivityAt": "2026-06-15T10:00:00+09:00",
+                    "lastLoginAt": "2026-06-10T10:00:00+09:00",
+                    "sessions30d": 0,
+                    "preChurnEvent": "RETURNED(상품불량)",
+                }
+            ],
+        }
+    )
+
+    result = await _call_runtime_tool(
+        get_churn_cohort, {"from_date": "2026-06-01", "to_date": "2026-07-31"}, fake
+    )
+
+    assert "987654" not in result  # 원시 회원 키가 LLM 표면에 실리지 않는다
+    assert "[?]" in result  # 라벨 미수신은 '?' 로만 떨어진다
+    assert "이탈 회원 1명" in result  # 흡수 자체는 성공 — 항목이 사라지는 게 아니다
+
+
+async def test_customer_label_note_attached_to_both_order_and_churn_outputs() -> None:
+    """[#487] 사례번호 규약 문구는 상수 1벌(_CUSTOMER_LABEL_NOTE)로 I-14·I-16 양쪽
+    출력에 붙는다 — 복붙본이 갈라져 한쪽 경로의 규약만 낡는 것을 막는다."""
+    from app.agents.seller.tools import _CUSTOMER_LABEL_NOTE, _ORDER_LOG_RULES_NOTE
+
+    # I-14 기록 규칙 노트는 같은 문구를 같은 자리(맨 끝)에 그대로 유지한다(무회귀).
+    assert _ORDER_LOG_RULES_NOTE.endswith(_CUSTOMER_LABEL_NOTE)
+
+    fake = FakeSpringClient()
+    # rows 가 비면 "0건" 조기 반환 경로라 기록 규칙 노트가 붙지 않는다 — 목록 경로로 태운다.
+    fake.order_events_result = OrderEventsResult(
+        rows=[{"orderId": 5001, "toStatus": "CANCELLED", "customerLabel": "A3F29C"}], total=1
+    )
+    order_result = await _call_runtime_tool(
+        get_order_events, {"from_date": "2026-07-01", "to_date": "2026-07-31"}, fake
+    )
+    churn_result = await _call_runtime_tool(
+        get_churn_cohort, {"from_date": "2026-07-01", "to_date": "2026-07-31"}, fake
+    )
+
+    assert _CUSTOMER_LABEL_NOTE in order_result
+    assert _CUSTOMER_LABEL_NOTE in churn_result
 
 
 async def test_churn_tool_reports_missing_rate_as_unreceived_not_zero() -> None:
@@ -1547,7 +1758,7 @@ async def test_churn_tool_caps_member_lines_by_settings() -> None:
         churn_rate=0.5,
         cohort_size=cap * 4,
         pre_churn_signals=PreChurnSignals(),
-        members=[ChurnMember(member_id=i) for i in range(cap + 3)],
+        members=[ChurnMember(customer_label=f"L{i:05d}") for i in range(cap + 3)],
     )
 
     result = await _call_runtime_tool(
@@ -1573,34 +1784,26 @@ async def test_churn_tool_degrades_on_spring_failure() -> None:
 
 
 async def _call_account_events(args: dict, fake) -> str:
-    """runtime 없는 전역 도구 호출 헬퍼 — 싱글턴 교체 후 반드시 원복."""
-    spring_client_module.set_spring_client(fake)
-    try:
-        return await get_account_events.coroutine(**args)
-    finally:
-        spring_client_module.set_spring_client(None)
+    """[#481] 브랜드 스코프 전환 — runtime(brand_id=42) 주입 호출 헬퍼."""
+    return await _call_runtime_tool(get_account_events, args, fake)
 
 
-def _enable_account_events(monkeypatch) -> None:
-    """[#197 PR 리뷰] I-8 노출 보류 플래그를 테스트에서만 켠다.
-
-    admin 소유 협의 미완(🔴, api-spec §4.4 v0.19.1)으로 기본 false — 활성 상태의
-    요약/전달 로직은 협의 종결 후에도 그대로 쓰이므로 플래그만 켜서 검증한다.
-    """
+def _disable_account_events(monkeypatch) -> None:
+    """[#481] 운영 킬스위치 검증용 — 기본 활성 플래그를 테스트에서만 끈다."""
     from app.agents.seller import tools as tools_module
     from app.core.config import get_settings
 
-    enabled = get_settings().model_copy(update={"seller_account_events_enabled": True})
-    monkeypatch.setattr(tools_module, "get_settings", lambda: enabled)
+    disabled = get_settings().model_copy(update={"seller_account_events_enabled": False})
+    monkeypatch.setattr(tools_module, "get_settings", lambda: disabled)
 
 
-async def test_account_events_tool_disabled_by_default() -> None:
-    """[#197 PR 리뷰] I-8 은 admin 소유 협의(🔴) 전까지 기본 비활성 — 도구가
-    Spring 호출 없이 "Error:" 문자열을 반환한다(전역 데이터 노출 보류).
+async def test_account_events_tool_kill_switch_blocks_call(monkeypatch) -> None:
+    """[#481] 플래그를 끄면 Spring 호출 없이 "Error:" 로 차단된다(운영 킬스위치).
 
-    구 코드에선 쿼리 400·스키마 미스매치가 사실상 차단막이었는데 #197 정합이
-    그 차단막을 제거했으므로, 의도된 보류를 플래그로 명시해 회귀를 방지한다.
+    기본값은 활성(브랜드 스코프 전환으로 #197 보류 사유 해소)이지만, 되돌릴
+    스위치는 유지한다 — 끈 상태의 차단 경로가 살아 있는지 검증한다.
     """
+    _disable_account_events(monkeypatch)
     fake = FakeSpringClient()
 
     result = await _call_account_events({"from_date": "2026-07-01", "to_date": "2026-07-31"}, fake)
@@ -1610,11 +1813,10 @@ async def test_account_events_tool_disabled_by_default() -> None:
     assert fake.recorded_account_args is None  # Spring 호출 자체가 차단된다
 
 
-async def test_account_events_tool_rejects_unknown_group_by_locally(monkeypatch) -> None:
+async def test_account_events_tool_rejects_unknown_group_by_locally() -> None:
     """[#197 PR 리뷰 2] groupBy 화이트리스트(eventType|hour|ip) 밖 값은 Spring 왕복
     없이 즉시 "Error:" 로 거른다 — BE 400 INVALID_GROUP_BY 까지 가는 타임아웃 예산
     낭비 방지. 오류 문구에 유효값을 실어 LLM 재시도를 유도한다."""
-    _enable_account_events(monkeypatch)
     fake = FakeSpringClient()
 
     result = await _call_account_events(
@@ -1632,16 +1834,18 @@ async def test_account_events_tool_rejects_unknown_group_by_locally(monkeypatch)
             {"from_date": "2026-07-01", "to_date": "2026-07-31", "group_by": valid}, fake2
         )
         assert not ok.startswith("Error:"), valid
-        assert fake2.recorded_account_args == ("2026-07-01", "2026-07-31", None, valid)
+        assert fake2.recorded_account_args == (42, "2026-07-01", "2026-07-31", None, valid)
 
 
-async def test_account_events_tool_passes_period_and_summarizes_rows(monkeypatch) -> None:
-    """[#197 회귀] from/to 가 필수 전달되고, rows(구 events 아님) 내용이 노출된다.
+async def test_account_events_tool_passes_brand_period_and_summarizes_rows() -> None:
+    """[#197 회귀 + #481] runtime 의 brand_id 와 from/to 가 전달되고, rows 내용이
+    노출된다.
 
     구 스키마는 events 필드를 기대해 Spring rows 응답이 extra="allow" 로 조용히
-    버려져 항상 "0건 집계됨"이었다(I-14/I-15 #194 와 동일 패턴).
+    버려져 항상 "0건 집계됨"이었다(I-14/I-15 #194 와 동일 패턴). brand_id 는
+    #481 브랜드 스코프 전환으로 필수가 됐다 — LLM 인자가 아니라 신원 컨텍스트에서
+    온다(IDOR 방지).
     """
-    _enable_account_events(monkeypatch)
     fake = FakeSpringClient()
     fake.account_events_result = AccountEventsResult(
         group_by="eventType",
@@ -1653,29 +1857,31 @@ async def test_account_events_tool_passes_period_and_summarizes_rows(monkeypatch
         fake,
     )
 
-    assert fake.recorded_account_args == ("2026-07-01", "2026-07-31", "LOGIN_FAIL", None)
-    assert "계정/보안 이벤트 2건" in result
+    assert fake.recorded_account_args == (42, "2026-07-01", "2026-07-31", "LOGIN_FAIL", None)
+    assert "계정 이벤트 2건" in result
+    assert "자사 코호트" in result
     assert "groupBy=eventType" in result
     assert "key=LOGIN_FAIL" in result and "count=7" in result
     assert "2026-07-01~2026-07-31" in result
 
 
-async def test_account_events_tool_empty_rows_says_zero_with_group_by(monkeypatch) -> None:
-    """빈 rows 는 0건 + 적용 groupBy 를 함께 고지한다(정상 0건 표기)."""
-    _enable_account_events(monkeypatch)
+async def test_account_events_tool_empty_rows_says_zero_with_group_by() -> None:
+    """빈 rows 는 0건 + 적용 groupBy 를 함께 고지한다(정상 0건 표기 — 코호트 없음도
+    정상 결과다, #481)."""
     fake = FakeSpringClient()
 
     result = await _call_account_events(
         {"from_date": "2026-07-01", "to_date": "2026-07-31", "group_by": "ip"}, fake
     )
 
-    assert "계정/보안 이벤트 0건" in result
+    assert "계정 이벤트 0건" in result
+    assert "자사 코호트" in result
     assert "groupBy=ip" in result
 
 
-async def test_account_events_tool_degrades_on_spring_failure(monkeypatch) -> None:
-    """get_account_events 실패 시 "Error:" 문자열로 degrade 한다(보조 소스 규약)."""
-    _enable_account_events(monkeypatch)
+async def test_account_events_tool_degrades_on_spring_failure() -> None:
+    """get_account_events 실패 시 "Error:" 문자열로 degrade 한다(보조 소스 규약 —
+    #481 이후 BE 신경로 미배포 구간의 404 도 이 경로로 흡수된다)."""
     fake = FakeSpringClient(fail={"get_account_events"})
 
     result = await _call_account_events({"from_date": "2026-07-01", "to_date": "2026-07-31"}, fake)
@@ -1684,7 +1890,8 @@ async def test_account_events_tool_degrades_on_spring_failure(monkeypatch) -> No
 
 
 def test_worker_prompts_contain_log_interpretation_rules() -> None:
-    """워커 프롬프트에 해석 규칙(완료만 기록·이벤트≠주문 권위)이 남아 있다(회귀 방지)."""
+    """워커 프롬프트에 해석 규칙(완료만 기록·purchaseComplete 집계 단위)이 남아
+    있다(회귀 방지)."""
     from app.agents.seller.prompts import (
         ABUSE_PROMPT,
         BEHAVIOR_PROMPT,
@@ -1699,9 +1906,82 @@ def test_worker_prompts_contain_log_interpretation_rules() -> None:
     # [#197 리뷰] 워커에 전달되는 리터럴의 번호 목록 구조 회귀 방지 — 연속 문장이
     # 3칸 들여쓰기를 잃으면 목록 밖 독립 문장처럼 보인다(충돌 해결 중 실제 발생).
     # [#215] purchaseComplete 금지 문구가 3단계로 재작성돼 리터럴을 새 문구로 갱신.
-    assert "\n   구매·주문 수치의 권위는 get_order_events" in ABUSE_PROMPT
-    assert "\n구매·주문 수치의 권위는" not in ABUSE_PROMPT
-    assert "'구매 0'" in ABUSE_PROMPT  # 금지 문구 자체의 존치도 함께 고정
+    # [#488] 그 문구가 '금지'에서 '신뢰해도 된다'로 뒤집혀 리터럴을 다시 갱신했다 —
+    # 고정하는 것은 의미가 아니라 들여쓰기 구조다.
+    assert "\n   purchaseComplete 는 주문 기준 집계라" in ABUSE_PROMPT
+    assert "\npurchaseComplete 는 주문 기준 집계라" not in ABUSE_PROMPT
+    assert "'구매 0'을 그대로 신뢰해도 된다" in ABUSE_PROMPT
+
+
+# [#488] 2026-07-31 개정으로 폐기된 I-13 purchaseComplete 구 규정의 어휘. 이 문구가
+# LLM 이 읽는 표면에 남으면 미반영이 아니라 **능동적 오정보**가 된다 — 워커가 실재하는
+# 구매 데이터를 '신뢰 불가'로 취급하고 다른 도구로 우회한다(3개월 방치된 실제 결함).
+_DEPRECATED_PURCHASE_WORDING = (
+    "이벤트 기준",
+    "미귀속",
+    "구매 전무",
+    "0 집계될 수 있다",
+    "권위는 매출 조회",
+    "권위는 I-6",
+    "권위는 get_order_events",
+)
+
+
+async def test_behavior_surfaces_drop_deprecated_purchase_wording() -> None:
+    """[#488] 역방향 회귀 — 폐기된 구 규정 어휘가 **LLM 주입 표면**(I-13 도구 출력
+    3형 + behavior·abuse 워커 프롬프트)에 하나도 남아 있지 않다.
+
+    문구 드리프트가 이번처럼 오래 방치되지 않게 '무엇이 있어야 하나'가 아니라
+    '무엇이 없어야 하나'를 고정한다. 검사 대상은 파일이 아니라 실제로 LLM 에
+    실리는 문자열 객체다 — 주석·개정 이력에 남긴 폐기 사실 기록까지 잡지 않도록.
+    """
+    from app.agents.seller.prompts import ABUSE_PROMPT, BEHAVIOR_PROMPT
+
+    fake = FakeSpringClient()
+    surfaces: dict[str, str] = {"BEHAVIOR_PROMPT": BEHAVIOR_PROMPT, "ABUSE_PROMPT": ABUSE_PROMPT}
+
+    # groupBy 3형 전부 — 노트는 어느 형태로 조회해도 상시 부착된다.
+    fake.behavior_result = BehaviorEventsResult(
+        group_by="product",
+        rows=[_behavior_row(101, 1820, 240, 96, 61)],
+        total=1,
+    )
+    surfaces["tool:product"] = await _call_runtime_tool(
+        get_behavior_events, {"from_date": "2026-07-01", "to_date": "2026-07-14"}, fake
+    )
+    fake.behavior_result = BehaviorEventsResult(
+        group_by="eventType",
+        counts={"productView": 1820, "addToCart": 240, "checkoutStart": 96, "purchaseComplete": 61},
+    )
+    surfaces["tool:eventType"] = await _call_runtime_tool(
+        get_behavior_events,
+        {"from_date": "2026-07-01", "to_date": "2026-07-14", "group_by": "eventType"},
+        fake,
+    )
+    fake.behavior_result = BehaviorEventsResult(
+        group_by="date",
+        series=[
+            {"date": "2026-07-01", "productView": 900, "purchaseComplete": 30},
+            {"date": "2026-07-02", "productView": 920, "purchaseComplete": 31},
+        ],
+    )
+    surfaces["tool:date"] = await _call_runtime_tool(
+        get_behavior_events,
+        {"from_date": "2026-07-01", "to_date": "2026-07-02", "group_by": "date"},
+        fake,
+    )
+
+    for name, text in surfaces.items():
+        for phrase in _DEPRECATED_PURCHASE_WORDING:
+            assert phrase not in text, f"{name} 에 폐기 문구 '{phrase}' 잔존"
+
+    # 걷어낸 자리를 신규정이 실제로 채웠는지도 함께 고정(공백 회귀 방지).
+    for name in ("tool:product", "tool:eventType", "tool:date"):
+        assert "주문 기준 집계" in surfaces[name], f"{name} 에 집계 규칙 노트 미부착"
+    assert "주문 기준 집계" in BEHAVIOR_PROMPT and "주문 기준 집계" in ABUSE_PROMPT
+    # 스키마 docstring 은 LLM 표면이 아니라 개발자 문서라 위 부재 검사 대상이 아니다
+    # (거기엔 "구 … 규정은 폐기" 기록을 의도적으로 남긴다) — 신규정 서술만 확인한다.
+    assert "주문 기준" in (BehaviorEventsResult.__doc__ or "")
 
 
 # ── [#297] get_orders (I-29 자사 주문 조회, §4.18) ────────────────────────────────
@@ -1917,3 +2197,69 @@ async def test_update_order_status_spring_failure_never_claims_success() -> None
 
     assert result.startswith("Error:")
     assert "반영 여부가 확인되지 않았습니다" in result
+
+
+# ─────────── 기간 인자 백스톱 가드 (이슈 #346) ───────────
+
+
+async def test_period_arg_guard_rejects_range_over_upper_limit() -> None:
+    """[#346] 상한 밖 기간은 Spring 을 부르기 전에 "Error:" 로 끊는다.
+
+    두 레인 모두 기간을 코드가 환산해 입력 메시지로 주지만, 그 값을 도구 인자로 옮기는
+    것은 LLM 이다 — 무시하고 제 손으로 날짜를 지어내면 period.py 의 상한(R4)이 통째로
+    비켜간다. 프롬프트 한 줄에 기대는 대신 호출 경계에서 한 번 더 막는다
+    (판정과 집행을 분리한다 — docs/lessons.md 2026-08-07).
+    """
+    fake = FakeSpringClient()
+
+    result = await _call_runtime_tool(
+        get_sales_timeseries, {"from_date": "2000-01-01", "to_date": "2026-01-01"}, fake
+    )
+
+    assert result.startswith("Error:")
+    assert "상한" in result
+    assert fake.recorded_brand_id is None, "가드가 걸렸는데 Spring 을 불렀다"
+
+
+async def test_period_arg_guard_rejects_reversed_range() -> None:
+    """역전 범위(from > to)도 호출 전에 끊는다 — 빈 결과를 정상 답으로 읽지 않게."""
+    fake = FakeSpringClient()
+
+    result = await _call_runtime_tool(
+        get_funnel, {"from_date": "2026-07-14", "to_date": "2026-07-01"}, fake
+    )
+
+    assert result.startswith("Error:")
+    assert fake.recorded_brand_id is None
+
+
+async def test_period_arg_guard_rejects_malformed_dates() -> None:
+    """YYYY-MM-DD 가 아닌 값은 Spring 400 을 기다리지 않고 즉시 되돌린다."""
+    fake = FakeSpringClient()
+
+    result = await _call_runtime_tool(
+        get_sales_timeseries, {"from_date": "지난달", "to_date": "2026-07-14"}, fake
+    )
+
+    assert result.startswith("Error:")
+    assert "형식" in result
+
+
+async def test_period_arg_guard_allows_valid_range() -> None:
+    """정상 범위는 그대로 통과한다 — 가드가 본래 경로를 막지 않는다(회귀 방지)."""
+    fake = FakeSpringClient()
+
+    await _call_runtime_tool(
+        get_sales_timeseries, {"from_date": "2026-07-01", "to_date": "2026-07-14"}, fake, brand_id=9
+    )
+
+    assert fake.recorded_brand_id == 9
+
+
+async def test_period_arg_guard_skips_optional_unset_period() -> None:
+    """기간이 선택 인자인 도구(I-29 주문 조회)는 미지정을 통과시킨다."""
+    fake = FakeSpringClient()
+
+    result = await _call_runtime_tool(get_orders, {}, fake)
+
+    assert not result.startswith("Error:")
