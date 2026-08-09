@@ -39,6 +39,8 @@ from app.services.spring_client import (
     OrderAlreadyShipped,
     OrderInvalidTransition,
     OrderItemNotFound,
+    ProductAlreadyDeleted,
+    ProductDeletedNotEditable,
     SpringUnavailableError,
     get_spring_client,
 )
@@ -1403,7 +1405,8 @@ async def list_my_products(
     사용한다(§4.5 — 구 I-7 상세 읽기 대체).
 
     Args:
-        status: ON_SALE/HIDDEN 중 하나로 좁힐 때(선택).
+        status: ON_SALE/HIDDEN 중 하나로 좁힐 때(선택). DELETED 는 BE 가 목록에서
+            제외하므로 지정해도 빈 결과다(§4.5).
         q: 상품명 검색어(선택).
         limit: 반환 상한(선택, 미지정 시 설정 기본값).
         offset: 페이지 오프셋(선택).
@@ -1877,7 +1880,8 @@ async def update_product(
         description: 변경할 상세 설명(선택).
         category: 변경할 카테고리(선택).
         image_url: 변경할 대표 이미지 URL(선택).
-        status: ON_SALE/HIDDEN 중 하나로 변경(선택).
+        status: ON_SALE/HIDDEN 중 하나로 변경(선택). DELETED 는 지정할 수 없다
+            — 삭제는 I-12 전용 전이라 BE 가 거부한다(§4.5).
         stock_quantity: 변경할 재고 수량(절대값, 선택).
     """
     brand_id = runtime.context.brand_id
@@ -1893,6 +1897,9 @@ async def update_product(
             stock_quantity=stock_quantity,
         )
         result = await get_spring_client().update_product(brand_id, product_id, patch)
+    except ProductDeletedNotEditable:
+        # 재시도가 무의미한 "안 되는 일" — 장애 문구로 뭉개면 에이전트가 재시도를 권한다.
+        return f"Error: 이미 삭제된 상품이라 수정할 수 없습니다(productId={product_id})."
     except SpringUnavailableError as exc:
         return f"Error: 상품 수정에 실패했습니다({exc})."
     return f"수정됨: productId={result.product_id}"
@@ -1901,7 +1908,10 @@ async def update_product(
 @tool
 @_traced_tool("tool.delete_product")
 async def delete_product(runtime: ToolRuntime[SellerContext], product_id: int) -> str:
-    """상품을 삭제(숨김)한다(I-12, api-spec §4.5). 물리 삭제 없음 — HITL 승인 후 호출.
+    """상품을 삭제한다(I-12, api-spec §4.5). status=DELETED 전환 — HITL 승인 후 호출.
+
+    물리 삭제는 없지만 숨김(HIDDEN)과 다른 상태다 — 숨김은 판매자 목록에 남아 되돌릴 수
+    있고, 삭제는 목록에서도 빠지며 되돌릴 수 없다. 잠시 내릴 목적이면 I-11 로 HIDDEN 을 쓴다.
 
     Args:
         product_id: 대상 상품 식별자.
@@ -1909,9 +1919,12 @@ async def delete_product(runtime: ToolRuntime[SellerContext], product_id: int) -
     brand_id = runtime.context.brand_id
     try:
         result = await get_spring_client().delete_product(brand_id, product_id)
+    except ProductAlreadyDeleted:
+        # 멱등 200 이 아니다 — "이미 된 일"과 "방금 한 일"을 구분해야 거짓 성공을 막는다.
+        return f"Error: 이미 삭제된 상품입니다(productId={product_id})."
     except SpringUnavailableError as exc:
         return f"Error: 상품 삭제에 실패했습니다({exc})."
-    return f"삭제(숨김)됨: productId={result.product_id} (status={result.status})"
+    return f"삭제됨: productId={result.product_id} (status={result.status})"
 
 
 @tool

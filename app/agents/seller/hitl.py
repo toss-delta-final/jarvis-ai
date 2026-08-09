@@ -54,6 +54,8 @@ from app.services.spring_client import (
     OrderAlreadyShipped,
     OrderInvalidTransition,
     OrderItemNotFound,
+    ProductAlreadyDeleted,
+    ProductDeletedNotEditable,
     get_spring_client,
 )
 
@@ -63,7 +65,11 @@ logger = logging.getLogger(__name__)
 
 # after(str) → 정수 캐스팅 대상 필드(ProposedChange "수치도 문자열" 계약의 역변환 지점).
 _INT_FIELDS = frozenset({"price", "original_price", "stock_quantity"})
-_STATUS_VALUES = frozenset({"ON_SALE", "HIDDEN"})
+# I-10 등록·I-11 수정으로 지정할 수 있는 status. 삭제(`DELETED`)는 **I-12 전용 전이**라
+# 여기 넣지 않는다 — 넣으면 update 본문으로 새어나가 BE 가 400 으로 막는다(api-spec §4.5).
+_UPDATE_STATUS_VALUES = frozenset({"ON_SALE", "HIDDEN"})
+# delete draft 의 표시용 after — I-12 는 본문이 없어 실행에 실리지 않는다(diff 카드 전용).
+_DELETE_STATUS_VALUE = "DELETED"
 # 도구 출력("가격 15,000원 재고 100건")을 옮겨적은 값 관용 처리용 단위 접미사.
 _INT_SUFFIXES = ("원", "건", "개")
 # status 는 create 지정 불가 — I-10 이 ON_SALE 로 발급한다.
@@ -108,14 +114,21 @@ def _parse_int(raw: str) -> int:
     return int(text)
 
 
-def _typed_after(change: DraftChange) -> int | str:
-    """changes[].after(str) → I-10/11 본문 타입. 실패는 ValueError 전파(호출부 되묻기)."""
+def _typed_after(change: DraftChange, *, op: str = "update") -> int | str:
+    """changes[].after(str) → I-10/11 본문 타입. 실패는 ValueError 전파(호출부 되묻기).
+
+    status 허용값이 op 별로 갈린다: 삭제 초안은 `DELETED` 뿐(표시용 — I-12 는 본문이 없다)
+    이고 등록·수정은 `ON_SALE`/`HIDDEN` 뿐이다. 한 집합으로 합치면 삭제 값이 I-10·I-11
+    본문으로 새어나가 BE 가 400 으로 막는 요청을 보내게 된다(api-spec §4.5).
+    """
     if change.field in _INT_FIELDS:
         return _parse_int(change.after)
     if change.field == "status":
         value = change.after.strip()
-        if value not in _STATUS_VALUES:
-            raise ValueError(f"status 는 ON_SALE/HIDDEN 만 가능합니다: {change.after!r}")
+        allowed = {_DELETE_STATUS_VALUE} if op == "delete" else _UPDATE_STATUS_VALUES
+        if value not in allowed:
+            allowed_text = _DELETE_STATUS_VALUE if op == "delete" else "ON_SALE/HIDDEN"
+            raise ValueError(f"status 는 {allowed_text} 만 가능합니다: {change.after!r}")
         return value
     return change.after
 
@@ -212,7 +225,7 @@ def validate_draft(
             )
     for change in changes:
         try:
-            _typed_after(change)
+            _typed_after(change, op=proposal.op)
         except ValueError:
             return None, (
                 f"'{change.field}' 값 '{change.after}' 을(를) 해석하지 못했습니다. "
@@ -239,16 +252,23 @@ _STALE_EXEMPT_FIELDS = frozenset({"stock_quantity"})
 
 
 def find_stale_changes(
-    row: SellerProductRow, changes: list[DraftChange]
+    row: SellerProductRow, changes: list[DraftChange], *, op: str = "update"
 ) -> list[tuple[str, str, str]]:
     """draft.changes 의 before 를 현재 상품값과 대조 — 불일치 (field, before, current) 목록.
 
     int 필드는 표기 차이("15,000" vs "15000")로 인한 오탐을 막기 위해 정수 비교,
     문자열 필드는 strip 후 비교한다. stock_quantity 는 제외(모듈 docstring 3).
+
+    **삭제(op="delete")는 `status` 를 비교하지 않는다** — `ON_SALE`·`HIDDEN` 어느 쪽에서든
+    `DELETED` 로 가는 것이 정상 전이라(api-spec §4.5) 초안 작성 후 판매자가 상품을 숨겼다는
+    이유로 삭제를 막을 근거가 없다. 비교하면 BE 가 열어준 "숨겼다가 나중에 지운다" 흐름이
+    AI 쪽에서 다시 막힌다(구 계약의 409 `ALREADY_HIDDEN` 이 만들던 것과 같은 증상).
     """
     mismatches: list[tuple[str, str, str]] = []
     for change in changes:
         if change.field in _STALE_EXEMPT_FIELDS:
+            continue
+        if op == "delete" and change.field == "status":
             continue
         current = getattr(row, change.field, None)
         current_str = "" if current is None else str(current)
@@ -379,10 +399,11 @@ async def _execute_draft(record: DraftRecord) -> tuple[str, str]:
         return (
             "stale",
             f"대상 상품(productId={record.product_id})을 상품 목록에서 찾을 수 없어 "
-            f"반영을 중단했습니다. 삭제되었거나 변경된 것 같습니다. {_STALE_RETRY_GUIDE}",
+            "반영을 중단했습니다. 이미 삭제되었거나(삭제한 상품은 목록에서 빠집니다) "
+            f"다른 브랜드로 옮겨진 것 같습니다. {_STALE_RETRY_GUIDE}",
         )
 
-    mismatches = find_stale_changes(row, record.changes)
+    mismatches = find_stale_changes(row, record.changes, op=record.op)
     if mismatches:
         lines = [
             f"- {field}: 초안 기준 '{before}' → 현재 '{current}'"
@@ -411,15 +432,30 @@ async def _execute_draft(record: DraftRecord) -> tuple[str, str]:
             )
 
     if record.op == "delete":
-        deleted = await client.delete_product(record.brand_id, record.product_id)
+        try:
+            deleted = await client.delete_product(record.brand_id, record.product_id)
+        except ProductAlreadyDeleted:
+            return (
+                "already_done",
+                f"이미 삭제된 상품입니다 (productId={record.product_id}) — 중복 실행하지 "
+                "않았습니다. 삭제는 되돌릴 수 없어 다시 시도해도 결과가 같습니다.",
+            )
         return (
             "executed",
-            f"상품을 삭제(숨김) 처리했습니다 (productId={deleted.product_id}, "
-            f"status={deleted.status}). 물리 삭제는 아니며 노출만 중단됩니다.",
+            f"상품을 삭제했습니다 (productId={deleted.product_id}, status={deleted.status}). "
+            "숨김(판매정지)과 달리 판매자 상품 목록에서도 빠지며 되돌릴 수 없습니다. "
+            "다만 물리 삭제는 아니라 기존 주문 내역·매출 통계는 그대로 남습니다.",
         )
 
     patch = ProductUpdate(**{c.field: _typed_after(c) for c in record.changes})
-    updated = await client.update_product(record.brand_id, record.product_id, patch)
+    try:
+        updated = await client.update_product(record.brand_id, record.product_id, patch)
+    except ProductDeletedNotEditable:
+        return (
+            "already_done",
+            f"이미 삭제된 상품이라 수정할 수 없습니다 (productId={record.product_id}). "
+            "삭제는 되돌릴 수 없으니 같은 상품이 필요하시면 새로 등록해 주세요.",
+        )
     summary_part = f" {record.summary}" if record.summary else ""
     return (
         "executed",

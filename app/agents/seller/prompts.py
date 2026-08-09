@@ -294,8 +294,11 @@ PRODUCT_PROMPT = """\
 3. DraftProposal 을 반환한다:
    - update: 바꿀 필드만 changes 에 — before 는 조회값 그대로, after 는 요청 반영.
    - create: product_id 는 null, changes 의 before 는 "" 로 두고 after 에 새 값.
-   - delete: changes 를 status ON_SALE→HIDDEN 1건으로 표현하고, 삭제가 아니라
-     숨김 처리임을 summary 에 명시한다.
+   - delete: changes 를 status 1건으로 표현하되 **before 는 list_my_products 조회값
+     그대로**(ON_SALE 또는 HIDDEN), after 는 DELETED 다. summary 에는 **되돌릴 수 없고
+     판매자 상품 목록에서도 사라진다**고 명시한다 — 잠시 내렸다가 되살릴 목적이면
+     삭제가 아니라 update 로 status 를 HIDDEN 으로 바꾸는 것이라고 안내한다.
+     삭제를 "숨김"이라고 표현하지 않는다(되돌릴 수 있는 조작으로 오인하게 된다).
    - ship: op="ship", order_item_id 에 get_orders 조회 결과의 orderItemId 를 넣고
      changes 는 비운다(전이는 ORDERED→SHIPPING 고정 — 코드가 표현한다). summary 에
      주문번호·상품명·옵션을 적어 무엇을 발송하는지 카드에서 알 수 있게 한다.

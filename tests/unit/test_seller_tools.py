@@ -174,7 +174,7 @@ class FakeSpringClient:
     async def delete_product(self, brand_id, product_id):
         self.recorded_brand_id = brand_id
         self._maybe_fail("delete_product")
-        return ProductDeleteResult(product_id=product_id, status="HIDDEN")
+        return ProductDeleteResult(product_id=product_id, status="DELETED")
 
     # ── [#297] I-29/I-30/I-31 주문·리뷰 ──
 
