@@ -257,6 +257,7 @@ async def _load_color_synonym_map(settings) -> dict[str, list[str]] | None:
             return color_synonyms.get_synonym_map(
                 settings.catalog_db_url,
                 ttl_s=settings.color_synonym_cache_ttl_s,
+                warn_if_empty=settings.color_synonym_expansion_enabled,
             )
         finally:
             # wait_for가 먼저 끝나도 실제 worker 종료 전에는 풀 크기 슬롯을 반환하지 않는다.

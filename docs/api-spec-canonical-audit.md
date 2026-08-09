@@ -129,3 +129,18 @@
 | admin | AD-1~AD-7 (7) | 전부 [폐기] |
 | chat 폐기 | CH-3, CH-4 (2) | 전부 [폐기] |
 | internal 폐기 | I-5 (1) | [폐기] 문의 접수 |
+
+## #461 색상 동의어 확장 전/후 실측(2026-08-09)
+
+재현 명령: `uv run python /tmp/measure_461_color_synonyms.py` (커밋하지 않는 실측 전용 스크립트, 로컬 `pg-catalog`에서 `color_synonyms`의 `status`·`canonical`만 UPDATE).
+
+`products.extras.attributes` 6,310건을 대상으로 정본 §4.6의 3갈래 판정(색상 축 부재 통과 / 축이 있으면 색상 값만 부분 일치)으로 셌다. 측정 전 로더 사전은 `approved AND canonical IS NOT NULL` 0건이었고, 사람 검수 오버레이의 승인 46행을 반영한 뒤 46건이 됐다; `pending_review` 743건은 그대로라 이번 이득이 작거나 0일 수 있다.
+
+| 상태 | `expand_color("그레이", mapping)` | I-1 재현 매칭 상품 | 색상 축 부재 통과 | 명시 색상 부분일치 | 확장으로 새로 유입 |
+|---|---|---:|---:|---:|---:|
+| A. 확장 off·사전 비어 있음 | 1개: `그레이` | 6,310 | 6,307 | 3 | 0 |
+| B. 승인 46행 반영·확장 on | 2개: `그레이`, `회색` | 6,310 | 6,307 | 3 | 0 |
+
+이번 승인군의 그레이 묶음은 `그레이`·`회색` 두 표기뿐이고, 로컬 카탈로그의 명시 색상 3건에는 이미 `그레이`가 들어 있어 새 유입 표기는 **0건**이다. 따라서 `다크그레이`·`차콜`을 비롯한 신규 유입 예시 5건은 만들 수 없으며, 해당 수식어·복합 표기는 검수 대기 743건에 남아 있다; 0건을 5건으로 부풀리지 않는다.
+
+AI 사후필터도 정본 ②와 정합이다. `app/services/spring_client.py::search_products`는 `filters.color`를 I-1 요청으로만 전송하고, `app/services/search_service.py::apply_ai_side_filters`는 `rating_min`·`attr_conditions`만 처리한다; 후자의 `_matches_attr_conditions`는 축이 없으면 `continue`로 후보를 보존한다. `tests/unit/test_recommendation.py::test_color_turn_preserves_product_without_color_axis_after_ai_side_filters`가 색상 조건 턴에서 색상 축 없는 상품이 살아남음을 고정한다.
