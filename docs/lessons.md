@@ -13,6 +13,125 @@
 
 ---
 
+## [2026-08-10] 서로 다른 저장소를 잇는 단계 사이에는 "의도"를 먼저 적어야 재개가 성립한다
+- 증상: #358 조립부(`apply_edge_mutation`)가 `문서 쓰기 → 감사 → 원장 완료` 순인데, **문서는 썼고
+  완료 표시 전에 끊긴** 창에서 재시도가 `404`(초기화는 `409`)를 받았다. api-spec §3.9.2 가 ⚠️ 로
+  *"이미 삭제된 edge 는 404 로 뭉뚱그리면 멱등 규약과 정면으로 모순"* 이라고 못박은 바로 그 판정을
+  하고 있었다. PR 리뷰가 잡았다.
+- 원인 셋이 겹쳤다.
+  1. **404 판정이 원장을 안 봤다.** `document` 만 보고 "대상이 없으니 404"라 했는데, 그 부재가
+     *이 요청이 만든 결과*일 수 있다. 게다가 그 판정이 claim 보다 앞이라 **TTL 이 지나도 같은 답**
+     이었다 — 자가 복구가 구조적으로 불가능했다.
+  2. **의도를 안 적었다.** 문서 쓰기와 완료 표시는 서로 다른 저장소라 한 트랜잭션에 못 묶이는데
+     (다중 항목 원자성 없음), 그 사이에 끊기면 "이 요청이 무엇을 만들려 했는가"가 어디에도 없어
+     재개가 응답을 재구성할 수 없다. SPEC 이 "저널 **선행** 기록(의도)"이라고 적은 이유가 이거였는데
+     구현이 그 단계를 생략했다.
+  3. **크래시한 시도의 lease 가 살아 있어** 재선점이 막혔다 — 재시도가 최대 TTL 동안 틀린 답을 받는다.
+- 규칙: **서로 다른 저장소에 걸친 다단계 쓰기는 (a) 첫 쓰기 전에 의도를 적고, (b) 실패·부재 판정을
+  그 의도 기록과 함께 하고, (c) 재개가 남은 단계만 마저 하게 만든다.** 셋 중 하나만 빠져도 중간에
+  끊긴 요청이 영구히 틀린 답을 받는다. 특히 "부재"를 오류로 판정하는 자리는 **그 부재를 내가 만든
+  것인지** 먼저 물어야 한다.
+- 규칙(추가): 재개가 생기면 **각 단계가 멱등이어야** 한다. 감사처럼 "한 변경 = 한 행"인 기록은 자연
+  키로 UNIQUE 를 걸어 두 번째 쓰기를 무시하게 한다. 그 키가 PII 를 담으면 지문으로 바꿔 담는다.
+- 규칙(추가): **크래시 재개는 "무엇이 진짜 상호배제인가"를 먼저 정해야 한다.** 여기서는 per-user
+  advisory 락이 그것이고, 그 락을 쥔 채 `processing` 잔재를 봤다면 주인은 돌고 있지 않다 — lease
+  만료를 기다릴 이유가 없다. 반대로 `completed` 는 어떤 경우에도 재선점하지 않는다(부작용 2회).
+- 관련: `app/agents/profile/graph_journal.py::apply_edge_mutation`·`record_intent`·`claim(takeover=)` ·
+  `tests/unit/test_profile_graph_apply.py` · api-spec §3.9.2 · PR #540 리뷰
+
+## [2026-08-10] 새 pg 모듈의 정리 배선은 "테스트 하니스"와 "앱 종료" 두 곳이다
+- 증상: #358 의 `graph_journal` 을 `tests/conftest.py::close_pg_pools_on_loop` 에는 배선했는데
+  **`app/main.py::_close_owned_resources` 에는 빠뜨렸다.** 통합 테스트도 유닛도 초록이었다 —
+  테스트는 하니스 쪽만 쓰고, 앱 종료 경로를 재는 테스트는 자원 목록을 손으로 열거하고 있었기
+  때문이다. 그 상태로 배포하면 **재배포마다 pg 커넥션 풀이 새고**, `max_connections` 에 닿아서야
+  무관해 보이는 곳에서 연결 실패로 드러난다.
+- 원인: 같은 성격의 목록이 두 곳에 있는데 서로를 강제하지 않았다. 한쪽만 채워도 스위트가 통과한다.
+- 규칙: **pg 풀을 여는 모듈을 새로 만들면 배선은 세 곳이 한 단위다** —
+  ① `tests/conftest.py::close_pg_pools_on_loop`(빠지면 CI 무한 대기)
+  ② `tests/integration/test_pg_pool_loop_teardown.py`(①의 누락을 잡는 가드가 성립하려면 필요)
+  ③ **`app/main.py::_close_owned_resources`(빠지면 운영에서 커넥션 누수)**.
+- 규칙(추가): 목록을 **손으로 세는 대신 구조로 고정한다.** 이름을 하드코딩한 테스트는 "둘 다
+  잊는" 실패 모드를 그대로 남긴다 — 패키지를 훑어 `close_pool` 을 가진 모듈이 전부 배선돼
+  있는지 확인하는 테스트를 넣었고(`test_every_pg_pool_module_is_wired_into_lifespan_shutdown`),
+  그게 실제로 이 누락을 잡았다.
+- 관련: `app/main.py::_close_owned_resources` · `tests/unit/test_main_lifespan.py` · 이슈 #208·#358
+
+## [2026-08-10] CHECK 제약의 어휘를 바꾸면 DROP → 행 이행 → ADD 셋이 한 세트다
+- 증상: 감사 `action` 어휘를 `edgeSuppress`→`edgeDelete` 로 개명(#499)하면서 **세 번 연속으로
+  다른 실패**를 밟았고, 매번 **기존 데이터가 있는 볼륨에서만** 터졌다.
+  1. 코드·DDL 문자열만 바꿨다 → `IF NOT EXISTS` 로 감싼 `ADD CONSTRAINT` 가 아무것도 안 해서
+     **이름이 같은 낡은 CHECK 가 그대로 남았고**, 새 값 INSERT 가 거부됐다.
+  2. 제약을 DROP 후 재생성했다 → 옛 값이 든 기존 행 6건 때문에 `ADD CONSTRAINT` **검증이 실패**해
+     `_ensure_schema` 전체가 죽었고, dev 폴백이 그 예외를 삼켜 "풀이 안 열림"으로만 보였다.
+  3. 행을 먼저 UPDATE 했다 → **낡은 CHECK 가 아직 살아 있어** 새 값이 거부됐다
+     (`new row for relation ... violates check constraint`).
+- 원인: `CREATE ... IF NOT EXISTS` / `DO $$ IF NOT EXISTS ... ADD CONSTRAINT $$` 관용구는
+  **"없으면 만든다"이지 "다르면 고친다"가 아니다.** 그리고 제약과 데이터는 서로를 막는다 —
+  제약이 살아 있으면 데이터를 못 고치고, 데이터가 낡았으면 제약을 못 건다.
+- 규칙: **enum 성격의 CHECK 어휘를 바꾸면 한 트랜잭션 안에서 `DROP CONSTRAINT IF EXISTS` →
+  기존 행 UPDATE → `ADD CONSTRAINT` 순서로 쓴다.** 셋 중 하나만 빠져도 빈 볼륨(CI·새 개발자)에서는
+  통과하고 **데이터가 있는 볼륨에서만** 깨진다 — 즉 운영에서 처음 드러난다.
+- 규칙(추가): **DDL 실패가 dev 폴백에 삼켜지면 증상이 "연결 실패"로 위장한다.** `_get_pool` 이
+  `except Exception → InMemory 폴백` 이라 진짜 원인(제약 위반)이 안 보였다. 스키마 오류를 쫓을
+  때는 폴백을 우회해 `_ensure_schema` 를 직접 부르거나, psql 로 같은 DDL 을 실행해 본다.
+  (Windows 에서 psycopg async 를 스크립트로 직접 돌리면 `ProactorEventLoop` 비호환이라
+  `docker exec ... psql` 이 더 빠르다.)
+- 관련: `app/agents/profile/graph_journal.py::_ensure_schema` ·
+  `tests/integration/test_pg_graph_journal.py` · #358 / #499
+
+## [2026-08-10] "되돌리면 깨지는지"를 실제로 해 보면 테스트가 주장을 안 재고 있는 게 드러난다
+- 증상: #358 조립부에서 `409` 경로의 claim 롤백(`release`)을 **일부러 제거했는데 14건이 전부
+  통과**했다. `test_conflict_releases_the_claim_so_a_corrected_retry_can_proceed` 라는 이름을 달고
+  있었는데도 그랬다.
+- 원인: 그 테스트가 재시도에 **다른 `If-Match`**(g41→g42)를 썼다. 파생 키가
+  `{action}:{userId}:{scopeId}:{ifMatch}` 라 `If-Match` 가 바뀌면 **키 자체가 달라져**, 남아 있는
+  claim 이 애초에 방해할 수 없다. 이름이 주장하는 인과가 시나리오에 없었다.
+- 규칙: **"되돌리면 깨지는지"는 문장으로 적지 말고 실제로 되돌려 돌려 본다.** 통과하면 그 코드가
+  불필요하거나 테스트가 다른 것을 재고 있는 것이고, 둘 다 고칠 거리다. 특히 **키·식별자가 입력에서
+  파생되는 경우** 두 요청이 같은 키를 쓰는지 먼저 확인한다 — 안 그러면 "경합"을 재는 시나리오가
+  실은 경합이 아니다. 여기서는 롤백이 진짜로 필요한 자리가 `409` 가 아니라 **no-op** 이었다
+  (같은 `If-Match` 로 온 진짜 변경이 같은 키를 쓴다).
+- 규칙(추가): 같은 점검에서 **만들어 놓고 배선 안 한 방어**도 드러났다(`request_fp`). 방어 장치를
+  추가한 커밋과 그것을 호출부에 꽂는 커밋이 다르면, 그 사이에 "있는데 안 쓰이는" 상태가 남는다 —
+  방어를 추가할 때 **그 방어가 없으면 깨지는 테스트를 같은 커밋에** 넣는다.
+- 관련: `app/agents/profile/graph_journal.py::_apply_claimed` ·
+  `tests/unit/test_profile_graph_apply.py` · #358
+
+## [2026-08-10] 표현을 바꾸면 그 표현을 읽던 먼 코드가 조용히 판정을 잃는다
+- 증상: #358 에서 삭제를 "`status="suppressed"` edge 보존" → "물리 삭제 + 별도 tombstone 리스트"로
+  바꿨더니, `builder._summary_input` 이 **지운 취향을 요약에 되돌려 넣기** 시작했다.
+- 원인: 그 함수는 "문서에 없는 `edge_key` 는 `active` 로 간주한다"는 규칙을 갖고 있었다. 절단으로
+  빠진 edge 를 삭제로 오인하지 않으려는 **정당한** 규칙인데, 삭제가 edge 를 문서에서 없애는 순간
+  "없음"의 뜻이 둘("저장 한계로 빠짐" vs "사용자가 지움")이 되어 규칙이 반대로 작동했다.
+- 규칙: **"없음"을 신호로 쓰는 코드를 먼저 찾고 나서 표현을 바꾼다.** 부재(absence)로 판정하는
+  자리는 표현이 바뀔 때 침묵으로 깨진다 — 예외도 타입 오류도 안 난다. 검색어는 필드 이름이 아니라
+  **그 필드가 없을 때의 기본값**(`.get(key, DEFAULT)` · `or` · `if not`)이다.
+- 규칙(추가): 이번엔 기존 테스트 6건이 잡아 줬다. 표현 변경 PR 에서 **기존 테스트가 무더기로
+  깨지는 것은 신호지 잡음이 아니다** — 하나씩 "이 테스트가 재던 성질이 새 표현에서도 성립하는가"를
+  묻고, 성립하면 매개체만 바꾸고 성립하지 않으면 그게 설계 결함이다.
+- 관련: `app/agents/profile/builder.py::_summary_input` · `graph_merge.py` · REQ-PGRAPH-023 · #358
+
+## [2026-08-09] OS별 구현이 다른 저수준 API를 전역 패치로 막으면 CI가 초록인 채 로컬만 죽는다
+- 증상: 유닛 스위트가 Windows 로컬에서 **556건 실패 / 4716 통과**. 실패가 `test_home_recommendation`
+  (66)·`test_seller_api`(64)·`test_auth_e2e`(59)처럼 **async 비중이 높은 파일 순서**로 몰렸고, 오류는
+  전부 `ConnectionRefusedError: unit tests must not open live TCP connections` + teardown 경고
+  `'ProactorEventLoop' object has no attribute '_ssock'`. 같은 커밋에서 CI(ubuntu-latest)는 전부 success.
+- 원인: 바로 아래 항목의 TCP 격리 가드가 `socket.socket`을 전역 패치해 AF_INET/AF_INET6 `connect`를
+  거부하는데, **Windows에는 AF_UNIX socketpair가 없어** CPython이 `socket.socketpair()`를
+  127.0.0.1 리스닝 소켓 + `connect()`로 흉내낸다. asyncio는 이벤트 루프 생성 시 self-pipe를
+  socketpair로 만들므로 **루프 생성 자체가 실패**했다(`_ssock` 미설정이 그 흔적). 리눅스·macOS는
+  커널 AF_UNIX라 `connect()`를 타지 않아 이 경로가 아예 없다.
+- 규칙: **테스트 격리를 위해 저수준 API를 전역 패치할 때는 그 API의 OS별 구현 차이를 먼저 확인한다.**
+  `socketpair`·`pipe`·`fork`처럼 POSIX 원형이 Windows에서 에뮬레이션되는 것들이 대상이다. 그리고
+  차단 가드는 **"막는 것"과 "통과해야 하는 것"을 같은 파일에서 둘 다 테스트로 고정**한다 — 막는
+  쪽만 재면 이런 과차단을 못 잡고, 통과 쪽만 재면 가드에 뚫린 구멍을 못 잡는다. 예외 범위를
+  스레드 전역이 아니라 **스레드 로컬**로 두는 것도 같은 이유다(예외 구간에 다른 스레드의 실 TCP가
+  묻어 통과하면 안 된다).
+- 규칙(추가): **CI가 단일 OS면 그 OS에서만 성립하는 회귀는 영영 안 잡힌다.** 로컬 전용 실패를
+  "환경 탓"으로 넘기기 전에 원인을 한 번은 분류한다 — 여기서는 그 분류가 실제 버그를 찾아냈다.
+- 관련: `tests/unit/conftest.py::_guarded_socketpair` · `tests/unit/test_unit_tcp_guard.py` ·
+  `.github/workflows/ci.yml:10`(ubuntu-latest) · #474 회귀, #358 작업 중 발견
+
 ## [2026-08-10] 반복 실행 지표에서 기준선만 repeat 0 으로 고정하면 지터가 신호로 둔갑한다
 - 증상: Tier L 축 유출(`filterAxisLeakage`)이 기준선을 `repeat == 0` 한 벌로 뽑아 놓고 비교
   대상은 전 repeat 을 돌았다. `--repeats 1` 에서는 무해했지만 `--repeats 3` 을 켜는 순간
@@ -122,6 +241,7 @@
 - 규칙: 분위수·분모 분리 회귀 테스트는 의도한 잘못된 결합을 실제로 적용한 변이에서 적어도 하나의
   단언값이 달라지는 손계산 표본을 사용하고, 변이 실행으로 그 실패를 확인한다.
 - 관련: `tests/unit/test_aggregate_rescue_chain.py` · #385
+
 ## [2026-08-10] 동시 레인의 완료 조건은 이슈가 아니라 최신 dev에서 다시 실측한다
 - 증상: 이슈 완료 조건에 "미구현"으로 표시된 항목을 그대로 믿고 승인 0건 가드를 구현했는데,
   같은 조건을 다른 레인(PR #502)이 이미 dev 에 넣어 둔 상태였다. back-merge 때 같은 판정이 두
