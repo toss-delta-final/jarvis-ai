@@ -1628,6 +1628,20 @@ class Settings(BaseSettings):
     stream_total_timeout_buyer_s: float = Field(default=30.0, gt=0.0)
     # disconnect 감지 폴링 간격 (취소 = 연결 종료, §2.9 b).
     stream_disconnect_poll_s: float = 0.5
+    # ── 공유 스트림 레지스트리 (#476, docs/specs/DESIGN-SHARED-STREAM-REGISTRY-476.md) ──
+    # "memory"(기본) = 프로세스 로컬. 현재 배포는 워커 1개라 공유 백엔드는 이득 없이 DB 왕복과
+    # 새 실패 모드만 더한다 — 출하 기본 동작은 이 기능 도입 이전과 동일하다. "shared" 는
+    # pg-profile 테이블로 §2.9(a) 슬롯·scope fence·scope idle 을 워커 간에 공유해 워커 다중화의
+    # 선행조건 하나를 충족시킨다(나머지 조건은 OPS-SCALEOUT-476.md §2 인벤토리 참조).
+    stream_registry_backend: Literal["memory", "shared"] = "memory"
+    # 공유 백엔드 행의 lease 수명. 워커가 죽어도 이 시간 뒤엔 슬롯이 반드시 풀린다(#48 재발 방지).
+    stream_registry_lease_ttl_s: float = Field(default=60.0, gt=0.0)
+    # lease 연장 최소 간격 — 이미 도는 stream_disconnect_poll_s tick 에 얹는다(프레임마다 DB 금지).
+    stream_registry_lease_renew_interval_s: float = Field(default=5.0, gt=0.0)
+    # 공유 백엔드 wait_for_scope_idle 폴링 주기 (asyncio.Event 는 프로세스를 못 넘는다).
+    stream_registry_scope_poll_s: float = Field(default=0.5, gt=0.0)
+    # 같은 대기의 전체 상한 — 무한 대기 금지.
+    stream_registry_scope_idle_wait_max_s: float = Field(default=120.0, gt=0.0)
     # AI→Spring 콜백 타임아웃 (§2.9 c, BE I-2 기준 통일). 실제 호출부에서 사용.
     spring_timeout_s: float = 3.0
     # [#427] I-1 검색 전용 타임아웃 — `spring_timeout_s`(전 구간 공용)와 분리한다. 기본값은
@@ -2191,6 +2205,40 @@ class Settings(BaseSettings):
                 "COLOR_SYNONYM_HARVEST_MAX_TERMS_PER_PRODUCT "
                 f"(got {self.color_synonym_harvest_scan_max_values_per_product} <= "
                 f"{self.color_synonym_harvest_max_terms_per_product})"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _require_consistent_stream_registry_leases(self) -> "Settings":
+        """공유 레지스트리 lease 관계를 기동 시점에 고정한다 (#476).
+
+        연장 간격이 TTL 의 절반 이상이면 연장을 한 번만 놓쳐도 살아있는 스트림의 슬롯이
+        만료돼 다른 워커가 같은 방을 잡을 수 있다 — §2.9(a) 가 조용히 뚫린다. 반대로
+        scope idle 대기 상한이 TTL 보다 짧으면, 죽은 워커가 남긴 행이 만료되기도 전에 대기가
+        끝나 "기다렸다" 는 보장이 무의미해진다. 값은 `memory` 백엔드에서도 검증한다 —
+        운영이 백엔드를 켜는 순간 발견하는 것보다 기동 시점에 막는 편이 싸다.
+        """
+        if self.stream_registry_lease_renew_interval_s >= self.stream_registry_lease_ttl_s / 2:
+            raise ValueError(
+                "STREAM_REGISTRY_LEASE_RENEW_INTERVAL_S must be under half of "
+                "STREAM_REGISTRY_LEASE_TTL_S "
+                f"(got {self.stream_registry_lease_renew_interval_s} >= "
+                f"{self.stream_registry_lease_ttl_s / 2})"
+            )
+        if self.stream_registry_scope_idle_wait_max_s <= self.stream_registry_lease_ttl_s:
+            raise ValueError(
+                "STREAM_REGISTRY_SCOPE_IDLE_WAIT_MAX_S must exceed "
+                "STREAM_REGISTRY_LEASE_TTL_S "
+                f"(got {self.stream_registry_scope_idle_wait_max_s} <= "
+                f"{self.stream_registry_lease_ttl_s}): "
+                "a dead worker's row must be able to expire before the wait gives up"
+            )
+        if self.stream_registry_scope_poll_s >= self.stream_registry_scope_idle_wait_max_s:
+            raise ValueError(
+                "STREAM_REGISTRY_SCOPE_POLL_S must be under "
+                "STREAM_REGISTRY_SCOPE_IDLE_WAIT_MAX_S "
+                f"(got {self.stream_registry_scope_poll_s} >= "
+                f"{self.stream_registry_scope_idle_wait_max_s})"
             )
         return self
 

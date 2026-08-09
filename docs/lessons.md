@@ -21,6 +21,24 @@
 - 규칙: format은 이번에 수정한 파일 목록만 인자로 넘기고, 전체 검증은 `uv run ruff check`로 한다.
 - 관련: #406 · `.github/workflows/ci.yml` · `docs/lessons.md`
 
+---
+
+## [2026-08-09] 변이가 살아남으면 "테스트가 약한 것"이 아니라 **더 위 계층에서 멈춘 것**일 수 있다
+- 증상: #476 공유 스트림 레지스트리에서 `release_stream` 의 SQL `AND stream_token=%s` 를 지우는
+  변이를 넣었는데, 그 조건을 검증한다고 이름 붙인 통합 테스트
+  (`test_pg_release_only_deletes_the_row_this_worker_owns`)가 **그대로 통과**했다.
+- 원인: 테스트가 `SharedStreamRegistry.release()` 를 통해 들어갔는데, 레지스트리가 자기 로컬
+  토큰 맵에 키가 없으면 **DB 를 치기 전에 조기 반환**한다. 즉 테스트는 상위 계층 가드를 재고
+  있었고 SQL 조건에는 애초에 도달한 적이 없다. 이름과 주석은 SQL 을 검증한다고 말하고 있었다.
+- 규칙: 다층 방어(호출부 가드 + 저장소 조건)를 넣었으면 **각 층을 그 층의 진입점에서** 시험한다.
+  저장소 조건은 저장소 API 를 직접 불러(`store.release_stream(..., stream_token=<틀린 토큰>)`)
+  확인하고, 변이 시험은 층마다 따로 돌린다. 변이가 살아남으면 "단언을 세게" 하기 전에
+  **호출 경로가 그 코드에 닿는지부터** 확인할 것.
+- 관련: `tests/integration/test_pg_shared_stream_registry.py` ·
+  `app/core/stream_registry.py::SharedStreamRegistry.release` · #476
+
+---
+
 ## [2026-08-09] 범위 대조는 선언된 건수보다 열거된 식별자를 우선한다
 - 증상: #472 정본 인덱스는 범위를 44건이라 표기했지만, 실제 열거는 internal 36건·chat 6건·S-4·P-4/P-5·E-1로 46건이었다.
 - 원인: 요약 집계와 개별 범위 목록이 독립적으로 수정돼 산술 검증이 빠졌다.

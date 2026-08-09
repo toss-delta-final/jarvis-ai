@@ -1512,12 +1512,12 @@ async def test_409_does_not_store_ghost_turn() -> None:
 
     store = await get_conversation_store()
     # dev 게스트 → registry_key/conversation_key owner="anon"
-    get_registry().acquire("anon:t")  # 동일 threadId 슬롯 선점 → 다음 요청은 409
+    await get_registry().acquire("anon:t")  # 동일 threadId 슬롯 선점 → 다음 요청은 409
     try:
         r = client.post("/chat", json={"sessionId": "dup", "threadId": "t", "message": "중복요청"})
         assert r.status_code == 409
     finally:
-        get_registry().release("anon:t")
+        await get_registry().release("anon:t")
     assert await store.turns_for(conversation_key(None, "dup")) == []  # 유령 턴 없음
 
 
@@ -1682,7 +1682,7 @@ async def test_outer_cancellation_during_first_pull_owns_prestream_cleanup() -> 
         if inner_task is not None and not inner_task.done():
             inner_task.cancel()
             await asyncio.gather(inner_task, return_exceptions=True)
-        get_registry().release(stream_key)
+        await get_registry().release(stream_key)
 
     assert snapshot == (True, True, True, 1)
     (root,) = exporter.exported[0]
