@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 
 from langgraph.store.base import BaseStore
@@ -27,6 +28,9 @@ _NAMESPACE_ROOT = "buyer_cart_v2"
 _LAST_RECO_KEY = "last_reco"
 _PENDING_KEY = "pending"
 _LAST_ADD_KEY = "last_add"
+_PUSH_FAILED_KEY = "push_failed"
+
+_log = logging.getLogger(__name__)
 
 # last_reco 의 상품명(product.name 원본 컬럼 사본)은 pg-profile 에 저장하지 않는다 — CLAUDE.md
 # "AI Postgres 에는 AI 생성물만 저장, 상품 원본 컬럼 사본 금지"(PR #46 후속 리뷰). pg-profile 엔
@@ -169,6 +173,23 @@ class CartStateStore:
         if option_hints:
             hints.update(option_hints)
         _last_reco_options[key] = {pid: hint for pid, hint in hints.items() if pid in kept}
+        try:
+            await run_with_query_timeout(self._store.adelete(self._ns(key), _PUSH_FAILED_KEY))
+        except Exception as exc:  # noqa: BLE001 - 실패 고지 마커 정리가 추천 저장을 죽이지 않는다
+            _log.warning("push_failed_marker_clear_failed", extra={"reason": str(exc)})
+
+    async def set_push_failed(self, key: str) -> None:
+        """추천 목록 push 실패 사실만 스레드에 남긴다 (#468, PII 없음)."""
+        await run_with_query_timeout(
+            self._store.aput(self._ns(key), _PUSH_FAILED_KEY, {"value": True})
+        )
+
+    async def get_push_failed(self, key: str) -> bool:
+        """목록 push 실패 마커. 값이 없거나 모양이 이상하면 False로 degrade한다."""
+        item = await run_with_query_timeout(self._store.aget(self._ns(key), _PUSH_FAILED_KEY))
+        if not item or not isinstance(item.value, dict):
+            return False
+        return item.value.get("value") is True
 
     async def get_last_reco(self, key: str) -> list[tuple[int, str]]:
         """누적 추천 목록(최근 언급 순). 담기 가드가 쓰는 목록이다."""

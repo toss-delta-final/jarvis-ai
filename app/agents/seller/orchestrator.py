@@ -53,6 +53,7 @@ from app.agents.seller.pipeline import (
     format_rewrite_input,
     format_worker_input,
     format_worker_retry_input,
+    period_confirmation_text,
     resolve_plan,
 )
 from app.agents.seller.schemas import (
@@ -665,16 +666,22 @@ class PipelineResult:
     """분석 파이프라인 최종 산출 — SSE 계층·save_history(4단계)가 소비한다.
 
     kind: report(정상 보고서) / clarification(되묻기 — 파이프라인 미실행) /
-    apology(전 워커 실패 사과). text 는 세 경우 모두 사용자에게 보낼 최종 문안.
+    apology(전 워커 실패 사과) / refused(도메인 밖 거절) /
+    period_confirmation(기간 해석 확인 대기 — 파이프라인 미실행, #345).
+    text 는 모든 경우에 사용자에게 보낼 최종 문안이다.
 
     findings·period·chart_requested 는 `report` SSE 이벤트(이슈 #296, api-spec §3.2
     v0.24.0)의 직렬화 재료다 — kind=="report" 일 때만 채워지고 그 외에는 기본값
     (None·False)이다. compose_response 가 텍스트로 눌러 펴며 버리던 구조를 와이어에
     그대로 실어 보내기 위한 확장이라, 신규 필드는 전부 default 있는 keyword 로만
     추가한다(frozen dataclass — 기존 생성부·픽스처의 positional 호환 유지).
+
+    [#345] resolved 는 kind=="period_confirmation" 일 때만 채워진다 — 호출부(SSE 계층)가
+    확인 대기에 저장했다가 승인 시 planner 없이 재개하는 그 계획이다(DESIGN §6).
+    와이어에는 나가지 않는다(내부 계약).
     """
 
-    kind: Literal["report", "clarification", "apology", "refused"]
+    kind: Literal["report", "clarification", "apology", "refused", "period_confirmation"]
     text: str
     verified: VerifiedReport | None = None
     recommendations: RecommendationSet | None = None
@@ -682,6 +689,7 @@ class PipelineResult:
     findings: list[AnalysisFinding] | None = None
     period: tuple[date, date] | None = None
     chart_requested: bool = False
+    resolved: ResolvedPlan | None = None
 
 
 async def run_analysis_pipeline(
@@ -693,13 +701,19 @@ async def run_analysis_pipeline(
     recent_turns: Sequence[seller_thread.Turn] = (),
     screen: ScreenContext | None = None,
 ) -> PipelineResult:
-    """분석 레인 전체: planner → resolve → 팬아웃 → 검증 루프 → recommend → compose.
+    """분석 레인 전체: planner → resolve → (확인?) → 팬아웃 → 검증 루프 → recommend → compose.
 
-    되묻기(계획 불성립·미지원 기간)와 전 워커 실패 사과는 예외가 아니라
+    되묻기(계획 불성립·해석 불가 기간)와 전 워커 실패 사과는 예외가 아니라
     PipelineResult 로 반환한다 — 호출부(SSE)는 kind 와 무관하게 text 를 token 으로
     흘리고 done 하면 된다. **예외 전파는 두 경우다**: planner 자체 장애, 그리고
     1차 보고서 작성 실패(Q2 — 내보낼 보고서가 없음). 호출부는 둘 다 사과/error
     경로로 처리해야 한다.
+
+    [#345] 코드가 값을 보충한 기간 해석("이번 달"·"최근 3개월")은 팬아웃 전에
+    kind="period_confirmation" 으로 되돌린다 — 호출부가 ResolvedPlan 을 확인 대기에
+    저장했다가 승인 시 `run_resolved_pipeline` 로 재개한다. planner 이후 구간을 그
+    함수로 **분리**했기 때문에 승인 경로의 planner 재호출 0회가 조건문이 아니라
+    호출 그래프로 보장된다(DESIGN-SELLER-PERIOD §6).
 
     scope 가드(3-6): 구조화 출력 레인은 end 점프 미들웨어를 쓸 수 없어(계약 파손)
     **파이프라인 입구에서 check_scope 코드 검사**로 차단한다 — LLM 호출 0회 거절.
@@ -759,6 +773,34 @@ async def run_analysis_pipeline(
     except ValueError as exc:
         return PipelineResult(kind="clarification", text=str(exc))
 
+    # [#345] 코드가 값을 보충한 해석은 실행 전에 확인받는다 — 팬아웃(LLM·Spring 호출)
+    # 앞에 두어야 잘못 해석한 기간으로 비용을 쓰지 않는다.
+    if resolved.needs_confirmation:
+        return PipelineResult(
+            kind="period_confirmation",
+            text=period_confirmation_text(resolved),
+            resolved=resolved,
+        )
+
+    return await run_resolved_pipeline(question, resolved, context, emit=emit)
+
+
+async def run_resolved_pipeline(
+    question: str,
+    resolved: ResolvedPlan,
+    context: SellerContext,
+    *,
+    emit: Emit,
+) -> PipelineResult:
+    """계획 확정 이후 구간: 팬아웃 → 검증 루프 → recommend(±graph) → compose → 이력 저장.
+
+    [#345] 신규 질문(`run_analysis_pipeline`)과 기간 확인 승인 재개가 **같은 이 함수**를
+    부른다. 승인 경로에 planner 호출이 없다는 것이 조건문이 아니라 호출 그래프로
+    보장되는 지점이다(DESIGN-SELLER-PERIOD §6 — #269 완료 조건 "planner 재호출 0회").
+
+    scope 가드·이력 주입·planner 는 여기 없다 — 전부 계획을 세우는 단계의 일이고,
+    승인 재개는 이미 확정된 계획을 실행만 한다.
+    """
     try:
         verified_branches = await run_branches(question, resolved, context, emit=emit)
     except AllWorkersFailedError:

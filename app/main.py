@@ -44,7 +44,7 @@ from app.agents.seller.history import close_store as close_seller_history_store
 from app.api import chat, events, internal, profile, seller
 from app.core.body_limit import BodySizeLimitMiddleware
 from app.core.conversation import close_store as close_conversation_store
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.core.errors import install_error_handling
 from app.core.logging import configure_logging, get_logger
 from app.core.pg_store import close_store as close_pg_store
@@ -232,10 +232,31 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             await _close_owned_resources()
 
 
+def _warn_if_scripted_llm(settings: Settings) -> None:
+    """G2(#438) — 스텁 LLM 활성 시 기동 로그에 눈에 띄는 배너를 남긴다.
+
+    G1(config.py `_forbid_scripted_outside_local`)이 local/test 밖 기동 자체를 막지만, 그
+    안에서도 "지금 이 서버가 가짜 응답을 낸다"는 사실을 로그로만 보고 켠 사람이 잊을 수 있다.
+    운영 var 실수(deploy.yml `LLM_PROVIDER`)는 G1 이 기동 자체를 거부해 이 배너까지 갈 일이
+    없다 — deploy.yml 은 이 이슈에서 건드리지 않는다(§7 범위 밖, evals/benchmark/README.md 참조).
+    """
+    if settings.llm_provider != "scripted":
+        return
+    logger.warning(
+        "=" * 60
+        + "\nSTUB LLM MODE — LLM_PROVIDER=scripted\n"
+        + "이 서버는 모든 LLM 호출에 결정론 가짜 응답을 낸다 — 실 모델 호출이 아니다.\n"
+        + "운영 사용 금지: 사용자에게 정상 200 으로 가짜 추천/응답이 나간다(#438).\n"
+        + "부하 테스트 전용(app_environment=local|test 에서만 기동 허용).\n"
+        + "=" * 60
+    )
+
+
 def create_app() -> FastAPI:
     """FastAPI 앱을 생성·구성해 반환한다 (앱 팩토리)."""
     configure_logging()
     settings = get_settings()
+    _warn_if_scripted_llm(settings)
 
     app = FastAPI(
         title="Jarvis AI Server",
