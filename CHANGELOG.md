@@ -9,6 +9,12 @@
 
 ## [Unreleased]
 
+### Added
+- **#385 — 구제 체인 JSONL 재실행 집계기와 실측 불가 판정 근거**. `recommend_zero_result`·
+  `recommend_pipeline` 합집합의 first-token 기여분과 0건 종결 진입 하한, `UPSTREAM_TIMEOUT` 상한을
+  Markdown·CSV로 남기며, 현재 평문 로깅 포맷이 `extra` 계측 필드를 stdout에서 폐기해 운영 표본이
+  원천 생성되지 않는 사실과 선행 싱크 수정 경계를 문서화했다.
+
 ### Fixed
 - **#494 — I-31 집계 모드가 `rating` 필터를 버려 저평점 상품을 틀리게 지목하던 문제** (api-spec
   §4.20, 계약 무변경 — 코드가 확정 명세를 못 따라간 단방향 드리프트). `SpringClient.get_review_stats`
