@@ -56,18 +56,20 @@ from app.agents.seller.pipeline import (
     period_confirmation_text,
     resolve_plan,
 )
+from app.agents.seller import charts as seller_charts
+from app.agents.seller.charts import ChartUnavailable
 from app.agents.seller.schemas import (
     AnalysisFinding,
     AnalysisPlan,
     AnalysisScore,
     AnalysisType,
+    ChartPlanSet,
     ChartSet,
     RecommendationSet,
     ReportScore,
     RouteDecision,
 )
 from app.agents.seller.verifier import (
-    run_chart_checks,
     run_deterministic_checks,
     run_finding_checks,
 )
@@ -599,37 +601,44 @@ async def run_recommend(
         return RecommendationSet(recommendations=[], summary="")
 
 
-# ── graph (이슈 #242) — 차트 생성 + G1 검증. wants_chart 일 때만 run_analysis_pipeline
-# 이 asyncio.gather(run_recommend, run_graph) 로 호출한다(3단계 배선 — 아래 참조) ──
+# ── graph (이슈 #242 → #504 재설계) — LLM 은 축 선언, 좌표는 charts.py 가 조립.
+# wants_chart 일 때만 run_resolved_pipeline 이 asyncio.gather(run_recommend, run_graph)
+# 로 호출한다(3단계 배선 — 아래 참조) ──
 
 
 async def run_graph(
     findings: list[AnalysisFinding],
     report: str,
     question: str,
+    resolved: ResolvedPlan,
     context: SellerContext,
     *,
     emit: Emit,
-) -> ChartSet:
-    """차트 생성 실행 — 실패는 빈 ChartSet 으로 degrade(보고서를 죽이지 않는다, C2 대칭).
+) -> tuple[ChartSet, list[ChartUnavailable]]:
+    """차트 생성 실행 — (조립된 ChartSet, 못 만든 사유 목록)을 반환한다(부분 성공 허용).
 
-    차트도 recommend 와 같은 부가 가치다: LLM 장애·타임아웃·구조화 출력 실패는 물론
-    G1(verifier.run_chart_checks) 자체의 실패(예: 향후 verifier 변경으로 인한 버그,
-    비정상 float 값 등)가 나도 검증된 보고서는 그대로 나간다 — [PR 리뷰 반영] G1
-    호출을 agent 호출과 별개의 try/except 로 감싼다. 호출부(run_analysis_pipeline)
-    는 이 함수를 asyncio.gather(run_recommend, run_graph)로 묶되 return_exceptions
-    을 쓰지 않으므로, 이 함수가 예외를 밖으로 흘리면 이미 성공한 recommend 결과·
-    검증된 보고서까지 통째로 사과 응답으로 대체된다(이 함수는 예외를 밖으로
-    내보내면 안 된다는 뜻).
-    G1(verifier.run_chart_checks)이 미달 ChartSpec 을 드랍한다 — 보고서 검증(D)과
-    달리 재작성 루프는 없다.
+    [#504] 좌표 생성 주체가 LLM → 코드다: graph_agent 는 축 선언(ChartPlanSet)까지만
+    하고, charts.build_charts 가 Spring(I-6·I-13·I-9·I-31)을 직접 호출해 좌표를
+    조립한다. 구 G1 근거 대조는 검사 대상(LLM 산 좌표)이 사라져 삭제됐다.
 
-    호출부(run_analysis_pipeline)는 resolved.wants_chart 일 때만 이 함수를
-    run_recommend 와 asyncio.gather 로 병렬 호출한다 — 원치 않는 요청까지
-    graph LLM 콜을 태우지 않는다(비용·wall-clock 절약, SPEC-SELLER-001 §1-12
-    조정표의 "chart 는 전달 경로 없어 보류" 원칙이 3단계로 해소된다).
+    차트는 recommend 와 같은 부가 가치다 — 어떤 실패도 예외로 새지 않는다(C2 대칭).
+    호출부는 이 함수를 asyncio.gather(run_recommend, run_graph)로 묶되
+    return_exceptions 를 쓰지 않으므로, 예외가 밖으로 흐르면 이미 성공한 recommend
+    결과·검증된 보고서까지 사과 응답으로 대체된다. 실패는 전부 chartUnavailable
+    사유로 강등한다: 차트 기간 해석 실패 → chart_period_unclear(LLM 콜 0회),
+    LLM 실패·타임아웃 → agent_failed, Spring 실패 → source_failed(차트 단위),
+    미지원 축 → unsupported_axes, 데이터 0건 → no_data.
+
+    차트 기간은 resolved.chart_from/to(별도 지정)가 있으면 그것을, 없으면 분석
+    기간(date_from/to)을 쓴다 — SSE 계층이 chartPeriod 로 차이를 노출한다.
     """
     await emit(PROGRESS_TOKENS["graph"])
+    empty = ChartSet(charts=[])
+
+    # 차트 기간만 해석 실패 — 보고서는 계속, 차트는 사유 안내(LLM·Spring 콜 0회).
+    if resolved.chart_period_error:
+        return empty, [seller_charts.chart_period_unclear(resolved.chart_period_expr)]
+
     agent = build_graph_agent()
     try:
         with trace_span("llm.seller.graph", "llm", _llm_metadata("graph")):
@@ -644,21 +653,37 @@ async def run_graph(
                 ),
                 timeout=get_settings().seller_worker_timeout_s,
             )
-        charts = result.get("structured_response")
-        if not isinstance(charts, ChartSet):
-            raise TypeError("graph 가 ChartSet 을 반환하지 않았다")
+        plans = result.get("structured_response")
+        if not isinstance(plans, ChartPlanSet):
+            raise TypeError("graph 가 ChartPlanSet 을 반환하지 않았다")
     except Exception as exc:
-        logger.warning("graph 실패(%r) — 차트 없이 계속(C2 대칭)", exc)
-        return ChartSet(charts=[])
+        logger.warning("graph 축 선언 실패(%r) — 차트 없이 계속(C2 대칭)", exc)
+        return empty, [seller_charts.agent_failed()]
 
+    if not plans.charts:
+        return empty, []
+
+    chart_from = resolved.chart_from or resolved.date_from
+    chart_to = resolved.chart_to or resolved.date_to
     try:
-        passed, dropped = run_chart_checks(charts, findings)
+        charts, unavailable = await seller_charts.build_charts(
+            plans.charts,
+            brand_id=context.brand_id,
+            date_from=chart_from,
+            date_to=chart_to,
+        )
     except Exception as exc:
-        logger.warning("G1 차트 검증 실패(%r) — 차트 없이 계속(C2 대칭)", exc)
-        return ChartSet(charts=[])
-    if dropped:
-        logger.info("차트 드랍 %d건(G1): %s", len(dropped), "; ".join(dropped))
-    return passed
+        # build_charts 는 차트 단위로 삼키므로 여기 오면 조립기 자체 결함이다 — 그래도
+        # 보고서를 죽이지 않는다.
+        logger.warning("차트 조립 실패(%r) — 차트 없이 계속(C2 대칭)", exc)
+        return empty, [seller_charts.source_failed()]
+    if unavailable:
+        logger.info(
+            "차트 미생성 %d건: %s",
+            len(unavailable),
+            "; ".join(item.reason for item in unavailable),
+        )
+    return charts, unavailable
 
 
 @dataclass(frozen=True)
@@ -690,6 +715,12 @@ class PipelineResult:
     period: tuple[date, date] | None = None
     chart_requested: bool = False
     resolved: ResolvedPlan | None = None
+    # [#504] chart_unavailable: 차트를 못 만든 사유(부분 성공 시 charts 와 공존) /
+    # chart_period: 차트 전용 기간(별도 지정 시에만 — SSE 가 period 와 다를 때만 실음) /
+    # chart_only: 차트만 턴(제목 "판매 분석 그래프", 보고서·추천 없음).
+    chart_unavailable: tuple[ChartUnavailable, ...] = ()
+    chart_period: tuple[date, date] | None = None
+    chart_only: bool = False
 
 
 async def run_analysis_pipeline(
@@ -801,6 +832,33 @@ async def run_resolved_pipeline(
     scope 가드·이력 주입·planner 는 여기 없다 — 전부 계획을 세우는 단계의 일이고,
     승인 재개는 이미 확정된 계획을 실행만 한다.
     """
+    # [#504] chart_only 턴 — 워커 팬아웃·보고서·추천을 생략하고 차트만 조립한다.
+    # 차트 데이터는 charts.py 가 Spring 을 직접 조회하므로 워커 finding 이 필요 없다.
+    if resolved.chart_only:
+        charts, chart_unavailable = await run_graph([], "", question, resolved, context, emit=emit)
+        if charts.charts:
+            text = "요청하신 그래프를 준비했습니다. 우측 패널에서 확인해 주세요."
+            if chart_unavailable:
+                text += "\n\n[차트 안내]\n" + "\n".join(item.message for item in chart_unavailable)
+        elif chart_unavailable:
+            text = "\n".join(item.message for item in chart_unavailable)
+        else:
+            text = "요청하신 차트를 만들지 못했습니다."
+        return PipelineResult(
+            kind="report",
+            text=text,
+            charts=charts,
+            period=(resolved.date_from, resolved.date_to),
+            chart_requested=True,
+            chart_unavailable=tuple(chart_unavailable),
+            chart_period=(
+                (resolved.chart_from, resolved.chart_to)
+                if resolved.chart_from and resolved.chart_to
+                else None
+            ),
+            chart_only=True,
+        )
+
     try:
         verified_branches = await run_branches(question, resolved, context, emit=emit)
     except AllWorkersFailedError:
@@ -811,11 +869,13 @@ async def run_resolved_pipeline(
 
     # wants_chart 일 때만 graph 를 recommend 와 병렬 실행한다(이슈 #242, 3단계 배선) —
     # 요청 없는 대다수 질문에서 불필요한 LLM 콜·wall-clock 을 추가하지 않는다.
+    chart_unavailable: list[ChartUnavailable] = []
     if resolved.wants_chart:
-        recommendations, charts = await asyncio.gather(
+        recommendations, graph_result = await asyncio.gather(
             run_recommend(findings, verified.report, context, emit=emit),
-            run_graph(findings, verified.report, question, context, emit=emit),
+            run_graph(findings, verified.report, question, resolved, context, emit=emit),
         )
+        charts, chart_unavailable = graph_result
     else:
         recommendations = await run_recommend(findings, verified.report, context, emit=emit)
         charts = None
@@ -842,6 +902,7 @@ async def run_resolved_pipeline(
             recommendations,
             charts,
             chart_requested=resolved.wants_chart,
+            chart_unavailable=chart_unavailable,
         ),
         verified=verified,
         recommendations=recommendations,
@@ -849,4 +910,10 @@ async def run_resolved_pipeline(
         findings=findings,
         period=(resolved.date_from, resolved.date_to),
         chart_requested=resolved.wants_chart,
+        chart_unavailable=tuple(chart_unavailable),
+        chart_period=(
+            (resolved.chart_from, resolved.chart_to)
+            if resolved.chart_from and resolved.chart_to
+            else None
+        ),
     )

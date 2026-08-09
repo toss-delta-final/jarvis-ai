@@ -1815,8 +1815,9 @@ class SpringClient:
         """I-31 자사 상품 리뷰 목록 조회 — VISIBLE 만 (§4.20).
 
         기간 생략 시 서버가 최근 7일 기본 적용(확정 2026-08-04 — 누락은
-        INVALID_PERIOD 아님). rating 은 "1,2" 콤마 CSV, sort 는 latest|rating(낮은 순
-        고정). 리뷰 원문은 AI DB에 저장하지 않는다 — 질의 시점 조회(I-19 원칙).
+        INVALID_PERIOD 아님). rating 은 "1,2" 콤마 CSV, sort 는 latest(기본)|ratingAsc
+        (낮은 별점부터 — 2026-08-06 개명, 구 `rating` 은 폐기돼 400 VALIDATION_ERROR 다.
+        ratingDesc 는 없다). 리뷰 원문은 AI DB에 저장하지 않는다 — 질의 시점 조회(I-19 원칙).
         """
         params: dict = {}
         if from_:

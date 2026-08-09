@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from datetime import date
 from typing import get_args
@@ -62,6 +63,19 @@ class ResolvedPlan:
     comparison_expr: str = ""
     compare_from: date | None = None
     compare_to: date | None = None
+    # [#504] 차트 전용 기간 — 판매자가 그래프 기간을 분석 기간과 별도로 말했을 때만
+    # 채워진다("지난달 보고서 + 최근 7일 매출 그래프"). 비워지면 차트는 본 기간을 따른다.
+    # 차트 기간은 확인(needs_confirmation) 대상이 **아니다** — 차트는 부가 가치이고,
+    # 해석 결과가 report.chartPeriod 뱃지로 그대로 노출되므로 고지로 갈음한다
+    # (DESIGN-SELLER-PERIOD §7.2 확인/고지 비대칭의 고지 측). 해석 실패는 파이프라인을
+    # 죽이지 않고 chart_period_error 에 담아 chartUnavailable(chart_period_unclear)로
+    # 강등한다 — 보고서는 살린다.
+    chart_period_expr: str = ""
+    chart_from: date | None = None
+    chart_to: date | None = None
+    chart_period_error: str = ""
+    # [#504] 보고서 없이 차트만 원하는 턴 — 워커 팬아웃·보고서·추천을 생략한다.
+    chart_only: bool = False
 
 
 def resolve_plan(
@@ -90,7 +104,8 @@ def resolve_plan(
     """
     if plan.clarification:
         raise ValueError(plan.clarification)
-    if not plan.analyses:
+    if not plan.analyses and not plan.chart_only:
+        # [#504] chart_only 턴은 워커를 쓰지 않으므로 analyses 가 비어도 계획이 성립한다.
         raise ValueError(
             "어떤 분석을 원하시는지 파악하지 못했습니다. 조금 더 구체적으로 알려주세요."
         )
@@ -108,7 +123,29 @@ def resolve_plan(
                 plan.comparison_expr, resolution, max_days=max_days
             ),
         )
-    wants_chart = plan.wants_chart or bool(_CHART_RE.search(question))
+    # [#504] 차트 전용 기간 — 해석 실패는 ValueError 로 전파하지 않는다(보고서를 죽이지
+    # 않고 chartUnavailable 로 강등). 확인 대상도 아니다 — ResolvedPlan 필드 주석 참조.
+    chart_expr = plan.chart_period_expr.strip()
+    chart_from: date | None = None
+    chart_to: date | None = None
+    chart_period_error = ""
+    if chart_expr:
+        try:
+            chart_resolution = seller_period.resolve_period(
+                chart_expr,
+                today=today,
+                recent_default_days=recent_default_days,
+                max_days=max_days,
+            )
+        except ValueError as exc:
+            chart_period_error = str(exc)
+        else:
+            chart_from = chart_resolution.date_from
+            chart_to = chart_resolution.date_to
+            chart_expr = chart_resolution.expr
+    wants_chart = (
+        plan.wants_chart or plan.chart_only or bool(chart_expr) or bool(_CHART_RE.search(question))
+    )
     comparison = resolution.comparison
     return ResolvedPlan(
         analyses=tuple(plan.analyses),
@@ -121,6 +158,11 @@ def resolve_plan(
         comparison_expr=comparison.expr if comparison else "",
         compare_from=comparison.date_from if comparison else None,
         compare_to=comparison.date_to if comparison else None,
+        chart_period_expr=chart_expr,
+        chart_from=chart_from,
+        chart_to=chart_to,
+        chart_period_error=chart_period_error,
+        chart_only=plan.chart_only,
     )
 
 
@@ -323,6 +365,7 @@ def compose_response(
     charts: ChartSet | None = None,
     *,
     chart_requested: bool = False,
+    chart_unavailable: Sequence[object] = (),
 ) -> str:
     """검증된 보고서 + 추천(+ 차트 안내)을 최종 응답 텍스트로 조립한다.
 
@@ -331,11 +374,14 @@ def compose_response(
     한 줄 덧붙임) — 억지 추천 금지(RECOMMEND_PROMPT)와 짝.
 
     charts/chart_requested 는 이슈 #242 D-5 4자 확장 — 차트 자체는 텍스트에
-    담기지 않는다(SSE `chart` 이벤트가 별도로 나간다, api/seller.py). 여기서는
-    "차트를 명시 요청했는데 만들지 못한 경우"만 안내 한 줄을 덧붙인다 — charts
-    가 None(미요청)이면 기존과 동일하게 무언급이고, chart_requested=True 인데
-    charts 가 비었으면(graph 실패·G1 전건 드랍) 그 경우만 알려준다(요청 없음과
-    구분이 안 되면 사용자가 "왜 차트가 없지" 라고 오해한다).
+    담기지 않는다(`report` 이벤트 charts[] 로 별도 직렬화, api/seller.py). 여기서는
+    "차트를 요청했는데 만들지 못한 경우"만 안내를 덧붙인다.
+
+    [#504] chart_unavailable 은 charts.ChartUnavailable 목록(구조적 타이핑 — 이 모듈은
+    순수 계약이라 charts.py 를 import 하지 않는다). 사유가 있으면 그 완성 문장을 그대로
+    싣고(원인을 아는데 뭉개면 오보), 없으면 종전처럼 일반 안내 한 줄이다 — 단 구
+    "데이터 부족으로 생략합니다" 단정은 뺐다(원인을 모르는 상태에서 특정 원인을
+    말하던 문장). 부분 성공(charts 도 있고 사유도 있음)에도 사유는 싣는다.
     """
     items = recommendations.recommendations
     if not items:
@@ -356,8 +402,12 @@ def compose_response(
         lines.append(APPLY_GUIDE)
         text = "\n".join(lines)
 
-    if chart_requested and (charts is None or not charts.charts):
-        text = f"{text}\n\n[차트 안내]\n요청하신 차트를 만들지 못했습니다 — 데이터 부족으로 생략합니다."
+    notes = [str(getattr(item, "message", "")) for item in chart_unavailable]
+    notes = [note for note in notes if note]
+    if notes:
+        text = f"{text}\n\n[차트 안내]\n" + "\n".join(notes)
+    elif chart_requested and (charts is None or not charts.charts):
+        text = f"{text}\n\n[차트 안내]\n요청하신 차트를 만들지 못했습니다."
     return text
 
 

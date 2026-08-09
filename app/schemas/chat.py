@@ -410,7 +410,7 @@ class BuyerChatRequest(ChatRequest):
 class ProgressData(CamelModel):
     """`progress` 이벤트 페이로드 (api-spec §3.1 (1), 이슈 #289 — 계약 등재 2026-08-05
     / 다회 emit·어휘 확장 이슈 #396 — api-spec §3.1 v0.27.0
-    / retrying 추가 이슈 #406 — api-spec §3.1 v0.29.6).
+    / retrying 추가 이슈 #406 — api-spec §3.1 v0.30.1).
 
     stage 확정 어휘는 8종(`analyzing`·`mapping`·`expanding`·`searching`·`retrying`·`relaxing`·
     `reranking`·`publishing`)이며 개방형(open set) — FE 는 모르는 값을 무시하고 오류로 다루지
