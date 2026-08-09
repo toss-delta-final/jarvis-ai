@@ -99,6 +99,48 @@ def test_first_token_contribution_excludes_post_sse_chip_probe_time():
     assert result["first_token"]["eligible"]["p50"] == 120.0
 
 
+def test_rare_rescue_contributions_report_conditional_tail_and_exposure_not_only_diluted_percentiles():
+    result = aggregate_rescue_chain.aggregate_lines(
+        [_line("recommend_pipeline") for _ in range(995)]
+        + [
+            _line("recommend_pipeline", rescue_elapsed_ms=value)
+            for value in (8_500, 8_800, 9_000, 9_300, 9_600)
+        ]
+    )
+
+    first_token = result["first_token"]
+    assert first_token["eligible"]["p95"] == 0.0
+    assert first_token["contributing"] == {"n": 5, "p50": 9_000.0, "p95": 9_600.0, "p99": 9_600.0}
+    assert first_token["exposure"] == {"count": 5, "rate": 0.005}
+    assert first_token["baseline_or_higher_count"] == 3
+    assert first_token["timeout_or_higher_count"] == 0
+    assert first_token["max"] == 9_600.0
+
+    markdown = aggregate_rescue_chain.render_markdown(result, _settings())
+    assert "| 구제 기여 > 0 (조건부) | 5 | 9000 | 9600 | 9600 |" in markdown
+    assert "9.0s 기준선 이상 3건" in markdown
+    assert "9.0s 기준선 근접·도달" in markdown
+    csv_rows = aggregate_rescue_chain._csv_rows(result, _settings(), min_samples=3)
+    assert ("first_token", "contributing", "timeout_or_higher_count", 0) in csv_rows
+
+
+@pytest.mark.parametrize(
+    ("values", "expected"),
+    [
+        ([8_999, 8_999, 8_999], "9.0s 기준선 미만"),
+        ([9_000, 9_000, 9_000], "9.0s 기준선 근접·도달"),
+        ([10_000, 10_000, 10_000], "first-token 상한 도달·초과"),
+        ([10_001, 10_001, 10_001], "first-token 상한 도달·초과"),
+    ],
+)
+def test_proximity_covers_baseline_and_timeout_boundaries(values, expected):
+    result = aggregate_rescue_chain.aggregate_lines(
+        [_line("recommend_pipeline", rescue_elapsed_ms=value) for value in values]
+    )
+
+    assert expected in aggregate_rescue_chain.render_markdown(result, _settings())
+
+
 def test_missing_null_and_invalid_metrics_are_excluded_and_counted():
     result = aggregate_rescue_chain.aggregate_lines(
         [
@@ -161,6 +203,34 @@ def test_cli_writes_markdown_and_csv_with_empty_missing_values(tmp_path, capsys)
     assert ["first_token", "may_auto_relax_true", "p95", ""] in rows
     assert "표본 부족(0/" in markdown
     assert capsys.readouterr().out == ""
+
+
+def test_cli_min_samples_override_controls_rescue_report_hold(tmp_path):
+    log_path = tmp_path / "rescue.log"
+    markdown_path = tmp_path / "report.md"
+    log_path.write_text(
+        _line("recommend_pipeline", rescue_elapsed_ms=9_000) + "\n", encoding="utf-8"
+    )
+
+    assert (
+        aggregate_rescue_chain.main(
+            [str(log_path), "--markdown", str(markdown_path), "--min-samples", "1"]
+        )
+        == 0
+    )
+
+    assert "9.0s 기준선 근접·도달" in markdown_path.read_text(encoding="utf-8")
+
+
+def test_llm_head_baseline_is_the_documented_section_four_point_one_reference():
+    result = aggregate_rescue_chain.aggregate_lines(
+        [_line("recommend_pipeline", rescue_elapsed_ms=9_000) for _ in range(3)]
+    )
+
+    assert aggregate_rescue_chain.DECOMPOSE_LLM_HEAD_P95_MS == 3_000
+    assert "선행 LLM head 포함 기준선 12.0s" in aggregate_rescue_chain.render_markdown(
+        result, _settings()
+    )
 
 
 @pytest.mark.asyncio

@@ -22,6 +22,8 @@ from scripts.aggregate_observability import percentile
 
 
 RESCUE_EVENTS = ("recommend_zero_result", "recommend_pipeline")
+# #151의 decompose LLM head p95≈3.0s — MEASURE-FIRST-TOKEN-363 §4.1의 비교 기준이다.
+DECOMPOSE_LLM_HEAD_P95_MS = 3_000
 ZERO_RESULT_FIELDS = frozenset(
     {
         "had_candidates",
@@ -123,6 +125,11 @@ def aggregate_lines(lines: Iterable[str]) -> dict[str, Any]:
         else:
             not_delayed_values.append(value)
 
+    contributing_values = [value for value in eligible_values if value > 0]
+    settings = get_settings()
+    baseline_ms = settings.spring_search_timeout_s * 3 * 1000
+    timeout_ms = settings.stream_first_token_timeout_s * 1000
+
     chat_records = [record for record in records if record.get("event") == "chat_request"]
     timeout_count = sum(record.get("errorType") == "UPSTREAM_TIMEOUT" for record in chat_records)
     post_suppress_count = sum(
@@ -139,6 +146,11 @@ def aggregate_lines(lines: Iterable[str]) -> dict[str, Any]:
         "rescue_records": rescue_records,
         "first_token": {
             "eligible": _stats(eligible_values),
+            "contributing": _stats(contributing_values),
+            "exposure": _rate(len(contributing_values), len(eligible_values)),
+            "baseline_or_higher_count": sum(value >= baseline_ms for value in contributing_values),
+            "timeout_or_higher_count": sum(value >= timeout_ms for value in contributing_values),
+            "max": max(contributing_values) if contributing_values else None,
             "not_delayed": _stats(not_delayed_values),
             "excluded_invalid": excluded_invalid,
             "event_counts": {
@@ -184,29 +196,45 @@ def _rate_display(value: float | None, n: int, min_samples: int) -> str:
 
 
 def _proximity(
-    p95: float | None, baseline_ms: float, timeout_ms: float, min_samples: int, n: int
+    contributing: dict[str, int | float | None],
+    baseline_ms: float,
+    timeout_ms: float,
+    min_samples: int,
+    eligible_n: int,
+    baseline_or_higher_count: int,
+    timeout_or_higher_count: int,
 ) -> str:
-    """기준선·상한에 대한 p95 근접도를 표본 하한과 함께 판단한다."""
-    if n < min_samples:
+    """조건부 분포와 임계 초과 건수로 근접도를 판단한다."""
+    if eligible_n < min_samples:
         return "표본 부족 — 판정 보류"
-    if p95 is None:
-        return "표본 부족 — 판정 보류"
-    if p95 > timeout_ms:
-        return "first-token 상한 초과"
+    if timeout_or_higher_count:
+        return "first-token 상한 도달·초과"
+    if baseline_or_higher_count:
+        return f"{baseline_ms / 1000:.1f}s 기준선 근접·도달"
+    p95 = contributing["p95"]
+    if contributing["n"] == 0:
+        return "구제 기여 없음"
+    if not isinstance(p95, float):
+        return "조건부 표본 부족 — 판정 보류"
+    if p95 >= timeout_ms:
+        return "first-token 상한 도달·초과"
     if p95 >= baseline_ms:
         return f"{baseline_ms / 1000:.1f}s 기준선 근접·도달"
     return f"{baseline_ms / 1000:.1f}s 기준선 미만"
 
 
-def render_markdown(result: dict[str, Any], settings: Any) -> str:
+def render_markdown(
+    result: dict[str, Any], settings: Any, *, min_samples: int | None = None
+) -> str:
     """분자·분모·결측 규약을 포함한 Markdown 보고서를 렌더링한다."""
     first_token = result["first_token"]
     eligible = first_token["eligible"]
     not_delayed = first_token["not_delayed"]
-    min_samples = settings.degrade_alert_min_samples
+    # 별도 구제 체인 설정은 추가하지 않는다. 기본값만 기존 degrade 알림 하한을 빌리고 CLI에서 덮는다.
+    min_samples = settings.degrade_alert_min_samples if min_samples is None else min_samples
     timeout_ms = settings.stream_first_token_timeout_s * 1000
     baseline_ms = settings.spring_search_timeout_s * 3 * 1000
-    llm_head_baseline_ms = baseline_ms + 3000
+    llm_head_baseline_ms = baseline_ms + DECOMPOSE_LLM_HEAD_P95_MS
     lines = [
         "# 구제 체인 실측 집계",
         "",
@@ -223,12 +251,14 @@ def render_markdown(result: dict[str, Any], settings: Any) -> str:
         "분자: `rescue_elapsed_ms + relax_auto_elapsed_ms` (칩 probe는 first SSE 이후라 제외).  ",
         "분모: `recommend_zero_result ∪ recommend_pipeline` 중 `may_auto_relax=True`인 턴.",
         "",
-        "| 그룹 | n | p50(ms) | p95(ms) | p99(ms) | 근접도 |",
-        "|---|---:|---:|---:|---:|---|",
-        f"| may_auto_relax=True | {eligible['n']} | {_display(eligible['p50'])} | {_display(eligible['p95'])} | {_display(eligible['p99'])} | {_proximity(eligible['p95'], baseline_ms, timeout_ms, min_samples, eligible['n'])} |",
-        f"| may_auto_relax=False (별도, first-token 비기여) | {not_delayed['n']} | {_display(not_delayed['p50'])} | {_display(not_delayed['p95'])} | {_display(not_delayed['p99'])} | 분모에서 제외 |",
+        "| 그룹 | n | p50(ms) | p95(ms) | p99(ms) | 상한 소모율 | 근접도 |",
+        "|---|---:|---:|---:|---:|---:|---|",
+        f"| may_auto_relax=True (빈도 가중) | {eligible['n']} | {_display(eligible['p50'])} | {_display(eligible['p95'])} | {_display(eligible['p99'])} | {_percent(eligible['p95'] / timeout_ms if eligible['p95'] is not None else None)} | {_proximity(first_token['contributing'], baseline_ms, timeout_ms, min_samples, eligible['n'], first_token['baseline_or_higher_count'], first_token['timeout_or_higher_count'])} |",
+        f"| 구제 기여 > 0 (조건부) | {first_token['contributing']['n']} | {_display(first_token['contributing']['p50'])} | {_display(first_token['contributing']['p95'])} | {_display(first_token['contributing']['p99'])} | {_percent(first_token['contributing']['p95'] / timeout_ms if first_token['contributing']['p95'] is not None else None)} | 실제 진입 턴 분포 |",
+        f"| may_auto_relax=False (별도, first-token 비기여) | {not_delayed['n']} | {_display(not_delayed['p50'])} | {_display(not_delayed['p95'])} | {_display(not_delayed['p99'])} | - | 분모에서 제외 |",
         "",
         f"> 이벤트별 합집합 내역: zero_result {first_token['event_counts']['recommend_zero_result']}건 / pipeline {first_token['event_counts']['recommend_pipeline']}건. 결측·형식 오류 제외 | {first_token['excluded_invalid']}건.",
+        f"> 노출 규모: 구제 기여 > 0은 {first_token['exposure']['count']} / {eligible['n']} ({_percent(first_token['exposure']['rate'])}); {baseline_ms / 1000:.1f}s 기준선 이상 {first_token['baseline_or_higher_count']}건, {timeout_ms / 1000:.1f}s 상한 이상 {first_token['timeout_or_higher_count']}건, 최댓값 {_display(first_token['max'])}ms.",
         f"> 비교 기준: 구제 3단 기준선 {baseline_ms / 1000:.1f}s, 선행 LLM head 포함 기준선 {llm_head_baseline_ms / 1000:.1f}s, 설정 first-token 상한 {timeout_ms / 1000:.1f}s. {_sample_text(eligible['n'], min_samples)}.",
         "",
         "## 체인 진입 빈도",
@@ -249,13 +279,16 @@ def render_markdown(result: dict[str, Any], settings: Any) -> str:
     return "\n".join(lines)
 
 
-def _csv_rows(result: dict[str, Any], settings: Any) -> list[tuple[str, str, str, object]]:
+def _csv_rows(
+    result: dict[str, Any], settings: Any, min_samples: int
+) -> list[tuple[str, str, str, object]]:
     """Markdown 수치와 같은 long-format CSV 행을 만든다."""
     rows: list[tuple[str, str, str, object]] = []
     for metric in ("total_lines", "accepted_records", "skipped_lines"):
         rows.append(("overview", "all", metric, result[metric]))
     for group, stats in (
         ("may_auto_relax_true", result["first_token"]["eligible"]),
+        ("contributing", result["first_token"]["contributing"]),
         ("may_auto_relax_false", result["first_token"]["not_delayed"]),
     ):
         for metric in ("n", "p50", "p95", "p99"):
@@ -263,6 +296,12 @@ def _csv_rows(result: dict[str, Any], settings: Any) -> list[tuple[str, str, str
     rows.append(
         ("first_token", "all", "excluded_invalid", result["first_token"]["excluded_invalid"])
     )
+    rows.extend(
+        ("first_token", "contributing", metric, result["first_token"]["exposure"][metric])
+        for metric in ("count", "rate")
+    )
+    for metric in ("baseline_or_higher_count", "timeout_or_higher_count", "max"):
+        rows.append(("first_token", "contributing", metric, result["first_token"][metric]))
     for metric, stats in result["chain_entry"].items():
         if metric == "zero_result_turns":
             rows.append(("chain_entry", "zero_result", metric, stats))
@@ -286,7 +325,7 @@ def _csv_rows(result: dict[str, Any], settings: Any) -> list[tuple[str, str, str
                 "timeout_ms",
                 settings.stream_first_token_timeout_s * 1000,
             ),
-            ("threshold", "first_token", "min_samples", settings.degrade_alert_min_samples),
+            ("threshold", "first_token", "min_samples", min_samples),
         ]
     )
     return rows
@@ -320,6 +359,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("logfiles", metavar="LOGFILE", nargs="*")
     parser.add_argument("--markdown", type=Path)
     parser.add_argument("--csv", type=Path)
+    parser.add_argument("--min-samples", type=int)
     return parser
 
 
@@ -331,14 +371,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         return int(exc.code)
     try:
         settings = get_settings()
+        min_samples = (
+            settings.degrade_alert_min_samples if args.min_samples is None else args.min_samples
+        )
+        if min_samples < 0:
+            print("오류: 최소 표본은 0 이상이어야 합니다.", file=sys.stderr)
+            return 2
         result = aggregate_lines(_read_lines(args.logfiles))
-        markdown = render_markdown(result, settings)
+        markdown = render_markdown(result, settings, min_samples=min_samples)
         if args.markdown is None:
             print(markdown, end="")
         else:
             args.markdown.write_text(markdown, encoding="utf-8")
         if args.csv is not None:
-            _write_csv(args.csv, _csv_rows(result, settings))
+            _write_csv(args.csv, _csv_rows(result, settings, min_samples))
     except (OSError, UnicodeError) as exc:
         print(f"오류: 로그 또는 출력 파일을 처리할 수 없습니다: {exc}", file=sys.stderr)
         return 2

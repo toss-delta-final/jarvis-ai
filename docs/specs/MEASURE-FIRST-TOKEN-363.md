@@ -315,10 +315,15 @@ uv run python scripts/aggregate_rescue_chain.py LOGFILE ... --markdown rescue-ch
 결과는 이 문서의 후속 실측 절에 운영 날짜·로그 범위·표본 수와 함께 기록한다. 1급 지표의 모집단은
 `recommend_zero_result ∪ recommend_pipeline`이고, 분모는 그중 `may_auto_relax=True`인 턴이다.
 분자는 `rescue_elapsed_ms + relax_auto_elapsed_ms`이며 first SSE 뒤의
-`relax_chip_elapsed_ms`는 제외한다. p50/p95/p99와 n, zero_result/pipeline 이벤트별 n을 함께 보고하고,
-`may_auto_relax=False` 턴은 first-token 비기여 별도 그룹으로 남긴다. 9.0s(선행 LLM head 포함 시
-12.0s) 기준선과 `stream_first_token_timeout_s` 상한에 대한 근접도는 설정값을 읽어 판정하며, 최소
-표본에 못 미치면 수치 결론 대신 "표본 부족 — 판정 보류"를 낸다.
+`relax_chip_elapsed_ms`는 제외한다. 빈도 가중 p50/p95/p99와 n, zero_result/pipeline 이벤트별 n을
+함께 보고하고, `may_auto_relax=False` 턴은 first-token 비기여 별도 그룹으로 남긴다. 다만
+`recommend_pipeline`은 구제 미진입 성공 턴도 남기므로 0ms가 빈도 가중 분위수를 희석할 수 있다.
+그래서 `구제 기여 > 0`인 턴만의 조건부 p50/p95/p99·n, 그 n/전체 분모의 노출률, 9.0s 기준선 이상
+턴 수, `stream_first_token_timeout_s` 상한 이상 턴 수, 최댓값을 반드시 함께 읽는다. 근접도는
+희석된 전체 p95 하나가 아니라 이 조건부 분포와 임계 초과 건수로 판정하고, p95/상한의 소모율도
+기록한다. 최소 표본 기본값은 기존 `degrade_alert_min_samples`를 **빌린 값**이며(새 설정 추가 없음),
+운영자는 `--min-samples`로 이 보고서 실행마다 덮어쓸 수 있다. 최소 표본에 못 미치면 수치 결론 대신
+"표본 부족 — 판정 보류"를 낸다.
 
 체인 진입 빈도는 `recommend_zero_result`만을 분모로
 `post_suppress_fallback_attempted=True`, `category_expanded=True and had_candidates=True` 비율을 낸다.
