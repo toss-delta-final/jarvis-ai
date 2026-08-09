@@ -25,7 +25,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from app.schemas.recommendations import LIMIT_MAX as HOME_RECO_LIMIT_MAX
 from app.schemas.spring import LIST_MAX_PRODUCTS, MAX_LISTS
 
-LLMProvider = Literal["openai", "anthropic"]
+LLMProvider = Literal["openai", "anthropic", "scripted"]
 # 검색 백엔드 선택(#101) — spring: Spring 위임만(방식1 이전 MVP, 운영 롤백), embedding_rerank:
 # Spring 전량 → pgvector 의미 재정렬(방식2, MVP 기본), vector: 방식1 오프라인 비교 전용
 # (운영 사용 금지, #32 미채택, C-17 기각).
@@ -282,9 +282,12 @@ class Settings(BaseSettings):
             return cls.model_fields[info.field_name].default
         return value
 
-    # ── LLM provider 토글 (이슈 #40) ──
-    # "openai"(기본) | "anthropic". 호출부는 tier("fast"|"smart")로 부르고 provider 가 모델을 해석한다.
-    # 실행 오버라이드: .env / OS 환경변수 LLM_PROVIDER 가 이 기본값을 덮는다(pydantic-settings).
+    # ── LLM provider 토글 (이슈 #40, #438) ──
+    # "openai"(기본) | "anthropic" | "scripted". 호출부는 tier("fast"|"smart")로 부르고 provider 가
+    # 모델을 해석한다. 실행 오버라이드: .env / OS 환경변수 LLM_PROVIDER 가 이 기본값을 덮는다(pydantic-settings).
+    # "scripted"(#438): 결정론 스텁(app/core/llm_scripted.py::LoadTestLLM)으로 실 LLM 호출을 대신해
+    # 부하 테스트를 비용 없이 돌린다. local/test 환경에서만 허용 — 아래 _forbid_scripted_outside_local
+    # 이 그 밖의 환경에서 기동을 막는다.
     llm_provider: LLMProvider = "openai"
 
     # ── Anthropic 2-tier LLM (fast=haiku / smart=sonnet) ──
@@ -1837,6 +1840,29 @@ class Settings(BaseSettings):
     def _normalize_llm_provider(cls, value: object) -> object:
         """기존 환경변수 호환을 위해 provider 값의 ASCII 대소문자를 정규화한다."""
         return value.lower() if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def _forbid_scripted_outside_local(self) -> "Settings":
+        """G1(#438): `llm_provider=scripted` 는 local/test 밖에서 기동 자체를 막는다.
+
+        스텁이 켜진 채 뜨면 사용자에게 **정상 200 으로 가짜 응답**이 나간다 — 이건 오류가
+        아니라 조용한 degrade다(#401 과 같은 실패 성질). #401 의 사전 가드가 기본 `log`(경고만,
+        기동은 허용)인 것과 판단이 갈리는 이유는 **오탐 가능성**이다: #401 은 DB 도달 불가를
+        구성 오류와 구분할 수 없어 오탐이 정상 서비스를 죽일 수 있지만, 여기서는 "운영에서
+        provider=scripted" 가 오탐일 수 없다(설정값이 곧 사실이다). 하방(local·test 밖에서는
+        스텁이 필요 없다)이 유계이므로 `fail` 이 적정하다.
+        staging 도 거부한다 — staging 에는 실 FE 가 붙을 수 있다(`tests/unit/test_progress_event.py`
+        R5-1 이 그 전제를 명시한다). 무료 부하 측정은 로컬 타깃으로 한다.
+        """
+        if self.llm_provider == "scripted" and self.app_environment not in ("local", "test"):
+            raise ValueError(
+                "LLM_PROVIDER=scripted is only allowed when APP_ENVIRONMENT is 'local' or "
+                f"'test' (got {self.app_environment!r}). Scripted responses are deterministic "
+                "fakes, not real LLM output — running them outside local/test would silently "
+                "serve fake 200 OK answers to real users. Fix: unset LLM_PROVIDER (defaults to "
+                "openai) or set it to 'openai'/'anthropic' for this environment."
+            )
+        return self
 
     @model_validator(mode="after")
     def _require_valid_benchmark_settings(self) -> "Settings":

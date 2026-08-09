@@ -13,6 +13,28 @@
 
 ---
 
+## [2026-08-08] `ruff format` 을 인자 없이 돌려 무관한 파일 30개가 diff 에 딸려 왔다
+- 증상: #438 작업 중 `CLAUDE.md` "자동 정리: `uv run ruff check --fix && uv run ruff format`" 을
+  문자 그대로 인자 없이(= 저장소 전체 대상) 돌렸더니, 이번 이슈와 무관한 파일 30개가 순수 포맷
+  변경으로 딸려 들어왔다 — `data-analysis/generate_dummy.py` 만 +1189줄,
+  `docs/research/research-275-harness/*`·`evals/ablation/*`·`evals/scoring/*`·여러
+  `tests/unit/test_*.py`·`.github/scripts/review_mode.py`. `git status --porcelain` 으로 발견해
+  `git checkout --` 로 그 파일들만 원복했다.
+- 원인: 저장소에 **사전 존재하던 포맷 드리프트**다. CI 와 pre-commit 훅이 실제로 강제하는 것은
+  다르다 — CI 는 `ruff check` 만 돌고(`ruff format --check` 는 안 돈다), pre-commit 의
+  `ruff-format` 훅은 **스테이징된 파일에만** 걸린다. 그래서 한 번도 커밋 경로를 타지 않은
+  파일들(분석 스크립트·연구 하네스 등)은 포맷되지 않은 채로 남아 있고, 그 상태에서 전체
+  `ruff format` 을 돌리면 무관한 파일이 한꺼번에 재포맷된다. `CLAUDE.md` 의 문구를 그대로
+  따르면 누구나 이걸 밟는다.
+- 왜 나쁜가: 한 커밋 = 한 논리 단위 규약이 깨지고, 리뷰어가 실제 변경을 포맷 노이즈 속에서
+  찾아야 하며, 무관한 파일을 건드려 다른 레인과 충돌할 수 있다.
+- 규칙: 커밋 전 자동 정리는 **이번에 실제로 고친 파일에만 스코프를 좁혀** 건다
+  (`uv run ruff format <파일들>`). 전체 대상 `ruff format` 은 "포맷 드리프트 정리" 를 목적으로
+  하는 **별도 PR** 에서만 돌린다. 돌렸다면 `git status --porcelain` 으로 의도 밖 파일이 없는지
+  반드시 확인하고, 있으면 `git checkout --` 로 되돌린 뒤 커밋한다. (`uv run ruff check` 는
+  전체로 돌려도 안전하다 — 이번 사고는 `format` 쪽이다.)
+- 관련: #438 · `CLAUDE.md` "커밋 워크플로" 2단계 · `.pre-commit-config.yaml`(ruff-format 은
+  스테이징 파일 한정) · `.github/workflows` 의 CI 는 `ruff check` 만 실행
 ## [2026-08-08] TTL 만료를 엄격 부등호로 재면 판정이 시계 분해능에 걸린다 (리눅스만 통과)
 - 증상: `period_confirm.load_pending` 의 TTL 테스트(`test_pending_expires_after_ttl`, ttl=0)가
   **리눅스 CI 에서는 늘 통과하는데 Windows 로컬에서 실패**했다 — 만료됐어야 할 대기가
