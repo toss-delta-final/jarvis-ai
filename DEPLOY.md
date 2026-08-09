@@ -44,6 +44,33 @@ docker run -p 8000:8000 --env-file deploy.env jarvis-ai:dev
 
 **선택 (기본값 있음):** 상태저장 타임아웃/풀(`STATE_STORE_*`), 배치 주기(`CATALOG_BATCH_INTERVAL_S`=300), 검색·추천 튜너블(`TOP_K`·`EXPOSE_*`·`LLM_CALL_LIMIT` 등), 프로필 튜너블(`PROFILE_*`).
 
+**조건부 주입 손잡이 4종 (이슈 #437/#532)** — `deploy.yml` 이 이 네 키를 다른 19+개 키와
+**똑같이 quoted heredoc(`cat << 'ENVEOF'`) 안에 데이터로만** 써서 `ENV_FILE` 을 만든 뒤,
+heredoc 뒤에서 값이 비었거나 공백뿐인 줄만 `sed` 로 지운다(`.github/workflows/deploy.yml`
+3b 단계) — **Variable 을 등록하지 않았거나 빈/공백뿐인 값을 등록하면 그 줄 자체가 env 파일에
+남지 않고, 앱은 코드 기본값을 그대로 쓴다.** Variable 값은 heredoc 안의 데이터로만 쓰이므로
+따옴표·공백이 섞여도 셸이 재해석하지 않는다 — **Variable 값을 실행되는 셸 문장에 직접
+스플라이스하지 않는다**는 것이 이 방식의 핵심이다(값에 작은따옴표가 든 Variable 을 셸 문장에
+바로 이어붙이면 원격 코드 실행으로 이어질 수 있다는 것이 PR #539 리뷰로 드러났다). 무조건
+`KEY=${{ vars.X }}` 로만 쓰면 미등록 시 빈 문자열이 되는데, 아래 `SPRING_MAX_RETRIES`(int)·
+`RESCUE_BUDGET_MODE`(Literal)는 빈 문자열 파싱에 기동이 죽으므로 sed 로 그 줄 자체를 지운다.
+
+| 키 | 타입·허용값 | 미등록 시 |
+|---|---|---|
+| `MODEL_PRICE_IN_PER_1K` / `MODEL_PRICE_OUT_PER_1K` | `{"모델ID": USD/1,000tokens}` JSON 오브젝트 문자열. **표 전체를 치환**한다(기본표와 병합하지 않는다). | `app/core/model_pricing.py` 코드 기본표(`gpt-5-nano`/`gpt-5.6-luna`, 출처·기준일은 `evals/model_eval/pricing_manifest.json` 과 동일). `chat_request` 로그 `costUsd` 가 이 표로 집계된다(기동 로그 `MODEL_PRICE_DEFAULTS_IN_USE`/`MODEL_PRICE_MISSING_AT_STARTUP` 로 상태 확인). |
+| `SPRING_MAX_RETRIES` | 정수, `0`~`1`. | 코드 기본값 `1`(PR #532/#406 — #394 원복). |
+| `RESCUE_BUDGET_MODE` | `observe` \| `narrow` \| `narrow_skip`. | 코드 기본값 `narrow`. |
+
+**롤백 절차 — `PROGRESS_EVENTS_ENABLED=false` 는 이제 단독으로 기동하지 못한다.** `SPRING_MAX_RETRIES`
+기본값이 `0`→`1`로 바뀐 뒤로는, `progress_events_enabled=False`(미룬 턴 직렬 I-1 3회 12.0s)
+와 `spring_max_retries=1`(재시도 포함 직렬 합이 더 커짐)을 함께 두면 `STREAM_FIRST_TOKEN_TIMEOUT_S`
+가드가 기동 자체를 거부한다 — `tests/unit/test_progress_event.py::
+test_progress_events_disabled_rejects_startup_with_retries_enabled` 가 `ValidationError`
+(메시지에 `STREAM_FIRST_TOKEN_TIMEOUT_S` 포함)로 이 사실을 고정한다. **`PROGRESS_EVENTS_ENABLED=false`
+로 되돌리려면 반드시 `SPRING_MAX_RETRIES=0` 을 함께 지정하라.** 같은 이유로 `RESCUE_BUDGET_MODE=observe`
+로 되돌릴 때도 `SPRING_MAX_RETRIES=0` 을 짝으로 지정해야 한다(직렬 합 18.0s 가 `observe` 의
+꼬리 예약 비교를 넘기지 못하도록).
+
 ## 3. ⚠️ 시크릿 — repo에 실제 값은 없다
 
 repo에는 **키 목록(`.env.example`)만** 있고 실제 시크릿은 없다(커밋 금지). 배포 환경용으로 준비:
