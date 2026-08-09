@@ -10,6 +10,17 @@
 ## [Unreleased]
 
 ### Added
+- **#484 — Tier L 이 케이스별 프로필을 받는다. 그전까지는 dev 전 케이스에 고정 프로필 하나를
+  먹이고 있었다** (평가 하네스 한정, api-spec 무개정). Tier D 는 케이스별 구조화 선호를
+  파생하지만 Tier L 은 서빙과 같은 마크다운을 소비하는데 그 변환기가 없어, `profiles.json` 의
+  "Sony 이어폰 / 3~5만원" 한 개가 라면·립스틱 질의에도 그대로 들어갔다. 즉 `live-v1` 의
+  `clean_rerank_only ΔnDCG@10 = −0.056445` 는 개인화의 손해가 아니라 **무관한 프로필의 손해**를
+  잰 값이다. 구조화 선호 → §5.1 3섹션 마크다운 결정론 렌더러(`render_profile_markdown`,
+  강/중/약을 자연어로만 노출·상한은 생성측 압축)를 신설하고 `clean_rerank_only`·`clean_both`
+  를 갈아끼웠다. 옛 방식은 `clean_fixed` arm(옵트인, 기본 arm 목록 밖)으로 남겨 같은 실행 안에서
+  대조할 수 있게 했고, 선호가 비는 35/109건을 가르는 `profile_signal` 슬라이스와
+  `run_manifest.json` 의 `profileMarkdownRenderVersion` 을 함께 실었다. **실측은 병합 후 별도
+  live 실행이 필요하다** — 이 변경만으로는 새 수치가 나오지 않는다.
 - **#506 — 이미지 기반 상품 등록 초안** (api-spec §3.2, v0.31.0 — 추가 전용, 기존 op 와이어
   불변). 판매자가 채팅에 상품 사진을 첨부하면(`imageUrls`, 새로 첨부한 턴에만) vision 이 1회
   분석해 등록 초안(`draft{op:"create"}`)을 만들고, FE 등록 미리보기 카드용 **`preview{}`**(11키

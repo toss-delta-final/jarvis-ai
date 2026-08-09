@@ -23,6 +23,24 @@
 
 ---
 
+## [2026-08-09] `asyncio.run` 을 타는 유닛 테스트는 Windows 에서만 TCP 차단에 걸린다
+- 증상: `tests/unit/test_personalization_scope.py::test_live_wrapper_routes_profile_for_all_scopes`
+  가 로컬(Windows)에서만 `ConnectionRefusedError: unit tests must not open live TCP connections`
+  로 실패한다. httpx 는 `MockTransport` 라 실제 요청이 없는데도 그렇다. 같은 코드가 CI 는 통과한다.
+- 원인: `LiveBuyerAdapter.__call__` 이 `asyncio.run` 을 쓰는데, Windows 기본 루프인
+  `ProactorEventLoop` 는 self-pipe 를 **TCP 루프백 socketpair** 로 만든다. `tests/unit/conftest.py`
+  의 `_TcpRefusingSocket` 이 AF_INET `connect` 를 전부 거부하므로 루프 생성 자체가 죽는다
+  (뒤따르는 `AttributeError: 'ProactorEventLoop' object has no attribute '_ssock'` 이 그 흔적).
+  POSIX 는 AF_UNIX socketpair 라 같은 가드에 걸리지 않는다 — 그래서 OS 별로 갈린다.
+- 규칙: 유닛 테스트에서 **주입·배선 경로만** 검증할 거면 `asyncio.run` 을 타는 실행기를 통째로
+  부르지 말고 경계 함수(여기서는 `profile_for_scope`)의 입력을 가로채고 내부 어댑터는 대역으로
+  바꾼다. 로컬 실패를 보고 "환경 탓"으로 넘기기 전에 **변경 전 baseline 에서도 같은 실패가
+  나는지** 먼저 확인한다(`git stash push -u -m <고유태그>` → 확인 → `git stash apply <sha>` → drop).
+- 관련: `tests/unit/conftest.py:23-36`, `evals/model_eval/adapter.py::LiveBuyerAdapter.__call__`,
+  `tests/unit/test_personalization_scope.py::_resolved_markdowns` (#484)
+
+---
+
 ## [2026-08-09] 계약 어휘 동기화의 완료 조건은 "신규 값 등장"이 아니라 "구 값 0건"이다
 - 증상: BE 가 `ProductStatus.DELETED` 를 신설했는데, #472 사본 동기화가 api-spec §4.5 **표**를
   정본에 맞춘 뒤 §4.5 를 "확정·구현 완료"로 표시했다. 실제로는 §3.2 산문이 `status=HIDDEN` 으로
