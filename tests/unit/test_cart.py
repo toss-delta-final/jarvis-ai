@@ -864,6 +864,77 @@ async def test_route_wishlist_add_unresolved_notice_reflects_has_last_reco() -> 
     )
 
 
+@pytest.mark.parametrize(
+    ("intent", "message", "expected"),
+    [
+        (
+            "cart_add",
+            "음... 아무거나",
+            "어떤 상품을 담을까요? 추천 목록 전달에 문제가 있었어요. 다시 추천을 요청해 주시면 도와드릴게요.",
+        ),
+        (
+            "wishlist_add",
+            "음... 아무거나 찜해줘",
+            "어떤 상품을 찜할까요? 추천 목록 전달에 문제가 있었어요. 다시 추천을 요청해 주시면 도와드릴게요.",
+        ),
+    ],
+)
+async def test_unresolved_add_after_push_failure_asks_for_a_new_recommendation(
+    intent: str, message: str, expected: str
+) -> None:
+    """[#468 I-21] push 실패 뒤에는 "추천을 먼저"라는 거짓 전제가 아닌 재요청 안내를 낸다.
+
+    `has_push_failed`를 문구 함수로 넘기지 않거나 기본 문구를 유지하면 이 테스트가 기존의
+    "추천을 먼저 받아보시면" 문구로 실패한다.
+    """
+    from app.agents.buyer.cart.state import get_cart_store
+    from tests._fakes import FakeLLM
+
+    request = _req(message=message, thread_id=f"t-468-push-failed-{intent}")
+    store = await get_cart_store()
+    key = await _thread_key(request, _member())
+    await store.set_push_failed(key)
+    llm = FakeLLM(decompose={"intent": intent, "cart": {"productId": None, "quantity": 1}})
+
+    events = await _collect(run_buyer_turn(request, _member(), llm=llm))
+
+    text = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert text == expected
+
+
+async def test_last_reco_clears_push_failed_marker_without_breaking_recommendation_state() -> None:
+    """[#468 I-21] 다음 추천 push 성공은 실패 마커를 지워 기존 last_reco 문구가 우선하게 한다."""
+    from app.agents.buyer.cart.state import CartStateStore
+
+    store = CartStateStore()
+    await store.set_push_failed("k")
+    await store.set_last_reco("k", [(101, "이어폰")])
+
+    assert await store.get_push_failed("k") is False
+    assert await store.get_last_reco("k") == [(101, "이어폰")]
+
+
+async def test_push_failed_marker_read_failure_keeps_unresolved_add_turn_alive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#468 I-21] 실패 마커 조회가 깨지면 오늘 기본 문구로 degrade하고 담기 턴은 끝까지 진행한다."""
+    from app.agents.buyer.cart.state import CartStateStore
+    from tests._fakes import FakeLLM
+
+    async def fail_get_push_failed(self, key):  # noqa: ANN001
+        raise RuntimeError("store unavailable")
+
+    monkeypatch.setattr(CartStateStore, "get_push_failed", fail_get_push_failed)
+    request = _req(message="음... 아무거나", thread_id="t-468-push-failed-read")
+    llm = FakeLLM(decompose={"intent": "cart_add", "cart": {"productId": None, "quantity": 1}})
+
+    events = await _collect(run_buyer_turn(request, _member(), llm=llm))
+
+    text = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert text == "어떤 상품을 담을까요? 추천을 먼저 받아보시면 담아드릴게요."
+    assert _types(events)[-1] == "done"
+
+
 async def test_route_wishlist_remove(monkeypatch: pytest.MonkeyPatch) -> None:
     """[라운드 24] decompose 가 직접 wishlist_remove 를 산출하면 stream_wishlist_remove 로 위임된다."""
     from tests._fakes import FakeLLM

@@ -15,7 +15,7 @@ from app.core.config import Settings, get_settings
 from app.schemas.spring import ProductSearchFilters
 
 SCHEMA_VERSION = "2.1.0"
-DATASET_VERSION = "2.2.0"
+DATASET_VERSION = "2.3.0"
 CASE_ID_RE = re.compile(r"^buy-[a-z][a-z0-9_]*-\d{4}$")
 # 니즈 축(신원 아님) — 케이스당 정확히 1개(disjoint, §2.1). guest/member 신원 슬라이스와는 별도 축이다.
 NEEDS_SLICES = frozenset({"single_need", "multi_constraint", "budget", "repurchase"})
@@ -122,7 +122,7 @@ class CaseCore(CamelModel):
 
     case_id: str
     schema_version: Literal["2.1.0"]
-    dataset_version: Literal["2.2.0"]
+    dataset_version: Literal["2.3.0"]
     split: Literal["dev", "holdout"]
     slices: list[str]
     query: str = Field(min_length=1)

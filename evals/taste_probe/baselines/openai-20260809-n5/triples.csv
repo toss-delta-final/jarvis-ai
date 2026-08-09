@@ -1,0 +1,144 @@
+sessionId,sampleIndex,kind,label,nodeId,predicate,verified,method,distance,margin,salience
+conflict-attribute,0,attribute,화려한 디자인,attribute:화려한 디자인,avoids,False,no_vocabulary,,,0.9
+conflict-attribute,1,attribute,화려한 디자인,attribute:화려한 디자인,avoids,False,no_vocabulary,,,0.9
+conflict-attribute,2,attribute,화려한 디자인,attribute:화려한 디자인,avoids,False,no_vocabulary,,,0.9
+conflict-attribute,3,attribute,화려한 디자인,attribute:화려한 디자인,avoids,False,no_vocabulary,,,0.9
+conflict-attribute,4,attribute,화려한 디자인,attribute:화려한 디자인,avoids,False,no_vocabulary,,,0.9
+conflict-brand,0,brand,아디다스,brand:아디다스,avoids,False,no_vocabulary,,,0.95
+conflict-brand,1,brand,아디다스,brand:아디다스,avoids,False,no_vocabulary,,,0.95
+conflict-brand,2,brand,아디다스,brand:아디다스,avoids,False,no_vocabulary,,,0.95
+conflict-brand,3,brand,아디다스,brand:아디다스,avoids,False,no_vocabulary,,,0.95
+conflict-brand,4,brand,아디다스,brand:아디다스,avoids,False,no_vocabulary,,,0.95
+kc-attribute-01,0,attribute,방수 기능,attribute:방수 기능,prefers,False,no_vocabulary,,,0.95
+kc-attribute-01,0,attribute,높은 가격 수용,attribute:높은 가격 수용,prefers,False,no_vocabulary,,,0.7
+kc-attribute-01,1,attribute,방수 기능,attribute:방수 기능,prefers,False,no_vocabulary,,,0.95
+kc-attribute-01,1,attribute,가격 프리미엄 허용,attribute:가격 프리미엄 허용,prefers,False,no_vocabulary,,,0.75
+kc-attribute-01,2,attribute,방수 기능,attribute:방수 기능,prefers,False,no_vocabulary,,,0.9
+kc-attribute-01,2,situation,비 오는 날 사용,situation:비 오는 날 사용,interestedIn,False,no_vocabulary,,,0.8
+kc-attribute-01,2,attribute,높은 가격 수용,attribute:높은 가격 수용,prefers,False,no_vocabulary,,,0.7
+kc-attribute-01,3,attribute,방수 기능,attribute:방수 기능,prefers,False,no_vocabulary,,,0.95
+kc-attribute-01,3,attribute,높은 가격 수용,attribute:높은 가격 수용,prefers,False,no_vocabulary,,,0.8
+kc-attribute-01,4,attribute,방수 기능,attribute:방수 기능,prefers,False,no_vocabulary,,,0.9
+kc-attribute-01,4,attribute,높은 가격 수용,attribute:높은 가격 수용,prefers,False,no_vocabulary,,,0.7
+kc-attribute-02,0,attribute,천연 성분,attribute:천연 성분,prefers,False,no_vocabulary,,,0.9
+kc-attribute-02,0,attribute,저자극,attribute:저자극,prefers,False,no_vocabulary,,,0.8
+kc-attribute-02,0,attribute,약한 향,attribute:약한 향,prefers,False,no_vocabulary,,,0.9
+kc-attribute-02,1,attribute,천연 성분,attribute:천연 성분,prefers,False,no_vocabulary,,,0.9
+kc-attribute-02,1,attribute,약한 향,attribute:약한 향,prefers,False,no_vocabulary,,,0.9
+kc-attribute-02,2,attribute,천연 성분,attribute:천연 성분,prefers,False,no_vocabulary,,,0.9
+kc-attribute-02,2,attribute,저자극,attribute:저자극,prefers,False,no_vocabulary,,,0.85
+kc-attribute-02,2,attribute,약한 향,attribute:약한 향,prefers,False,no_vocabulary,,,0.85
+kc-attribute-02,3,attribute,천연 성분,attribute:천연 성분,prefers,False,no_vocabulary,,,0.9
+kc-attribute-02,3,attribute,저자극,attribute:저자극,prefers,False,no_vocabulary,,,0.8
+kc-attribute-02,3,attribute,약한 향,attribute:약한 향,prefers,False,no_vocabulary,,,0.9
+kc-attribute-02,4,attribute,천연 성분,attribute:천연 성분,prefers,False,no_vocabulary,,,0.85
+kc-attribute-02,4,attribute,저자극,attribute:저자극,prefers,False,no_vocabulary,,,0.75
+kc-attribute-02,4,attribute,은은한 향,attribute:은은한 향,prefers,False,no_vocabulary,,,0.8
+kc-brand-01,0,brand,소니,brand:소니,likes,False,no_vocabulary,,,0.85
+kc-brand-01,1,brand,소니,brand:소니,likes,False,no_vocabulary,,,0.9
+kc-brand-01,2,brand,소니,brand:소니,likes,False,no_vocabulary,,,0.9
+kc-brand-01,3,brand,소니,brand:소니,likes,False,no_vocabulary,,,0.9
+kc-brand-01,4,brand,소니,brand:소니,likes,False,no_vocabulary,,,0.9
+kc-category-02,0,category,커피/생수/음료 > 커피,category:커피/생수/음료 > 커피,likes,True,embedding,0.2519,0.065,0.8
+kc-category-02,0,situation,매일 아침,situation:매일 아침,interestedIn,False,no_vocabulary,,,0.7
+kc-category-02,1,category,커피/생수/음료 > 커피,category:커피/생수/음료 > 커피,likes,True,embedding,0.2519,0.065,0.8
+kc-category-02,1,situation,매일 아침,situation:매일 아침,interestedIn,False,no_vocabulary,,,0.6
+kc-category-02,3,category,커피/생수/음료 > 커피,category:커피/생수/음료 > 커피,likes,True,embedding,0.2519,0.065,0.7
+kc-category-02,3,situation,매일 아침,situation:매일 아침,interestedIn,False,no_vocabulary,,,0.5
+kc-category-02,4,category,커피/생수/음료 > 커피,category:커피/생수/음료 > 커피,likes,True,embedding,0.2519,0.065,0.7
+kc-category-02,4,situation,아침,situation:아침,interestedIn,False,no_vocabulary,,,0.6
+kc-priceBand-01,0,priceBand,30000-50000,priceBand:30000-50000,prefers,True,rule,,,0.9
+kc-priceBand-01,1,priceBand,30000-50000,priceBand:30000-50000,prefers,True,rule,,,0.9
+kc-priceBand-01,2,priceBand,30000-50000,priceBand:30000-50000,prefers,True,rule,,,0.9
+kc-priceBand-01,3,priceBand,30000-50000,priceBand:30000-50000,prefers,True,rule,,,0.9
+kc-priceBand-01,4,priceBand,30000-50000,priceBand:30000-50000,prefers,True,rule,,,0.9
+kc-priceBand-02,0,priceBand,0-100000,priceBand:0-100000,prefers,True,rule,,,0.95
+kc-priceBand-02,0,attribute,가성비,attribute:가성비,prefers,False,no_vocabulary,,,0.9
+kc-priceBand-02,0,priceBand,100000-999999999,priceBand:100000-999999999,avoids,True,rule,,,0.85
+kc-priceBand-02,0,attribute,저렴한 가격,attribute:저렴한 가격,prefers,False,no_vocabulary,,,0.9
+kc-priceBand-02,1,priceBand,0-100000,priceBand:0-100000,prefers,True,rule,,,0.95
+kc-priceBand-02,1,attribute,가성비,attribute:가성비,prefers,False,no_vocabulary,,,0.9
+kc-priceBand-02,1,attribute,고가 제품,attribute:고가 제품,avoids,False,no_vocabulary,,,0.85
+kc-priceBand-02,2,priceBand,0-100000,priceBand:0-100000,prefers,True,rule,,,0.9
+kc-priceBand-02,2,attribute,가성비,attribute:가성비,prefers,False,no_vocabulary,,,0.85
+kc-priceBand-02,2,attribute,고가 상품,attribute:고가 상품,avoids,False,no_vocabulary,,,0.8
+kc-priceBand-02,2,attribute,저렴한 가격,attribute:저렴한 가격,prefers,False,no_vocabulary,,,0.9
+kc-priceBand-02,3,priceBand,0-100000,priceBand:0-100000,prefers,True,rule,,,0.95
+kc-priceBand-02,3,priceBand,100000-999999999,priceBand:100000-999999999,avoids,True,rule,,,0.85
+kc-priceBand-02,3,attribute,가성비,attribute:가성비,prefers,False,no_vocabulary,,,0.95
+kc-priceBand-02,4,priceBand,0-100000,priceBand:0-100000,prefers,True,rule,,,0.95
+kc-priceBand-02,4,attribute,가성비,attribute:가성비,prefers,False,no_vocabulary,,,0.9
+kc-priceBand-02,4,attribute,고가 제품,attribute:고가 제품,avoids,False,no_vocabulary,,,0.85
+kc-priceBand-02,4,attribute,저렴한 가격,attribute:저렴한 가격,prefers,False,no_vocabulary,,,0.9
+kc-product-01,0,product,12345,product:12345,likes,False,rule,,,0.9
+kc-product-01,1,product,12345,product:12345,likes,False,rule,,,0.9
+kc-product-01,2,product,12345,product:12345,likes,False,rule,,,0.9
+kc-product-01,3,product,12345,product:12345,likes,False,rule,,,0.95
+kc-product-01,4,product,12345,product:12345,likes,False,rule,,,0.95
+kc-ratingBand-01,0,ratingBand,4-5,ratingBand:4-5,prefers,True,rule,,,0.9
+kc-ratingBand-01,0,attribute,낮은 평점 상품,attribute:낮은 평점 상품,avoids,False,no_vocabulary,,,0.85
+kc-ratingBand-01,1,ratingBand,4-5,ratingBand:4-5,prefers,True,rule,,,0.9
+kc-ratingBand-01,1,attribute,낮은 평점,attribute:낮은 평점,avoids,False,no_vocabulary,,,0.85
+kc-ratingBand-01,2,ratingBand,4-5,ratingBand:4-5,prefers,True,rule,,,0.95
+kc-ratingBand-01,2,attribute,낮은 평점,attribute:낮은 평점,avoids,False,no_vocabulary,,,0.9
+kc-ratingBand-01,3,ratingBand,4-5,ratingBand:4-5,prefers,True,rule,,,0.9
+kc-ratingBand-01,4,ratingBand,4-5,ratingBand:4-5,prefers,True,rule,,,0.9
+pol-attribute-avoid,0,attribute,인조가죽,attribute:인조가죽,avoids,False,no_vocabulary,,,0.9
+pol-attribute-avoid,0,attribute,진짜 가죽,attribute:진짜 가죽,prefers,False,no_vocabulary,,,0.85
+pol-attribute-avoid,0,attribute,원단 소재,attribute:원단 소재,prefers,False,no_vocabulary,,,0.8
+pol-attribute-avoid,1,attribute,인조가죽,attribute:인조가죽,avoids,False,no_vocabulary,,,0.9
+pol-attribute-avoid,1,attribute,진짜 가죽,attribute:진짜 가죽,prefers,False,no_vocabulary,,,0.8
+pol-attribute-avoid,1,attribute,원단,attribute:원단,prefers,False,no_vocabulary,,,0.8
+pol-attribute-avoid,2,attribute,인조가죽,attribute:인조가죽,avoids,False,no_vocabulary,,,0.9
+pol-attribute-avoid,2,attribute,진짜 가죽,attribute:진짜 가죽,prefers,False,no_vocabulary,,,0.8
+pol-attribute-avoid,2,attribute,원단 소재,attribute:원단 소재,prefers,False,no_vocabulary,,,0.8
+pol-attribute-avoid,3,attribute,인조가죽,attribute:인조가죽,avoids,False,no_vocabulary,,,0.9
+pol-attribute-avoid,3,attribute,진짜 가죽,attribute:진짜 가죽,prefers,False,no_vocabulary,,,0.8
+pol-attribute-avoid,3,attribute,원단 소재,attribute:원단 소재,prefers,False,no_vocabulary,,,0.8
+pol-attribute-avoid,4,attribute,인조가죽,attribute:인조가죽,avoids,False,no_vocabulary,,,0.9
+pol-attribute-avoid,4,attribute,진짜 가죽,attribute:진짜 가죽,prefers,False,no_vocabulary,,,0.8
+pol-attribute-avoid,4,attribute,원단,attribute:원단,prefers,False,no_vocabulary,,,0.8
+pol-attribute-prefer,0,attribute,무선,attribute:무선,prefers,False,no_vocabulary,,,0.9
+pol-attribute-prefer,1,attribute,무선,attribute:무선,prefers,False,no_vocabulary,,,0.9
+pol-attribute-prefer,1,attribute,선 없음,attribute:선 없음,prefers,False,no_vocabulary,,,0.8
+pol-attribute-prefer,1,attribute,충전 용이성,attribute:충전 용이성,prefers,False,no_vocabulary,,,0.7
+pol-attribute-prefer,2,attribute,무선,attribute:무선,prefers,False,no_vocabulary,,,0.8
+pol-attribute-prefer,2,attribute,충전 성능,attribute:충전 성능,prefers,False,no_vocabulary,,,0.6
+pol-attribute-prefer,3,attribute,무선,attribute:무선,prefers,False,no_vocabulary,,,0.9
+pol-attribute-prefer,4,attribute,무선,attribute:무선,prefers,False,no_vocabulary,,,0.9
+pol-attribute-prefer,4,attribute,선 없는 디자인,attribute:선 없는 디자인,prefers,False,no_vocabulary,,,0.8
+pol-brand-avoid,0,brand,나이키,brand:나이키,avoids,False,no_vocabulary,,,0.9
+pol-brand-avoid,1,brand,나이키,brand:나이키,avoids,False,no_vocabulary,,,0.85
+pol-brand-avoid,2,brand,나이키,brand:나이키,avoids,False,no_vocabulary,,,0.9
+pol-brand-avoid,2,attribute,발볼 핏,attribute:발볼 핏,avoids,False,no_vocabulary,,,0.8
+pol-brand-avoid,3,brand,나이키,brand:나이키,avoids,False,no_vocabulary,,,0.9
+pol-brand-avoid,3,attribute,발볼 핏,attribute:발볼 핏,avoids,False,no_vocabulary,,,0.8
+pol-brand-avoid,4,brand,나이키,brand:나이키,avoids,False,no_vocabulary,,,0.85
+pol-brand-prefer,0,brand,나이키,brand:나이키,likes,False,no_vocabulary,,,0.95
+pol-brand-prefer,0,attribute,쿠션감,attribute:쿠션감,prefers,False,no_vocabulary,,,0.85
+pol-brand-prefer,1,brand,나이키,brand:나이키,likes,False,no_vocabulary,,,0.95
+pol-brand-prefer,1,attribute,쿠션감,attribute:쿠션감,prefers,False,no_vocabulary,,,0.85
+pol-brand-prefer,2,brand,나이키,brand:나이키,likes,False,no_vocabulary,,,0.95
+pol-brand-prefer,2,attribute,쿠션감,attribute:쿠션감,prefers,False,no_vocabulary,,,0.8
+pol-brand-prefer,3,brand,나이키,brand:나이키,likes,False,no_vocabulary,,,0.95
+pol-brand-prefer,3,attribute,쿠션감,attribute:쿠션감,prefers,False,no_vocabulary,,,0.85
+pol-brand-prefer,4,brand,나이키,brand:나이키,likes,False,no_vocabulary,,,0.95
+pol-brand-prefer,4,attribute,쿠션감,attribute:쿠션감,prefers,False,no_vocabulary,,,0.85
+rep-attribute-varied,0,attribute,경량,attribute:경량,prefers,False,no_vocabulary,,,0.95
+rep-attribute-varied,0,attribute,휴대성,attribute:휴대성,prefers,False,no_vocabulary,,,0.9
+rep-attribute-varied,1,attribute,경량·휴대성,attribute:경량·휴대성,prefers,False,no_vocabulary,,,0.9
+rep-attribute-varied,2,attribute,경량,attribute:경량,prefers,False,no_vocabulary,,,0.95
+rep-attribute-varied,2,attribute,휴대성,attribute:휴대성,prefers,False,no_vocabulary,,,0.9
+rep-attribute-varied,3,attribute,경량,attribute:경량,prefers,False,no_vocabulary,,,0.9
+rep-attribute-varied,3,attribute,휴대성,attribute:휴대성,prefers,False,no_vocabulary,,,0.85
+rep-attribute-varied,4,attribute,경량·휴대성,attribute:경량·휴대성,prefers,False,no_vocabulary,,,0.95
+rep-category-varied,0,attribute,진 소재,attribute:진 소재,prefers,False,no_vocabulary,,,0.8
+rep-category-varied,1,attribute,진 소재,attribute:진 소재,prefers,False,no_vocabulary,,,0.8
+rep-category-varied,2,attribute,진 소재,attribute:진 소재,prefers,False,no_vocabulary,,,0.8
+rep-category-varied,3,attribute,진 소재,attribute:진 소재,prefers,False,no_vocabulary,,,0.8
+rep-category-varied,4,attribute,진 소재,attribute:진 소재,prefers,False,no_vocabulary,,,0.8
+rep-verbatim-repeat-cap,0,brand,삼성전자,brand:삼성전자,likes,False,no_vocabulary,,,0.9
+rep-verbatim-repeat-cap,1,brand,삼성전자,brand:삼성전자,likes,False,no_vocabulary,,,0.9
+rep-verbatim-repeat-cap,2,brand,삼성전자,brand:삼성전자,likes,False,no_vocabulary,,,0.9
+rep-verbatim-repeat-cap,3,brand,삼성전자,brand:삼성전자,likes,False,no_vocabulary,,,0.8
+rep-verbatim-repeat-cap,4,brand,삼성전자,brand:삼성전자,likes,False,no_vocabulary,,,0.9

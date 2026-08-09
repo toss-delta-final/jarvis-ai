@@ -2,7 +2,7 @@
 
 - 위반: **0건**
 - 경고: **16건**
-- dev/holdout: 103/24
+- dev/holdout: 109/24
 
 ## 경고와 사유
 
@@ -21,7 +21,7 @@
 - `buy-fail-1003` ↔ `buy-fail-1004`: query 3-gram Jaccard 0.882 (동일 split의 의도적 표현 변형)
 - `buy-fail-1003` ↔ `buy-fail-1005`: query 3-gram Jaccard 0.882 (동일 split의 의도적 표현 변형)
 - `buy-fail-1004` ↔ `buy-fail-1005`: query 3-gram Jaccard 0.882 (동일 split의 의도적 표현 변형)
-- holdout 비중 0.189: 목표 0.300에서 허용 오차 0.050보다 크게 벗어남
+- holdout 비중 0.180: 목표 0.300에서 허용 오차 0.050보다 크게 벗어남
 
 후보가 전부 정답인 케이스들은 순위 지표(nDCG·MRR·Precision@k)의 분모에서 제외해야 한다. 노출·필터·하드제약 검증에는 계속 사용한다.
 
@@ -42,14 +42,14 @@ manifest.json의 `violationNegatives`가 유형별 최소 케이스·최소 후�
     "category_mapping_failure": 9,
     "cold_start": 2,
     "failure": 5,
-    "guest": 68,
+    "guest": 74,
     "member": 35,
     "multi_constraint": 12,
     "personalization": 11,
     "personalization_overreach": 6,
     "repurchase": 8,
-    "search": 62,
-    "single_need": 71
+    "search": 68,
+    "single_need": 77
   },
   "holdout": {
     "budget": 0,

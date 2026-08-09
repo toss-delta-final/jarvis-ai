@@ -460,6 +460,52 @@ async def test_push_failure_does_not_persist_last_reco_for_search_path() -> None
     key = await _thread_key(request, _member())
     cart_store = await get_cart_store()
     assert await cart_store.get_last_reco(key) == []
+    assert await cart_store.get_push_failed(key) is True
+
+
+async def test_push_failed_marker_write_failure_does_not_break_search_recommendation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#468 I-21] 실패 사실 기록이 실패해도 목록 전달 실패 턴은 기존 degrade로 끝난다."""
+    from app.agents.buyer.cart.state import CartStateStore
+
+    async def fail_set_push_failed(self, key):  # noqa: ANN001
+        raise RuntimeError("store unavailable")
+
+    monkeypatch.setattr(CartStateStore, "set_push_failed", fail_set_push_failed)
+    events = await _collect(
+        run_buyer_turn(
+            _req(thread_id="push-fail-marker-write"),
+            _member(),
+            llm=FakeLLM(),
+            search=_make_search(DEFAULT_PRODUCTS),
+            push_fn=_failing_push,
+        )
+    )
+
+    assert "products.ready" not in _types(events)
+    assert _types(events)[-1] == "done"
+
+
+async def test_profile_name_falls_back_only_for_legacy_or_malformed_name_presence_flag() -> None:
+    """[#468 I-17] 명시적 False 만 category 폴백을 버리고 구 행·이상값은 #435 동작을 유지한다.
+
+    이 함수가 플래그를 무시하면 False 행이 "생활용품"을 이름으로 되돌려준다. 반대로
+    truthiness 판정으로 바꾸면 0·문자열 같은 손상 값을 가진 기존 행의 이름 공급이 죽는다.
+    """
+    from app.agents.buyer.recommendation.no_condition import name_from_artifact
+    from app.pipelines.artifact_store import CatalogArtifact, EXTRAS_NAME_PRESENT_KEY
+
+    def artifact(extras: dict) -> CatalogArtifact:
+        return CatalogArtifact(
+            product_id=101, search_doc="생활용품\n설명", embedding=[], extras=extras
+        )
+
+    assert name_from_artifact(artifact({EXTRAS_NAME_PRESENT_KEY: False})) == ""
+    assert name_from_artifact(artifact({EXTRAS_NAME_PRESENT_KEY: True})) == "생활용품"
+    assert name_from_artifact(artifact({})) == "생활용품"
+    assert name_from_artifact(artifact({EXTRAS_NAME_PRESENT_KEY: 0})) == "생활용품"
+    assert name_from_artifact(artifact({EXTRAS_NAME_PRESENT_KEY: "false"})) == "생활용품"
 
 
 # ─────────── zero-result / fallback ───────────
@@ -1791,6 +1837,24 @@ async def test_attr_conditions_preserve_axis_absent() -> None:
         backend=FakeBackend(products=products),
     )
     assert {p.product_id for p in res.products} == {1, 2}  # 축 부재 2 보존
+
+
+async def test_color_attr_conditions_preserve_axis_absent_and_exclude_mismatch() -> None:
+    """[#461 §4.6 ②] 색상 축 부재는 보존하고, 명시 색상 불일치는 사후필터에서 제외한다."""
+    from app.schemas.spring import ProductSearchFilters, SpringProduct
+    from app.services.search_service import search_catalog
+    from tests._fakes import FakeBackend
+
+    products = [
+        SpringProduct(product_id=1, name="무색상 속성 상품", price=1, attributes={"소재": "린넨"}),
+        SpringProduct(product_id=2, name="그레이 상품", price=1, attributes={"색상": "그레이"}),
+        SpringProduct(product_id=3, name="빨강 상품", price=1, attributes={"색상": "빨강"}),
+    ]
+    res = await search_catalog(
+        ProductSearchFilters(attr_conditions={"색상": "그레이"}),
+        backend=FakeBackend(products=products),
+    )
+    assert {product.product_id for product in res.products} == {1, 2}
 
 
 async def test_attr_conditions_lenient_match() -> None:
@@ -6117,6 +6181,7 @@ async def test_profile_push_failure_does_not_persist_last_reco(
     key = await _thread_key(request, _member_num())
     cart_store = await get_cart_store()
     assert await cart_store.get_last_reco(key) == []
+    assert await cart_store.get_push_failed(key) is True
 
 
 # ─────────── [#435] 이음매 회귀 — "추천 → 이름으로 지목해 찜/담기" ───────────
@@ -6278,13 +6343,18 @@ async def test_profile_recommendation_name_target_cart_add_regression(
     assert actions and actions[0]["data"]["type"] == "CART_ADDED"
 
 
-def _no_name_category_store(pid: int, category: str = "생활용품"):
+def _no_name_category_store(pid: int, category: str = "생활용품", extras: dict | None = None):
     """이름 없는 상품 1건 — `search_doc` 첫 줄이 `category` 로 밀리는 [#435 리뷰 C1] 재현용."""
     from app.pipelines.artifact_store import CatalogArtifact, CatalogArtifactStore
 
     store = CatalogArtifactStore()
     store.upsert(
-        CatalogArtifact(product_id=pid, search_doc=category, embedding=[1.0, 0.0, 0.0], extras={})
+        CatalogArtifact(
+            product_id=pid,
+            search_doc=category,
+            embedding=[1.0, 0.0, 0.0],
+            extras=extras or {},
+        )
     )
     return store
 
@@ -6351,6 +6421,52 @@ async def test_profile_recommendation_cross_turn_category_fallback_names_deduped
     # 오확정을 막는 핵심 단언 — 같은 이름이 두 productId 에 동시에 남으면 안 된다.
     assert accumulated.get(202, "") == "", accumulated
     assert accumulated.get(101) == "생활용품", accumulated
+
+
+async def test_profile_recommendation_discards_flagged_category_fallback_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#468 I-17] 명시적 이름 없음 상품 하나도 추천은 유지하되 이름은 누적하지 않는다.
+
+    `rank_by_profile`가 `name_from_artifact` 대신 첫 줄 추출기를 직접 쓰면 이 테스트는
+    "생활용품"이 last_reco에 남아 실패한다. 플래그 없는 대조군은 바로 위 #435 cross-turn
+    테스트의 첫 턴(``{101: "생활용품"}``)이 기존 동작으로 이미 고정한다.
+    """
+    from app.agents.buyer.cart.state import CartStateStore
+    from app.agents.buyer.recommendation.graph import stream_recommendation
+    from app.agents.buyer.recommendation.state import RouteDecision
+    from app.pipelines.artifact_store import EXTRAS_NAME_PRESENT_KEY
+    from app.schemas.spring import ProductSearchFilters
+
+    cart_store = CartStateStore()
+    thread_key = "t-468-flagged-category-fallback"
+    monkeypatch.setattr(
+        "app.pipelines.artifact_store.get_catalog_store",
+        lambda: _no_name_category_store(101, extras={EXTRAS_NAME_PRESENT_KEY: False}),
+    )
+    events = await _collect(
+        stream_recommendation(
+            request=_req(thread_id="nc-468-flagged-category-fallback"),
+            decision=RouteDecision(
+                intent="recommend", filters=ProductSearchFilters(), semantic_query_is_fallback=True
+            ),
+            llm=FakeLLM(),
+            search=_make_search([]),
+            push_fn=_RecordingPush(),
+            identity=None,
+            profile=None,
+            settings=get_settings(),
+            cart_store=cart_store,
+            thread_key=thread_key,
+            request_id="req-468-flagged-category-fallback",
+            no_condition=True,
+            popular_fn=_recording_popular()[0],
+            profile_vec=[1.0, 0.0, 0.0],
+        )
+    )
+
+    assert "products.ready" in _types(events)
+    assert dict(await cart_store.get_last_reco(thread_key)) == {101: ""}
 
 
 async def test_member_without_taste_vector_falls_back_to_popular(

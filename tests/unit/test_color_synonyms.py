@@ -167,6 +167,59 @@ def test_cache_uses_monotonic_ttl_and_reset(monkeypatch) -> None:
     assert loads == ["dsn", "dsn", "dsn"]
 
 
+def test_empty_approved_map_warns_once_per_ttl_when_expansion_enabled(monkeypatch, caplog) -> None:
+    """확장이 켜진 채 approved 0건이면 조용한 무동작을 경고한다(#461)."""
+    import logging
+
+    color_synonyms.reset_cache()
+    now = [100.0]
+    monkeypatch.setattr(color_synonyms.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(color_synonyms, "load_synonym_map", lambda dsn: {})
+
+    with caplog.at_level(logging.WARNING, logger="app.pipelines.color_synonyms"):
+        assert color_synonyms.get_synonym_map("dsn", ttl_s=10.0, warn_if_empty=True) == {}
+        assert color_synonyms.get_synonym_map("dsn", ttl_s=10.0, warn_if_empty=True) == {}
+
+    warnings = [
+        record.getMessage() for record in caplog.records if record.levelno == logging.WARNING
+    ]
+    assert warnings == [
+        "색상 동의어 사전 비어 있음 — status='approved' AND canonical IS NOT NULL 0행, 확장 무동작"
+    ]
+
+
+def test_empty_approved_map_is_quiet_when_expansion_disabled(monkeypatch, caplog) -> None:
+    """확장이 꺼진 환경은 빈 사전이어도 경고하지 않는다(#461)."""
+    import logging
+
+    color_synonyms.reset_cache()
+    monkeypatch.setattr(color_synonyms, "load_synonym_map", lambda dsn: {})
+
+    with caplog.at_level(logging.WARNING, logger="app.pipelines.color_synonyms"):
+        assert color_synonyms.get_synonym_map("dsn", ttl_s=10.0, warn_if_empty=False) == {}
+
+    assert not [record for record in caplog.records if record.levelno == logging.WARNING]
+
+
+def test_nonempty_approved_map_does_not_warn_when_expansion_enabled(monkeypatch, caplog) -> None:
+    """승인 사전이 있으면 확장 활성화 경고를 내지 않는다(#461)."""
+    import logging
+
+    color_synonyms.reset_cache()
+    monkeypatch.setattr(
+        color_synonyms,
+        "load_synonym_map",
+        lambda dsn: {"그레이": ["그레이", "회색"]},
+    )
+
+    with caplog.at_level(logging.WARNING, logger="app.pipelines.color_synonyms"):
+        assert color_synonyms.get_synonym_map("dsn", ttl_s=10.0, warn_if_empty=True) == {
+            "그레이": ["그레이", "회색"]
+        }
+
+    assert not [record for record in caplog.records if record.levelno == logging.WARNING]
+
+
 def test_concurrent_cache_misses_do_not_hold_cache_lock_during_db_load(monkeypatch) -> None:
     color_synonyms.reset_cache()
     both_loaders_entered = threading.Barrier(2)

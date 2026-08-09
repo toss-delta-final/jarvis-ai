@@ -1,0 +1,624 @@
+{
+  "schemaVersion": "1.0.0",
+  "datasetVersion": "2026-08-08.2",
+  "sessions": [
+    {
+      "sessionId": "kc-brand-01",
+      "sliceId": "kindCoverage",
+      "testType": "MFT",
+      "turns": [
+        "요즘 소니 제품이 마음에 들어요",
+        "이것저것 다 마음에 들어요",
+        "다음에도 소니 걸로 사려고요"
+      ],
+      "expectedTriples": [
+        {
+          "kind": "brand",
+          "predicate": "likes",
+          "accept": [
+            "소니",
+            "SONY"
+          ],
+          "canonicalLabel": "소니",
+          "nodeId": "brand:소니"
+        }
+      ],
+      "boundaryNote": "소니 브랜드 선호가 반복 언급됨 — 브랜드는 무어휘라 표기 흔들림을 accept 에 담아 verified=false 로 통과한다."
+    },
+    {
+      "sessionId": "kc-category-01",
+      "sliceId": "kindCoverage",
+      "testType": "MFT",
+      "turns": [
+        "무선 이어폰 하나 사고 싶어요",
+        "지금 하나도 없어서 급하게 필요해요",
+        "괜찮은 걸로 추천해 주시면 감사하겠어요"
+      ],
+      "expectedTriples": [
+        {
+          "kind": "category",
+          "predicate": "likes",
+          "accept": [
+            "음향가전 > 이어폰"
+          ],
+          "canonicalLabel": "음향가전 > 이어폰",
+          "nodeId": "category:음향가전 > 이어폰"
+        }
+      ],
+      "boundaryNote": "카테고리 canonical 은 라이브 pg-catalog 잎 표기 그대로 — '이어폰' 단독 표기는 도메인 중복이라 쓰지 않는다."
+    },
+    {
+      "sessionId": "kc-attribute-01",
+      "sliceId": "kindCoverage",
+      "testType": "MFT",
+      "turns": [
+        "저는 방수 기능이 있는 제품을 좋아해요",
+        "비 오는 날에도 걱정 없이 쓰고 싶어서요",
+        "그런 조건이면 가격은 좀 비싸도 괜찮아요"
+      ],
+      "expectedTriples": [
+        {
+          "kind": "attribute",
+          "predicate": "prefers",
+          "accept": [
+            "방수",
+            "방수 기능",
+            "waterproof"
+          ],
+          "canonicalLabel": "방수",
+          "nodeId": "attribute:방수"
+        }
+      ],
+      "boundaryNote": "속성은 통제 어휘가 없어 verified=false — anchorPhrase 표현 흔들림을 accept 에 담는다(#357 비범위)."
+    },
+    {
+      "sessionId": "kc-priceBand-01",
+      "sliceId": "kindCoverage",
+      "testType": "MFT",
+      "turns": [
+        "3만원에서 5만원 사이 제품으로 찾아주세요",
+        "그 가격대가 딱 적당한 것 같아요",
+        "그 예산 안에서 골라주세요"
+      ],
+      "expectedTriples": [
+        {
+          "kind": "priceBand",
+          "predicate": "prefers",
+          "accept": [
+            "30000-50000"
+          ],
+          "canonicalLabel": "30000-50000",
+          "nodeId": "priceBand:30000-50000"
+        }
+      ],
+      "boundaryNote": "가격 성향 — canonicalLabel 정규형(30000-50000)은 발화 원문에 없다(누출 금지, §4 규칙7)."
+    },
+    {
+      "sessionId": "kc-ratingBand-01",
+      "sliceId": "kindCoverage",
+      "testType": "MFT",
+      "turns": [
+        "평점 4점 이상인 상품만 보고 싶어요",
+        "별점 낮은 건 좀 불안해서요",
+        "평점 낮은 상품은 거르고 싶어요"
+      ],
+      "expectedTriples": [
+        {
+          "kind": "ratingBand",
+          "predicate": "prefers",
+          "accept": [
+            "4-5"
+          ],
+          "canonicalLabel": "4-5",
+          "nodeId": "ratingBand:4-5"
+        }
+      ],
+      "boundaryNote": "평점 성향 — ratingBand 상한은 5(_RATING_SCALE_MAX), resolver._resolve_band 로 검증된다."
+    },
+    {
+      "sessionId": "kc-product-01",
+      "sliceId": "kindCoverage",
+      "testType": "MFT",
+      "turns": [
+        "12345번 상품 정말 마음에 들어요",
+        "그 상품으로 계속 재구매하고 싶어요",
+        "다음 주에 또 주문할 것 같아요"
+      ],
+      "expectedTriples": [
+        {
+          "kind": "product",
+          "predicate": "likes",
+          "accept": [
+            "12345"
+          ],
+          "canonicalLabel": "12345",
+          "nodeId": "product:12345"
+        }
+      ],
+      "boundaryNote": "product 라벨은 숫자 productId 만 허용 — verified=false 가 정확한 답이다(카탈로그 원본 미저장)."
+    },
+    {
+      "sessionId": "kc-situation-01",
+      "sliceId": "kindCoverage",
+      "testType": "MFT",
+      "turns": [
+        "캠핑 갈 때 필요한 용품을 자주 찾아요",
+        "이번 주말에도 캠핑 예정이에요",
+        "필요한 게 더 있으면 또 살 것 같아요"
+      ],
+      "expectedTriples": [
+        {
+          "kind": "situation",
+          "predicate": "interestedIn",
+          "accept": [
+            "캠핑",
+            "캠핑 갈 때",
+            "camping"
+          ],
+          "canonicalLabel": "캠핑",
+          "nodeId": "situation:캠핑"
+        }
+      ],
+      "boundaryNote": "situation 은 positive predicate 가 interestedIn — resolver._POSITIVE_PREDICATE 표와 대조해 검증된다."
+    },
+    {
+      "sessionId": "kc-category-02",
+      "sliceId": "kindCoverage",
+      "testType": "MFT",
+      "turns": [
+        "커피 원두 사고 싶어요",
+        "매일 아침 마시려고요",
+        "적당한 걸로 추천해 주세요"
+      ],
+      "expectedTriples": [
+        {
+          "kind": "category",
+          "predicate": "likes",
+          "accept": [
+            "커피/생수/음료 > 커피"
+          ],
+          "canonicalLabel": "커피/생수/음료 > 커피",
+          "nodeId": "category:커피/생수/음료 > 커피"
+        }
+      ],
+      "boundaryNote": "운영 분포에서 가장 흔한 축(category) 가중 — 남는 3세션 배정(§5)."
+    },
+    {
+      "sessionId": "kc-priceBand-02",
+      "sliceId": "kindCoverage",
+      "testType": "MFT",
+      "turns": [
+        "10만원 이하로 가성비 좋은 걸로 부탁해요",
+        "너무 비싼 건 부담스러워요",
+        "품질만 괜찮으면 저렴한 게 최고예요"
+      ],
+      "expectedTriples": [
+        {
+          "kind": "priceBand",
+          "predicate": "prefers",
+          "accept": [
+            "0-100000",
+            "10000-100000",
+            "50000-100000"
+          ],
+          "canonicalLabel": "0-100000",
+          "nodeId": "priceBand:0-100000"
+        }
+      ],
+      "boundaryNote": "priceBand 가중 배정 — '이하'는 하한이 없는 표현이라 모델이 합리적인 하한(예: 10000·50000)을 잡아도 정답이다. 하한 없는 표현은 구조적으로 모호해 복수 정답을 연다(category_probe 가 taxonomy 모호성에 accept 복수를 쓰는 것과 같은 규약, A-8). canonicalLabel(0-100000, 하한 없음 읽기)과 다른 accept 값이 매칭되면 nodeIdAgreement 가 그 인코딩 불일치를 정직하게 반영한다."
+    },
+    {
+      "sessionId": "kc-attribute-02",
+      "sliceId": "kindCoverage",
+      "testType": "MFT",
+      "turns": [
+        "저는 천연 성분으로 만든 제품이 좋아요",
+        "피부에 자극이 적어서요",
+        "향이 강하지 않은 것도 중요해요"
+      ],
+      "expectedTriples": [
+        {
+          "kind": "attribute",
+          "predicate": "prefers",
+          "accept": [
+            "천연 성분",
+            "천연성분",
+            "natural"
+          ],
+          "canonicalLabel": "천연 성분",
+          "nodeId": "attribute:천연 성분"
+        },
+        {
+          "kind": "attribute",
+          "predicate": "avoids",
+          "accept": [
+            "강한 향",
+            "진한 향",
+            "강한 향기"
+          ],
+          "canonicalLabel": "강한 향",
+          "nodeId": "attribute:강한 향"
+        }
+      ],
+      "boundaryNote": "attribute 가중 배정 — '천연 성분'/'천연성분'은 공백 유무로 다른 문자열(정규화 후에도 구분). '향이 강하지 않은 것도 중요해요'는 별도의 라벨 안 된 취향(강한 향 회피)이라 두 번째 기대트리플로 라벨한다(A-15) — 안 하면 정확히 뽑는 모델이 falsePositiveRate 로 처벌받는다."
+    },
+    {
+      "sessionId": "pol-brand-prefer",
+      "sliceId": "polarity",
+      "testType": "MFT",
+      "turns": [
+        "나이키 신발이 편하고 좋아요",
+        "그래서 계속 나이키만 사요",
+        "쿠션감이 특히 마음에 들어요"
+      ],
+      "expectedTriples": [
+        {
+          "kind": "brand",
+          "predicate": "likes",
+          "accept": [
+            "나이키",
+            "Nike"
+          ],
+          "canonicalLabel": "나이키",
+          "nodeId": "brand:나이키"
+        },
+        {
+          "kind": "attribute",
+          "predicate": "prefers",
+          "accept": [
+            "쿠션감",
+            "쿠션",
+            "cushioning"
+          ],
+          "canonicalLabel": "쿠션감",
+          "nodeId": "attribute:쿠션감"
+        }
+      ],
+      "boundaryNote": "브랜드 선호 — polarity 양방향 쌍의 긍정 축(pol-brand-avoid 와 대응). '쿠션감이 특히 마음에 들어요'는 별도의 라벨 안 된 취향(속성 선호)이라 두 번째 기대 트리플로 라벨한다(A-15)."
+    },
+    {
+      "sessionId": "pol-brand-avoid",
+      "sliceId": "polarity",
+      "testType": "MFT",
+      "turns": [
+        "나이키는 별로 안 좋아해요",
+        "발볼이 안 맞아서 불편하더라고요",
+        "다른 브랜드를 더 찾아보려고요"
+      ],
+      "expectedTriples": [
+        {
+          "kind": "brand",
+          "predicate": "avoids",
+          "accept": [
+            "나이키",
+            "Nike"
+          ],
+          "canonicalLabel": "나이키",
+          "nodeId": "brand:나이키"
+        }
+      ],
+      "boundaryNote": "브랜드 회피 — 같은 축(나이키)의 부정 predicate 가 정확히 avoids 로 잡히는지가 핵심(§5)."
+    },
+    {
+      "sessionId": "pol-attribute-prefer",
+      "sliceId": "polarity",
+      "testType": "MFT",
+      "turns": [
+        "저는 무선 제품을 선호해요",
+        "선 없는 게 훨씬 편하더라고요",
+        "충전만 잘 되면 상관없어요"
+      ],
+      "expectedTriples": [
+        {
+          "kind": "attribute",
+          "predicate": "prefers",
+          "accept": [
+            "무선",
+            "무선 제품",
+            "wireless"
+          ],
+          "canonicalLabel": "무선",
+          "nodeId": "attribute:무선"
+        }
+      ],
+      "boundaryNote": "속성 선호 — polarity 양방향 쌍의 긍정 축(pol-attribute-avoid 와 대응)."
+    },
+    {
+      "sessionId": "pol-attribute-avoid",
+      "sliceId": "polarity",
+      "testType": "MFT",
+      "turns": [
+        "저는 인조가죽 제품은 피해요",
+        "금방 벗겨지고 냄새가 나서요",
+        "진짜 가죽이나 원단 소재가 좋아요"
+      ],
+      "expectedTriples": [
+        {
+          "kind": "attribute",
+          "predicate": "avoids",
+          "accept": [
+            "인조가죽",
+            "인조 가죽",
+            "synthetic leather"
+          ],
+          "canonicalLabel": "인조가죽",
+          "nodeId": "attribute:인조가죽"
+        },
+        {
+          "kind": "attribute",
+          "predicate": "prefers",
+          "accept": [
+            "가죽",
+            "원단",
+            "천연 소재"
+          ],
+          "canonicalLabel": "가죽",
+          "nodeId": "attribute:가죽"
+        }
+      ],
+      "boundaryNote": "속성 회피 — 같은 축(인조가죽)의 부정 predicate 가 avoids 로 확정되는지 확인한다. '진짜 가죽이나 원단 소재가 좋아요'는 별도의 라벨 안 된 긍정 취향이라 두 번째 기대 트리플로 라벨한다(A-15)."
+    },
+    {
+      "sessionId": "rep-category-varied",
+      "sliceId": "repetition",
+      "testType": "MFT",
+      "turns": [
+        "청바지 하나 사려고요",
+        "데님 팬츠 스타일이 저랑 잘 맞더라고요",
+        "진 소재 옷을 자주 입어요",
+        "그래서 청바지류를 계속 눈여겨보고 있어요"
+      ],
+      "expectedTriples": [
+        {
+          "kind": "category",
+          "predicate": "likes",
+          "accept": [
+            "여성의류 > 청바지"
+          ],
+          "canonicalLabel": "여성의류 > 청바지",
+          "nodeId": "category:여성의류 > 청바지"
+        }
+      ],
+      "boundaryNote": "같은 취향(청바지)을 매턴 다른 표현으로 반복 — 축자 반복이 아니라 repeatCap 에 안 먹힌다."
+    },
+    {
+      "sessionId": "rep-attribute-varied",
+      "sliceId": "repetition",
+      "testType": "MFT",
+      "turns": [
+        "저는 가벼운 제품이 좋아요",
+        "무게가 안 나가는 걸 선호해요",
+        "휴대하기 편한 경량 제품 위주로 찾아요"
+      ],
+      "expectedTriples": [
+        {
+          "kind": "attribute",
+          "predicate": "prefers",
+          "accept": [
+            "가벼움",
+            "경량",
+            "가벼운",
+            "light weight"
+          ],
+          "canonicalLabel": "가벼움",
+          "nodeId": "attribute:가벼움"
+        }
+      ],
+      "boundaryNote": "반복 표현(가볍다/경량/가벼운)이 누적 승격되는지 재는 세션 — 다른 표현이라 repeatCap 밖이다."
+    },
+    {
+      "sessionId": "rep-verbatim-repeat-cap",
+      "sliceId": "repetition",
+      "testType": "MFT",
+      "turns": [
+        "저는 삼성전자 제품이 좋아요",
+        "저는 삼성전자 제품이 좋아요",
+        "저는 삼성전자 제품이 좋아요",
+        "그리고 다른 것도 좀 물어봐도 될까요"
+      ],
+      "expectedTriples": [
+        {
+          "kind": "brand",
+          "predicate": "likes",
+          "accept": [
+            "삼성전자",
+            "삼성",
+            "Samsung"
+          ],
+          "canonicalLabel": "삼성전자",
+          "nodeId": "brand:삼성전자"
+        }
+      ],
+      "boundaryNote": "축자 반복 3회 — profile_buffer_repeat_cap(2)에 걸려 3번째 반복은 버퍼에 안 들어간다. 이 캡 동작 자체를 재려는 의도적 세션이다(§5 '먹히는 것 자체를 재는 세션 1개 허용')."
+    },
+    {
+      "sessionId": "conflict-brand",
+      "sliceId": "conflict",
+      "testType": "MFT",
+      "turns": [
+        "전엔 아디다스를 정말 좋아했어요",
+        "그런데 요즘은 별로예요",
+        "이제는 아디다스 제품은 안 사려고요"
+      ],
+      "expectedTriples": [
+        {
+          "kind": "brand",
+          "predicate": "avoids",
+          "accept": [
+            "아디다스",
+            "Adidas"
+          ],
+          "canonicalLabel": "아디다스",
+          "nodeId": "brand:아디다스"
+        }
+      ],
+      "boundaryNote": "선호→회피 전환 — 기대는 전환 후 상태(avoids)만. 초기 선호(좋아했어요)는 최종 판정에 포함하지 않는다."
+    },
+    {
+      "sessionId": "conflict-category",
+      "sliceId": "conflict",
+      "testType": "MFT",
+      "turns": [
+        "예전엔 원피스를 자주 찾았는데",
+        "요즘은 그다지 안 끌리네요",
+        "원피스는 이제 안 찾아도 될 것 같아요"
+      ],
+      "expectedTriples": [
+        {
+          "kind": "category",
+          "predicate": "avoids",
+          "accept": [
+            "여성의류 > 원피스"
+          ],
+          "canonicalLabel": "여성의류 > 원피스",
+          "nodeId": "category:여성의류 > 원피스"
+        }
+      ],
+      "boundaryNote": "카테고리 선호→회피 전환 — 전환 후 상태(avoids)가 최종 정답이며 근거는 마지막 발화다."
+    },
+    {
+      "sessionId": "conflict-attribute",
+      "sliceId": "conflict",
+      "testType": "MFT",
+      "turns": [
+        "처음엔 화려한 디자인을 좋아했었어요",
+        "근데 지금은 화려한 건 부담스럽더라고요",
+        "이제는 화려한 디자인은 피하고 싶어요"
+      ],
+      "expectedTriples": [
+        {
+          "kind": "attribute",
+          "predicate": "avoids",
+          "accept": [
+            "화려한 디자인",
+            "화려함",
+            "flashy design"
+          ],
+          "canonicalLabel": "화려한 디자인",
+          "nodeId": "attribute:화려한 디자인"
+        }
+      ],
+      "boundaryNote": "속성 선호→회피 전환 — 세 턴에 걸쳐 명시적으로 전환이 드러난다."
+    },
+    {
+      "sessionId": "noise-greeting",
+      "sliceId": "noise",
+      "testType": "MFT",
+      "turns": [
+        "안녕하세요",
+        "오늘 날씨가 정말 좋네요",
+        "그냥 인사드리고 싶었어요"
+      ],
+      "expectedTriples": [],
+      "boundaryNote": "인사·잡담 — 취향 신호 0. expectedTriples 는 빈 배열이어야 한다."
+    },
+    {
+      "sessionId": "noise-order-inquiry",
+      "sliceId": "noise",
+      "testType": "MFT",
+      "turns": [
+        "제 주문 언제 도착하나요",
+        "배송 조회 좀 해주세요",
+        "송장번호도 알려주시면 좋겠어요"
+      ],
+      "expectedTriples": [],
+      "boundaryNote": "주문 조회 — 취향 신호가 없는 발화라 오탐 슬라이스에 포함한다."
+    },
+    {
+      "sessionId": "noise-cart-inquiry",
+      "sliceId": "noise",
+      "testType": "MFT",
+      "turns": [
+        "장바구니에 뭐 담겨 있는지 볼 수 있을까요",
+        "지금 담긴 상품 목록 좀 보여주세요",
+        "수량도 같이 확인하고 싶어요"
+      ],
+      "expectedTriples": [],
+      "boundaryNote": "장바구니 조회 — 취향 표명이 아니라 상태 조회라 기대 트리플이 없다."
+    },
+    {
+      "sessionId": "noise-delivery-complaint",
+      "sliceId": "noise",
+      "testType": "MFT",
+      "turns": [
+        "배송이 너무 늦는 것 같아요",
+        "언제쯤 올까요",
+        "너무 답답해서 여쭤봐요"
+      ],
+      "expectedTriples": [],
+      "boundaryNote": "배송 지연 불만 — 감정 표현이지 취향 신호가 아니다."
+    },
+    {
+      "sessionId": "noise-refund",
+      "sliceId": "noise",
+      "testType": "MFT",
+      "turns": [
+        "환불은 어떻게 하나요",
+        "절차가 궁금해요",
+        "얼마나 걸리는지도 알려주세요"
+      ],
+      "expectedTriples": [],
+      "boundaryNote": "환불 문의 — 정책 질문이라 취향 신호가 없다."
+    },
+    {
+      "sessionId": "noise-payment",
+      "sliceId": "noise",
+      "testType": "MFT",
+      "turns": [
+        "결제 수단을 바꾸고 싶어요",
+        "카드 등록은 어디서 하나요",
+        "포인트도 같이 쓸 수 있나요"
+      ],
+      "expectedTriples": [],
+      "boundaryNote": "결제 수단 변경 문의 — 계정/결제 설정이라 취향 신호가 없다."
+    },
+    {
+      "sessionId": "noise-smalltalk",
+      "sliceId": "noise",
+      "testType": "MFT",
+      "turns": [
+        "오늘 하루 어떠셨어요",
+        "저는 그냥 심심해서 들어와봤어요",
+        "딱히 살 건 없어요"
+      ],
+      "expectedTriples": [],
+      "boundaryNote": "잡담 — 명시적으로 구매 의사가 없다고까지 말하는 잡음 세션."
+    },
+    {
+      "sessionId": "noise-account",
+      "sliceId": "noise",
+      "testType": "MFT",
+      "turns": [
+        "비밀번호를 잊어버렸어요",
+        "재설정은 어떻게 하나요",
+        "이메일로 받을 수 있나요"
+      ],
+      "expectedTriples": [],
+      "boundaryNote": "계정 문의 — 취향과 무관한 인증 절차 질문이다."
+    },
+    {
+      "sessionId": "noise-general-question",
+      "sliceId": "noise",
+      "testType": "MFT",
+      "turns": [
+        "이 사이트는 언제부터 운영됐나요",
+        "회원가입은 무료인가요",
+        "이용약관도 궁금해요"
+      ],
+      "expectedTriples": [],
+      "boundaryNote": "서비스 일반 문의 — 취향 신호가 전혀 없는 세션이다."
+    },
+    {
+      "sessionId": "noise-shipping-policy",
+      "sliceId": "noise",
+      "testType": "MFT",
+      "turns": [
+        "무료배송 기준이 어떻게 되나요",
+        "얼마 이상 사야 하나요",
+        "제주도는 추가 비용이 있나요"
+      ],
+      "expectedTriples": [],
+      "boundaryNote": "배송 정책 문의 — 특정 취향이 아니라 일반 정책 질문이다."
+    }
+  ]
+}

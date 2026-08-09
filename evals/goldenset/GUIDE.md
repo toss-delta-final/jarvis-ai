@@ -365,3 +365,11 @@ labeler-01/02의 자동 초안 + adjudicator-omx-01(모델)의 127건 전수 검
 문서화돼 있어 전 127건 `labelSource="model"`이 근거를 갖는다(개별 케이스 단위가 아니라
 데이터셋 전체 단위의 문서 근거다). 이 이슈에서 새로 만드는 라벨 변경(향후 relabel 등)은
 그 판정을 실제로 내린 근거를 `labelRationale`에 적는다 — "소급"이 아니라 "당시 근거"다.
+
+## #474 색상 동의어 A/B MFT
+
+색상 고유어/정본 쌍은 off 팔에서 의도적으로 노출이 달라 INV `color_synonym` 그룹에 등록하지 않는다.
+fixture는 라이브 검색 없이 `catalog_snapshot.json`만으로 결정론 생성한다.
+I-1 mock은 api-spec §4.6의 색상 미지정·축 없음 패스스루·부분 일치 3갈래 판정을 모사한다.
+`injected-relevant-approved:`는 #474에서 adjudicator 승인이 아니라 정본 색상 일치로 설계한
+오프라인 정답 후보를 뜻하며, 신규 케이스의 `adjudicator`는 비어 있다.
