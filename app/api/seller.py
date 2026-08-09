@@ -998,6 +998,10 @@ def _masked_preview(preview: dict) -> dict:
         "originalPriceText",
         "stockText",
         "categoryPath",
+        # [#541] 카테고리 2칸 표기도 같은 마스킹을 탄다 — 표시 키를 늘릴 때 이 목록을
+        # 같이 늘리지 않으면 그 키만 마스킹을 비껴간다(#524 lesson "입구를 전부 센다").
+        "categoryMajor",
+        "categorySubPath",
         "summary",
         "description",
     ):
