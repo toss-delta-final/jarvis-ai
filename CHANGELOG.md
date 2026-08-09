@@ -9,6 +9,19 @@
 
 ## [Unreleased]
 
+### Changed
+- **#504 — 판매자 분석 차트 재설계: 좌표 생성 주체를 LLM → 코드로 전환** (api-spec §3.2,
+  v0.30.0 · `docs/specs/DESIGN-SELLER-CHART-V2.md`). 구 구조는 `graph_agent`(도구 없음,
+  결정 D-4)가 워커 요약에서 숫자를 베껴 좌표를 만들고 G1 이 근거 없는 수치를 드랍해
+  `charts` 가 상시 비었다 — 실데이터 좌표를 만들 경로가 구조적으로 없었다. 이제 LLM 은
+  축 선언(`ChartPlanSet`)까지만 하고, 신설 `app/agents/seller/charts.py` 가 14조합 소스
+  레지스트리로 Spring(I-6·I-13·I-9·I-31)을 직접 조회해 좌표를 조립한다(빈 날짜 y:0 채움·
+  기간별 버킷 ≤60점·상품축 상위 15 절단·x 유일성 보장, nullable 수치는 0 으로 뭉개지 않고
+  no_data). 와이어는 추가 전용 — `chartPeriod`(차트 전용 기간, 다를 때만)·
+  `chartUnavailable[]`(사유 5종, message 는 서버 완성 문장)·`charts[].aggregate`·
+  `unit: RATING`. chart_only 턴은 레인 신설 없이 `title="판매 분석 그래프"` 로 구분.
+  구 G1(`verifier.run_chart_checks`)과 결정 D-4 는 폐기.
+
 ### Fixed
 - **#494 — I-31 집계 모드가 `rating` 필터를 버려 저평점 상품을 틀리게 지목하던 문제** (api-spec
   §4.20, 계약 무변경 — 코드가 확정 명세를 못 따라간 단방향 드리프트). `SpringClient.get_review_stats`

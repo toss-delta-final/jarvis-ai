@@ -398,11 +398,12 @@ def test_pipeline_builders_compile() -> None:
 
 
 def test_graph_prompt_principles() -> None:
-    """graph(이슈 #242 5단계) — 숫자 재사용 강제·차트 유형 판정 기준·계열 1개·빈 목록 허용."""
-    assert "계산·추정" in GRAPH_PROMPT or "새 수치를 만들지 않는다" in GRAPH_PROMPT
-    assert "line" in GRAPH_PROMPT
-    assert "bar" in GRAPH_PROMPT
-    assert "1개만" in GRAPH_PROMPT
+    """graph([#504] 축 선언 계약) — 좌표 생성 금지·14조합 명시·other 강등·빈 목록 허용."""
+    assert "좌표·수치는 만들지 않는다" in GRAPH_PROMPT  # 좌표는 코드 소관
+    assert "14개" in GRAPH_PROMPT  # 지원 축 조합 명시(레지스트리와 짝)
+    assert "date" in GRAPH_PROMPT and "product" in GRAPH_PROMPT
+    assert "rating" in GRAPH_PROMPT and "behavior_type" in GRAPH_PROMPT
+    assert '"other"' in GRAPH_PROMPT  # 지원 밖 요청은 임의 대체 없이 other 선언
     assert "charts=[]" in GRAPH_PROMPT  # 억지 차트 금지
 
 
