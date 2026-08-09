@@ -85,6 +85,11 @@ class FakeSpringClient:
         self.funnel_calls: list[tuple] = []  # [#290] 현재+직전 기간 2회 호출 기록
         self.account_events_result = AccountEventsResult()  # I-8 기본 빈 응답(rows, #197)
         self.recorded_account_args: tuple | None = None
+        # [#518] bucket 팬아웃은 도구 호출 1회가 I-31 집계를 N번 부른다 — 마지막 인자만
+        # 남기는 recorded_review_stats_args 로는 구간 경계를 검증할 수 없어 전 호출을
+        # 누적한다. review_stats_by_range 는 (from_, to) → 결과 또는 예외 매핑이다.
+        self.review_stats_calls: list[tuple] = []
+        self.review_stats_by_range: dict[tuple, object] | None = None
         self._fail = fail or set()
 
     def _maybe_fail(self, method: str) -> None:
@@ -216,7 +221,14 @@ class FakeSpringClient:
     ):
         self.recorded_brand_id = brand_id
         self.recorded_review_stats_args = (from_, to, product_id, rating)
+        self.review_stats_calls.append((from_, to, product_id, rating))
         self._maybe_fail("get_review_stats")
+        if self.review_stats_by_range is not None:
+            outcome = self.review_stats_by_range.get((from_, to))
+            if isinstance(outcome, Exception):
+                raise outcome
+            if outcome is not None:
+                return outcome
         return getattr(self, "review_stats_result", SellerReviewStats())
 
 
@@ -2283,6 +2295,225 @@ async def test_get_reviews_degrades_on_spring_failure() -> None:
     result = await _call_runtime_tool(get_reviews, {}, fake)
 
     assert result.startswith("Error:")
+
+
+# ── [#518] null content 수신 · 감성 비율 · bucket 추이 ────────────────────────
+
+
+def _review_stats(total: int, average: float | None, dist: dict[str, int]) -> SellerReviewStats:
+    return SellerReviewStats(
+        total_count=total, average_rating=average, distribution=dist, by_product=[]
+    )
+
+
+async def test_get_reviews_renders_null_content_and_nickname() -> None:
+    """[#518] content·authorNickname 이 null 인 행도 목록에 나오고 'None' 을 찍지 않는다.
+
+    별점만 남기는 리뷰가 실재한다(DDL `content TEXT NULL`). 구 스키마는 이 행 하나로
+    조회 전체를 ValidationError → degrade 시켰고, 그걸 고친 뒤에도 폴백이 없으면
+    판매자 화면에 "None" 이 노출되고 워커가 그 행을 불만 유형으로 분류한다.
+    """
+    fake = FakeSpringClient()
+    fake.reviews_result = SellerReviewList(
+        rows=[
+            SellerReviewRow(
+                review_id=9,
+                product_id=3,
+                product_name="여행용 파우치",
+                rating=5,
+                content=None,
+                author_nickname=None,
+                created_at="2026-07-21T12:00:00+09:00",
+            )
+        ],
+        total=1,
+    )
+
+    result = await _call_runtime_tool(get_reviews, {}, fake)
+
+    assert "None" not in result
+    assert "(내용 없음)" in result and "익명" in result
+    assert "★5" in result and "여행용 파우치" in result
+
+
+async def test_get_reviews_stats_mode_reports_sentiment_ratio() -> None:
+    """[#518] 감성 비율은 도구가 계산해 출력한다 — 워커가 암산하면 F2 가 잡는다.
+
+    verifier.check_evidence_grounded 는 finding 의 유의 수치를 도구 출력과 대조하므로,
+    비율이 출력에 없으면 "긍정 62.5%" 서술이 근거 없는 수치로 강등된다.
+    """
+    fake = FakeSpringClient()
+    fake.review_stats_result = _review_stats(48, 3.9, {"5": 20, "4": 10, "3": 6, "2": 8, "1": 4})
+
+    result = await _call_runtime_tool(get_reviews, {"stats": True}, fake)
+
+    assert "긍정(4-5점) 30건 62.5%" in result
+    assert "중립(3점) 6건 12.5%" in result
+    assert "부정(1-2점) 12건 25.0%" in result
+
+
+async def test_get_reviews_stats_mode_omits_sentiment_when_rating_filtered() -> None:
+    """[#518 회귀] rating 을 걸고 온 집계에는 감성 비율을 붙이지 않는다.
+
+    분모가 그 별점 범위라 "부정 100%" 같은 자명한 수가 나오고, #494 가 세운 rating
+    지정 경로의 출력이 회귀한다.
+    """
+    fake = FakeSpringClient()
+    fake.review_stats_result = _review_stats(12, 1.4, {"2": 8, "1": 4})
+
+    result = await _call_runtime_tool(get_reviews, {"stats": True, "rating": "1,2"}, fake)
+
+    assert "감성:" not in result
+    assert "리뷰 집계(별점 1,2 한정)" in result
+
+
+async def test_get_reviews_bucket_splits_period_and_fans_out() -> None:
+    """[#518] bucket 은 도구 호출 1회로 구간별 I-31 집계를 모아 온다."""
+    fake = FakeSpringClient()
+    fake.review_stats_by_range = {
+        ("2026-07-01", "2026-07-07"): _review_stats(10, 4.5, {"5": 7, "4": 2, "1": 1}),
+        ("2026-07-08", "2026-07-14"): _review_stats(6, 2.0, {"2": 4, "1": 2}),
+        ("2026-07-15", "2026-07-15"): _review_stats(0, None, {}),
+    }
+
+    result = await _call_runtime_tool(
+        get_reviews,
+        {
+            "stats": True,
+            "bucket": "weekly",
+            "from_date": "2026-07-01",
+            "to_date": "2026-07-15",
+        },
+        fake,
+        brand_id=12,
+    )
+
+    assert fake.recorded_brand_id == 12
+    assert [(call[0], call[1]) for call in fake.review_stats_calls] == [
+        ("2026-07-01", "2026-07-07"),
+        ("2026-07-08", "2026-07-14"),
+        ("2026-07-15", "2026-07-15"),
+    ]
+    assert "리뷰 추이(주별, 3구간)" in result
+    assert "2026-07-01~2026-07-07 10건 평균 4.5점(부정 1건·긍정 9건)" in result
+    assert "2026-07-15~2026-07-15 0건" in result
+    assert "조회 실패" not in result
+
+
+async def test_get_reviews_bucket_marks_failed_span_without_calling_it_zero() -> None:
+    """[#518] 실패한 구간은 '조회 실패' 다 — '0건' 으로 뭉개면 없는 급락이 서술된다."""
+    fake = FakeSpringClient()
+    fake.review_stats_by_range = {
+        ("2026-07-01", "2026-07-01"): _review_stats(4, 4.0, {"4": 4}),
+        ("2026-07-02", "2026-07-02"): SpringUnavailableError("Spring 콜백 타임아웃(3.0s)"),
+        ("2026-07-03", "2026-07-03"): _review_stats(3, 2.0, {"2": 3}),
+    }
+
+    result = await _call_runtime_tool(
+        get_reviews,
+        {
+            "stats": True,
+            "bucket": "daily",
+            "from_date": "2026-07-01",
+            "to_date": "2026-07-03",
+        },
+        fake,
+    )
+
+    assert not result.startswith("Error:")
+    assert "2026-07-02~2026-07-02 조회 실패" in result
+    assert "2026-07-01~2026-07-01 4건" in result and "2026-07-03~2026-07-03 3건" in result
+    assert "0건과 다릅니다" in result
+
+
+async def test_get_reviews_bucket_all_spans_failed_degrades() -> None:
+    """[#518] 전 구간이 실패하면 부분 성공이 아니라 degrade 다."""
+    fake = FakeSpringClient(fail={"get_review_stats"})
+
+    result = await _call_runtime_tool(
+        get_reviews,
+        {
+            "stats": True,
+            "bucket": "daily",
+            "from_date": "2026-07-01",
+            "to_date": "2026-07-02",
+        },
+        fake,
+    )
+
+    assert result.startswith("Error:")
+
+
+async def test_get_reviews_bucket_requires_stats_mode() -> None:
+    """[#518] 목록 모드로 열면 구간 수 × limit 만큼 원문이 쏟아진다 — 막는다."""
+    fake = FakeSpringClient()
+
+    result = await _call_runtime_tool(
+        get_reviews,
+        {"bucket": "weekly", "from_date": "2026-07-01", "to_date": "2026-07-15"},
+        fake,
+    )
+
+    assert result.startswith("Error:") and "stats=True" in result
+    assert fake.review_stats_calls == []
+
+
+async def test_get_reviews_bucket_requires_explicit_period() -> None:
+    """[#518] 서버 기본 7일은 요청마다 오늘이 달라 버킷 경계를 고정할 수 없다."""
+    fake = FakeSpringClient()
+
+    result = await _call_runtime_tool(get_reviews, {"stats": True, "bucket": "weekly"}, fake)
+
+    assert result.startswith("Error:") and "from_date" in result
+    assert fake.review_stats_calls == []
+
+
+async def test_get_reviews_bucket_rejects_over_limit_before_calling_spring() -> None:
+    """[#518] 상한 초과는 조회 **전에** 거절한다 — 한 번도 왕복하지 않는다."""
+    fake = FakeSpringClient()
+
+    result = await _call_runtime_tool(
+        get_reviews,
+        {
+            "stats": True,
+            "bucket": "daily",
+            "from_date": "2026-07-01",
+            "to_date": "2026-08-31",
+        },
+        fake,
+    )
+
+    assert result.startswith("Error:")
+    assert fake.review_stats_calls == []
+
+
+async def test_get_reviews_bucket_rejects_unknown_unit() -> None:
+    """[#518] 어휘 밖 bucket 은 화이트리스트에서 걸린다(_REVIEW_SORT 와 같은 패턴)."""
+    fake = FakeSpringClient()
+
+    result = await _call_runtime_tool(
+        get_reviews,
+        {
+            "stats": True,
+            "bucket": "yearly",
+            "from_date": "2026-07-01",
+            "to_date": "2026-07-15",
+        },
+        fake,
+    )
+
+    assert result.startswith("Error:")
+    assert fake.review_stats_calls == []
+
+
+async def test_get_reviews_without_bucket_keeps_legacy_output() -> None:
+    """[#518 회귀] bucket 미지정 경로는 팬아웃을 타지 않고 종전 출력 그대로다."""
+    fake = FakeSpringClient()
+
+    result = await _call_runtime_tool(get_reviews, {"stats": True}, fake)
+
+    assert result == "조회 기간에 리뷰가 없습니다. (기준: 최근 7일 기본 적용)"
+    assert fake.review_stats_calls == [(None, None, None, None)]
 
 
 # ── [#297] update_order_status (I-30 발송 처리, §4.19 — ORDER_WRITE_TOOLS 전용) ──

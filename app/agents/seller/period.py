@@ -683,3 +683,59 @@ def parse_period_approval(message: str) -> bool:
     tokens = [token.strip(_TOKEN_TRIM) for token in text.split()]
     tokens = [token for token in tokens if token]
     return bool(tokens) and all(token in _AFFIRMATIVE_TOKENS for token in tokens)
+
+
+# ── 기간 버킷 분할 (이슈 #518 — I-31 리뷰 추이) ────────────────────────────────
+
+# 사용자가 지정하는 버킷 어휘. `charts.py` 의 `_bucket_days` 는 **기간 길이로 자동
+# 선택**하는 별개 축이라 여기 어휘와 겹치지 않는다(그쪽은 좌표 상한 60점을 지키는 게
+# 목적, 이쪽은 "주별로 보여줘" 라는 판매자 요구가 목적).
+BUCKET_UNITS = ("daily", "weekly", "monthly")
+
+
+def split_buckets(
+    date_from: date, date_to: date, unit: str, *, max_buckets: int
+) -> list[tuple[date, date]]:
+    """[from, to] 를 버킷 단위로 잘라 (시작일, 종료일) 목록을 만든다 — 순수 함수.
+
+    경계 규칙:
+    - `daily`·`weekly` 는 **from 앵커 고정창**(1일·7일)이다. 달력 주(월요일 시작)를
+      쓰면 "최근 4주"가 5조각으로 갈라지며 첫 조각이 2~3일짜리로 나와, 판매자가
+      첫 구간을 급락으로 오독한다. `charts._bucket_starts` 도 같은 앵커 규칙이라
+      두 경로의 x축이 어긋나지 않는다.
+    - `monthly` 만 **달력 월 경계**다 — "7월/8월"이라는 판매자 어휘가 곧 경계이고,
+      30일 고정창은 그 어휘와 어긋난다. 첫·마지막 구간은 from/to 로 클립한다.
+
+    마지막 구간은 to 를 넘지 않게 자른다 — 넘겨서 조회하면 I-31 이 기간 밖 리뷰를
+    함께 세어 마지막 버킷만 부풀어 오른다.
+
+    Raises:
+        ValueError: 어휘 밖 unit, from > to, 또는 구간 수가 max_buckets 초과.
+            호출부(도구)가 "Error:" 문자열로 옮긴다 — 이 모듈은 문구만 만들고
+            degrade 판정은 하지 않는다(§4 문구 소유권과 같은 결).
+    """
+    if unit not in BUCKET_UNITS:
+        raise ValueError(
+            f"bucket 은 {'/'.join(BUCKET_UNITS)} 중 하나여야 합니다(받은 값: {unit!r})"
+        )
+    if date_to < date_from:
+        raise ValueError(f"시작일이 종료일보다 뒤입니다({date_from}~{date_to})")
+
+    spans: list[tuple[date, date]] = []
+    cursor = date_from
+    while cursor <= date_to:
+        if unit == "monthly":
+            last_day = calendar.monthrange(cursor.year, cursor.month)[1]
+            end = min(cursor.replace(day=last_day), date_to)
+        else:
+            width = 1 if unit == "daily" else 7
+            end = min(cursor + timedelta(days=width - 1), date_to)
+        spans.append((cursor, end))
+        # 상한 초과는 조기 탈출한다 — 731일(seller_period_max_days) × daily 를
+        # 끝까지 돌고 나서 거절하면 731개 튜플을 헛으로 만든다.
+        if len(spans) > max_buckets:
+            raise ValueError(
+                f"{date_from}~{date_to} 를 {unit} 로 나누면 구간이 {max_buckets}개를 넘습니다"
+            )
+        cursor = end + timedelta(days=1)
+    return spans
