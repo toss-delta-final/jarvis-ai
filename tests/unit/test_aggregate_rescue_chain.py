@@ -112,8 +112,6 @@ def test_rare_rescue_contributions_report_conditional_tail_and_exposure_not_only
     assert first_token["eligible"]["p95"] == 0.0
     assert first_token["contributing"] == {"n": 5, "p50": 9_000.0, "p95": 9_600.0, "p99": 9_600.0}
     assert first_token["exposure"] == {"count": 5, "rate": 0.005}
-    assert first_token["baseline_or_higher_count"] == 3
-    assert first_token["timeout_or_higher_count"] == 0
     assert first_token["max"] == 9_600.0
 
     markdown = aggregate_rescue_chain.render_markdown(result, _settings())
@@ -122,6 +120,22 @@ def test_rare_rescue_contributions_report_conditional_tail_and_exposure_not_only
     assert "9.0s 기준선 근접·도달" in markdown
     csv_rows = aggregate_rescue_chain._csv_rows(result, _settings(), min_samples=3)
     assert ("first_token", "contributing", "timeout_or_higher_count", 0) in csv_rows
+
+
+def test_injected_thresholds_control_both_labels_and_exceedance_counts():
+    result = aggregate_rescue_chain.aggregate_lines(
+        [_line("recommend_pipeline") for _ in range(995)]
+        + [
+            _line("recommend_pipeline", rescue_elapsed_ms=value)
+            for value in (8_500, 8_800, 9_000, 9_300, 9_600)
+        ]
+    )
+    settings = _settings(spring_search_timeout_s=10.0, stream_first_token_timeout_s=40.0)
+
+    markdown = aggregate_rescue_chain.render_markdown(result, settings)
+
+    assert "30.0s 기준선 이상 0건, 40.0s 상한 이상 0건, 최댓값 9600ms" in markdown
+    assert "30.0s 기준선 미만" in markdown
 
 
 @pytest.mark.parametrize(

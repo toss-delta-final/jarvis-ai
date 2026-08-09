@@ -126,9 +126,6 @@ def aggregate_lines(lines: Iterable[str]) -> dict[str, Any]:
             not_delayed_values.append(value)
 
     contributing_values = [value for value in eligible_values if value > 0]
-    settings = get_settings()
-    baseline_ms = settings.spring_search_timeout_s * 3 * 1000
-    timeout_ms = settings.stream_first_token_timeout_s * 1000
 
     chat_records = [record for record in records if record.get("event") == "chat_request"]
     timeout_count = sum(record.get("errorType") == "UPSTREAM_TIMEOUT" for record in chat_records)
@@ -147,9 +144,8 @@ def aggregate_lines(lines: Iterable[str]) -> dict[str, Any]:
         "first_token": {
             "eligible": _stats(eligible_values),
             "contributing": _stats(contributing_values),
+            "contributing_values": contributing_values,
             "exposure": _rate(len(contributing_values), len(eligible_values)),
-            "baseline_or_higher_count": sum(value >= baseline_ms for value in contributing_values),
-            "timeout_or_higher_count": sum(value >= timeout_ms for value in contributing_values),
             "max": max(contributing_values) if contributing_values else None,
             "not_delayed": _stats(not_delayed_values),
             "excluded_invalid": excluded_invalid,
@@ -195,6 +191,17 @@ def _rate_display(value: float | None, n: int, min_samples: int) -> str:
     return "표본 부족 — 판정 보류" if n < min_samples else _percent(value)
 
 
+def _threshold_summary(first_token: dict[str, Any], settings: Any) -> dict[str, int]:
+    """주입 설정 하나로 조건부 분포의 임계 초과 건수를 계산한다."""
+    baseline_ms = settings.spring_search_timeout_s * 3 * 1000
+    timeout_ms = settings.stream_first_token_timeout_s * 1000
+    values = first_token["contributing_values"]
+    return {
+        "baseline_or_higher_count": sum(value >= baseline_ms for value in values),
+        "timeout_or_higher_count": sum(value >= timeout_ms for value in values),
+    }
+
+
 def _proximity(
     contributing: dict[str, int | float | None],
     baseline_ms: float,
@@ -234,6 +241,7 @@ def render_markdown(
     min_samples = settings.degrade_alert_min_samples if min_samples is None else min_samples
     timeout_ms = settings.stream_first_token_timeout_s * 1000
     baseline_ms = settings.spring_search_timeout_s * 3 * 1000
+    thresholds = _threshold_summary(first_token, settings)
     llm_head_baseline_ms = baseline_ms + DECOMPOSE_LLM_HEAD_P95_MS
     lines = [
         "# 구제 체인 실측 집계",
@@ -253,12 +261,12 @@ def render_markdown(
         "",
         "| 그룹 | n | p50(ms) | p95(ms) | p99(ms) | 상한 소모율 | 근접도 |",
         "|---|---:|---:|---:|---:|---:|---|",
-        f"| may_auto_relax=True (빈도 가중) | {eligible['n']} | {_display(eligible['p50'])} | {_display(eligible['p95'])} | {_display(eligible['p99'])} | {_percent(eligible['p95'] / timeout_ms if eligible['p95'] is not None else None)} | {_proximity(first_token['contributing'], baseline_ms, timeout_ms, min_samples, eligible['n'], first_token['baseline_or_higher_count'], first_token['timeout_or_higher_count'])} |",
+        f"| may_auto_relax=True (빈도 가중) | {eligible['n']} | {_display(eligible['p50'])} | {_display(eligible['p95'])} | {_display(eligible['p99'])} | {_percent(eligible['p95'] / timeout_ms if eligible['p95'] is not None else None)} | {_proximity(first_token['contributing'], baseline_ms, timeout_ms, min_samples, eligible['n'], thresholds['baseline_or_higher_count'], thresholds['timeout_or_higher_count'])} |",
         f"| 구제 기여 > 0 (조건부) | {first_token['contributing']['n']} | {_display(first_token['contributing']['p50'])} | {_display(first_token['contributing']['p95'])} | {_display(first_token['contributing']['p99'])} | {_percent(first_token['contributing']['p95'] / timeout_ms if first_token['contributing']['p95'] is not None else None)} | 실제 진입 턴 분포 |",
         f"| may_auto_relax=False (별도, first-token 비기여) | {not_delayed['n']} | {_display(not_delayed['p50'])} | {_display(not_delayed['p95'])} | {_display(not_delayed['p99'])} | - | 분모에서 제외 |",
         "",
         f"> 이벤트별 합집합 내역: zero_result {first_token['event_counts']['recommend_zero_result']}건 / pipeline {first_token['event_counts']['recommend_pipeline']}건. 결측·형식 오류 제외 | {first_token['excluded_invalid']}건.",
-        f"> 노출 규모: 구제 기여 > 0은 {first_token['exposure']['count']} / {eligible['n']} ({_percent(first_token['exposure']['rate'])}); {baseline_ms / 1000:.1f}s 기준선 이상 {first_token['baseline_or_higher_count']}건, {timeout_ms / 1000:.1f}s 상한 이상 {first_token['timeout_or_higher_count']}건, 최댓값 {_display(first_token['max'])}ms.",
+        f"> 노출 규모: 구제 기여 > 0은 {first_token['exposure']['count']} / {eligible['n']} ({_percent(first_token['exposure']['rate'])}); {baseline_ms / 1000:.1f}s 기준선 이상 {thresholds['baseline_or_higher_count']}건, {timeout_ms / 1000:.1f}s 상한 이상 {thresholds['timeout_or_higher_count']}건, 최댓값 {_display(first_token['max'])}ms.",
         f"> 비교 기준: 구제 3단 기준선 {baseline_ms / 1000:.1f}s, 선행 LLM head 포함 기준선 {llm_head_baseline_ms / 1000:.1f}s, 설정 first-token 상한 {timeout_ms / 1000:.1f}s. {_sample_text(eligible['n'], min_samples)}.",
         "",
         "## 체인 진입 빈도",
@@ -284,6 +292,7 @@ def _csv_rows(
 ) -> list[tuple[str, str, str, object]]:
     """Markdown 수치와 같은 long-format CSV 행을 만든다."""
     rows: list[tuple[str, str, str, object]] = []
+    thresholds = _threshold_summary(result["first_token"], settings)
     for metric in ("total_lines", "accepted_records", "skipped_lines"):
         rows.append(("overview", "all", metric, result[metric]))
     for group, stats in (
@@ -300,8 +309,12 @@ def _csv_rows(
         ("first_token", "contributing", metric, result["first_token"]["exposure"][metric])
         for metric in ("count", "rate")
     )
-    for metric in ("baseline_or_higher_count", "timeout_or_higher_count", "max"):
-        rows.append(("first_token", "contributing", metric, result["first_token"][metric]))
+    for metric, value in [
+        ("baseline_or_higher_count", thresholds["baseline_or_higher_count"]),
+        ("timeout_or_higher_count", thresholds["timeout_or_higher_count"]),
+        ("max", result["first_token"]["max"]),
+    ]:
+        rows.append(("first_token", "contributing", metric, value))
     for metric, stats in result["chain_entry"].items():
         if metric == "zero_result_turns":
             rows.append(("chain_entry", "zero_result", metric, stats))
