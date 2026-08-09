@@ -44,6 +44,7 @@ from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessageChunk, HumanMessage
 from pydantic.alias_generators import to_camel
 
+from app.agents.seller import period_confirm as seller_period_confirm
 from app.agents.seller import thread as seller_thread
 from app.agents.seller.checkpoint import get_checkpointer
 from app.agents.seller.context import SellerContext
@@ -51,8 +52,19 @@ from app.agents.seller.history import apply_recommendation
 from app.agents.seller.hitl import DraftRecord, confirm_draft, start_draft, validate_draft
 from app.agents.seller.middleware import StreamingOutputGuard, check_scope, mask_output
 from app.agents.seller.models import SellerRole, seller_trace_model_metadata
-from app.agents.seller.orchestrator import PipelineResult, route_question, run_analysis_pipeline
-from app.agents.seller.pipeline import APPLY_GUIDE, parse_apply_message, split_report_summary
+from app.agents.seller.orchestrator import (
+    PipelineResult,
+    route_question,
+    run_analysis_pipeline,
+    run_resolved_pipeline,
+)
+from app.agents.seller.period import disclosure_text, parse_period_approval, resolve_from_message
+from app.agents.seller.pipeline import (
+    APPLY_GUIDE,
+    format_general_input,
+    parse_apply_message,
+    split_report_summary,
+)
 from app.agents.seller.schemas import DraftProposal
 from app.agents.seller.workers import build_general_agent, build_product_agent
 from app.api.deps import require_seller
@@ -294,6 +306,9 @@ async def _general_stream(
     - scope 선차단: 미들웨어(end 점프)가 주입하는 거절 메시지는 astream
       messages 모드에서 모델 청크로 흐르지 않으므로, 코드에서 같은 판정점
       (check_scope)으로 거절 문안을 직접 token emit 한다.
+    - [#346] 기간 선해결: 환산은 period.py 소관이고 프롬프트는 주어진 from/to 를 쓰기만
+      한다. 해석 불가 기간은 LLM·도구 호출 **앞에서** 되묻기로 끝난다 — 분석 레인의
+      resolve_plan 실패 → clarification 과 같은 자리다.
     - 출력 검사(§10-⑥): 요청 단위 StreamingOutputGuard가 Unicode 문맥과
       청크 경계 시크릿 prefix를 보류해 확정된 안전 조각만 내보낸다.
     - 오류: 스트림 내부 실패는 error 이벤트(LLM_TIMEOUT/INTERNAL) 후 종료(§2.7).
@@ -311,6 +326,27 @@ async def _general_stream(
         yield _token(refusal)
         yield _done("keep")
         return
+
+    # [#346] 기간 환산 — 프롬프트가 하던 일을 코드로 옮겼다. 여기서 끝내야 상한·0/음수
+    # 가드가 general 레인에도 걸리고("최근 999999일"), 분석 레인과 같은 (from, to) 가
+    # 나온다. 순수 계산이라 아래 레인 상한(seller_general_timeout_s) 밖이어도 무해하다.
+    settings = get_settings()
+    try:
+        resolution = resolve_from_message(
+            request.message,
+            today=date.today(),
+            recent_default_days=settings.seller_recent_days_default,
+            max_days=settings.seller_period_max_days,
+        )
+    except ValueError as exc:
+        # 되묻기 문구는 period.py 가 만든다(§4.2 문구 소유권) — 여기서 가공하지 않는다.
+        yield _token(str(exc))
+        yield _done("keep")
+        return
+    if resolution.any_confirmation_needed:
+        # 분석 레인처럼 확인 대기를 걸지 않고 **고지**만 한다 — 근거는
+        # period.disclosure_text docstring(오해석 비용 비대칭, DESIGN §7).
+        yield _token(disclosure_text(resolution) + "\n\n")
 
     queue: asyncio.Queue[object] = asyncio.Queue()
 
@@ -352,7 +388,13 @@ async def _general_stream(
                 first_text = True
                 with trace_span("llm.seller.general", "llm", _llm_metadata("worker")):
                     async for item in agent.astream(
-                        {"messages": [HumanMessage(content=request.message)]},
+                        {
+                            "messages": [
+                                HumanMessage(
+                                    content=format_general_input(request.message, resolution)
+                                )
+                            ]
+                        },
                         config=seller_thread.chat_config(context, request.thread_id),
                         context=context,
                         stream_mode="messages",
@@ -460,6 +502,7 @@ async def _analysis_stream(
     recent_turns: list[seller_thread.Turn],
     *,
     request_id: str | None = None,
+    pending: seller_period_confirm.PendingPeriod | None = None,
 ) -> AsyncIterator[str]:
     """분석 레인 (4-1b) — 파이프라인 emit(진행)을 progress 로, 최종 답변을 token 으로 중계.
 
@@ -468,10 +511,15 @@ async def _analysis_stream(
       구조화 `report` 이벤트 1회(우측 패널 재료, 이슈 #296) → 패널 교체 여부는
       kind 로 갈린다(아래 panel).
     - 패널: kind=="report" 만 우측 교체(replace) — 되묻기(clarification)·사과(apology)·
-      거절(refused)은 대화이므로 유지(keep). (FE 요구 2·3 — "화면 바뀔 질문만" 교체.)
+      거절(refused)·기간 확인(period_confirmation)은 대화이므로 유지(keep).
+      (FE 요구 2·3 — "화면 바뀔 질문만" 교체.)
     - **예외 2경우**(planner 장애·1차 report 실패)만 여기로 전파 — 사과 token 후
       error 로 종료(REVIEW-STAGE3 §5-2). error 종료는 패널 유지(done 없음).
     - 진행 문구는 파이프라인 내부 상수라 마스킹 불필요, 최종 text 는 mask_output 적용.
+
+    [#345] pending 이 주어지면 **기간 확인 승인 재개**다 — planner 를 건너뛰고 저장된
+    ResolvedPlan 으로 곧바로 실행한다(DESIGN-SELLER-PERIOD §6). 와이어 이벤트 순서와
+    패널 규칙은 신규 질문과 완전히 같다 — FE 는 이 턴이 재개인지 알 필요가 없다.
     """
     request_id = _resolve_request_id(request_id)
     _set_trace_lane("analysis")
@@ -484,6 +532,12 @@ async def _analysis_stream(
     async def run_pipeline():
         """Keep the analysis trace token and all descendants in one task context."""
         with trace_span("seller.graph.analysis", "chain"):
+            if pending is not None:
+                # 원 질문(pending.question)으로 실행한다 — 승인 발화("응")는 질문이 아니라
+                # 워커 입력·이력에 그대로 쓰면 맥락이 사라진다.
+                return await run_resolved_pipeline(
+                    pending.question, pending.plan, context, emit=emit
+                )
             return await run_analysis_pipeline(
                 request.message,
                 context,
@@ -540,7 +594,19 @@ async def _analysis_stream(
                 retryable=True,
             )
             return
+        # [#345] 기간 확인 대기 저장 — token 을 내보내기 **전에** 한다. 저장에 실패하면
+        # 후속 "응" 이 신규 질문으로 처리되는데(degrade, DESIGN §5.4), 그 사실을 모른 채
+        # 확인 문구만 나가는 것보다 순서를 맞춰 두는 편이 추적하기 쉽다.
+        if result.kind == "period_confirmation" and result.resolved is not None:
+            await seller_period_confirm.save_pending(
+                context,
+                request.thread_id,
+                question=request.message,
+                plan=result.resolved,
+            )
         # 대화 스레드 기록(best-effort) — 되묻기 포함 최종 문안이 후속 발화의 맥락이 된다.
+        # 승인 재개 턴은 사용자 발화가 "응" 이라 그대로 기록한다 — 무엇에 답했는지는
+        # 직전 턴(확인 문구)이 스레드에 남아 있어 맥락이 이어진다.
         await seller_thread.record_turn(context, request.thread_id, request.message, result.text)
         yield _token(result.text)
         # report 는 kind=="report" 일 때 정확히 1회 — token(산문) 뒤·done 앞
@@ -987,6 +1053,30 @@ async def _seller_stream(
             yield line
         return
 
+    # ①.7 기간 확인 대기 선판정 (코드 판정, LLM 0회) — #345, DESIGN-SELLER-PERIOD §5.5.
+    # ②(scope)보다 **앞**이어야 한다: "응" 은 판매 도메인 어휘가 아니라 scope 필터에
+    # 걸릴 수 있다. ①·①.5 보다는 뒤다 — 그 둘이 더 명시적인 신호(구조화 필드·정형
+    # 발화)라 기간 확인이 가로채면 안 된다.
+    # 대기가 있을 때만 승인 판정을 돌린다 — 대기 없는 상태의 "응" 을 승인으로 오인할
+    # 여지를 구조적으로 없앤다. 승인이 아니면(수정·새 질문 전부) 대기를 폐기하고
+    # 아래 일반 흐름으로 흘린다(3경로 — 수정 전용 파서를 두지 않는 이유는 DESIGN §5.1).
+    pending_period = await seller_period_confirm.load_pending(context, request.thread_id)
+    if pending_period is not None:
+        if parse_period_approval(request.message):
+            # 승인은 1회성이다 — 실행 전에 폐기해 실패하더라도 재승인으로 두 번 돌지 않는다.
+            await seller_period_confirm.clear_pending(context, request.thread_id)
+            recent_turns = await seller_thread.load_recent_turns(context, request.thread_id)
+            async for line in _analysis_stream(
+                request,
+                context,
+                recent_turns,
+                request_id=request_id,
+                pending=pending_period,
+            ):
+                yield line
+            return
+        await seller_period_confirm.clear_pending(context, request.thread_id)
+
     # ② scope 선차단 (LLM 0회) — 전 레인 공통 코드 경로. 도메인 밖 = 대화(패널 유지).
     # 거절 턴은 스레드에 기록하지 않는다 — 도메인 밖 장문이 맥락을 오염시키지 않게.
     refusal = check_scope(request.message)
@@ -1116,7 +1206,9 @@ async def seller_chat(
     return await open_stream(
         http_request,
         registry_key(identity, request.thread_id),
-        lambda: _seller_stream(request, identity, request_id=request_id),
+        # [#427] 판매자 레인은 구제 체인 공유 예산을 쓰지 않는다 — 받아서 무시한다(시그니처만
+        # open_stream 의 새 계약에 맞춘다).
+        lambda _turn_started_at: _seller_stream(request, identity, request_id=request_id),
         observer=observation,
         role="seller",
     )

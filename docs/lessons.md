@@ -13,6 +13,271 @@
 
 ---
 
+## [2026-08-09] 범위 대조는 선언된 건수보다 열거된 식별자를 우선한다
+- 증상: #472 정본 인덱스는 범위를 44건이라 표기했지만, 실제 열거는 internal 36건·chat 6건·S-4·P-4/P-5·E-1로 46건이었다.
+- 원인: 요약 집계와 개별 범위 목록이 독립적으로 수정돼 산술 검증이 빠졌다.
+- 규칙: 전수 대조표는 식별자 열거를 기준으로 만들고, 선언 건수와 다르면 누락시키지 말고 불일치와 산식을 감사 결과에 기록한다.
+- 관련: `docs/api-spec-canonical-audit.md` #472 범위 기준
+
+---
+
+## [2026-08-09] 로컬 pytest 무더기 실패는 워크트리 환경을 먼저 분리해 재현한다
+- 증상: #472에서 로컬 `uv run pytest`가 38건 실패했다.
+- 원인: 워크트리의 `.env`가 테스트 환경에 개입했지만, CI는 `.env` 없이 실행한다.
+- 규칙: 무더기 실패 시 자기 변경이나 dev 환경을 의심하기 전에 `.env`를 내용을 열지 않고 잠시 치운 뒤 재현하고 반드시 되돌린다.
+- 관련: #472 검증 기록
+
+---
+
+## [2026-08-09] 유닛 테스트는 로컬 BE가 살아 있어도 TCP를 열면 안 된다
+- 증상: 로컬 Spring BE가 8080에서 실행 중이고 `.env`의 내부 토큰이 채워지면 재구매·완화 유닛
+  테스트가 실제 응답을 받아 CI와 다른 단언 결과를 냈다.
+- 원인: PG 연결은 `tests/unit/conftest.py`에서 구조적으로 격리했지만, httpx/anyio가 만드는 TCP
+  연결에는 같은 차단 경계가 없었고 `INTERNAL_API_TOKEN`도 공통 환경 초기화에서 빠져 있었다.
+- 규칙: 유닛 테스트는 `tests/unit/` 범위에서만 실제 TCP를 `ConnectionRefusedError`로 거부하고,
+  로컬 서비스·토큰 유무와 무관하게 CI의 연결 실패 degrade 경로를 검증한다.
+- 관련: `tests/conftest.py` · `tests/unit/conftest.py` · `tests/unit/test_network_isolation.py` · #474
+
+## [2026-08-09] datasetHash 규칙을 바꾸면 연결된 baseline을 즉시 재생성한다
+- 증상: `audit/holdout_runs.jsonl`을 해시 대상에서 제외한 뒤 datasetHash는 바뀌었지만,
+  `dev-v2.3`와 `trivial_empty` baseline은 이전 hash를 계속 가리켰다.
+- 원인: 재현 가능한 파일 목록을 고친 후 baseline 산출물의 `datasetHash` 연결을 재검증하지 않았다.
+- 규칙: datasetHash 입력·제외 규칙을 바꾼 커밋에서는 모든 현재 baseline을 재생성하고, 산출물의
+  hash가 manifest와 같은지 확인한다. append-only 런타임 로그는 해시에서 제외한다.
+- 관련: `evals/goldenset/refresh_manifest.py::HASH_EXCLUDED_PATHS` ·
+  `tests/unit/test_goldenset_audit.py` · #474
+
+## [2026-08-08] 로컬 BE 가 떠 있으면 유닛 테스트가 라이브 BE 를 친다 — `dev` 나 내 변경을 의심하기 전에 `.env` 를 무력화해 재현하라
+- 증상: 문서 2개만 고친 상태에서 `uv run pytest` 가 **38건 실패**했다(재구매 지목·완화 경로).
+  같은 커밋이 6시간 전엔 4829 passed 였고 **CI 도 초록**이었다. 실패는 결정적이었고(ordering
+  무관, `-p no:randomly` 동일) 문서를 stash 해도 그대로였다.
+- 원인: 누군가 3시간 전 로컬에 **Spring BE(:8080)·mariadb·redis 를 띄웠고**, 이 worktree `.env`
+  에 유효한 `INTERNAL_API_TOKEN` 이 있어 **유닛 테스트가 라이브 BE 를 호출**했다. 그래서 주입한
+  가짜 검색 대신 실 카탈로그 상품 id 가 push 페이로드에 실렸다. `tests/conftest.py` 는
+  `OPENAI/ANTHROPIC/GOOGLE_API_KEY` 만 비우고 **`INTERNAL_API_TOKEN` 은 비우지 않는다** —
+  CI 는 BE 가 없어서 이 갭이 드러나지 않았다.
+- 규칙: 로컬 pytest 가 CI 와 다르게 깨지면 **코드보다 환경을 먼저 의심한다**. 순서는
+  (1) `Settings()` vs `Settings(_env_file=None)` 의 **차이 나는 필드 이름만** 뽑아 본다
+  (값 출력 금지 — 시크릿이 섞인다), (2) 후보를 하나씩 빈 값으로 덮어 이분한다
+  (`INTERNAL_API_TOKEN= uv run pytest ...`), (3) `docker ps` 로 로컬 BE·DB 기동 여부를 본다.
+  `.env` 를 읽거나 옮기지 말 것 — 덮어쓰기(override)만으로 판정된다.
+- 관련: `tests/conftest.py`(키 3종만 무력화), `app/core/config.py::Settings.model_config`
+  (`env_file=".env"`, CWD 상대), #395 작업 중 발견
+## [2026-08-08] `ruff format` 을 인자 없이 돌려 무관한 파일 30개가 diff 에 딸려 왔다
+- 증상: #438 작업 중 `CLAUDE.md` "자동 정리: `uv run ruff check --fix && uv run ruff format`" 을
+  문자 그대로 인자 없이(= 저장소 전체 대상) 돌렸더니, 이번 이슈와 무관한 파일 30개가 순수 포맷
+  변경으로 딸려 들어왔다 — `data-analysis/generate_dummy.py` 만 +1189줄,
+  `docs/research/research-275-harness/*`·`evals/ablation/*`·`evals/scoring/*`·여러
+  `tests/unit/test_*.py`·`.github/scripts/review_mode.py`. `git status --porcelain` 으로 발견해
+  `git checkout --` 로 그 파일들만 원복했다.
+- 원인: 저장소에 **사전 존재하던 포맷 드리프트**다. CI 와 pre-commit 훅이 실제로 강제하는 것은
+  다르다 — CI 는 `ruff check` 만 돌고(`ruff format --check` 는 안 돈다), pre-commit 의
+  `ruff-format` 훅은 **스테이징된 파일에만** 걸린다. 그래서 한 번도 커밋 경로를 타지 않은
+  파일들(분석 스크립트·연구 하네스 등)은 포맷되지 않은 채로 남아 있고, 그 상태에서 전체
+  `ruff format` 을 돌리면 무관한 파일이 한꺼번에 재포맷된다. `CLAUDE.md` 의 문구를 그대로
+  따르면 누구나 이걸 밟는다.
+- 왜 나쁜가: 한 커밋 = 한 논리 단위 규약이 깨지고, 리뷰어가 실제 변경을 포맷 노이즈 속에서
+  찾아야 하며, 무관한 파일을 건드려 다른 레인과 충돌할 수 있다.
+- 규칙: 커밋 전 자동 정리는 **이번에 실제로 고친 파일에만 스코프를 좁혀** 건다
+  (`uv run ruff format <파일들>`). 전체 대상 `ruff format` 은 "포맷 드리프트 정리" 를 목적으로
+  하는 **별도 PR** 에서만 돌린다. 돌렸다면 `git status --porcelain` 으로 의도 밖 파일이 없는지
+  반드시 확인하고, 있으면 `git checkout --` 로 되돌린 뒤 커밋한다. (`uv run ruff check` 는
+  전체로 돌려도 안전하다 — 이번 사고는 `format` 쪽이다.)
+- 관련: #438 · `CLAUDE.md` "커밋 워크플로" 2단계 · `.pre-commit-config.yaml`(ruff-format 은
+  스테이징 파일 한정) · `.github/workflows` 의 CI 는 `ruff check` 만 실행
+
+## [2026-08-08] 응답 픽스처 계약 테스트는 "요청 파라미터 누락"을 못 잡는다 (#494)
+- 증상: `get_reviews(stats=True, rating="1,2")` 가 rating 을 쿼리스트링에 **안 실어** 전 별점
+  합산 `byProduct` 를 받아왔다. HTTP 200, 예외 없음, 숫자도 자연스러움 — 워커는 그것을
+  "1–2점이 몰린 상품"으로 서술했다. 명세(I-31)가 대표 사용례로 든 질문이 조용히 틀렸다.
+  `passed=True` 로 끝나므로 **로그·구조화 트레이스에도 안 남는다.**
+- 원인: `SpringClient.get_review_stats` 시그니처에 `rating` 이 아예 없었다. 도구 층은 인자를
+  받아서(`tools.py` 시그니처·docstring 에 존재) 클라이언트에 넘기지 않고 **버렸다** — 무시
+  사실을 출력에 적지도 않았다. 기존 테스트는 응답 JSON 픽스처를 고정해 파싱만 검증해서,
+  요청이 무엇을 보냈는지는 아무도 보지 않았다.
+- 규칙:
+  - **필터 인자를 받는 클라이언트 메서드에는 요청 쿼리스트링 스냅샷 테스트를 별도로 둔다.**
+    응답 shape 검증(픽스처 계약 테스트)과 요청 파라미터 검증은 서로 다른 실패를 잡는다 —
+    후자가 없으면 인자 누락이 200 뒤에 숨는다. 실린 것뿐 아니라 **안 실려야 할 것**
+    (집계 모드의 sort/limit/offset)도 같이 못 박는다.
+  - 도구가 인자를 받아 하위로 안 넘길 때 선택지는 둘뿐 — **넘기거나, 무시를 코드로 강제하고
+    그 사실을 출력 문자열에 적거나.** 조용히 버리는 세 번째는 없다
+    (선례: `get_order_events` 의 `ignored_status_note`).
+  - 집계 결과를 문장으로 내보낼 때는 **어떤 필터가 적용된 집계인지 스코프를 함께 적는다.**
+    "리뷰 집계: 총 18건"과 "리뷰 집계(별점 1,2 한정): 총 18건"은 워커에게 전혀 다른 사실이다.
+  - 0건 응답도 같은 함정 — "리뷰가 없습니다"와 "별점 1,2 리뷰가 없습니다"를 구분한다.
+- 관련: `app/services/spring_client.py` `get_review_stats`, `app/agents/seller/tools.py`
+  `get_reviews`, `docs/api-spec.md` §4.20(I-31), 이슈 #494
+
+## [2026-08-08] TTL 만료를 엄격 부등호로 재면 판정이 시계 분해능에 걸린다 (리눅스만 통과)
+- 증상: `period_confirm.load_pending` 의 TTL 테스트(`test_pending_expires_after_ttl`, ttl=0)가
+  **리눅스 CI 에서는 늘 통과하는데 Windows 로컬에서 실패**했다 — 만료됐어야 할 대기가
+  그대로 돌아왔다. #345 에서 들어온 코드이고 #346 작업 중 로컬 실행에서 처음 드러났다.
+- 원인: `datetime.now(UTC) - created_at > ttl` 의 **엄격 부등호**. ttl=0 이면 "경과가 0보다
+  커야 만료" 라는 뜻이 되는데, 저장→조회가 인메모리 체크포인터라 마이크로초 안에 끝난다.
+  Windows 의 기본 시스템 타이머 틱은 ~15.6ms 라 두 `now()` 가 **같은 값**을 반환해 경과가
+  정확히 0 이 되고 만료 판정이 안 선다. 리눅스는 µs 분해능이라 항상 양수가 나와 가려졌다.
+  "시간이 흐른다" 를 코드가 암묵적으로 가정했고, 그 가정이 플랫폼마다 다른 값이었다.
+- 규칙: 만료·쿨다운·디바운스처럼 **경과 시간을 임계와 비교**할 때 경계를 포함할지(`>=`)
+  배제할지(`>`)를 의식적으로 고른다 — 임계 0 이 "즉시"를 뜻해야 하면 `>=` 다. 그리고
+  "두 번의 `now()` 사이에는 시간이 흐른다"를 전제로 테스트를 쓰지 않는다: 그건 OS 타이머
+  분해능에 의존하는 가정이고, 리눅스 CI 가 초록이어도 개발자 머신에서 깨진다.
+- 관련: `app/agents/seller/period_confirm.py::load_pending` · 같은 형태가
+  `hitl.py:527`(draft TTL)에도 있으나 ttl=0 경로가 없어 현재는 드러나지 않는다 · #345·#346
+
+## [2026-08-08] 머지 여부를 확인하면서 `git branch -r --contains` 와 페이지 요약을 "독립된 두 근거"로 착각했다
+- 증상: #346 착수 전 선행 조건(#345 머지)을 확인하면서 **"PR #429 는 아직 open"** 이라고 보고했다.
+  실제로는 그날 `dev` 로 머지된 뒤였다. 사용자가 PR 상태를 직접 확인하고 나서야 정정했고,
+  그 사이 "머지될 때까지 대기 vs `feat/345` 위에 스택" 이라는 **있지도 않은 선택지**를 놓고
+  설계 논의를 한 턴 낭비했다.
+- 원인: 근거가 둘이었지만 **같은 결함을 공유**했다. (1) 페이지 요약이 오래된 상태를 반환했고,
+  (2) 교차 검증으로 쓴 `git branch -r --contains <sha>` 는 **로컬 원격 참조**만 본다. 그 직전
+  `git fetch` 가 네트워크 차단(403)으로 실패한 것을 보고도, 그 실패가 (2)의 전제를 무너뜨린다는
+  연결을 짓지 않았다. 두 근거가 모두 "오래된 스냅샷"이라는 하나의 원인에서 나온 셈이라,
+  일치하는 것이 확증이 아니라 **같은 오류의 중복**이었다.
+- 규칙: 원격 상태(머지·브랜치 존재·태그)를 판단할 때는 **`git fetch` 가 성공했는지 먼저 확인**하고,
+  실패했으면 `origin/*` 기반 판정을 근거로 쓰지 않는다 — "fetch 불가"는 "확인 못 함"이지
+  "없음"이 아니다. 교차 검증을 셀 때는 근거의 개수가 아니라 **실패 원인이 서로 독립인지**를 센다:
+  같은 캐시·같은 스냅샷·같은 네트워크 경로를 공유하는 두 근거는 하나로 친다.
+- 관련: #346 착수 · PR #429(#345) · `git worktree`/`origin/dev` 확인 절차
+
+---
+
+## [2026-08-08] 하나의 명세 개정이 여러 I-번호에 걸치면, 반영한 것 말고 **안 한 것**을 세야 한다
+- 증상: #481 이 노션 2026-08-06 개정을 반영하면서 I-8·I-14 만 손보고 **I-16 을 빠뜨렸다**(#487).
+  그 개정의 핵심이 "회원 재식별 키(memberId)를 판매자 LLM 표면에서 걷어낸다" 였는데, I-16
+  `get_churn_cohort` 요약은 계속 `[41] 마지막 활동 …` 로 원시 memberId 를 실었다. 노션 I-16 은
+  "I-8·I-14 와 동시 배포(분리 시 그 사이 기간 개인정보 노출 지속)" 를 명시했으므로, #481 이
+  막으려던 노출이 정확히 한 경로로만 그대로 열린 채 배포된 것이다.
+- 원인: 두 가지가 겹쳤다. ① 개정 범위를 "이슈 제목에 적힌 I-번호"(I-14·I-8)로 잡고, 개정
+  문서가 건드리는 I-번호 전체를 역으로 세지 않았다 — I-16 은 #481 의 api-spec 개정문에
+  `returnReasonsTop` 단위 파급으로 **이름이 언급되기까지 했는데** 그게 "확인했다"는 착각을 줬다.
+  ② 공유돼야 할 규약 문구(customerLabel 주의)가 `_ORDER_LOG_RULES_NOTE` 안에 I-14 기록 규칙과
+  **섞여 박혀 있어** 재사용 지점이 없었다. 재사용 가능한 상수였다면 "이 상수를 쓰는 곳이 한
+  군데뿐"이라는 사실 자체가 누락 신호였을 것이다.
+- 규칙:
+  - 정본(노션) 개정 하나를 반영할 때는 **그 개정 문서가 언급하는 I-번호를 전부 나열해
+    체크리스트로 만들고**, 각 항목에 "반영함 / 해당 없음(이유)" 중 하나를 붙인다. 이슈 제목의
+    번호만 따라가지 않는다. 개정문에 "동시 배포" 문구가 있으면 분리 반영은 그 자체로 계약 위반이다.
+  - 여러 계약 경로가 공유하는 규약 문구는 **처음부터 상수로 뽑아** 각 도구 출력에 부착한다.
+    한 도구의 노트 안에 섞어 넣으면 두 번째 경로에서 복붙본이 갈라지거나(규약이 낡음),
+    이번처럼 아예 누락된다.
+  - 개인정보 관련 필드 교체는 **폴백을 만들지 않는다** — 신 필드 결측 시 구 필드로 되돌리면
+    "미배포 구간에는 원래대로 노출"이 되어 차단 자체가 무의미해진다. 결측은 `?` 로 떨어뜨리고,
+    그 상태를 회귀 테스트로 고정한다(구응답 스텁 → 요약에 원시 키 부재 단언).
+- 관련: `app/agents/seller/tools.py`(`_CUSTOMER_LABEL_NOTE`·`get_churn_cohort`),
+  `app/schemas/spring.py`(`ChurnMember`), `docs/api-spec.md` §4.4 I-16(v0.29.1), #481·#487
+
+---
+
+## [2026-08-08] 명세 개정이 폐기한 규정이 프롬프트·주석에 남으면 미반영이 아니라 LLM 에 대한 능동적 오정보다
+- 증상: I-13 `purchaseComplete` 산출 규정은 2026-07-31 에 "이벤트 기준, 권위는 I-6/I-14"
+  → "주문 기준 집계(`order_item × product × brand`, PAID, `COUNT(DISTINCT order_id)`)" 로
+  개정됐다(jarvis-backend#62 근본 수정 배포 / #196). 그런데 구 규정 문구가 코드에 **3개월간
+  잔존**해, `get_behavior_events` 도구 출력 말미에 상시 부착되고 behavior·abuse 워커
+  프롬프트에 박힌 채 LLM 에게 "이 값은 0 일 수 있으니 근거로 쓰지 말라"고 안내하고 있었다.
+  워커는 실재하는 구매 데이터를 신뢰 불가로 취급하고 다른 도구로 우회한다 — **데이터가
+  없어서 못 쓰는 게 아니라, 우리가 쓰지 말라고 시켜서 안 쓴 것**이다.
+- 원인: 개정 작업이 "새 규정을 어디에 반영할까"(추가 지점)만 보고 "구 규정이 어디에
+  적혀 있나"(제거 지점)를 grep 하지 않았다. 게다가 잔존 지점이 이슈에 적힌 3곳이 아니라
+  **6곳**이었다 — 도구 상수(`tools.py`)·워커 프롬프트 2종(`prompts.py` ABUSE/BEHAVIOR)·
+  스키마 docstring(`spring.py`)·군집 모듈 docstring(`segmentation.py`)·계약 사본
+  (`docs/api-spec.md` §4.4 I-13). 특히 **주** 프롬프트인 BEHAVIOR_PROMPT 와 계약 사본이
+  이슈 목록에서 빠져 있었다. 기존 테스트는 전부 "구 문구가 **있는지**"를 어설션해서
+  (`assert "권위는 매출 조회(I-6)" in result`) 드리프트를 잡기는커녕 **고정하고** 있었다.
+- 규칙: (1) 계약·명세를 개정하면 **폐기되는 문구를 문자열로 grep** 해 잔존 지점을 전부
+  세고 같은 PR 에서 지운다 — 코드뿐 아니라 프롬프트·docstring·`docs/api-spec.md` 사본까지.
+  이슈에 적힌 목록을 그대로 믿지 말고 직접 grep 한다. (2) LLM 에 주입되는 문구를 바꿀 때는
+  "새 문구가 있다"는 어설션만 두지 말고 **"폐기 문구가 없다"는 역방향 어설션**을 함께 남긴다
+  — 존재 어설션은 드리프트를 못 잡고, 문구가 재작성될 때마다 리터럴만 갱신되며 살아남는다.
+  (3) 부재 검사의 범위는 **LLM 이 실제로 읽는 표면**(도구 출력 문자열·프롬프트 상수)으로
+  한정한다. 파일 단위 grep 으로 짜면 "구 규정은 폐기됐다"고 남긴 개정 이력·주석까지 잡혀
+  결국 이력을 못 남기게 된다. (4) 폐기 규정을 근거로 세웠던 **판단 게이트**도 함께 걷어낸다
+  — BEHAVIOR_PROMPT 에는 "구매 관련 판정은 퍼널과 교차 확인한 뒤에만 warning 이상으로
+  올린다"는 게이트가 있었고, 전제가 사라진 뒤에도 남으면 근거 없이 워커 민감도만 깎는다.
+- 관련: `app/agents/seller/tools.py::_BEHAVIOR_PURCHASE_RULES_NOTE`(구
+  `_BEHAVIOR_AUTHORITY_NOTE`) · `app/agents/seller/prompts.py`(BEHAVIOR/ABUSE) ·
+  `app/schemas/spring.py::BehaviorEventsResult` · `app/agents/seller/analysis/segmentation.py` ·
+  `docs/api-spec.md` §4.4 I-13(v0.29.2) · `tests/unit/test_seller_tools.py::
+  test_behavior_surfaces_drop_deprecated_purchase_wording` · #488
+
+## [2026-08-07] "얼마나 좁힐지" 계산에 하한만 걸고 "이미 지났으면" 을 안 걸면 좁히기가 음수를 낸다
+- 증상: #427 리뷰(오케스트레이터 직접 재현)가 `rescue_deadline` 이 이미 지난 턴(과거
+  `turn_started_at`)에서 `narrow_search_budget` 이 **음수 예산**을 받는 결함을 잡았다.
+  `_stage_budget` 은 `granted = min(spring_search_timeout_s, remaining / n)` 를 그대로
+  돌려주는데, `remaining = rescue_deadline - time.monotonic()` 이 음수면 `granted` 도 음수다.
+  `_apply_stage_budget` 의 skip→narrow 강등 두 경로(본검색의 `allow_skip=False`, `narrow`
+  모드의 skip 실행)가 그 음수를 검증 없이 그대로 실행에 넘겼다 — `asyncio.wait_for(timeout=
+  음수)` 가 즉시 만료돼 **HTTP 요청 자체가 나가지 않았다**. "본검색은 절대 건너뛰지 않는다"는
+  불변식이 이름만 남고 실제로는 건너뛴 것보다 나쁜 결과(요청 없이 실패)를 냈고, 자동완화
+  probe 는 `relaxing` progress 를 emit 해 놓고 아무 일도 안 하는 거짓 신호(H4)까지 재현했다.
+- 원인: `granted >= min_threshold` 형태의 하한 분기(`"narrow"` vs `"skip"` 판정)를 만들 때
+  "판정이 `narrow`" 와 "그 값이 실행 가능한 양수" 를 같은 조건으로 착각했다 — 실제로는
+  `min(x, remaining/n)` 의 `remaining` 이 음수일 수 있다는 걸 놓쳐 `granted < min_threshold`
+  분기(`"skip"`)만 하한 아래를 잡고, `"skip"` 을 다시 `"narrow"` 로 강등하는 경로에는 하한이
+  전혀 적용되지 않았다. **판정 임계값과 실행 임계값은 같은 변수를 참조해도 강제 지점이 다르면
+  분리해서 각각 확인해야 한다** — 하나는 분류용(threshold 비교), 하나는 집행용(clamp)이다.
+  테스트도 `search=` 에 fake 를 주입해 `narrow_search_budget` 이 **불렸다는 것만** 확인하고
+  그 인자 값이 실제로 유효한지, 끝단(`spring_client.search_products`)까지 살아있는지는 재지
+  않아 이 결함을 통과시켰다.
+- 규칙: "예산을 좁힌다/못 쓰게 건너뛴다" 류 로직에서 원본 시간축 계산(`deadline - now`)이
+  음수가 될 수 있는 경우(데드라인이 이미 지난 턴), **판정(분류)과 실제로 실행에 넘기는 값을
+  분리해서 각각 clamp 하라** — 판정은 "어느 분기인가"만 정하고, 그 분기가 무엇이든 실행 직전에
+  "이 값을 그대로 API 에 넘겨도 되는가"(양수·최소 유효값 이상)를 다시 확인한다. 테스트는
+  fake 를 주입해 "그 함수가 불렸다"만 보지 말고, 스파이가 **실제 함수를 통과시키면서** 인자
+  값을 기록하게 하거나(`with real_fn(x): yield` 형태), 최소한 그 값 자체에 대한 별도 어설션을
+  추가한다 — 호출 여부와 호출 값의 유효성은 다른 주장이다.
+- 관련: `app/agents/buyer/recommendation/graph.py::stream_recommendation` 의 `_stage_budget`/
+  `_apply_stage_budget`(D4) · `app/services/spring_client.py::narrow_search_budget` · #427
+
+## [2026-08-07] `open_stream` 의 `inner_factory` 시그니처를 바꾸면 테스트 전수가 조용히 깨진다
+- 증상: #427 에서 `open_stream(..., inner_factory: Callable[[], AsyncIterator[str]])` 를
+  `Callable[[float], AsyncIterator[str]]` 로 바꿨더니(D2 턴 시작 시각 플럼빙), `uv run pytest`
+  전체 실행에서 `tests/unit/test_observability.py`·`test_infra.py`·`test_recommendation.py`·
+  `test_buyer_tracing.py`·`test_seller_tracing.py`·`test_session_claim_api.py`·
+  `test_spring_search_budget_132.py`·`tests/integration/conftest.py`·`evals/scoring/adapter.py`·
+  `evals/model_eval/adapter.py`·`evals/metrics/harness.py`·`evals/first_event_budget/
+  measure_first_event.py` 에 걸쳐 `TypeError: <lambda>() got an unexpected keyword/positional
+  argument` 가 40건 넘게 났다 — 전부 `inner_factory` 로 넘기는 0-인자 로컬 함수/람다/클래스
+  (`async def slow(): ...`, `lambda: httpx.AsyncClient(...)`)였다.
+- 원인: `open_stream` 은 `app/services/spring_client.py::_client()` 처럼 프로덕션 코드
+  안쪽에만 있는 함수가 아니라, 테스트가 **직접 인자로 넘기는 콜백**의 시그니처 계약이다.
+  그런 함수는 `grep -rn "open_stream(" tests/` 로도 호출부만 보이고 실제 깨지는 지점(그 호출에
+  넘긴 콜백의 정의부)은 별도로 찾아야 한다 — 콜백 정의가 호출부와 수십~수백 줄 떨어져 있거나
+  다른 파일(`tests/integration/conftest.py` 의 공유 fixture, `evals/*/adapter.py` 의 하네스)에
+  있으면 놓치기 쉽다. `spring_client._client()` 도 같은 패턴이라 `timeout=` 키워드 인자를
+  추가했을 때 `lambda: httpx.AsyncClient(...)` 로 patch 한 fake 들이 같은 이유로 깨졌다.
+- 규칙: 테스트가 **콜백으로 주입하는** 함수(래퍼가 시그니처를 정의하고 호출부가 인자를 받아
+  넘기는 패턴 — `open_stream(inner_factory)`, `_client()` 등)의 시그니처를 바꿀 때는
+  `grep -rn "<함수명>(" tests/ evals/` 로 호출부만 보지 말고, 그 호출에 넘겨지는 각 인자
+  (변수명)의 **정의부**를 별도로 찾아 전수 갱신한다. 새 인자는 가능하면 키워드 전용 +
+  기본값(`*, timeout: float | None = None`)으로 추가해 fake 들이 무시해도 무해하게 만들되,
+  위치 인자가 필수면(D2 의 `turn_started_at` 처럼 값 자체를 검증해야 하는 경우) 콜백 시그니처를
+  전수 갱신하고 `uv run pytest`(전체, 개별 파일 단위가 아니라)로 결과를 확인한다 — 개별 파일만
+  돌리면 다른 파일의 같은 패턴을 놓친다.
+- 관련: `app/core/stream.py::open_stream`(D2) · `app/services/spring_client.py::_client`(§1) ·
+  #427
+
+## [2026-08-07] 두 정상 설계의 이음매는 어느 쪽 코드를 봐도 결함으로 안 보인다 — 적용 범위를 문서에 적어라
+- 증상: #435 "추천 카드를 이름으로 지목한 찜/담기가 실패한다"가 여러 라운드 동안 "미확정"
+  으로 남아 있었다. `screen_reference.py`(화면 지시어 결정적 해소기)를 보면 정상 설계고,
+  `no_condition.rank_by_profile`(프로필 벡터 추천)를 봐도 정상 설계다 — 어느 쪽도 단독으로는
+  결함이 아니다.
+- 원인: FE 위조방지 설계(추천 카드는 서버가 `listId` 로 이미 알아 `screen` 에서 의도적으로
+  제외)와 AI 상품명 공백(AI 카탈로그 인덱스에는 원본 컬럼이 없어 프로필 경로가 상품명을
+  모른다)이 **서로 다른 시점에 각자 옳게 결정된 설계**인데, 그 둘이 만나는 지점(추천 카드
+  턴의 이름 지목)에 아무도 적어두지 않았다. `screen_reference.py` 를 진단하는 사람은 "이
+  모듈은 `screen.products` 가 있을 때만 돈다"만 보고 추천 카드 턴이 왜 안 되는지 모르고,
+  `no_condition.py` 를 진단하는 사람은 "이름을 모른다"만 보고 그게 이음매 반대편에서 되물음
+  문구·찜 실패로 이어지는 줄 모른다. 각 모듈 안에서는 완결된 근거가, 모듈을 넘어서는 인과를
+  가리지 못했다.
+- 규칙: 두 설계가 서로의 전제를 깨는 지점(A 가 의도적으로 비운 것을 B 가 의도적으로 요구하는
+  경우)을 발견하면, 그 교차점을 **양쪽 모듈 docstring 모두에** 적어라(한쪽에만 적으면 반대편
+  진단자가 여전히 못 찾는다). "이 결함처럼 보이는 동작은 설계의 귀결이다"라고 명시적으로
+  적어야 다음 추적 라운드가 같은 두 모듈을 또 오가며 낭비되지 않는다.
+- 관련: `app/agents/buyer/screen_reference.py`(모듈 docstring) ·
+  `app/agents/buyer/recommendation/no_condition.py::rank_by_profile` ·
+  `docs/api-spec.md` §3.1 v0.28.1 · #435
 ## [2026-08-08] 낡은 코드 주석이 **회귀의 심각도 판단을 뒤집었다** — 심각도 근거는 주석이 아니라 정본에서 가져와라
 - 증상: #430 이 `screenExactPick` 회귀를 만났을 때, `decompose.py` 의 screen 절 주석
   ("FE 는 아직 screen 을 보내지 않으므로 그쪽이 절대다수 경로다")을 근거로 **"휴면 경로라 심각도가
@@ -512,6 +777,45 @@
   `evals/filter_axes/probe.py:83-125`(같은 패턴의 선례가 이미 repo 에 있었는데 참조되지 않았다) ·
   `evals/combo_matrix/README.md` "필터링 검색 대역의 성격"
 
+## [2026-08-06] 사용자 대면 문구의 생성 지점이 둘이면 "예외 메시지가 곧 사용자 문구"는 보장이 아니라 조건부다
+- 증상: #269 P0(PR #284)는 `calc.normalize_period` 의 `ValueError` 메시지를 "그대로 판매자에게
+  노출되는 문구"로 설계하고 그렇게 주석까지 달았다. 그런데 dev 실측 응답이 코드 원문과 달랐다 —
+  `최근 0일` 의 코드 원문은 "기간 일수는 1일 이상이어야 합니다…" 인데 화면에는 "'최근 0일'은
+  조회할 수 없는 기간입니다…" 가 나왔다. #345 에서 이 불일치를 조사 항목으로 다시 열었다.
+- 원인: 되묻기 문구의 생성 지점이 **두 곳**이었다. ① planner LLM 이 채우는 `AnalysisPlan.clarification`
+  (→ `resolve_plan` 첫 줄이 `raise ValueError(plan.clarification)`), ② `calc` 의 예외 메시지.
+  둘 다 `PipelineResult(kind="clarification", text=str(exc))` 로 합류하는데, **PLANNER_PROMPT 가
+  기간 미지원 판정을 LLM 에게 시키고 있었기 때문에** LLM 이 먼저 되물으면 ②는 아예 실행되지
+  않는다. 즉 P0 의 보장은 "planner 가 통과시켰을 때만" 성립했고, 그 조건은 어디에도 적히지 않았다.
+- 규칙:
+  - **사용자 대면 문구는 소유자를 한 모듈로 못박고, 그 사실을 문구를 만들 수 있는 다른 지점(프롬프트·
+    스키마 description)에 금지 문장으로 적는다.** "코드가 문구를 만든다"는 코드 쪽 주석만으로는
+    지켜지지 않는다 — LLM 이 같은 일을 할 수 있으면 언젠가 한다.
+  - **어느 쪽이 썼는지 실측해 맞춰가지 말고, 생성 지점을 하나로 만들어 구조로 닫아라.** 측정은
+    그 시점의 LLM 산출을 고정해줄 뿐이고 프롬프트·모델이 바뀌면 다시 갈린다.
+  - **LLM 출력 스키마의 `Field(description=...)` 은 프롬프트와 한 쌍이다.** 구조화 출력에서는 LLM 이
+    둘을 함께 읽으므로 한쪽만 고치면 서로 반대를 지시해 산출이 비결정적이 된다 — 같은 커밋에서 고친다.
+  - 파생 규칙: **"코드가 판정한다" 고 적어 놓고 프롬프트가 같은 판정을 시키고 있지 않은지** 확인한다.
+    #345 에서 어휘 확장의 실질 차단 지점은 `calc` 가 아니라 planner 프롬프트였다.
+- 관련: `app/agents/seller/period.py` · `prompts.py` PLANNER_PROMPT `[기간]` 절 ·
+  `schemas.py` `AnalysisPlan.period_expr` · `docs/specs/DESIGN-SELLER-PERIOD.md` §4, 이슈 #345(#269 P1)
+
+## [2026-08-06] 부분 구현 PR 이 이슈를 닫아 나머지 범위가 통째로 유실됐다
+- 증상: #269 는 P0·P1·P2 로 범위가 나뉘어 있었는데, P0 만 구현한 PR #284 가 병합되며 이슈가
+  닫혔다(2026-08-04). PR 본문에 "어휘 확장·확인 흐름은 out of scope" 라고 적혀 있었는데도
+  후속 이슈가 남지 않아, P1 이 있었다는 사실 자체가 2주 가까이 아무 데도 추적되지 않았다.
+  #345 로 다시 열면서 발견 — 예고됐던 `docs/specs/DESIGN-SELLER-PERIOD.md` 도 미작성 상태였다.
+- 원인: `Closes #N` 이 **PR 이 이슈 전체를 닫는지** 와 무관하게 붙었다. 리뷰도 "P0 가 맞게
+  구현됐는가"만 봤고 "이 PR 이 이슈를 닫아도 되는가"는 아무도 판단하지 않았다.
+- 규칙:
+  - **PR 이 이슈의 일부만 구현하면 `Closes` 를 쓰지 않는다.** `Refs #N` 으로 연결만 하고,
+    남은 범위를 후속 이슈로 즉시 만들어 원 이슈 본문에 링크한다.
+  - 범위가 P0/P1/P2 로 쪼개진 이슈는 **각 범위를 별도 이슈로 먼저 분해**하는 편이 안전하다 —
+    "본문 안의 미구현 항목"은 이슈가 닫히는 순간 검색되지 않는다.
+  - SPEC/DESIGN 문서를 예고한 이슈는 **문서 작성도 완료 조건에 넣는다** — 설계 근거가 없으면
+    다음 사람이 같은 판단을 처음부터 다시 한다.
+- 관련: 이슈 #269 · PR #284 · 이슈 #345, `docs/specs/DESIGN-SELLER-PERIOD.md`
+
 ## [2026-08-07] `uv run ruff check --fix && uv run ruff format` 커밋 워크플로 문구를 문자 그대로 실행하면 무관 파일 30개가 재포맷된다
 - 증상: #439 구현 검증 단계에서 CLAUDE.md 커밋 워크플로 2항을 그대로 `uv run ruff check --fix &&
   uv run ruff format`으로 실행했더니 `ruff check`는 `All checks passed!`였지만 `ruff format`은
@@ -639,6 +943,10 @@
 - 관련: `evals.metrics.run_manifest.build_run_manifest`(`commitSha`·`dirty`) ·
   `evals.metrics.report.normalize_artifacts` ·
   `evals.personalization.cli.normalize_paired_artifacts` · #380
+- **후속(#413)**: 정규화가 `commitSha`·`dirty` 축을 정본으로 걷어내 이 함정 자체는 사양으로
+  해소됐다(`evals.metrics.run_manifest.strip_volatile_manifest_keys`). 남은 위험은 `hashes`
+  축뿐 — `uv run pytest` 도중 uv.lock·goldenset·decompose.py·rerank.py·config.py 를 편집하면
+  여전히 실패한다(의도된 계약).
 
 ## [2026-08-06] `ruff format`/`--fix` 는 쓰기 명령이다 — `ruff check` 와 같은 감각으로 전체 스코프에 돌리면 안 된다
 - 증상: #380 리뷰 라운드 1 작업 중 `uv run ruff format .` 을 스코프 없이 전체 리포에 돌렸다.

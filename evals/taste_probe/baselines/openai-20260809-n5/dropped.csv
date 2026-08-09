@@ -1,0 +1,27 @@
+sessionId,sampleIndex,kind,label
+conflict-category,0,category,원피스
+conflict-category,1,category,원피스
+conflict-category,2,category,원피스
+conflict-category,3,category,원피스
+conflict-category,4,category,원피스
+kc-category-01,0,category,무선 이어폰
+kc-category-01,1,category,무선 이어폰
+kc-category-01,2,category,무선 이어폰
+kc-category-01,3,category,무선 이어폰
+kc-category-01,4,category,무선 이어폰
+kc-situation-01,0,category,캠핑용품
+kc-situation-01,1,category,캠핑 용품
+kc-situation-01,2,category,캠핑용품
+kc-situation-01,3,category,캠핑용품
+kc-situation-01,4,category,캠핑용품
+pol-attribute-prefer,2,category,무선 제품
+rep-category-varied,0,category,데님 팬츠
+rep-category-varied,0,category,청바지
+rep-category-varied,1,category,청바지
+rep-category-varied,1,category,데님 팬츠
+rep-category-varied,2,category,청바지
+rep-category-varied,2,category,데님 팬츠
+rep-category-varied,3,category,데님 팬츠
+rep-category-varied,3,category,청바지
+rep-category-varied,4,category,청바지/데님 팬츠
+rep-category-varied,4,category,청바지류

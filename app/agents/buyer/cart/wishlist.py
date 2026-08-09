@@ -42,6 +42,29 @@ def _done() -> str:
     return sse("done", DoneData(finish_reason="stop").model_dump(by_alias=True))
 
 
+# 찜 대상을 확정하지 못했을 때의 되물음 문구 (#435).
+#
+# 기본 문구는 **한 글자도 바꾸지 않는다** — `last_reco`(스레드 누적 추천)가 빈 절대다수 경로가
+# 오늘과 바이트 동일해야 한다(`cart/graph.py::_UNRESOLVED_DEFAULT` 와 같은 규약). "추천을 먼저
+# 받아보시면"은 **이미 추천을 받은** 사용자에게 거짓으로 읽힌다 — `last_reco` 가 비어 있지 않으면
+# "이름을 말씀해 주시면"으로 갈아 무엇을 말해야 할지 알려준다. "방금"처럼 시점을 단정하는 표현은
+# 쓰지 않는다 — `last_reco` 는 누적이라 직전 턴이 아닐 수 있다.
+_WISHLIST_UNRESOLVED_DEFAULT = "어떤 상품을 찜할까요? 추천을 먼저 받아보시면 찜해 드릴게요."
+_WISHLIST_UNRESOLVED_WITH_RECO = (
+    "어떤 상품을 찜할까요? 추천해 드린 상품 중에서 이름을 말씀해 주시면 찜해 드릴게요."
+)
+_WISHLIST_UNRESOLVED_AFTER_PUSH_FAILURE = "어떤 상품을 찜할까요? 추천 목록 전달에 문제가 있었어요. 다시 추천을 요청해 주시면 도와드릴게요."
+
+
+def _wishlist_add_unresolved_notice(has_last_reco: bool, *, has_push_failed: bool = False) -> str:
+    """찜 담기 미해소 문구 — 추천 목록이 있으면 그 문구가 실패 마커보다 우선한다."""
+    if has_last_reco:
+        return _WISHLIST_UNRESOLVED_WITH_RECO
+    if has_push_failed:
+        return _WISHLIST_UNRESOLVED_AFTER_PUSH_FAILURE
+    return _WISHLIST_UNRESOLVED_DEFAULT
+
+
 def _display_wishlist_name(item: WishlistItem) -> str:
     """안내 문구용 상품명 — 반드시 `_strip_unsafe` 를 거친다(판매자 입력, `remove.py` 와 같은 규약)."""
     return _strip_unsafe(item.name or "") or "상품"
@@ -280,11 +303,19 @@ async def stream_wishlist_add(
     cart: CartIntent,
     settings,
     allowed_product_ids: set[int] | None = None,
+    has_last_reco: bool = False,
+    has_push_failed: bool = False,
     add_wishlist_fn=None,
     observer=None,
 ) -> AsyncIterator[str]:
     """찜 추가 서브그래프(I-26, 확정 2026-08-05). `action`(WISHLIST_ADDED/WISHLIST_ADD_FAILED)
-    또는 되물음 token 을 내고 `done` 으로 끝난다."""
+    또는 되물음 token 을 내고 `done` 으로 끝난다.
+
+    `has_last_reco`(#435) 는 스레드 누적 추천(`last_reco`)이 비어 있지 않은지만 알리는 신호다 —
+    미해소 문구를 가르는 데만 쓰고 판정에는 관여하지 않는다. 기본값 `False` 는
+    `screen_reference.py` 의 "기본값 금지"(F-5) 와 다르다 — 여기서 빠뜨렸을 때의 실패 모드는
+    **오담기가 아니라 문구 퇴화**(오늘 문구로 남는 것)뿐이라 안전한 쪽으로 기본값을 둘 수 있다.
+    """
     add_wishlist_fn = add_wishlist_fn or spring_client.add_wishlist
 
     user_id, _guest_id = cart_identity(identity)
@@ -306,7 +337,7 @@ async def stream_wishlist_add(
         yield sse(
             "token",
             TokenData(
-                text="어떤 상품을 찜할까요? 추천을 먼저 받아보시면 찜해 드릴게요."
+                text=_wishlist_add_unresolved_notice(has_last_reco, has_push_failed=has_push_failed)
             ).model_dump(by_alias=True),
         )
         yield _done()

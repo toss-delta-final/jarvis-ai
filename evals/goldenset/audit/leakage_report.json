@@ -5,14 +5,14 @@
       "category_mapping_failure": 9,
       "cold_start": 2,
       "failure": 5,
-      "guest": 68,
+      "guest": 74,
       "member": 35,
       "multi_constraint": 12,
       "personalization": 11,
       "personalization_overreach": 6,
       "repurchase": 8,
-      "search": 62,
-      "single_need": 71
+      "search": 68,
+      "single_need": 77
     },
     "holdout": {
       "budget": 0,
@@ -35,7 +35,7 @@
     "holdout personalization_overreach slice 표본이 0건입니다"
   ],
   "holdoutRatio": {
-    "actual": 0.188976,
+    "actual": 0.180451,
     "target": 0.3,
     "tolerance": 0.05
   },
@@ -134,7 +134,7 @@
   ],
   "relevantPairs": [],
   "summary": {
-    "devCases": 103,
+    "devCases": 109,
     "holdoutCases": 24,
     "violationCount": 0,
     "warningCount": 16
@@ -270,7 +270,7 @@
       "score": 0.882353
     },
     {
-      "actual": 0.188976,
+      "actual": 0.180451,
       "kind": "holdoutRatioDrift",
       "target": 0.3,
       "tolerance": 0.05
