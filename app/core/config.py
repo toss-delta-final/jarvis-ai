@@ -1799,6 +1799,10 @@ class Settings(BaseSettings):
     personalization_eval_clean_noisy_drop_margin: float = 0.03
     # 현행 0.15를 중심으로 0~4배 범위를 대칭적이지 않은 실용 구간으로 탐색한다.
     personalization_eval_weight_sweep: tuple[float, ...] = (0.0, 0.075, 0.15, 0.30, 0.60)
+    # [#484] 케이스 파생 선호를 마크다운으로 렌더할 때의 (강, 중) 임계. 정규화 가중치는
+    # "정답 안에서 몇 번 나왔나"라 1회짜리 꼬리 브랜드가 최상위와 같은 줄에 나열되면 LLM이
+    # 둘을 동급으로 읽는다. 수치는 노출하지 않고 강도만 자연어로 구분한다(§5.1 결정 16).
+    personalization_eval_profile_strength_bands: tuple[float, float] = (0.7, 0.5)
 
     # ── 구매자 progress 이벤트 (이슈 #396, 계약 등재 완료 — 기본 on) ──
     # 정본(Notion CH-2)·api-spec §3.1 v0.21.0 등재와 FE 구현 완료(2026-08-06)로 전제가
@@ -2008,6 +2012,9 @@ class Settings(BaseSettings):
             raise ValueError(
                 "개인화 평가 weight sweep은 [0,1]의 오름차순 고유 값이며 0.15를 포함해야 합니다"
             )
+        high, mid = self.personalization_eval_profile_strength_bands
+        if not (math.isfinite(high) and math.isfinite(mid)) or not 0 < mid < high <= 1:
+            raise ValueError("개인화 평가 강도 임계는 0 < 중 < 강 <= 1 이어야 합니다")
         return self
 
     @model_validator(mode="after")
