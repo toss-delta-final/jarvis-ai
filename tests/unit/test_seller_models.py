@@ -42,6 +42,8 @@ def test_role_tier_matches_provider_neutral_spec() -> None:
     # analysis_judge(이슈 #242, DESIGN-ANALYSIS-V31-242 결정 D-1)도 이 정책을 따른다 —
     # 이슈 원안(fast)을 채택하지 않고 판정 품질을 우선했다.
     # graph(5단계, 같은 이슈)도 smart — 이슈 원안 그대로 전 역할 정책과 일치.
+    # [#506] vision(이미지 분석)·draft_gate(초안 대기 발화 분류)도 전 역할 smart 정책 —
+    # vision 은 초안 전체의 원천 품질, draft_gate 는 오분류가 곧 UX 사고라 강등하지 않는다.
     assert ROLE_TIER == {
         "supervisor": "smart",
         "planner": "smart",
@@ -52,6 +54,8 @@ def test_role_tier_matches_provider_neutral_spec() -> None:
         "recommend": "smart",
         "analysis_judge": "smart",
         "graph": "smart",
+        "vision": "smart",
+        "draft_gate": "smart",
     }
 
 
