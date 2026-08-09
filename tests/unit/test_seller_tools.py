@@ -880,6 +880,113 @@ async def test_sales_tool_includes_point_detail_and_caps_output() -> None:
     assert "외 30개 포인트 생략" in result  # 90 - 상한 60 = 30
 
 
+class FlatSeriesClient(FakeSpringClient):
+    """[#512] 길이·수량을 지정해 평탄한 일별 시계열을 돌려주는 이중."""
+
+    def __init__(self, days: int, *, sales_count: int | None = None) -> None:
+        super().__init__()
+        self._days = days
+        self._sales_count = sales_count
+
+    async def get_sales(self, brand_id, from_, to, granularity="daily"):
+        self.recorded_brand_id = brand_id
+        return SalesResult(
+            series=[
+                SalesSeriesPoint(
+                    date=f"2026-07-{day:02d}",
+                    sales=100,
+                    order_count=1,
+                    sales_count=self._sales_count,
+                )
+                for day in range(1, self._days + 1)
+            ]
+        )
+
+
+async def test_sales_tool_rejects_summary_granularity() -> None:
+    """[#512] granularity=summary 는 조회 전에 차단한다 — "총매출 0원" 을 만들지 않는다.
+
+    I-6 summary 응답에는 `series` 가 없고 SalesResult 는 extra="allow" 라, 호출하면
+    ValidationError 도 degrade 도 없이 series=[] 로 파싱돼 언제나 0원이 나갔다.
+    정상값과 구별되지 않는 0 을 내보내느니 명시적으로 거절한다.
+    """
+    fake = FakeSpringClient()
+    result = await _call_runtime_tool(
+        get_sales_timeseries,
+        {"from_date": "2026-07-01", "to_date": "2026-07-14", "granularity": "summary"},
+        fake,
+    )
+
+    assert result.startswith("Error:")
+    assert "summary" in result
+    assert "0원" not in result
+    assert fake.recorded_brand_id is None, "Spring 을 호출하기 전에 막아야 한다"
+
+
+async def test_sales_tool_rejects_non_canonical_iso_dates() -> None:
+    """[#512] 파싱되지만 정규형이 아닌 ISO 날짜(기본형·주 표기)는 즉시 오류다.
+
+    `date.fromisoformat` 은 "20260801"·"2026W311" 을 받는다. 그 원문이 window 필터
+    경계값(`p.date >= from_date`)이 되면 사전식 비교가 어긋나 전 포인트가 탈락하고
+    "총매출 0원" 이 오류 없이 나갔다 — Spring 조회 전에 끊는다.
+    """
+    for from_date, to_date in (
+        ("20260701", "2026-07-14"),  # 기본형(무하이픈)
+        ("2026-07-01", "2026W311"),  # 주 표기 — to_date 는 종전에 본문 검증 자체가 없었다
+        ("2026-7-1", "2026-07-14"),  # 무패딩(종전에도 차단, 회귀 확인)
+    ):
+        fake = FakeSpringClient()
+        result = await _call_runtime_tool(
+            get_sales_timeseries, {"from_date": from_date, "to_date": to_date}, fake
+        )
+
+        assert result.startswith("Error:"), f"{from_date}~{to_date} 가 통과했다"
+        assert "YYYY-MM-DD" in result
+        assert "총매출" not in result
+        assert fake.recorded_brand_id is None
+
+
+async def test_sales_tool_holds_judgment_when_samples_too_few() -> None:
+    """[#512] 표본 3개 미만은 "이상 감지 없음" 이 아니라 "판정 보류" 다.
+
+    워커 프롬프트가 정확히 금지하는 것 — "판정 보류(표본 부족·미집계·결측)는
+    이상 없음과 다르다". 같은 파일의 Tukey 경로가 이미 쓰던 어휘를 따른다.
+    """
+    result = await _call_runtime_tool(
+        get_sales_timeseries,
+        {"from_date": "2026-07-01", "to_date": "2026-07-02", "granularity": "daily"},
+        FlatSeriesClient(2),
+    )
+
+    assert "이상 감지 판정 보류(표본 2개 < 최소 3개)." in result
+    assert "이상 감지 없음" not in result
+    assert "총매출 200원" in result  # 매출 요약 자체는 그대로 나간다
+
+
+async def test_sales_tool_keeps_no_anomaly_wording_when_decided() -> None:
+    """[#512 회귀] 표본이 충분하고 이상 0건이면 종전 문구를 글자 그대로 유지한다."""
+    result = await _call_runtime_tool(
+        get_sales_timeseries,
+        {"from_date": "2026-07-01", "to_date": "2026-07-20", "granularity": "daily"},
+        FlatSeriesClient(20),
+    )
+
+    assert "이상 감지 없음(STL 계절조정·GESD)." in result
+    assert "판정 보류" not in result
+
+
+async def test_sales_tool_keeps_sales_count_note_with_new_detection_result() -> None:
+    """[#489 회귀] 반환 타입 교체(#512)가 salesCount 표기 경로를 건드리지 않았다."""
+    result = await _call_runtime_tool(
+        get_sales_timeseries,
+        {"from_date": "2026-07-01", "to_date": "2026-07-20", "granularity": "daily"},
+        FlatSeriesClient(20, sales_count=2),
+    )
+
+    assert "판매 40개" in result  # 20 포인트 × 2개 — 전량 집계라 비율 주석 없음
+    assert "개 포인트 집계)" not in result
+
+
 async def test_order_events_tool_summarizes_kv_with_cap() -> None:
     """[#194] I-14 rows(BE 실측)를 kv 로 상위 N건 노출 — Row/MemberRow 이형 대응."""
 

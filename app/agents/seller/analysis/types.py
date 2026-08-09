@@ -37,6 +37,26 @@ class SeasonalAnomaly:
 
 
 @dataclass(frozen=True)
+class SeasonalAnomalyDetection:
+    """detect_seasonal_anomalies 출력 — 이상 목록 + **판정 가능 여부** (#512).
+
+    빈 목록 하나가 "이상 없음"과 "판정 보류(표본 부족)"를 동시에 뜻하던 모호성을
+    타입으로 가른다. 호출부는 ``anomalies`` 길이가 아니라 ``decided`` 로 먼저 분기해야
+    한다 — 표본 2개짜리 확정적 all-clear 가 판매자에게 나가던 경로를 막는다.
+
+    ``seasonal_adjusted`` 는 STL 계절조정 분기를 실제로 탔는지다. 호출부가
+    ``len(values) >= min_history_for_stl`` 을 재계산하면 모듈 내부 임계와 조용히
+    어긋날 수 있어 판정 주체가 직접 알린다.
+    """
+
+    anomalies: list[SeasonalAnomaly]
+    decided: bool
+    sample_size: int
+    min_samples: int
+    seasonal_adjusted: bool
+
+
+@dataclass(frozen=True)
 class RateEstimate:
     """비율 추정 1건 — Wilson 신뢰구간 부착 (proportions.wilson_interval).
 

@@ -75,6 +75,12 @@ def _period_arg_error(from_date: str | None, to_date: str | None) -> str | None:
     되묻기가 아니라 "Error:" 인 이유: 이 시점은 이미 스트림 안이라 되묻기로 되돌아갈 수
     없고, 도구 실패 문자열은 프롬프트의 degrade 규약(§3.4)이 이미 다루는 어휘다.
     None(기간 미지정)은 통과 — get_orders·get_reviews 는 기간이 선택 인자다.
+
+    [#512] 파싱 성공만으로는 부족하다 — `date.fromisoformat` 은 `"20260801"`(기본형)·
+    `"2026W311"`(주 표기) 같은 비정규 ISO 도 받는다. 그 **원문**이 도구 안에서 문자열
+    비교 필터의 경계값이 되면(`get_sales_timeseries` 의 `p.date >= from_date`) 사전식
+    비교가 어긋나 전 포인트가 탈락하고 "총매출 0원" 이 오류 없이 나간다. 정규형
+    (YYYY-MM-DD)과 글자까지 같은 값만 통과시킨다 — 조용한 0 을 만들 문자열은 여기서 끊는다.
     """
     if from_date is None or to_date is None:
         return None
@@ -82,6 +88,8 @@ def _period_arg_error(from_date: str | None, to_date: str | None) -> str | None:
         start = date.fromisoformat(from_date)
         end = date.fromisoformat(to_date)
     except (TypeError, ValueError):
+        start = end = None
+    if start is None or end is None or start.isoformat() != from_date or end.isoformat() != to_date:
         return (
             f"Error: 기간 형식이 올바르지 않습니다(from_date={from_date!r}, "
             f"to_date={to_date!r}). 입력에 주어진 기간을 YYYY-MM-DD 그대로 쓰세요."
@@ -188,23 +196,30 @@ async def get_sales_timeseries(
     Args:
         from_date: 조회 시작일(YYYY-MM-DD).
         to_date: 조회 종료일(YYYY-MM-DD).
-        granularity: daily/weekly/monthly/summary 중 하나(기본 daily).
+        granularity: daily/weekly/monthly 중 하나(기본 daily).
     """
+    # [#512] summary 는 응답 shape 이 다르다(`series` 없음, I-6 §4.4) — SalesResult 는
+    # `series` 만 알고 extra="allow" 라 ValidationError 도 degrade 도 없이 series=[] 로
+    # 파싱돼 **언제나 "총매출 0원"** 을 낸다. 정상값과 구별되지 않는 0 을 내보내느니
+    # 명시적으로 거절한다. summary shape 수신은 명세 개정(§4.4 I-6) 후 별도 주제다.
+    if granularity == "summary":
+        return (
+            "Error: summary 집계는 아직 지원되지 않습니다 — "
+            "granularity=daily/weekly/monthly 로 조회하세요."
+        )
     brand_id = runtime.context.brand_id  # 검증된 JWT 클레임 유래 — LLM 이 만들 수 없다.
     settings = get_settings()
     # [#290] daily 는 요청 기간 앞에 lookback 을 붙여 조회한다 — STL(period 7)은
     # 최소 2주기 이력이 있어야 계절 성분을 추정한다. 요약·상세 나열은 요청 기간 내만
     # 쓰고, lookback 구간은 이상 감지 학습에만 쓴다(판매자에게 요청 밖 수치 미노출).
+    # [#512] 형식은 `_guard_period_args` 가 정규형(YYYY-MM-DD)으로 이미 보장한다 —
+    # 종전의 `except ValueError: pass`(형식 오류를 삼키고 Spring 파서의 관대함에
+    # 안전을 걸던 경로)는 제거했다. 여기 도달했다면 파싱은 반드시 성공한다.
     fetch_from = from_date
     if granularity == "daily":
-        try:
-            parsed_from = date.fromisoformat(from_date)
-        except ValueError:
-            pass  # 형식 오류는 확장 없이 그대로 — Spring 검증/오류 경로에 맡긴다.
-        else:
-            fetch_from = (
-                parsed_from - timedelta(days=settings.seller_analysis_lookback_days)
-            ).isoformat()
+        fetch_from = (
+            date.fromisoformat(from_date) - timedelta(days=settings.seller_analysis_lookback_days)
+        ).isoformat()
     try:
         result = await get_spring_client().get_sales(brand_id, fetch_from, to_date, granularity)
     except SpringUnavailableError as exc:
@@ -256,7 +271,7 @@ async def get_sales_timeseries(
         # [#290] SMA 편차 → S-H-ESD(STL 잔차 + robust GESD) 교체. 요일 효과를 분해로
         # 걷어내 "주말이라 원래 낮음"을 급락으로 오탐하지 않는다(worker-papers.md).
         try:
-            anomalies = timeseries.detect_seasonal_anomalies(
+            detection = timeseries.detect_seasonal_anomalies(
                 [p.date for p in result.series],
                 [float(p.sales) for p in result.series],
                 period=settings.seller_stl_period,
@@ -270,20 +285,7 @@ async def get_sales_timeseries(
             _log.warning("이상 감지 판정 불가 — 분석 설정 오류: %s", exc)
             anomaly_note = " 이상 감지 판정 불가(분석 설정 오류)."
         else:
-            # lookback 구간에서 검출된 이상은 요청 밖이라 보고하지 않는다(질문 범위 준수).
-            flagged = [_format_seasonal_anomaly(a) for a in anomalies if a.date >= from_date]
-            seasonal_adjusted = len(result.series) >= settings.seller_min_history_for_stl
-            method_note = (
-                "STL 계절조정·GESD"
-                if seasonal_adjusted
-                else f"robust 판정 — 이력 {len(result.series)}일"
-                f"<{settings.seller_min_history_for_stl}일이라 계절 미조정"
-            )
-            anomaly_note = (
-                f" 이상 감지 {len(flagged)}건({method_note}): " + ", ".join(flagged) + "."
-                if flagged
-                else f" 이상 감지 없음({method_note})."
-            )
+            anomaly_note = _format_anomaly_note(detection, from_date, settings)
     else:
         anomaly_note = ""
     return (
@@ -292,6 +294,34 @@ async def get_sales_timeseries(
         f"{granularity} 상세: {detail_lines}{omitted_note}.{anomaly_note} "
         f"{_reference_note(from_date, to_date)}"
     )
+
+
+def _format_anomaly_note(detection, from_date: str, settings) -> str:
+    """[#512] 이상 감지 결과 → 요약 문구. **판정 보류 / 이상 없음 / 이상 N건** 3갈래다.
+
+    빈 목록 하나로 "표본 부족이라 못 정했다"와 "검정했고 이상 0건"을 동시에 뜻하던
+    종전 구조가 표본 2개짜리 확정적 all-clear 를 판매자에게 내보내고 있었다 —
+    워커 프롬프트가 금지하는 것("판정 보류는 이상 없음과 다르다"). 보류 어휘는
+    같은 파일의 Tukey 경로(`_summarize_ratio_outliers`)와 맞춘다.
+    """
+    if not detection.decided:
+        return (
+            f" 이상 감지 판정 보류(표본 {detection.sample_size}개"
+            f" < 최소 {detection.min_samples}개)."
+        )
+    # lookback 구간에서 검출된 이상은 요청 밖이라 보고하지 않는다(질문 범위 준수).
+    flagged = [_format_seasonal_anomaly(a) for a in detection.anomalies if a.date >= from_date]
+    # [#512] 계절조정 여부는 판정 모듈이 실제로 탄 분기를 그대로 받는다 — 호출부가
+    # 임계를 재계산하면 모듈 내부와 조용히 어긋날 수 있다.
+    method_note = (
+        "STL 계절조정·GESD"
+        if detection.seasonal_adjusted
+        else f"robust 판정 — 이력 {detection.sample_size}일"
+        f"<{settings.seller_min_history_for_stl}일이라 계절 미조정"
+    )
+    if not flagged:
+        return f" 이상 감지 없음({method_note})."
+    return f" 이상 감지 {len(flagged)}건({method_note}): " + ", ".join(flagged) + "."
 
 
 def _format_seasonal_anomaly(anomaly) -> str:
