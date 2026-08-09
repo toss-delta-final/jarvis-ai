@@ -44,14 +44,16 @@ docker run -p 8000:8000 --env-file deploy.env jarvis-ai:dev
 
 **선택 (기본값 있음):** 상태저장 타임아웃/풀(`STATE_STORE_*`), 배치 주기(`CATALOG_BATCH_INTERVAL_S`=300), 검색·추천 튜너블(`TOP_K`·`EXPOSE_*`·`LLM_CALL_LIMIT` 등), 프로필 튜너블(`PROFILE_*`).
 
-**조건부 주입 손잡이 4종 (이슈 #437/#532)** — `deploy.yml` 이 이 네 키를 GitHub Variables 에서
-`ENV_FILE` 로 조건부 append 한다: **Variable 을 등록하지 않으면 그 줄 자체가 env 파일에
-생기지 않고, 앱은 코드 기본값을 그대로 쓴다.** 무조건 `KEY=${{ vars.X }}` 로 쓰면 미등록 시
-빈 문자열이 되는데, 아래 `SPRING_MAX_RETRIES`(int)·`RESCUE_BUDGET_MODE`(Literal)는 빈 문자열
-파싱에 기동이 죽는다 — 그래서 이 네 키만 heredoc 밖에서 `if [ -n "$v" ]; then ... fi` 로
-조건부 처리한다(`.github/workflows/deploy.yml` 3b 단계). **⚠️ Variable 값에 작은따옴표(')를
-쓰지 말 것** — 렌더된 텍스트를 작은따옴표로 감싸 셸에 넘기므로 값 안의 `'`가 인용을 깨뜨린다
-(아래 값들은 모두 JSON·정수·리터럴 enum이라 해당 없음).
+**조건부 주입 손잡이 4종 (이슈 #437/#532)** — `deploy.yml` 이 이 네 키를 다른 19+개 키와
+**똑같이 quoted heredoc(`cat << 'ENVEOF'`) 안에 데이터로만** 써서 `ENV_FILE` 을 만든 뒤,
+heredoc 뒤에서 값이 비었거나 공백뿐인 줄만 `sed` 로 지운다(`.github/workflows/deploy.yml`
+3b 단계) — **Variable 을 등록하지 않았거나 빈/공백뿐인 값을 등록하면 그 줄 자체가 env 파일에
+남지 않고, 앱은 코드 기본값을 그대로 쓴다.** Variable 값은 heredoc 안의 데이터로만 쓰이므로
+따옴표·공백이 섞여도 셸이 재해석하지 않는다 — **Variable 값을 실행되는 셸 문장에 직접
+스플라이스하지 않는다**는 것이 이 방식의 핵심이다(값에 작은따옴표가 든 Variable 을 셸 문장에
+바로 이어붙이면 원격 코드 실행으로 이어질 수 있다는 것이 PR #539 리뷰로 드러났다). 무조건
+`KEY=${{ vars.X }}` 로만 쓰면 미등록 시 빈 문자열이 되는데, 아래 `SPRING_MAX_RETRIES`(int)·
+`RESCUE_BUDGET_MODE`(Literal)는 빈 문자열 파싱에 기동이 죽으므로 sed 로 그 줄 자체를 지운다.
 
 | 키 | 타입·허용값 | 미등록 시 |
 |---|---|---|

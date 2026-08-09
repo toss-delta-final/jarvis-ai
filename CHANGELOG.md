@@ -950,15 +950,29 @@
   인프라 쪽(사용자 승인 후 확장, PR #532/#406 이 `SPRING_MAX_RETRIES` 기본값을 0→1로 원복한
   것에 대한 운영 롤백 손잡이 부재도 함께 해소): (3) `.github/workflows/deploy.yml` 에
   `MODEL_PRICE_IN_PER_1K`·`MODEL_PRICE_OUT_PER_1K`·`SPRING_MAX_RETRIES`·`RESCUE_BUDGET_MODE`
-  네 키의 **조건부(A) env 주입**을 배선했다 — GitHub Variable 미등록이면 그 줄 자체를
-  env 파일에 쓰지 않아 코드 기본값이 그대로 적용된다(무조건 생성 시 빈 문자열이 되어
-  `SPRING_MAX_RETRIES`(int)·`RESCUE_BUDGET_MODE`(Literal)의 기동을 깨뜨리는 것을 피한다 —
+  네 키의 **조건부(A) env 주입**을 배선했다 — GitHub Variable 미등록이거나 빈/공백뿐인 값이면
+  그 줄 자체가 env 파일에 남지 않아 코드 기본값이 그대로 적용된다(무조건 생성 시 빈 문자열이
+  되어 `SPRING_MAX_RETRIES`(int)·`RESCUE_BUDGET_MODE`(Literal)의 기동을 깨뜨리는 것을 피한다 —
   `MODEL_PRICE_*` 는 이미 `NoDecode`+수동 `json.loads` 로 빈 문자열 내성이 있었지만 네 키를
-  한 PR 에서 같은 규약으로 통일했다). `set -e` 아래서 조건 분기가 비영 종료로 배포를 죽이지
-  않도록 `if ... fi` 로 작성했고, Variable 값에 작은따옴표를 쓸 수 없다는 제약이 생겼다(모두
-  JSON·정수·리터럴 enum 값이라 해당 없음). (4) `.env.example`·`DEPLOY.md` §2 에 네 키의
-  형식·허용값·조건부 주입 규약과, `PROGRESS_EVENTS_ENABLED=false` 단독 롤백이 더 이상 불가능해
-  `SPRING_MAX_RETRIES=0` 과 반드시 짝지어야 한다는 사실(`tests/unit/test_progress_event.py::
+  한 PR 에서 같은 규약으로 통일했다). **PR #539 리뷰 — 초판은 `V='${{ vars.X }}'` 처럼 치환
+  결과를 실행되는 셸 문장에 직접 이어붙이고 `if [ -n "$V" ]; then ... fi` 로 분기했는데, 값에
+  작은따옴표 하나만 있으면 그 리터럴이 거기서 끝나고 이어지는 텍스트가 운영 EC2 에서 그대로
+  실행되는 셸 인젝션(원격 코드 실행)이었다 — "값에 작은따옴표 금지"라는 운영자 규율로만 막아둔
+  것이 오판이었다.** 이 지적을 받아들여 **실행되는 셸 문장에 값을 넣지 않는 방식으로 전면
+  교체**했다 — 네 키도 기존 19+줄과 동일하게 quoted heredoc(`cat << 'ENVEOF'`) **안**에
+  데이터로만 쓰고(quoted heredoc 본문은 셸이 재해석하지 않는다), heredoc 뒤에서 값이 비었거나
+  공백뿐인 줄만 `sed -i -E '/^(KEY1|KEY2|...)=[[:space:]]*$/d'` 로 지워 (A) 규약을 유지한다.
+  `set -e` 아래라 sed 실패는 배포를 그대로 중단시키며, `sed -i` 임시 파일은 GNU sed 가 원본
+  `$ENV_FILE` 의 권한(위 `umask 077` 로 생성된 0600)을 그대로 물려받아(로컬 실측: 다른 umask
+  하에서 sed 를 돌려도 원본 권한이 유지됨) 시크릿 파일 권한이 흔들리지 않는다. 셸 재현으로
+  (a) 네 값 모두 빈 문자열 → 0줄·정상 종료, (b) 정상 값 → 정확히 4줄·JSON 원문 온전, (c) 악성
+  값(`'; touch /tmp/PWNED_437 #`) → 그 값이 **데이터로만** 들어가고 `/tmp/PWNED_437` 미생성,
+  (d) 공백뿐인 값 → 줄 삭제(미등록과 동일)를 모두 실증했다. "작은따옴표 금지" 운영자 규율
+  문장은 더 이상 사실이 아니므로 삭제했다. (4) `.env.example`·`DEPLOY.md` §2 에 네 키의
+  형식·허용값·조건부 주입 규약(값에 따옴표·공백이 섞여도 데이터로만 쓰이므로 안전하다는 것,
+  빈/공백뿐인 값은 미등록과 동일 취급된다는 것)과, `PROGRESS_EVENTS_ENABLED=false` 단독 롤백이
+  더 이상 불가능해 `SPRING_MAX_RETRIES=0` 과 반드시 짝지어야 한다는 사실
+  (`tests/unit/test_progress_event.py::
   test_progress_events_disabled_rejects_startup_with_retries_enabled` 로 고정됨)을 문서화했다.
 - **#474 브랜치 후속 — 유닛 테스트가 로컬 Spring BE의 TCP 응답에 따라 달라지던 환경 의존을 차단** —
   `INTERNAL_API_TOKEN`을 공통 테스트 환경에서 비우고 `tests/unit/`에서만 실제 TCP 연결을
