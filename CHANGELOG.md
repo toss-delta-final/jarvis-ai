@@ -33,6 +33,11 @@
   I-10 에 `image_url`·카테고리 쓰기 값(`seller_category_write_mode`, 기본 leaf — **BE 정렬 1건
   잔여**)을 전달한다. 신규 모듈 `vision/category_catalog/preview/draft_session`, 수신 검증
   (canonical URL ≤500자·presigned 거부)은 요청 스키마+hitl 이중 방어.
+- **#505(#461 승계) — 정본 I-1 3갈래 판정 ②(상품 `attributes` 에 색상 축이 없으면 통과)와
+  부분일치 판정의 주체가 Spring BE 라는 사실을 회귀로 고정했다**. AI 사후필터는 색상을 판정하지
+  않고, 확장 on/off 모두 `color` 를 Spring payload 축으로 유지하며 배열 원소를 변형하지 않는다.
+  승인 0건 가드는 PR #502 가 이미 넣은 구현이므로 그 정본을 유지한다 — 같은 판정을 중복 구현하지
+  않도록 이 브랜치의 중복분은 back-merge에서 제거했다.
 
 ### Changed
 - **#394 원복 — I-1 `spring_max_retries` 기본값을 1로 복구하고 `rescue_budget_mode`를
