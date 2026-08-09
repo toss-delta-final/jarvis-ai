@@ -549,10 +549,18 @@ def annotate_axis_metrics(
 
     기준선에 짝이 없는 행(예산 소진으로 기준선이 잘린 경우)은 `[]` 가 아니라 `None` 이다.
     `[]` 는 "유출 없음"으로 읽혀 **측정 중단이 안전 신호로 둔갑**한다.
+
+    **기준선에서 예산 소진 행을 걸러내는 이유**(PR #536 리뷰): `run_repeats` 는 예산이 소진된
+    자리에 행을 없애는 게 아니라 `extractedFilters={}` 인 스텁을 남긴다(`repeats.py:108-120`).
+    이 행을 그대로 두면 키가 존재하므로 짝이 **있는 것으로 잡히고**, `{}` 가 "필터 없음"으로
+    읽혀 비교 arm 이 추출한 축이 전부 유출로 오탐된다. 예산은 arm 전체에 걸쳐 누적 공유되므로
+    앞 arm 이 정상 측정을 끝낸 뒤 기준선이 뒤늦게 소진되는 조합은 실제로 도달 가능하다.
+    술어는 `_rows_with_metrics` 와 같은 것을 쓴다 — 두 곳이 갈리면 조용히 어긋난다.
     """
     baseline_filters = {
         (str(row["caseId"]), int(row.get("repeat", 0))): row.get("extractedFilters") or {}
         for row in results_by_arm[baseline_arm]["caseResults"]
+        if isinstance(row.get("metrics"), dict)
     }
     for result in results_by_arm.values():
         for row in result["caseResults"]:
@@ -615,6 +623,22 @@ def build_live_comparison(
             for arm, result in results_by_arm.items()
         }
 
+    def unmeasured_rows_by_arm(key: str) -> dict[str, list[dict[str, Any]]]:
+        """[PR #536 리뷰] 측정 못 한 행을 **별도 키로** 낸다.
+
+        `None`(측정 못 함)과 `[]`(유출 없음)은 둘 다 falsy 라 위 목록에서 똑같이 빠진다. 그렇다고
+        같은 목록에 `axes: null` 로 섞으면 `len(axisLeakage[arm])` 으로 유출 건수를 세던 쪽이
+        **측정 실패를 유출로 집계**한다. 목록의 의미를 지키면서 공백을 드러내려면 키를 나눠야 한다.
+        """
+        return {
+            arm: [
+                {"caseId": row["caseId"], "repeat": row["repeat"]}
+                for row in result["caseResults"]
+                if row[key] is None
+            ]
+            for arm, result in results_by_arm.items()
+        }
+
     return {
         "primaryMetric": primary_metric,
         "baselineArm": LIVE_BASELINE_ARM,
@@ -636,6 +660,9 @@ def build_live_comparison(
         "budget": budget_snapshot,
         "coverage": {arm: result["coverage"] for arm, result in results_by_arm.items()},
         "axisLeakage": rows_by_arm("filterAxisLeakage"),
+        # 기준선 짝이 없어 유출을 **재지 못한** 행. `axisLeakage` 가 비어 있다고 "유출이 없었다"로
+        # 읽으면 안 된다는 신호다 — 그 판단은 이 목록이 빈 경우에만 성립한다.
+        "axisLeakageUnmeasured": unmeasured_rows_by_arm("filterAxisLeakage"),
         "intentContradictions": rows_by_arm("intentContradictionAxes"),
     }
 

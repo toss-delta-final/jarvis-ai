@@ -58,11 +58,33 @@ def test_parse_arms_default_carries_both_baselines() -> None:
 
 
 def _row(case_id: str, repeat: int, filters: dict[str, object]) -> dict[str, object]:
-    return {"caseId": case_id, "repeat": repeat, "extractedFilters": filters}
+    """정상 측정 행 — `metrics` 가 dict 인 것이 "이 행은 측정됐다"의 유일한 술어다."""
+    return {
+        "caseId": case_id,
+        "repeat": repeat,
+        "extractedFilters": filters,
+        "metrics": {"ndcgAtK": {"10": 1.0}},
+    }
+
+
+def _budget_exceeded_row(case_id: str, repeat: int) -> dict[str, object]:
+    """`run_repeats` 가 예산 소진 시 남기는 스텁 행 — 사라지지 않고 **빈 값으로 남는다**.
+
+    `evals/model_eval/repeats.py:108-120` 과 같은 모양이어야 한다. caseId·repeat 은 채워지고
+    extractedFilters 는 `{}`, metrics 는 None 이다.
+    """
+    return {
+        "caseId": case_id,
+        "repeat": repeat,
+        "extractedFilters": {},
+        "metrics": None,
+        "hardFailure": True,
+        "failureReason": "budgetExceeded",
+    }
 
 
 def _results(rows: list[dict[str, object]]) -> dict[str, object]:
-    return {"caseResults": rows}
+    return {"caseResults": rows, "coverage": {"missingModels": []}}
 
 
 def _leaked_axes(result: dict[str, object]) -> list[list[str]]:
@@ -136,6 +158,55 @@ def test_axis_leakage_marks_unpaired_rows_instead_of_reporting_zero() -> None:
         expected_filters_by_case={"c1": {}},
     )
     assert _leaked_axes(results_by_arm["clean_rerank_only"]) == [["brand"], None]
+
+
+def test_axis_leakage_ignores_budget_exceeded_baseline_stubs() -> None:
+    """[PR #536 리뷰] 예산 소진 스텁은 "필터가 비었다"가 아니라 "안 재봤다"다.
+
+    `run_repeats` 는 예산이 소진된 자리에 `extractedFilters={}` 인 스텁 행을 남긴다. 이 행을
+    기준선으로 쓰면 `{}` 가 "필터 없음"으로 읽혀 **비교 arm 이 추출한 모든 축이 유출로 오탐**된다.
+    예산은 arm 전체에 걸쳐 누적 공유되므로, 이미 정상 측정을 끝낸 앞 arm 이 뒤늦게 소진된
+    기준선과 비교되는 이 조합은 실제로 도달 가능하다.
+    """
+    results_by_arm = {
+        "member_no_profile": _results([_budget_exceeded_row("c1", 0)]),
+        "guest": _results([_row("c1", 0, {"category": "이어폰", "brand": ["소니"]})]),
+    }
+    personalization_cli.annotate_axis_metrics(
+        results_by_arm,
+        baseline_arm="member_no_profile",
+        expected_filters_by_case={"c1": {}},
+    )
+    # `["brand", "category"]`(전 축 오탐)가 아니라 None(측정 못 함)이어야 한다.
+    assert _leaked_axes(results_by_arm["guest"]) == [None]
+
+
+def test_unmeasured_axis_leakage_is_reported_separately_from_no_leakage() -> None:
+    """[PR #536 리뷰] `None`(측정 못 함)이 `[]`(유출 없음)과 같이 목록에서 사라지면 안 된다.
+
+    둘 다 falsy 라 `axisLeakage` 목록에서는 똑같이 빠진다. 그렇다고 같은 목록에 `axes: null`
+    로 섞으면 `len(axisLeakage[arm])` 으로 유출 건수를 세던 쪽이 **측정 실패를 유출로 집계**한다.
+    목록의 의미를 지키면서 공백을 드러내려면 별도 키여야 한다.
+    """
+    results_by_arm = {
+        "member_no_profile": _results([_budget_exceeded_row("c1", 0)]),
+        "guest": _results([_row("c1", 0, {"category": "이어폰"})]),
+        "clean_rerank_only": _results([_row("c1", 0, {"category": "이어폰"})]),
+    }
+    personalization_cli.annotate_axis_metrics(
+        results_by_arm,
+        baseline_arm="member_no_profile",
+        expected_filters_by_case={"c1": {}},
+    )
+    comparison = _build(
+        arm_names=["guest", "member_no_profile", "clean_rerank_only"],
+        results_by_arm=results_by_arm,
+    )
+    assert comparison["axisLeakage"]["guest"] == []  # 유출로 집계되지 않는다
+    assert comparison["axisLeakageUnmeasured"]["guest"] == [{"caseId": "c1", "repeat": 0}]
+    assert comparison["axisLeakageUnmeasured"]["clean_rerank_only"] == [
+        {"caseId": "c1", "repeat": 0}
+    ]
 
 
 ARMS = ["guest", "member_no_profile", "clean_rerank_only", "clean_both"]
