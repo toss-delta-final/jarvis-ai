@@ -118,15 +118,13 @@ _log = logging.getLogger(__name__)
 _color_synonym_limiters: dict[tuple[str, int], threading.BoundedSemaphore] = {}
 _color_synonym_limiter_lock = threading.Lock()
 _background_synonym_tasks: set[asyncio.Task[dict[str, list[str]]]] = set()
-# ContextVar로 SpringSearchBackend·EmbeddingRerankBackend·VectorSearchBackend와 search_catalog
-# 시그니처를 바꾸지 않고 호출 구간만 표시한다. gather 자식 태스크는 생성 시 컨텍스트를 복사한다.
-_search_retry_suppressed: ContextVar[bool] = ContextVar("search_retry_suppressed", default=False)
 # [#427, DESIGN-SHARED-BUDGET-384 §3 D3] 구제 체인 런타임 좁히기가 `search_products` 의 총시간
-# 예산(`budget_s`)을 잔여값으로 주입하는 통로 — `suppress_search_retry` 와 **정확히 같은 이유로**
-# ContextVar 다: 좁힌 값의 전달은 `graph.py → search_catalog → SearchBackend →
-# spring_client.search_products` 로 함수 경계를 넘어야 하고(D3 이 `rescue_deadline` 자체의
-# ContextVar 승격은 기각했다 — 그건 graph 로컬 판단이라서다), `SearchBackend` Protocol·
-# `search_catalog` 시그니처·테스트 fake 를 건드리지 않는 것이 이 선택의 실익이다.
+# 예산(`budget_s`)을 잔여값으로 주입하는 통로 — ContextVar 인 이유는 좁힌 값의 전달이
+# `graph.py → search_catalog → SearchBackend → spring_client.search_products` 로 함수 경계를
+# 넘어야 하는데(D3 이 `rescue_deadline` 자체의 ContextVar 승격은 기각했다 — 그건 graph 로컬
+# 판단이라서다), `SearchBackend` Protocol(SpringSearchBackend·EmbeddingRerankBackend·
+# VectorSearchBackend)·`search_catalog` 시그니처·테스트 fake 를 건드리지 않는 것이 실익이기
+# 때문이다. gather 자식 태스크는 생성 시 컨텍스트를 복사한다.
 _search_budget_override: ContextVar[float | None] = ContextVar(
     "search_budget_override", default=None
 )
@@ -186,14 +184,10 @@ async def _run_in_parse_executor(fn, *args):
     return await asyncio.get_running_loop().run_in_executor(_get_parse_executor(), fn, *args)
 
 
-@contextmanager
-def suppress_search_retry() -> Iterator[None]:
-    """현재 호출 컨텍스트의 I-1 검색 재시도만 일시적으로 끈다."""
-    token = _search_retry_suppressed.set(True)
-    try:
-        yield
-    finally:
-        _search_retry_suppressed.reset(token)
+# [#306] `suppress_search_retry()` 는 제거됐다 — #277 이 미룬 턴의 I-1 재시도만 끄려고 둔
+# 컨텍스트 매니저였다. 그 근거(미룬 턴의 첫 SSE 가 검색 뒤라 재시도가 first-token 예산을
+# 먹는다)는 #396 이 `progress` 를 검색 앞으로 보내며 사라졌고, 이제 재시도 여부는 턴 유형이
+# 아니라 `settings.spring_max_retries` 하나가 정한다.
 
 
 @contextmanager
@@ -202,7 +196,7 @@ def narrow_search_budget(budget_s: float) -> Iterator[None]:
 
     `search_products` 의 `asyncio.wait_for(..., timeout=budget_s)` 가 쓰는 총시간(재시도 포함)
     상한을 override 한다 — httpx 스칼라 타임아웃은 손대지 않는다(`wait_for` 가 총시간을 이미
-    집행한다, #132). `suppress_search_retry` 와 **동일한 누수 방지 규율**을 따른다: 이 `with`
+    집행한다, #132). `observe_search_retry` 와 **동일한 누수 방지 규율**을 따른다: 이 `with`
     블록은 `await` 직후 즉시 닫아야 한다 — `yield` 를 그 안에 두면 다음 턴으로 ContextVar 가
     샌다.
     """
@@ -462,8 +456,13 @@ class CartError(Exception):
 class CartStockInsufficient(Exception):
     """I-2 담기 재고 부족(400 CART_STOCK_INSUFFICIENT) → action reason STOCK_INSUFFICIENT.
 
-    합산 수량 > 재고(재고는 상품 단위, 옵션별 재고 없음, 2026-07-22 신설). available_stock 은
+    합산 수량 > 재고(2026-07-22 신설). available_stock 은
     BE error.detail.availableStock(남은 재고) — LLM "재고가 N개뿐이에요" 안내용. 없으면 None.
+
+    ⚠️ [#524/#508] 구 주석의 "재고는 상품 단위, 옵션별 재고 없음" 은 **BE 옵션별 재고
+    전환(02 D33 — product.stock_quantity → product_stock) 이후 사실이 아니다.**
+    그 시점부터 availableStock 은 담으려는 **옵션의 재고**를 뜻한다. 구매자 레인의 안내
+    문구·판정 정합은 #508 소관이라 여기서는 서술만 바로잡고 동작은 건드리지 않는다.
     """
 
     def __init__(self, available_stock: int | None) -> None:
@@ -527,6 +526,41 @@ class ProductDeletedNotEditable(Exception):
     """I-11 409 PRODUCT_DELETED — 삭제된 상품은 수정·복구 대상이 아니다(삭제는 I-12 전용
     전이). 404 가 아닌 이유: 상품은 실제로 존재하고 주문 내역·매출 통계에도 남아 있어
     에이전트가 "없는 상품"이라 답하면 사실과 다르다."""
+
+
+class InvalidStock(Exception):
+    """I-10/I-11 422 INVALID_STOCK (#524) — `stocks[].quantity` 음수 **또는** 그 상품의
+    옵션이 아닌 `optionId`. 옵션별 재고 도입으로 BE 가 기존 재고 오류 코드에 두 번째
+    조건을 접었다(BE 04 §9, 2026-08-09 — 새 code 를 만들지 않았다).
+
+    AI 는 두 조건을 모두 **선차단**한다 — 음수는 `hitl._parse_int` 의 `isdigit()`,
+    타 상품 옵션은 `stock_options.resolve_stock_option` 의 유일 매칭이다. 그래서 정상
+    경로에서는 이 예외가 나지 않는다. 여기 도달하는 건 confirm 시점 I-9 재조회와 PATCH
+    사이에 옵션이 삭제·변경된 **레이스**뿐이고, 그래서 안내가 "재조회 후 새 초안" 이다.
+    SpringUnavailableError 하위가 아니다 — 재시도해도 같은 결과라 catch-all 로 뭉개면
+    판매자가 무한 재confirm 에 갇힌다(I-12 ALREADY_DELETED 와 같은 규약)."""
+
+
+class ProductCategoryInvalid(Exception):
+    """I-10 400 PRODUCT_CATEGORY_INVALID (#541) — `categoryId` 가 없는 카테고리이거나
+    **대분류**다(BE `SellerProductService.create` → `Category.isRoot()` 거부).
+
+    AI 는 소분류만 담긴 스냅샷에서 id 를 고르므로 정상 경로에서는 나지 않는다. 여기
+    도달하는 건 **스냅샷이 정본 DB 보다 낡은** 경우뿐이다(파일 교체 = 배포, #506).
+    같은 초안을 다시 confirm 해도 결과가 같으므로 안내는 "재시도"가 아니라 **"카테고리를
+    다시 말해 새 초안"** 이다. SpringUnavailableError 하위가 아니다(catch-all 회피)."""
+
+
+class ProductFieldMissing(Exception):
+    """I-10 422 MISSING_FIELD (#541) — BE 가 필수값(name·price·stockQuantity·categoryId)
+    누락으로 거부. 본문의 `error.message` 에 누락 필드명이 실린다(BE `requireFields`).
+
+    정상 경로에서는 `validate_draft` 가 4종을 모두 강제하므로 나지 않는다. 실제로 여기
+    오는 경로는 **와이어 형식 불일치**다 — 예: `seller_stock_wire_mode="stocks"` 를 BE
+    PR B 배포 전에 켜면 `stockQuantity` 를 안 실어 구 BE 가 누락으로 거부한다(#524 가
+    말한 "등록은 시끄럽게 실패한다"의 그 지점). 종전엔 매핑이 없어 이 시끄러운 실패가
+    `SpringUnavailableError` → "일시적인 오류(재시도 가능)" 로 **조용해졌다**.
+    설정·배포를 고쳐야 풀리는 문제라 재시도 안내를 하면 안 된다."""
 
 
 # ── I-30 발송 처리 예외 (이슈 #297, §4.19 — 🔶 초안, BE 협의 전) ──────────────────
@@ -835,7 +869,7 @@ async def search_products(filters: ProductSearchFilters) -> ProductSearchResult:
             # 색상 확장은 보조 품질 경로다. DB 장애가 본 검색을 죽이지 않게 기존 단수로 degrade.
             _log.warning("색상 동의어 확장 실패 — 원문 단수 color로 검색", exc_info=True)
     params = _search_query_params(filters, color_values=color_values)
-    attempts = 1 if _search_retry_suppressed.get() else settings.spring_max_retries + 1
+    attempts = settings.spring_max_retries + 1
     # [#132] 검색 1회의 **총시간** 상한. `spring_search_timeout_s` 는 httpx 에 스칼라로 주입돼
     # connect/read/write/pool 네 시계가 되는데 `read` 는 **청크 사이 간격** 상한이라, 바디가
     # 끊기지 않고 계속 오면 한 번도 물리지 않는다 — `size` 제거(전량 반환, §4.6)로 바디가 커진
@@ -843,13 +877,14 @@ async def search_products(filters: ProductSearchFilters) -> ProductSearchResult:
     # (재시도+1)` 을 검색 예산으로 **가정**하고 스트림 상한을 기동 검증하는데, 그 가정을
     # 집행하는 코드가 없었다. 새 튜너블을 만들지 않고 같은 식을 쓴다 — 검증과 집행이 갈라지면
     # 한쪽만 고쳐 놓고 지켜진다고 믿게 된다.
-    # [#277 병합] 곱하는 값은 상수가 아니라 **실제 시도 수**(`attempts`)다 — 재시도를 끈 턴
-    # (`suppress_search_retry`, 미룬 conditions 가 first-token 예산을 쓰는 경로)은 예산도 1회분으로
-    # 함께 좁아져야 한다. `spring_max_retries + 1` 을 그대로 쓰면 억제한 턴이 억제 안 한 턴과
-    # 같은 상한을 갖게 돼 #277 이 아낀 예산을 이 가드가 도로 늘려 준다.
+    # [#277 병합 → #306] 곱하는 값은 상수가 아니라 **실제 시도 수**(`attempts`)다 — 예산과
+    # 시도 수가 갈리면 한쪽만 고쳐 놓고 지켜진다고 믿게 된다. #277 때는 미룬 턴만 시도 수가
+    # 1 로 갈려 이 구분이 실제 분기였고, #306 이 그 억제를 없애 지금은 설정 하나에서 나온다.
+    # `graph.py::_stage_budget` 의 `stage_cap` 산출이 **글자 그대로 같은 식**을 쓴다(D7).
     # [#427, DESIGN-SHARED-BUDGET-384 §3 D4] `narrow_search_budget()` 로 잔여 예산이 주입돼
     # 있으면(구제 체인 좁히기) 그 값을 **총시간(재시도 포함)의 상한**으로 쓴다 — 재시도 루프는
-    # 그 안에서 돈다. 주입이 없으면(오늘 기본 `observe` 모드·비-검색 단계) 종전대로 계산한다.
+    # 그 안에서 돈다. 주입이 없으면(`observe` 모드·`"full"` 판정 단·비-검색 단계) 종전대로
+    # 계산한다 — 기본 모드는 #406 이후 `narrow` 라 구제 체인 단은 대개 주입을 받는다.
     override = _search_budget_override.get()
     budget_s = override if override is not None else settings.spring_search_timeout_s * attempts
 
@@ -1729,12 +1764,25 @@ class SpringClient:
 
         미설정 옵션 필드(originalPrice/category/description/imageUrl 등)는 exclude_none 으로
         본문에서 제외한다(opus 리뷰 m4) — null 전송 대신 필드 자체를 생략한다.
+
+        [#524] 422 `INVALID_STOCK` 은 전용 예외다 — 등록 시점엔 옵션이 없어 `optionId` 는
+        항상 null 이므로 여기 오는 건 수량 문제뿐이지만, 코드 구분을 I-11 과 대칭으로 둔다.
+
+        [#541] 400 `PRODUCT_CATEGORY_INVALID`·422 `MISSING_FIELD` 도 전용 예외다. 둘 다
+        **재시도로 풀리지 않는** 실패(스냅샷 낡음 / 와이어 형식 불일치)인데 매핑이 없어
+        `SpringUnavailableError` 로 낙성돼 판매자에게 "일시적인 오류(재시도 가능)" 로
+        보였다 — 등록이 계속 실패하는데 원인은 화면 어디에도 없었다.
         """
         data = await self._request(
             "POST",
             f"/internal/seller/{brand_id}/products",
             operation="create_product",
             json_body=payload.model_dump(by_alias=True, exclude_none=True),
+            error_code_map={
+                "INVALID_STOCK": InvalidStock,
+                "PRODUCT_CATEGORY_INVALID": ProductCategoryInvalid,
+                "MISSING_FIELD": ProductFieldMissing,
+            },
         )
         return self._validate(ProductCreateResult, data)
 
@@ -1745,13 +1793,19 @@ class SpringClient:
 
         삭제된 상품 수정은 409 `PRODUCT_DELETED` 전용 예외 — 재시도 대상이 아니다(§4.5).
         `status` 로 `DELETED` 를 보내는 것도 BE 가 거부한다(삭제는 I-12 전용 전이).
+
+        [#524] 422 `INVALID_STOCK` 도 전용 예외다 — hitl 이 선차단하므로 정상 경로에서는
+        나지 않고, 초안과 실행 사이 옵션 변경 레이스만 여기로 온다(InvalidStock docstring).
         """
         data = await self._request(
             "PATCH",
             f"/internal/seller/{brand_id}/products/{product_id}",
             operation="update_product",
             json_body=patch.model_dump(by_alias=True, exclude_none=True),
-            error_code_map={"PRODUCT_DELETED": ProductDeletedNotEditable},
+            error_code_map={
+                "PRODUCT_DELETED": ProductDeletedNotEditable,
+                "INVALID_STOCK": InvalidStock,
+            },
         )
         return self._validate(ProductUpdateResult, data)
 

@@ -29,11 +29,15 @@ def profile_for_scope(
     )
 
 
-def filter_axis_leakage(guest_filters: dict[str, Any], member_filters: dict[str, Any]) -> list[str]:
-    """값을 기록하지 않고 member에만 새로 생긴 필터 축 이름을 반환한다."""
-    guest_axes = set(_filter_axes(ProductSearchFilters.model_validate(guest_filters)))
-    member_axes = set(_filter_axes(ProductSearchFilters.model_validate(member_filters)))
-    return sorted(member_axes - guest_axes)
+def filter_axis_leakage(baseline_filters: dict[str, Any], arm_filters: dict[str, Any]) -> list[str]:
+    """값을 기록하지 않고 arm에만 새로 생긴 필터 축 이름을 반환한다.
+
+    [#483] 인자 이름이 guest/member 였던 건 기준선이 `guest` 로 하드코딩돼 있던 시절의 흔적이다.
+    기준선은 이제 호출부가 정한다(`cli.annotate_axis_metrics`).
+    """
+    baseline_axes = set(_filter_axes(ProductSearchFilters.model_validate(baseline_filters)))
+    arm_axes = set(_filter_axes(ProductSearchFilters.model_validate(arm_filters)))
+    return sorted(arm_axes - baseline_axes)
 
 
 class PersonalizationLiveBuyerAdapter:

@@ -5,10 +5,19 @@
 
 - `changes[]` 는 실행 정본(기계용), `preview{}` 는 표시 사본(사람용) — FE 는 preview
   만 보고 그린다. preview 를 고쳐 보내도 저장 값은 안 바뀐다(confirm 은 draftId 만).
-- 11개 키는 **항상 존재**한다 — 값이 없으면 null 로 내려가지 키가 빠지지 않는다.
+- 13개 키는 **항상 존재**한다 — 값이 없으면 null 로 내려가지 키가 빠지지 않는다.
+  ([#541] `categoryMajor`·`categorySubPath` 2키 추가 — 추가 전용이라 기존 소비자 불변.)
 - 포맷은 서버가 완료한다("32,000원"·"50개") — FE 재가공 금지 계약이므로 역파싱이
   필요 없도록 숫자는 changes 원값에서만 뽑는다.
 - `sections[].kind` 는 source/warning/note — FE 는 모르는 kind 를 무시한다(확장 규칙).
+
+[#524] 옵션별 재고는 이 모듈의 대상이 아니다 — `preview{}` 는 `op=="create"` 전용 키이고
+등록 시점엔 옵션이 아직 없어(I-10 은 optionId null 한 줄) 옵션별 diff 가 성립하지 않는다.
+
+다만 잠재 결함을 하나 적어 둔다: `build_create_preview` 의 `values` 와 `diff_notes` 의
+비교는 둘 다 **field 키 기준**이라 같은 필드의 change 가 둘 이상이면 조용히 뭉갠다. 지금은
+create 에 재고 change 가 1건뿐이라 드러나지 않지만, **"옵션 있는 상품 등록"이 열리는 순간
+여기가 먼저 깨진다** — 그때는 이 dedupe 를 (field, option_name) 기준으로 먼저 고칠 것.
 """
 
 from __future__ import annotations
@@ -59,7 +68,7 @@ def build_create_preview(
     stock = _int_or_none(values.get("stock_quantity"))
     image_url = values.get("image_url") or None
     category_id = values.get("category")
-    category_path = category_catalog.path_str(category_id) if category_id else None
+    category = category_catalog.get(category_id) if category_id else None
 
     # 할인율 — 정가와 판매가가 모두 있을 때만 계산(내림). 정가 미입력은 0(배지 숨김).
     discount_rate = 0
@@ -88,7 +97,7 @@ def build_create_preview(
     if modified_notes:
         sections.append({"kind": "note", "title": "수정 반영", "items": list(modified_notes)})
 
-    # 11개 키는 항상 존재 — 없는 값은 null(FE 계약: undefined 분기를 만들지 않게 한다).
+    # 13개 키는 항상 존재 — 없는 값은 null(FE 계약: undefined 분기를 만들지 않게 한다).
     return {
         "title": values.get("name") or "",
         "imageUrl": image_url,
@@ -97,7 +106,13 @@ def build_create_preview(
         "originalPriceText": _price_text(original_price) if original_price is not None else None,
         "discountRate": discount_rate,
         "stockText": f"{stock:,}개" if stock is not None else "",
-        "categoryPath": category_path or "",
+        "categoryPath": category.path_str if category else "",
+        # [#541] 카테고리는 판매자가 **두 칸**(대분류 / 중·소분류)으로 채우는 값이라
+        # 조각도 함께 싣는다 — FE 가 categoryPath 를 " > " 로 쪼개면 대분류 이름에
+        # 슬래시가 든 경우("패션의류/잡화")나 중·소 병합형에서 칸 수를 오판한다.
+        # categoryPath == categoryMajor + " > " + categorySubPath 불변식(§6.1).
+        "categoryMajor": category.major if category else "",
+        "categorySubPath": category.sub_path if category else "",
         # summary 는 ProductField 가 아니라 changes 에 실리지 않는다 — vision 분석이 원천.
         "summary": analysis.summary if analysis else None,
         "description": values.get("description") or None,

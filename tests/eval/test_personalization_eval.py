@@ -116,7 +116,8 @@ def test_live_preflight_rejection_does_not_execute(tmp_path, monkeypatch) -> Non
 
 
 @pytest.mark.eval
-def test_live_mode_dispatches_three_scope_arms_after_preflight(tmp_path, monkeypatch) -> None:
+def test_live_mode_dispatches_four_arms_after_preflight(tmp_path, monkeypatch) -> None:
+    """[#483] 기본 실행에 두 기준선(guest·member_no_profile)이 모두 들어간다."""
     captured = {}
 
     def fake_run(output_dir, **kwargs):
@@ -127,7 +128,12 @@ def test_live_mode_dispatches_three_scope_arms_after_preflight(tmp_path, monkeyp
     out = tmp_path / "live"
     assert main(["--live", "--case-limit", "1", "--out", str(out)]) == 0
     assert captured["output"] == out
-    assert captured["arm_names"] == ["guest", "clean_rerank_only", "clean_both"]
+    assert captured["arm_names"] == [
+        "guest",
+        "member_no_profile",
+        "clean_rerank_only",
+        "clean_both",
+    ]
     assert len(captured["cases"]) == 1
 
 
@@ -143,11 +149,7 @@ def test_live_mode_accepts_clean_fixed_regression_arm_only_when_asked(
 
     monkeypatch.setattr(personalization_cli, "run_tier_l", fake_run)
     assert "clean_fixed" in personalization_cli.LIVE_ARMS
-    assert personalization_cli.DEFAULT_LIVE_ARMS == (
-        "guest",
-        "clean_rerank_only",
-        "clean_both",
-    )
+    assert "clean_fixed" not in personalization_cli.DEFAULT_LIVE_ARMS
     assert (
         main(
             [
@@ -155,7 +157,7 @@ def test_live_mode_accepts_clean_fixed_regression_arm_only_when_asked(
                 "--case-limit",
                 "1",
                 "--arms",
-                "guest,clean_rerank_only,clean_both,clean_fixed",
+                "guest,member_no_profile,clean_rerank_only,clean_both,clean_fixed",
                 "--out",
                 str(tmp_path / "live"),
             ]
@@ -164,6 +166,7 @@ def test_live_mode_accepts_clean_fixed_regression_arm_only_when_asked(
     )
     assert captured["arm_names"] == [
         "guest",
+        "member_no_profile",
         "clean_rerank_only",
         "clean_both",
         "clean_fixed",
@@ -174,6 +177,8 @@ def test_live_arm_spec_maps_arms_to_markdown_modes() -> None:
     """[#484] arm 이름 → (마크다운 모드, identity, scope). 모드가 케이스별/고정을 가른다."""
     spec = personalization_cli._live_arm_spec
     assert spec("guest") == (None, "guest", "off")
+    # [#483] guest 와 프로필 부재(None)는 같고 identity 만 member — 그 하나가 이 arm 의 존재 이유다.
+    assert spec("member_no_profile") == (None, "member", "off")
     assert spec("clean_rerank_only") == ("clean", "member", "rerank_only")
     assert spec("clean_both") == ("clean", "member", "both")
     assert spec("clean_fixed") == ("fixed", "member", "rerank_only")

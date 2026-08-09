@@ -17,6 +17,44 @@
   코드·마케팅명 등 40건은 반려로 고정했다. 생성 JSON·SQL은 검수 오버레이에서 재파생한다.
 
 ### Added
+- **#358 — 개인화 그래프의 사용자 변경 경로에 저장 안전장치를 깔았다** (SPEC-PROFILE-GRAPH-149
+  §5.4·§6.5·§7.1·§7.2). #356 이 배치 쓰기까지 만들었다면 이번은 **사용자가 직접 고치고 지우는**
+  경로를 안전하게 만든다. `store.set_graph` 가 CAS 없는 blind overwrite 라 그 위에 네 층을 얹었다.
+  - **`revision` compare-and-set** — `If-Match` 불일치는 `409` + 최신 `graphVersion` 병기이고
+    **부분 적용이 없다**(REQ-PGRAPH-040/041). 문서가 손상돼 `get_graph` 가 `None` 을 돌려줘도
+    revision 이 0 으로 되돌아가지 않는다 — **감사 테이블의 `graph_version_after` 최댓값**을
+    하한으로 쓴다(REQ-PGRAPH-042). 같은 구멍이 배치 경로(`consolidate`)에도 있어 함께 막았다.
+  - **멱등 원장** — 파생 키 `profile-graph-{action}:{userId}:{scopeId}:{ifMatch}` 로 재전송을
+    판정해 최초 응답을 재생한다(REQ-PGRAPH-043). 파생 키에 본문이 없어 생기는 구멍(같은
+    `If-Match`·다른 본문이 남의 응답을 재생)은 본문 지문으로 막고 충돌로 떨어뜨린다.
+  - **저널·크래시 복구** — `processing`/`completed` + claim/lease(기존 `processed_events` 패턴).
+    `404`·`409`·no-op 은 claim 을 되돌려 감사 행을 남기지 않는다(REQ-PGRAPH-080).
+    문서를 쓰기 **직전에 의도를 기록**하고(§7.2 저널 선행 기록), **부재 판정은 원장과 함께** 한다 —
+    문서 쓰기 뒤 완료 표시 전에 끊긴 창에서 재시도가 `404`/`409` 를 받으면 api-spec §3.9.2 가 ⚠️ 로
+    금지한 "edge 존재 여부로 뭉뚱그리기"가 된다. 재개는 남은 단계만 마저 하고 최초 응답을 재생하며,
+    감사는 파생 키 지문 UNIQUE 로 멱등이라 두 행이 되지 않는다.
+  - **변경 감사** — `actor_fp`·`object_fp` 는 peppered HMAC 이고 **raw userId·라벨 원문을 어떤
+    컬럼에도 넣지 않는다**(REQ-PGRAPH-081 [HARD]). 전체 초기화도 이 테이블은 보존한다(-062).
+  - **테이블은 3개다** — SPEC §7.1 은 "감사 겸 저널 + 중지 플래그" 2개라고 적었지만, 원장이 드는
+    응답 본문에 라벨 원문이 섞여(api-spec §3.9.1 `edge.to`) 감사와 한 행에 둘 수 없다. §7.1 문구는
+    개정 대상이다.
+- **#358 — 개별 삭제를 즉시 물리 삭제로 바꾸고 라벨 없는 tombstone 을 남긴다** (#499 확정 전제).
+  구 표현은 지운 취향을 `status="suppressed"` edge 로 문서에 그대로 뒀고 그 `node_id` 가
+  `"brand:소니"` 라 **사용자가 지웠다고 믿는 문장의 원문이 남아 있었다**. `GraphDocument.tombstones`
+  가 `edge_id`(내용 파생 해시)만 들어 라벨 없이 재파생을 막는다. 구 문서는 읽는 즉시 흡수하며
+  (별도 백필 없음) 참조 끊긴 노드까지 떨군다. 연쇄로 `_summary_input` 이 삭제 판정을 잃어
+  지운 취향이 요약으로 되돌아오던 것도 함께 고쳤다(REQ-PGRAPH-023).
+- **#358 — 전체 초기화가 대화 전사록까지 지운다** (api-spec §3.9.4, REQ-PGRAPH-061).
+  `idx_conversation_turns_user` 를 신설했다 — 없으면 그 삭제가 풀스캔이다(SPEC §12-7).
+  감사 로그와 개인화 중지 상태는 보존한다(-062/-063).
+- **#358 — 개인화 중지 플래그** (`profile_personalization_state`, REQ-PGRAPH-050). 전용 저장
+  위치여야 하는 이유가 여기서 실현된다 — 요약 항목에 두면 초기화가 지워 중지가 조용히 풀린다.
+  소비·수집 차단(집행)은 #359 몫이고 본 변경은 플래그와 요약 사용 표식까지다.
+  - **미집행**: 감사·원장 보존 기간(`graph_audit_retention_days`·`graph_idempotency_ttl_h`)은
+    값만 배선했고 **만료 행을 지우는 스윕 잡은 만들지 않았다** — 기본값(90일·24시간)은 🔴 C-23
+    미합의라 잠정이다.
+  - **비범위**: API 엔드포인트(I-32~I-37)와 `app/core/errors.py` 상태 코드 매핑은 #360.
+
 - **#518 — 리뷰 분석에 기간별 추이(`bucket`)와 긍부정 감성 집계 추가** (api-spec 계약 무변경).
   `get_reviews(stats=True, bucket="daily|weekly|monthly")` 가 기간을 구간으로 나눠 I-31 집계를
   한 번의 도구 호출로 모아 온다 — 워커가 구간마다 호출하면 추이 하나가 도구 호출 한도(8)를
@@ -70,12 +108,49 @@
   않도록 이 브랜치의 중복분은 back-merge에서 제거했다.
 
 ### Changed
+- **#306 — 미룬 턴만 I-1 검색 재시도를 끄던 #277 응급 처치를 제거했다. 이제 턴 유형과 무관하게
+  `SPRING_MAX_RETRIES` 하나가 재시도를 정한다** (api-spec §2.9(c)·§3.1, v0.32.5).
+  #277 의 스킵은 `conditions` 를 검색 뒤로 미룬 턴의 첫 SSE 가 검색 뒤에 있어 재시도가
+  first-token 10s 를 넘기던 시절의 것인데(실측 이벤트 0건·504 가 8/8), #396 이 `progress` 를
+  decompose 앞으로 보내며 그 전제가 사라졌다. #394 가 재시도를 0으로 내린 동안은 무동작이었고
+  #406 이 1로 원복하며 다시 유효한 가드가 되어, 이번에 제거 여부를 판단했다. 제거 대상은
+  `SEARCH_RETRY_ON_DEFERRED_CONDITIONS`(config)·`suppress_search_retry`(ContextVar+CM)·
+  미룬 턴 판정 셋이다. **동작 변화**: 미룬 턴 본검색·자동완화 probe 가 실제로 재시도하고,
+  #406 의 `retrying` progress 도 그 턴에서 나간다(그 턴에선 `conditions` 앞). 직렬 이론 상한은
+  12s → **18s**(`3 × 3.0 × 2`)지만 `RESCUE_BUDGET_MODE=narrow`(#406 기본)의 런타임 좁히기가
+  미룬 턴 본검색을 `(30−15−경과)/3 ≈ 4.8s` 로 묶어 **#277 이 재현한 「1차 3.0s 타임아웃 + 2차
+  2.9s 성공」조합은 성립하지 않는다** — 되살아나는 것은 2차가 빠르게 응답하는 경우뿐이고,
+  대가는 확정 실패 감지가 3.0s→≈4.8s 로 늦어지는 것이다. 실측(`evals/first_event_budget`,
+  변경 전/후 2벌)으로 첫 이벤트가 여전히 `progress`(수 ms)임을 함께 고정했다.
+  **롤백 규약이 하나 늘었다** — `RESCUE_BUDGET_MODE=observe` 로 되돌릴 때는
+  `SPRING_MAX_RETRIES=0` 을 함께 지정해야 기동한다(18.0 ≥ 30−15). `PROGRESS_EVENTS_ENABLED=false`
+  는 #406 이 만든 같은 짝 규칙을 그대로 따른다. 곁들여 #406 이 기본값을 0→1 로 올리며 갱신하지
+  않은 사본 drift 2건(api-spec §2.9(c) 의 `9s` 수치, `.env.example` 의 `SPRING_MAX_RETRIES=0`·
+  `RESCUE_BUDGET_MODE=observe`)도 함께 정정했다. **와이어 계약 불변.**
 - **#394 원복 — I-1 `spring_max_retries` 기본값을 1로 복구하고 `rescue_budget_mode`를
   `narrow`로 함께 올렸다.** 사람의 명시 지시로 수행했으며, #394가 제시한 원복 조건인 BE #395
   검색 쿼리 개선은 충족됐다: BE PR #133 커버링 인덱스와 `attributes` 4키 축소가 배포됐고,
   2026-08-09 라이브 응답에서 4키 부재 및 항목당 약 1,780B→1,052B로 확인됐다(`size` 상한 폐지).
   `narrow`는 꼬리 예약 예산이 부족한 구제 단의
   타임아웃을 좁혀도 시도하며 건너뛰지 않고, 다시 끄려면 `SPRING_MAX_RETRIES=0`을 설정한다.
+- **#483 — Tier L 의 주 비교를 `회원 vs 게스트` 에서 `회원 vs 프로필 없는 회원` 으로 바꿨다**
+  (평가 하네스 한정, 프로덕션 코드·api-spec 무개정). 기준선 `guest` 는 비교 arm 과 프로필만
+  다른 게 아니라 **identity 까지 달라**(persona_id 가 없어 I-19 구매이력 조회·재구매 dedup 이
+  통째로 빠진다) 헤드라인이 "프로필 효과 + identity 효과"의 합이었다 — `live-v1` 산출물을
+  라벨로 가르면 guest 라벨 +0.0135 / member 라벨 −0.1258 이고 하락은 `repurchase` 3건이
+  만든 것이라, 그 3건을 빼면 전체 평균이 −0.0340 → −0.0106 으로 0 에 수렴한다. Tier D 가 쓰던
+  `member_no_profile` arm(identity=member, 프로필 없음)을 Tier L 에 추가해 주 비교를
+  `clean_rerank_only vs member_no_profile`(`pairedVsMemberNoProfile`)로 옮기고, `pairedVsGuest`
+  는 cold-start 보조 비교로 남겼다(identity 가 섞이므로 프로필 효과로 해석하지 않는다 —
+  dev-v2 README 와 같은 규약). `rankingChange`·`axisLeakage` 도 같은 주 기준선을 따라가며,
+  `axisLeakage["guest"]` 는 자기 비교(항상 0)에서 **지터 바닥**으로 바뀌어 유출이 신호인지
+  잡음인지 가르는 기준이 된다. `--arms` 검증은 위치 규칙(`arms[0]=="guest"`)에서 두 기준선
+  포함 여부로 바뀌었고, `comparison.json` 에 `secondaryBaselineArm`·`primaryComparison`·
+  `axisLeakageUnmeasured` 가 추가됐다. 마지막 것은 기준선 짝이 없어 **유출을 재지 못한** 행을
+  따로 싣는다 — `[]`(유출 없음)와 `None`(측정 못 함)이 같은 목록에서 똑같이 빠지면 예산 소진이
+  안전 신호로 둔갑한다. 예산 상한은 그대로 두고 실행 시 `MODEL_EVAL_MAX_CALLS_PER_RUN=4000` override 를
+  쓴다(4-arm × dev109 × repeats3 = 3,924호출, 비용 상한 $20 은 무관). **실측은 병합 후 별도
+  live 실행이 필요하다.**
 - **#504 — 판매자 분석 차트 재설계: 좌표 생성 주체를 LLM → 코드로 전환** (api-spec §3.2,
   v0.30.0 · `docs/specs/DESIGN-SELLER-CHART-V2.md`). 구 구조는 `graph_agent`(도구 없음,
   결정 D-4)가 워커 요약에서 숫자를 베껴 좌표를 만들고 G1 이 근거 없는 수치를 드랍해
@@ -133,6 +208,18 @@
   - **코드 변경 0건** — 그래프 튜너블·라우트가 `app/` 에 아직 없다(구현은 #150).
 
 ### Fixed
+- **#323 잔여 — 요약 쓰기가 배치와 사용자 편집 사이에서 덮이던 것을 compare-and-set 으로 닫았다**
+  (#358 작업 범위 5). PR #387 이 잠금까지 넣었지만, `consolidate` 는 그래프 락을 놓고 LLM
+  왕복(수 초)을 한 뒤 요약을 쓰므로 **그 창의 사용자 편집을 시간상 겹치지 않은 채** 덮었다 —
+  잠금으로는 안 닫히는 갭이다(SPEC §7.4 "남은 부분"). LLM 호출 전에 읽어 둔 `seq` 를 지참해
+  그 사이 바뀌었으면 물러난다. 락 키를 합치는 대안은 `record_remember` hot-path 를 초 단위로
+  막아 채택하지 않았다.
+- **유닛 TCP 격리 가드가 Windows 에서 스위트를 통째로 죽이던 회귀** (#474 발, #358 작업 중 발견).
+  Windows 에는 AF_UNIX socketpair 가 없어 CPython 이 `socket.socketpair()` 를 127.0.0.1
+  `connect()` 로 흉내내는데, asyncio 이벤트 루프가 self-pipe 를 그것으로 만든다 — AF_INET
+  `connect` 를 통째로 막는 가드가 **루프 생성 자체를 실패시켜 async 테스트가 전멸**했다(실측
+  556 failed). 리눅스는 커널 AF_UNIX 라 이 경로가 없어 CI(ubuntu-latest)로는 영영 안 잡힌다.
+  socketpair 구간만 스레드 로컬로 예외 처리했다(가드의 본래 목적은 그대로).
 - **#512 — 매출 시계열 도구가 오류 없이 내던 "정상값처럼 보이는 틀린 답" 3종 차단** (와이어 계약
   불변 — AI 소비측 게이트). (1) `granularity=summary` 는 응답 shape 이 달라 `SalesResult`
   (`extra="allow"`)가 `series=[]` 로 삼켜 **언제나 "총매출 0원"** 이 나가던 것을 도구 입구에서
@@ -901,6 +988,49 @@
 - **#347 — Claude PR Review 에 `skip-claude-review` 라벨 게이트 추가** — 워크플로 job `if:` 에 라벨 조건을 더해, 리뷰가 불필요한 PR(대량 병합 정합·실험 브랜치)을 PR 단위로 끌 수 있게 했다. 기본 동작(라벨 없음 = 리뷰 실행)은 불변이며, 라벨 부착/제거는 다음 push 부터 적용된다. 계약(api-spec) 무변경.
 
 ### Fixed
+- **#437 — 운영 `costUsd` 가 항상 0 이던 문제(모델 단가표가 배포 env 에 주입되지 않음) +
+  deploy.yml 조건부 주입 손잡이 4종(사용자 승인으로 인프라까지 확장)** —
+  `model_price_in_per_1k`/`model_price_out_per_1k` 기본값이 빈 dict 이고 `deploy.yml` env
+  고정 목록에 `MODEL_PRICE_*` 가 없어, 운영은 항상 빈 단가표로 돌아 모든 턴 `costUsd=0`이
+  났다. 코드 쪽: (1) `app/core/model_pricing.py` 신설 — `evals/model_eval/pricing_manifest.json`
+  (EVAL-OBS-PLAN-001 §3.4 "비용축과 동일 소스 사용")과 글자 그대로 일치하는
+  `gpt-5-nano`/`gpt-5.6-luna` 기본 단가표를 코드에 싣고(런타임 컨테이너에 `evals/` 가 없어
+  직접 import 불가, 값 복제 + 테스트로 드리프트 고정) `Settings` 필드 기본값으로 배선
+  (`default_factory` 복사본 — 인스턴스 간 공유 가변 기본값 방지). 환경변수 주입은 표 전체를
+  치환한다(병합 아님), 빈 문자열(`deploy.yml` 이 미설정 vars 를 빈 문자열로 쓰는 관례)도 예외
+  없이 기본표로 해석한다. (2) 기동 시 1회 `log_model_price_table_status` — 활성 모델
+  (`resolve_model_id` 의 fast/smart) 단가 누락 시 `MODEL_PRICE_MISSING_AT_STARTUP`, env
+  미주입(기본표 사용 중) 시 `MODEL_PRICE_DEFAULTS_IN_USE`, 완전 주입 시
+  `MODEL_PRICE_TABLE_READY` 를 남긴다 — 어떤 경우에도 기동을 거부하지 않는다(경고 수준까지만).
+  Anthropic 모델 단가는 repo 에 출처 있는 값이 없어 싣지 않았다 — `LLM_PROVIDER=anthropic`
+  기동은 `MODEL_PRICE_MISSING_AT_STARTUP` 경고로 드러난다.
+  인프라 쪽(사용자 승인 후 확장, PR #532/#406 이 `SPRING_MAX_RETRIES` 기본값을 0→1로 원복한
+  것에 대한 운영 롤백 손잡이 부재도 함께 해소): (3) `.github/workflows/deploy.yml` 에
+  `MODEL_PRICE_IN_PER_1K`·`MODEL_PRICE_OUT_PER_1K`·`SPRING_MAX_RETRIES`·`RESCUE_BUDGET_MODE`
+  네 키의 **조건부(A) env 주입**을 배선했다 — GitHub Variable 미등록이거나 빈/공백뿐인 값이면
+  그 줄 자체가 env 파일에 남지 않아 코드 기본값이 그대로 적용된다(무조건 생성 시 빈 문자열이
+  되어 `SPRING_MAX_RETRIES`(int)·`RESCUE_BUDGET_MODE`(Literal)의 기동을 깨뜨리는 것을 피한다 —
+  `MODEL_PRICE_*` 는 이미 `NoDecode`+수동 `json.loads` 로 빈 문자열 내성이 있었지만 네 키를
+  한 PR 에서 같은 규약으로 통일했다). **PR #539 리뷰 — 초판은 `V='${{ vars.X }}'` 처럼 치환
+  결과를 실행되는 셸 문장에 직접 이어붙이고 `if [ -n "$V" ]; then ... fi` 로 분기했는데, 값에
+  작은따옴표 하나만 있으면 그 리터럴이 거기서 끝나고 이어지는 텍스트가 운영 EC2 에서 그대로
+  실행되는 셸 인젝션(원격 코드 실행)이었다 — "값에 작은따옴표 금지"라는 운영자 규율로만 막아둔
+  것이 오판이었다.** 이 지적을 받아들여 **실행되는 셸 문장에 값을 넣지 않는 방식으로 전면
+  교체**했다 — 네 키도 기존 19+줄과 동일하게 quoted heredoc(`cat << 'ENVEOF'`) **안**에
+  데이터로만 쓰고(quoted heredoc 본문은 셸이 재해석하지 않는다), heredoc 뒤에서 값이 비었거나
+  공백뿐인 줄만 `sed -i -E '/^(KEY1|KEY2|...)=[[:space:]]*$/d'` 로 지워 (A) 규약을 유지한다.
+  `set -e` 아래라 sed 실패는 배포를 그대로 중단시키며, `sed -i` 임시 파일은 GNU sed 가 원본
+  `$ENV_FILE` 의 권한(위 `umask 077` 로 생성된 0600)을 그대로 물려받아(로컬 실측: 다른 umask
+  하에서 sed 를 돌려도 원본 권한이 유지됨) 시크릿 파일 권한이 흔들리지 않는다. 셸 재현으로
+  (a) 네 값 모두 빈 문자열 → 0줄·정상 종료, (b) 정상 값 → 정확히 4줄·JSON 원문 온전, (c) 악성
+  값(`'; touch /tmp/PWNED_437 #`) → 그 값이 **데이터로만** 들어가고 `/tmp/PWNED_437` 미생성,
+  (d) 공백뿐인 값 → 줄 삭제(미등록과 동일)를 모두 실증했다. "작은따옴표 금지" 운영자 규율
+  문장은 더 이상 사실이 아니므로 삭제했다. (4) `.env.example`·`DEPLOY.md` §2 에 네 키의
+  형식·허용값·조건부 주입 규약(값에 따옴표·공백이 섞여도 데이터로만 쓰이므로 안전하다는 것,
+  빈/공백뿐인 값은 미등록과 동일 취급된다는 것)과, `PROGRESS_EVENTS_ENABLED=false` 단독 롤백이
+  더 이상 불가능해 `SPRING_MAX_RETRIES=0` 과 반드시 짝지어야 한다는 사실
+  (`tests/unit/test_progress_event.py::
+  test_progress_events_disabled_rejects_startup_with_retries_enabled` 로 고정됨)을 문서화했다.
 - **#474 브랜치 후속 — 유닛 테스트가 로컬 Spring BE의 TCP 응답에 따라 달라지던 환경 의존을 차단** —
   `INTERNAL_API_TOKEN`을 공통 테스트 환경에서 비우고 `tests/unit/`에서만 실제 TCP 연결을
   `ConnectionRefusedError`로 거부해 CI의 서비스 미기동 degrade 경로를 고정했다.

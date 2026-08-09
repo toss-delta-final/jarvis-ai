@@ -211,3 +211,53 @@ def test_llm_output_budgets_are_injected_not_hardcoded() -> None:
     default = Settings(_env_file=None)
     assert default.profile_delta_max_tokens > 800
     assert default.profile_summary_max_tokens > 1000
+
+
+# ─────────── #358 그래프 저장 안전장치 보존 기간 ───────────
+
+
+def test_graph_retention_defaults_are_wired() -> None:
+    """멱등 원장·감사 보존 기간은 config 주입이다 (SPEC-PROFILE-GRAPH-149 §11).
+
+    두 값 모두 🔴 C-23 잔여(정책·법무 미정)라 **잠정값**이다. 만료 행을 실제로 지우는 스윕은
+    #358 범위 밖이므로, 지금 이 값들이 바꾸는 동작은 아래 REQ-PGRAPH-044 기동 검증뿐이다.
+    """
+    settings = Settings(_env_file=None)
+
+    assert settings.graph_idempotency_ttl_h == 24.0
+    assert settings.graph_audit_retention_days == 90.0
+
+
+def test_idempotency_ledger_must_not_outlive_audit_log() -> None:
+    """REQ-PGRAPH-044 — 원장이 감사보다 오래 살면 안 된다.
+
+    원장은 "이 요청 아까 이렇게 답했다"를 들고 있고 감사는 "그 변경이 실제로 있었다"의 근거다.
+    원장이 더 오래 살면 재전송이 최초 응답을 재생하는데 그 변경의 감사 근거는 이미 사라진
+    구간이 생긴다. §11 이 "두 값의 대소로 정확성을 맞추려는 설정은 금지한다"고 못박았으므로
+    런타임 보정이 아니라 **기동 시점 fail-fast** 다.
+    """
+    with pytest.raises(ValidationError, match="GRAPH_IDEMPOTENCY_TTL_H"):
+        Settings(_env_file=None, graph_idempotency_ttl_h=48, graph_audit_retention_days=1)
+
+
+def test_graph_retention_boundary_is_inclusive() -> None:
+    """같은 길이는 허용한다 — REQ-PGRAPH-044 는 "길지 않아야" 이지 "짧아야" 가 아니다.
+
+    경계를 배타로 재면 24h == 1day 인 정상 구성이 기동에서 죽는다
+    (docs/lessons.md 2026-08-08 "TTL 만료를 엄격 부등호로 재면 판정이 시계 분해능에 걸린다").
+    """
+    settings = Settings(_env_file=None, graph_idempotency_ttl_h=24, graph_audit_retention_days=1)
+
+    assert settings.graph_idempotency_ttl_h == 24.0
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("graph_idempotency_ttl_h", 0),
+        ("graph_audit_retention_days", 0),
+    ],
+)
+def test_graph_retention_tunables_reject_nonpositive(field: str, value: float) -> None:
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, **{field: value})

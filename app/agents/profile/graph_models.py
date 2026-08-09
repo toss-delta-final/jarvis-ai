@@ -18,7 +18,7 @@ import hashlib
 import unicodedata
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 
 NodeType = Literal[
     "brand", "category", "attribute", "priceBand", "ratingBand", "product", "situation"
@@ -148,6 +148,30 @@ class GraphEdge(BaseModel):
     sensitive_topic: str | None  # 보존기간 판정용 — **와이어 미노출**(§6.8)
 
 
+class GraphTombstone(BaseModel):
+    """지운 취향의 **재파생 차단 표식** — 라벨을 담지 않는다 (§6.3, #499).
+
+    개별 삭제는 **즉시 물리 삭제**다(undo 창 없음 — #499가 I-35를 폐기했다). 그래서 지운 edge 는
+    `edges` 에서 통째로 사라지고 그 노드도 참조가 끊기면 함께 사라진다 — 사용자가 "지웠다"고
+    믿는 문장의 원문이 문서에 남지 않는다.
+
+    그런데 **그냥 지우기만 하면 다음 배치가 같은 fact 에서 같은 취향을 다시 만든다.** 삭제가
+    조용히 무력화되는 것이다(AC-PROF-31). 그래서 "이건 사용자가 지웠다"는 표식만 남긴다.
+
+    표식이 `edge_id` 하나로 성립하는 이유는 그것이 **내용 파생**이기 때문이다 —
+    `"e_" + sha256("{predicate}|{node_id}")`. 같은 취향이 재파생되면 같은 `edge_id` 가 나오므로
+    라벨 원문 없이도 차단할 수 있다(`make_edge_id` 의 결정론성이 기능 요구사항인 이유).
+
+    시간 만료가 없다 — 만료시키면 `profile_idle_sweep_interval_s` 주기 배치가 같은 발화를
+    재승격시켜 방금 지운 취향이 부활한다. 다만 "영구"는 *자동 만료 없음*이지 *사용자도 못 지움*이
+    아니다(전체 초기화는 tombstone 도 지운다 — REQ-PGRAPH-061).
+    """
+
+    edge_id: str  # "e_" + sha256(edge_key)[:16] — 라벨을 담지 않는 유일한 식별자
+    suppressed_at: str
+    user_intent: UserIntent | None = None  # 지울 당시 pin 이 걸려 있었나(감사·재승격 판정용)
+
+
 class GraphDocument(BaseModel):
     """`("graph", user_id)` / `"v1"` 단일 jsonb 문서 (SPEC §5.3, §7.1의 원자성 근거)."""
 
@@ -165,3 +189,44 @@ class GraphDocument(BaseModel):
     truncated: bool
     purged_at: str | None
     updated_at: str
+    # 사용자가 지운 취향의 재파생 차단 표식(#499·#358). **이 모듈에서 유일하게 기본값을 두는
+    # 상태 필드다** — 모듈 docstring 의 "기본값을 두지 않는다" 규약은 병합 엔진이 tombstone
+    # 필드를 의식적으로 정하게 하려는 것인데, 여기는 반대로 **필드가 없던 구 문서를 읽어야**
+    # 한다. 기본값이 없으면 기존 사용자 문서가 전부 `ValidationError` 로 떨어져
+    # `store.get_graph` 가 None 을 돌려주고, 그 순간 revision 이 0 으로 되돌아간다.
+    #
+    # `profile_graph_max_edges` 절단 대상이 아니다 — edge 가 아니라 별도 리스트이고,
+    # 잘리면 지운 취향이 부활한다. 항목당 필드 3개라 증가 폭도 edge 와 비교가 안 된다.
+    tombstones: list[GraphTombstone] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _absorb_legacy_suppressed_edges(self) -> "GraphDocument":
+        """구 표현(`status="suppressed"` edge)을 tombstone 으로 흡수한다 — 마이그레이션 없이.
+
+        #499 이전에는 지운 취향을 `suppressed` edge 로 **문서 안에 그대로** 뒀다. 그 edge 의
+        `node_id` 는 `"brand:소니"` 라 **라벨 원문이 남아 있다**. 저장된 문서를 읽는 이 지점에서
+        표식만 남기고 원문을 떨어뜨려, 별도 백필 잡 없이 읽는 즉시 새 표현으로 수렴시킨다.
+
+        참조가 끊긴 노드도 함께 버린다 — 라벨은 노드에 있으므로 edge 만 지우면 원문이 남는다.
+        """
+        legacy = [edge for edge in self.edges if edge.status == "suppressed"]
+        if not legacy:
+            return self
+
+        known = {tombstone.edge_id for tombstone in self.tombstones}
+        for edge in legacy:
+            if edge.edge_id in known:
+                continue
+            self.tombstones.append(
+                GraphTombstone(
+                    edge_id=edge.edge_id,
+                    # 구 문서에 `suppressed_at` 이 비어 있으면 문서 시각으로 대신한다 — 시각을
+                    # 날조하지 않으면서(문서가 마지막으로 쓰인 때는 사실이다) 필드를 채운다.
+                    suppressed_at=edge.suppressed_at or self.updated_at,
+                    user_intent=edge.user_intent,
+                )
+            )
+        self.edges = [edge for edge in self.edges if edge.status != "suppressed"]
+        referenced = {edge.node_id for edge in self.edges}
+        self.nodes = [node for node in self.nodes if node.node_id in referenced]
+        return self

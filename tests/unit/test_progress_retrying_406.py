@@ -202,7 +202,7 @@ async def test_retry_observer_context_does_not_leak_after_turn(
     gen = await _run(search, "retrying-context-406")
     async for _ in gen:
         pass
-    assert spring_client._search_retry_suppressed.get() is False
+    # [#306] `_search_retry_suppressed` 비누수 단언은 그 ContextVar 가 제거되며 함께 빠졌다.
     assert spring_client._search_budget_override.get() is None
     assert spring_client._search_retry_observer.get() is None
 

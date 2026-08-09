@@ -2477,10 +2477,19 @@ async def test_search_retry_zero_retries_config_calls_once(monkeypatch: pytest.M
     assert len(calls) == 1
 
 
-async def test_recommendation_deferred_conditions_suppresses_search_retry(
+async def test_recommendation_deferred_conditions_keeps_search_retry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """미룬 턴은 첫 이벤트 앞 I-1 직렬 예산을 지키려고 본 검색 재시도를 건너뛴다(#277)."""
+    """[#306] 미룬 턴도 다른 턴과 **같은** I-1 재시도를 쓴다 — #277 의 스킵을 원복했다.
+
+    #277 이 그 스킵을 넣은 이유는 미룬 턴의 첫 SSE 가 검색 뒤라 재시도가 first-token 상한을
+    넘겼기 때문인데, #396 이 `progress` 를 검색 **앞**으로 보내면서 그 전제가 사라졌다.
+    기본 설정(`spring_max_retries=1`, #406 이 #394 를 원복)에서 이 턴은 이제 2회 호출한다 —
+    억제가 남아 있으면 1회에 그쳐 이 어설션이 깨진다(회귀 가드).
+
+    같은 이유로 `retrying` progress 가 이 턴에서도 나간다(api-spec §3.1 v0.32.5) —
+    v0.32.4 까지는 미룬 턴이 재시도 자체를 안 해 그 프레임이 없었다.
+    """
     import httpx
 
     # [#393] `ratingMin` 만 있는 턴은 payload 기준으로 무필터라 새 가드(A)가 인기 상품으로
@@ -2489,7 +2498,7 @@ async def test_recommendation_deferred_conditions_suppresses_search_retry(
     calls = _counting_client(monkeypatch, httpx.Response(503))
     events = await _collect(
         run_buyer_turn(
-            _req(thread_id="deferred-retry-suppressed"),
+            _req(thread_id="deferred-retry-kept"),
             _guest(),
             llm=FakeLLM(
                 decompose={
@@ -2501,12 +2510,17 @@ async def test_recommendation_deferred_conditions_suppresses_search_retry(
         )
     )
 
-    assert len(calls) == 1
+    assert len(calls) == 2
     # progress 다회 emit(#396) — 이 decompose 는 categoryQueries 가 없어 카테고리 신호가
-    # 전혀 없다(mapping honesty 회귀, #396 라운드 1). mapping 은 안 나가고 analyzing·searching
-    # 2개만 conditions 앞에 온다(검색이 하드 실패라 relaxing 루프는 안 돈다 — 0건이 아니라
-    # 예외로 끝난다).
-    assert _types(events) == ["progress", "progress", "conditions", "error"]
+    # 전혀 없다(mapping honesty 회귀, #396 라운드 1). mapping 은 안 나가고 analyzing·searching·
+    # retrying 이 conditions 앞에 온다(검색이 하드 실패라 relaxing 루프는 안 돈다 — 0건이
+    # 아니라 예외로 끝난다).
+    assert _types(events) == ["progress", "progress", "progress", "conditions", "error"]
+    assert [e["data"]["stage"] for e in events if e["type"] == "progress"] == [
+        "analyzing",
+        "searching",
+        "retrying",
+    ]
     assert events[-1]["data"]["code"] == "SEARCH_FAILED"
 
 
@@ -2556,45 +2570,10 @@ async def test_recommendation_nondeferred_conditions_keeps_search_retry(
     assert events[-1]["data"]["code"] == "SEARCH_FAILED"
 
 
-async def test_recommendation_deferred_conditions_retry_can_be_restored_by_guard(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """가드를 켜면 미룬 턴도 종전처럼 I-1 재시도 1회를 쓴다(#277 롤백 손잡이)."""
-    import httpx
-
-    monkeypatch.setattr(get_settings(), "search_retry_on_deferred_conditions", True)
-    # [#394] 기본값이 0으로 바뀌어 재시도 루프 자체를 켜서 검증하려면 명시 주입이 필요하다.
-    monkeypatch.setattr(get_settings(), "spring_max_retries", 1)
-    # [#393] `ratingMin` 만 있는 턴은 payload 기준으로 무필터라 새 가드(A)가 인기 상품으로
-    # 돌린다 — 이 테스트의 주제는 I-1 재시도지 후보 소스 선택이 아니므로 새 가드를 끈다.
-    monkeypatch.setattr(get_settings(), "search_filter_guard_enabled", False)
-    calls = _counting_client(monkeypatch, httpx.Response(503))
-    events = await _collect(
-        run_buyer_turn(
-            _req(thread_id="deferred-retry-restored"),
-            _guest(),
-            llm=FakeLLM(
-                decompose={
-                    "intent": "recommend",
-                    "filters": {"ratingMin": 4.5},
-                    "case": 2,
-                }
-            ),
-        )
-    )
-
-    assert len(calls) == 2
-    # progress 다회 emit(#396) — 이 decompose 는 categoryQueries 가 없어 카테고리 신호가
-    # 전혀 없다(mapping honesty 회귀, #396 라운드 1). mapping 은 안 나가고 analyzing·searching·
-    # retrying이 conditions 앞에 온다(검색이 하드 실패라 relaxing 루프는 안 돈다 — 0건이 아니라
-    # 예외로 끝난다).
-    assert _types(events) == ["progress", "progress", "progress", "conditions", "error"]
-    assert [e["data"]["stage"] for e in events if e["type"] == "progress"] == [
-        "analyzing",
-        "searching",
-        "retrying",
-    ]
-    assert events[-1]["data"]["code"] == "SEARCH_FAILED"
+# [#306] `test_recommendation_deferred_conditions_retry_can_be_restored_by_guard` 는 삭제했다 —
+# 그 테스트는 `SEARCH_RETRY_ON_DEFERRED_CONDITIONS=true` 로 억제를 끈 미룬 턴을 쟀는데, 억제
+# 기구 자체가 사라져 그 조건이 곧 기본 동작이 됐다. 같은 명제는 위
+# `test_recommendation_deferred_conditions_keeps_search_retry` 가 그대로 고정한다.
 
 
 async def test_recommendation_relaxation_chip_probe_keeps_search_retry(

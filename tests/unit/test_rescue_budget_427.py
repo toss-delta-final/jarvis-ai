@@ -452,12 +452,11 @@ async def test_narrow_mode_h4_relaxing_frame_implies_the_probe_actually_ran(
 #
 # `_stage_budget` 은 `granted >= spring_search_timeout_s` 면 `"full"`(안 좁힘)을 낸다. 그런데
 # `spring_client.search_products` 가 실제로 쓰는 벽시계 상한은 `spring_search_timeout_s *
-# attempts` 다(`attempts = 1 if _search_retry_suppressed.get() else spring_max_retries + 1`).
-# 아래 본검색 시나리오는 `may_auto_relax=False`(FakeLLM() 기본 decompose 는 ratingMin 이
-# 없어 완화 후보가 안 생긴다)라 `suppress_deferred_search_retry=False` — F-1/#343 재검색과
-# 같은 "항상 재시도" 축을 탄다. 이 세 테스트가 함께 "런타임 attempts 규칙 ≡ search_products
-# attempts 규칙"을 고정한다: 하나만 바뀌면(예: graph.py 가 suppress 여부를 무시하고 상수를
-# 쓰면) 아래 중 하나가 반드시 깨진다.
+# attempts` 다(`attempts = spring_max_retries + 1`).
+# [#306] 종전에는 미룬 턴만 `attempts=1` 로 갈렸으나 그 억제가 제거돼 **모든 턴이 같은 축**을
+# 탄다. 아래 세 테스트가 함께 "런타임 attempts 규칙 ≡ search_products attempts 규칙"을
+# 고정한다: 하나만 바뀌면(예: graph.py 가 상수를 쓰거나 턴 유형으로 다시 갈리면) 아래 중
+# 하나가 반드시 깨진다 — 미룬 턴/안 미룬 턴이 이제 **같은 결과**를 내야 한다는 것까지 포함한다.
 
 
 async def test_narrow_mode_stage_cap_accounts_for_retry_attempts_before_narrowing(
@@ -545,25 +544,24 @@ async def test_zero_spring_max_retries_stage_cap_unchanged(
     )
 
 
-async def test_narrow_mode_suppressed_stage_stays_at_single_attempt_cap(
+async def test_narrow_mode_deferred_turn_narrows_like_any_other_turn(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """[PR #452 리뷰 R2 — attempts 규칙 ≡ search_products 규칙] 이 턴은 `ratingMin` 이 설정돼
-    `may_auto_relax=True`(기본 `search_retry_on_deferred_conditions=False`)라
-    `suppress_deferred_search_retry=True` — 본검색은 `spring_client.suppress_search_retry()`
-    로 감싸여 `spring_client.search_products` 의 `attempts` 가 `_search_retry_suppressed.get()`
-    로 강제 1 이 된다. `spring_max_retries=1` 이어도 이 단의 실제 상한은 여전히
-    `spring_search_timeout_s * 1 = 3.0s` 다 — 위 두 테스트와 **같은 압박**(granted≈4.5s)을
-    줘도 `"full"`(안 좁힘)이어야 한다.
+    """[#306 — 두 축의 합류] 이 턴은 `ratingMin` 이 설정돼 `may_auto_relax=True`(미룬 턴)다.
+    v0.32.4 까지는 그 턴만 `suppress_search_retry()` 로 감싸여 `attempts` 가 1 로 강제됐고,
+    단 상한도 `spring_search_timeout_s × 1 = 3.0s` 여서 같은 압박(granted≈4.5s)에서
+    `"full"`(안 좁힘)이었다. #306 이 그 억제를 제거해 **미룬 턴도 `attempts=2`·상한 6.0s** 를
+    쓰므로, 이제 `granted(≈4.5s) < 6.0s` 로 **narrow 가 집행된다.**
 
-    검증 실효성: graph.py 의 attempts 산출이 `suppress_deferred_search_retry` 를 무시하고
-    상수 `spring_max_retries + 1` 을 그대로 쓰는 회귀가 나면(= `search_products` 의 억제
-    규칙과 어긋나면) 상한이 6.0s 로 오판돼 이 턴이 narrow 로 좁혀지고 `calls` 가 채워져
-    이 테스트가 깨진다 — `test_narrow_mode_stage_cap_accounts_for_retry_attempts_before_
-    narrowing`(억제 안 됨 → narrow) 과 정확히 반대 결과가 나와야 두 축이 함께 고정된다.
+    검증 실효성: 억제가 조금이라도 남아 있으면(= `attempts` 가 1 로 떨어지면) 상한이 3.0s 가
+    돼 `granted >= stage_cap` 으로 `"full"` 판정이 나고 `calls` 가 비어 이 테스트가 깨진다.
+    그 "attempts=1 이면 안 좁힌다"는 대우는 추정이 아니라 **같은 압박을 주고 재시도만 0 으로
+    내린 `test_zero_spring_max_retries_stage_cap_unchanged` 가 직접 잰다**(그쪽은 `assert not
+    calls`). 그리고 미루지 않는 턴을 재는
+    `test_narrow_mode_stage_cap_accounts_for_retry_attempts_before_narrowing` 과 **이제 같은
+    결과**가 나와야 두 축이 합류했다는 증거가 된다 — 셋이 함께 attempts 규칙을 고정한다.
     """
     settings = get_settings()
-    assert settings.search_retry_on_deferred_conditions is False  # 기본값 전제
     monkeypatch.setattr(settings, "rescue_budget_mode", "narrow")
     monkeypatch.setattr(settings, "spring_max_retries", 1)
     monkeypatch.setattr(settings, "rescue_tail_reserve_s", 16.5)  # 위 두 테스트와 같은 압박
@@ -582,9 +580,15 @@ async def test_narrow_mode_suppressed_stage_stays_at_single_attempt_cap(
     )
 
     assert "products.ready" in _types(events)
-    assert not calls, (
-        "억제된(suppress_deferred_search_retry=True) 단인데도 narrow_search_budget 가 "
-        "집행됐다 — attempts 산출이 search_products 의 억제 규칙과 어긋난다"
+    assert calls, (
+        "미룬 턴 본검색이 narrow_search_budget 를 집행하지 않았다 — #306 이 제거한 억제가 "
+        "남아 attempts 를 1 로 떨어뜨렸다(상한 3.0s 오판)"
+    )
+    stage_cap = settings.spring_search_timeout_s * 2  # attempts = spring_max_retries(1) + 1
+    assert calls[0] < stage_cap
+    assert calls[0] > settings.spring_search_timeout_s, (
+        "옛 억제 상한(3.0s)보다 큰 값이 실제로 집행돼야 미룬 턴이 다른 턴과 같은 축을 탄다는 "
+        "증거가 된다"
     )
 
 
@@ -748,8 +752,8 @@ async def test_narrow_skip_mode_skips_auto_relax_without_emitting_relaxing_frame
 
 
 def test_narrow_search_budget_resets_after_the_with_block() -> None:
-    """`narrow_search_budget` 는 `suppress_search_retry` 와 동일한 누수 방지 규율을 따른다 —
-    `with` 블록을 벗어나면 다음 검색 호출로 ContextVar 가 새지 않는다.
+    """`narrow_search_budget` 는 `observe_search_retry`(#406)와 동일한 누수 방지 규율을
+    따른다 — `with` 블록을 벗어나면 다음 검색 호출로 ContextVar 가 새지 않는다.
     """
     assert spring_client._search_budget_override.get() is None
     with spring_client.narrow_search_budget(0.5):

@@ -41,7 +41,9 @@ from app.agents.seller.schemas import (
     DraftProposal,
     RecommendationSet,
 )
+from app.agents.seller.stock_options import option_labels
 from app.core.config import get_settings
+from app.schemas.spring import SellerProductRow
 from app.core.pg_resilience import (
     hardened_pg_conninfo,
     mutation_lock,
@@ -244,6 +246,37 @@ def _current_value_str(row: object, field: str) -> str:
     return "" if value is None else str(value)
 
 
+def _option_stock_blocker(
+    rec: ActionRecommendation, row: SellerProductRow
+) -> str | None:
+    """옵션별 재고 상품의 재고 추천은 초안을 만들지 않는다 — 되묻기 문구 (#524).
+
+    `ProposedChange` 에는 `option_name` 이 없다(추천 스키마는 옵션 개념보다 먼저
+    확정됐다). 그대로 초안을 만들면 두 가지가 어긋난다:
+
+    1. `before` 가 `row.stock_quantity` 즉 **옵션 합계**로 표시된다 — 추천이 의도한
+       단일 재고와 층위가 달라 카드가 거짓을 보여준다.
+    2. 실행 시점에야 `resolve_stock_option` 이 옵션을 못 좁혀 되묻는다 — 판매자가
+       **[적용]을 누른 뒤에** 질문을 받는다.
+
+    HITL 은 승인 전에 거르는 장치다. 승인 후 되묻기는 "보여준 것 == 실행하는 것" 보장을
+    무르게 만든다 — 그래서 여기서 막고 대화로 되돌린다. quantity 모드에서는 옵션 자체가
+    와이어에 없으므로 이 판정을 하지 않는다(기존 동작 불변).
+    """
+    if get_settings().seller_stock_wire_mode != "stocks":
+        return None
+    if not any(change.field == "stock_quantity" for change in rec.changes):
+        return None
+    named = [stock for stock in row.stocks if stock.option_id is not None]
+    if len(named) <= 1:
+        return None
+    return (
+        f"'{rec.title}' 추천은 재고 변경인데 이 상품은 옵션별로 재고가 관리됩니다"
+        f"({' · '.join(option_labels(row.stocks))}). "
+        "어느 옵션의 재고를 얼마로 바꿀지 말씀해 주시면 초안을 만들어 드리겠습니다."
+    )
+
+
 async def apply_recommendation(
     n: int, context: SellerContext
 ) -> tuple[hitl.DraftRecord | None, str | None]:
@@ -277,6 +310,9 @@ async def apply_recommendation(
             f"추천 대상 상품(productId={rec.product_id})을 상품 목록에서 찾을 수 없습니다. "
             "상품이 삭제되었을 수 있어요. 다시 확인 후 요청해 주세요."
         )
+
+    if problem := _option_stock_blocker(rec, row):
+        return None, problem
 
     proposal = DraftProposal(
         op="update",

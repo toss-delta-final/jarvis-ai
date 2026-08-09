@@ -12,13 +12,18 @@ SearchBackend로 구현해 골든셋 비교. [2026-08-03 #32] 방식2를 확정�
 
 from __future__ import annotations
 
+import json
 import math
 import os
 from functools import lru_cache
-from typing import Literal, NamedTuple
+from typing import Annotated, Literal, NamedTuple
 
 from pydantic import Field, SecretStr, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+# 모델 단가표 기본값의 단일 출처(#437) — model_pricing 은 최상단에서 config 를 import 하지
+# 않으므로 여기서 최상단 import 해도 순환이 생기지 않는다.
+from app.core.model_pricing import DEFAULT_MODEL_PRICE_IN_PER_1K, DEFAULT_MODEL_PRICE_OUT_PER_1K
 
 # I-21 계약 하드 상한(api-spec §4.2) — 노출 개수 설정이 계약을 넘지 못하게 묶는 기준.
 # 계약 값의 단일 출처는 스키마다(app/schemas/spring.py) — 여기서 숫자를 다시 적지 않는다.
@@ -59,8 +64,9 @@ ROUTE_INTENTS = frozenset(
 
 
 class RescueStageCounts(NamedTuple):
-    """구매자 30s 예산 안에서 도는 Spring I-1 호출의 이론적 최악 단 수 — 억제 스코프별로
-    나눈다 (#427 D7, PR #452 리뷰 R3 로 재정의).
+    """구매자 30s 예산 안에서 도는 Spring I-1 호출의 이론적 최악 단 수 — 런타임 좁히기가
+    "남은 단 수"를 세는 단위로 나눈다 (#427 D7, PR #452 리뷰 R3 로 재정의, #306 으로 억제
+    스코프 구분 소멸).
 
     DESIGN-SHARED-BUDGET-384 §3 D7 이 요구하는 **단일 계수 원천**이다. 기동 검증기
     (`_require_search_retry_within_stream_budget`)와 런타임 좁히기(D4, "남은 단 수" 계산,
@@ -142,7 +148,6 @@ def _rescue_chain_serial_budget_s(
     counts: RescueStageCounts,
     search_timeout_s: float,
     spring_max_retries: int,
-    search_retry_on_deferred_conditions: bool,
 ) -> float:
     """첫 `conditions` 앞 직렬 Spring 구간(본검색 + F-1/#343 재검색 + 자동완화 probe) 직렬
     최악 벽시계 (#427 D7).
@@ -151,56 +156,24 @@ def _rescue_chain_serial_budget_s(
     본검색 제외)이 아니라 본검색을 포함한 넓은 "첫 conditions 앞 직렬 Spring 구간"이다
     (DESIGN-SHARED-BUDGET-384 §2 용어 정의 F2).
 
-    §1(d) 각주①의 억제 스코프 비대칭을 반영한다 — `search_retry_on_deferred_conditions=False`
-    (기본값)일 때 F-1/#343 재검색(`counts.rescue`)은 `graph.py::stream_recommendation` 의
-    `suppress_search_retry()` 컨텍스트 **밖**에서 돌아 재시도가 억제되지 않는다
-    (`spring_client.py::search_products` 의 `attempts` 계산이 그 블록 안에서만 1회로
-    강제된다). 나머지(본검색·자동완화 probe)만 억제된다. `True` 면 억제 산출부
-    (`suppress_deferred_search_retry`) 자체가 항상 False 라 세 항 모두 재시도 예산을 쓴다.
+    **[#306] 세 항의 값 매김은 균일하다.** 종전에는 미룬 턴(`may_auto_relax=True`)의
+    본검색·자동완화 probe 만 `suppress_search_retry()` 로 재시도가 억제되고 F-1/#343 재검색은
+    그 블록 밖이라 혼자 재시도 전액을 쓰는 비대칭이 있었고(§1(d) 각주①), 이 함수는 턴별 판정을
+    할 수 없어 억제되는 턴/안 되는 턴 두 상한의 `max` 를 냈다(PR #452 R4). #306 이 억제 기구를
+    제거해 **모든 단이 `spring_max_retries` 를 그대로 쓰므로** 그 분기와 비대칭이 함께 사라졌고,
+    남는 것은 `단 수 × 단가` 곱셈 하나다. `spring_client.py::search_products` 의
+    `attempts = spring_max_retries + 1` 과 글자 그대로 같은 규칙이다.
 
-    [PR #452 리뷰 R4] **OFF 분기(`search_retry_on_deferred_conditions=False`)는 억제가 실제로
-    걸리는 턴과 안 걸리는 턴, 상호배타인 두 유형의 `max` 다.** `suppress_deferred_search_retry
-    = may_auto_relax and not search_retry_on_deferred_conditions`(`graph.py`)이고
-    `may_auto_relax` 는 **턴별**(그 턴의 `underspecified`·실제 완화 후보 유무)이라, 이 함수는
-    (config 만 보는 순수 함수라 `underspecified` 를 모른다, R3 의 `_rescue_chain_stage_counts`
-    docstring 과 같은 이유) 어느 쪽이 이 턴에 해당하는지 판정하지 않고 **두 유형의 상한을 모두
-    재서 큰 쪽을 쓴다**:
-
-    - **A. 억제가 걸리는 턴**(`may_auto_relax=True`) — `main`·`auto_relax` 는 억제된 1회분
-      (`search_timeout_s`), `rescue` 는 억제 밖이라 재시도 전액(`retried_budget`):
-      `(main + auto_relax) * search_timeout_s + rescue * retried_budget`.
-    - **B. 억제가 안 걸리는 턴**(`may_auto_relax=False`) — `main`·`rescue` 모두 재시도 전액
-      (`retried_budget`), 그리고 **`auto_relax` 는 0 단이다** — 자동완화 루프는
-      `relaxation_auto_fields` 후보가 있어야 돌고 그 후보 유무가 정확히 `may_auto_relax` 를
-      가르는 조건이라(`build_relaxation_candidates`·`graph.py` 의 `may_auto_relax` 판정),
-      `auto_relax` 후보가 있는데 `may_auto_relax=False` 인 턴은 존재할 수 없다:
-      `(main + rescue) * retried_budget`.
-
-    `main` 은 항상 1(R3)이라 `A - B = search_timeout_s * (auto_relax - spring_max_retries)`
-    라는 정확한 식이 성립한다(`rescue` 항은 상쇄돼 사라진다) — 부호로 어느 쪽이 최악인지
-    바로 읽힌다: `auto_relax > spring_max_retries` 면 A, `auto_relax < spring_max_retries` 면
-    B, 같으면 둘이 정확히 같다. **오늘 기본값(`auto_relax=1`)은 `spring_max_retries` 가 취할
-    수 있는 두 값(0·1, `le=1` 필드 제약) 모두에서 `auto_relax >= spring_max_retries` 라 A 가
-    최악이거나 A=B 다** — 그래서 `max(A, B)` 로 바꿔도 오늘 기본값에서 결과값은 항상 A(=이
-    함수를 R4 이전으로 되돌렸을 때의 값)와 같다. `auto_relax == 0`(`RELAXATION_MAX_ROUNDS=0`
-    또는 자동/칩 교집합 공집합)으로 낮추고 `spring_max_retries=1` 을 켜야만(`auto_relax(0) <
-    retries(1)`) B 가 A 를 넘어선다 — R3 가 이 함수의 30s·observe 꼬리 예약 비교를 미룸과
-    무관하게 상시 적용하도록 넓혀서, 그 조합에서 A 만 쓰던 종전 값매김이 실제 최악 벽시계를
-    과소평가하는 결함으로 드러났다(R3 가 열어 준 검증 범위가 아니었다면 드러나지 않았을
-    내부 불일치).
+    이 값은 **이론 상한**이지 실집행값이 아니다 — `rescue_budget_mode` 가 `narrow` 이상이면
+    런타임 좁히기(D4)가 각 단에 잔여 턴 예산을 남은 단 수로 나눠 주므로 실제 소요는 이보다
+    작다. 기동 검증은 그 좁히기가 없어도(=`observe`) 설정 자체가 안전한지를 본다.
 
     기동 검증(`_require_search_retry_within_stream_budget`)과 런타임 좁히기(D4, 그래프의
     "남은 단 수" 계산) **둘 다** 이 함수 하나만 호출한다 — 한쪽만 고쳐지는 드리프트를
     막는다(#383 이 고친 것과 같은 실패 모드, D7).
     """
     retried_budget = search_timeout_s * (spring_max_retries + 1)
-    if search_retry_on_deferred_conditions:
-        return (counts.main + counts.rescue + counts.auto_relax) * retried_budget
-    scenario_a_suppressed = (
-        counts.main + counts.auto_relax
-    ) * search_timeout_s + counts.rescue * retried_budget
-    scenario_b_unsuppressed = (counts.main + counts.rescue) * retried_budget
-    return max(scenario_a_suppressed, scenario_b_unsuppressed)
+    return (counts.main + counts.rescue + counts.auto_relax) * retried_budget
 
 
 def _deferred_first_event_i1_calls(
@@ -225,10 +198,8 @@ def _deferred_first_event_i1_calls(
 
     [PR #452 리뷰 R6] #383(PR #414)이 "구제 폴백 항만 떼는" 자매 함수(rescue-only 추출기)를
     별도로 뒀던 이유는, 그 시절 검증기가 억제된 항(1 회분)과 구제 폴백 항(`budget = 검색예산 ×
-    (재시도+1)`)을 항목별로 직접 조립했기
-    때문이다 — **F-1/#343 재검색은 `suppress_search_retry()` 블록 밖이라 억제 여부와 무관하게
-    항상 `spring_max_retries` 만큼 재시도한다**(#383 의 핵심 발견, 그 사실 근거는 이제
-    `_rescue_chain_serial_budget_s` docstring 이 갖고 있다). R2 이후 그 항목별 조립은
+    (재시도+1)`)을 항목별로 직접 조립했기 때문이다(#306 이 그 억제를 없애 항목별 값 매김
+    자체가 균일해졌다 — `_rescue_chain_serial_budget_s` docstring 참조). R2 이후 그 항목별 조립은
     `_rescue_chain_serial_budget_s` 안으로 옮겨져 `counts.rescue` 를 함수 내부에서 직접
     곱하므로, 별도 추출기가 더 이상 필요 없어져 R6 가 삭제했다 — 운영 소비처가 이미 0곳이었고
     (D7 이 막으려는 "같은 계수의 두 번째 미사용 추출기" 드리프트 미끼), 카테고리 토글이
@@ -310,11 +281,39 @@ class Settings(BaseSettings):
     # 바꾸면 목록에서 빼는 것으로 원복된다. 매칭은 접두사 — 날짜 스냅샷 ID도 함께 걸린다.
     openai_tool_reasoning_incompatible_models: list[str] = ["gpt-5.6-luna"]
     openai_tool_reasoning_effort_override: str = "none"
-    # 요청 단위 비용 관측 단가(USD / 1,000 tokens). 운영 값은 환경변수 JSON으로 주입한다.
-    # 빈 기본값은 임의 가격을 코드에 박지 않기 위한 fail-visible 설정이며, 미등록 모델은
-    # observability가 비용 0 + 경고로 처리한다.
-    model_price_in_per_1k: dict[str, float] = Field(default_factory=dict)
-    model_price_out_per_1k: dict[str, float] = Field(default_factory=dict)
+    # 요청 단위 비용 관측 단가(USD / 1,000 tokens). 운영 env 주입 경로(deploy.yml)가 아직
+    # 배선되지 않아 빈 기본값이면 운영 costUsd 가 항상 0 이었다(#437). 그래서 기본값을
+    # `app/core/model_pricing.py`(단일 출처, evals/model_eval/pricing_manifest.json 과 동일)의
+    # 코드 내장 단가로 바꾼다 — env 주입은 **표 전체를 치환**한다(병합이 아니다). 미등록 모델은
+    # 여전히 observability 가 비용 0 + `MODEL_PRICE_MISSING` 경고로 처리한다.
+    # `default_factory` 로 매 인스턴스 새 dict 복사본을 만든다 — 공유 가변 기본값이면 한
+    # `Settings()` 인스턴스에서의 변형이 다음 인스턴스를 오염시킨다.
+    model_price_in_per_1k: Annotated[dict[str, float], NoDecode] = Field(
+        default_factory=lambda: dict(DEFAULT_MODEL_PRICE_IN_PER_1K)
+    )
+    model_price_out_per_1k: Annotated[dict[str, float], NoDecode] = Field(
+        default_factory=lambda: dict(DEFAULT_MODEL_PRICE_OUT_PER_1K)
+    )
+
+    @field_validator("model_price_in_per_1k", "model_price_out_per_1k", mode="before")
+    @classmethod
+    def _empty_model_price_table_uses_default(cls, value: object, info) -> object:
+        # deploy.yml 은 미설정 vars 를 빈 문자열로 env 파일에 쓴다. 우리가 운영자에게 이 두
+        # 키를 deploy.yml 에 추가하라고 안내하므로, 빈 문자열이 JSON 파싱 실패로 기동을 죽이는
+        # 경로를 우리가 만들어 두는 셈이 된다(2026-08-05 APP_ENVIRONMENT 빈 값 부팅 실패와
+        # 같은 함정). 빈 문자열(공백만인 경우 포함)은 필드 기본값으로 해석한다.
+        # ⚠️ 이 필드는 `default_factory` 를 쓰므로 `cls.model_fields[name].default` 는
+        # `PydanticUndefined` 다 — `default_factory()` 를 호출해 기본값을 얻는다.
+        # ⚠️ dict 는 pydantic-settings 가 "복합 타입"으로 분류해 필드 검증기가 값을 보기도
+        # 전에 env 문자열을 JSON 디코드한다 — 빈 문자열은 그 디코드 단계에서 이미
+        # `SettingsError` 로 죽어 이 validator 에 도달조차 못한다(실측 확인). `NoDecode` 로
+        # 자동 디코드를 끄고 여기서 직접 `json.loads` 해야 빈 문자열을 가로챌 수 있다.
+        if isinstance(value, str):
+            if value.strip() == "":
+                default_factory = cls.model_fields[info.field_name].default_factory
+                return default_factory()
+            return json.loads(value)
+        return value
 
     # ── Google 임베딩 API (MVP, §4.8 배치 + 임베딩 검색) ──
     # [2026-07-20 결정 6 개정, v0.15.14] 셀프호스트 torch → Google gemini-embedding-001 API.
@@ -623,11 +622,26 @@ class Settings(BaseSettings):
     seller_vision_timeout_s: float = 20.0
     # 카테고리 스냅샷(#506) — BE 조회 없이 AI 가 로컬 JSON 으로 보유한다.
     # 파일 교체 = 배포(정합 리스크는 스냅샷 meta.version 으로 추적).
+    # 파일은 손으로 고치지 않는다 — scripts/build_seller_category_snapshot.py 가 정본
+    # DB(category 테이블)에서 생성한다. id 가 실 DB 와 어긋나면 등록이 통째로 죽는다.
     seller_category_snapshot_path: str = "app/data/seller_categories.json"
-    seller_category_candidates_k: int = 5  # 초안 에이전트에 주입할 카테고리 후보 수
-    # confirm 시 Spring I-10 `category`(자유 문자열)에 쓸 값 — BE 와 맞출 유일한 지점.
-    # leaf(말단 명칭) | path("A > B > C") | id(스냅샷 id 그대로).
-    seller_category_write_mode: Literal["leaf", "path", "id"] = "leaf"
+    # 초안 에이전트에 주입할 카테고리 후보 수 — 실 스냅샷이 1,000건대라 5개로는
+    # 동의어(셔츠/남방·티셔츠)가 잘려 에이전트가 카테고리를 포기하는 일이 잦다.
+    seller_category_candidates_k: int = 8
+    # 폴백(LLM 택1) 때 후보를 몇 배로 넓힐지 — 같은 폭으로 다시 물으면 의미가 없다.
+    seller_category_fallback_k_factor: int = 3
+    # 카테고리 LLM 택1 상한 — 에이전트가 카테고리를 못 고른 턴에만 1회 추가된다.
+    seller_category_resolve_timeout_s: float = 12.0
+    # NOTE: 구 `seller_category_write_mode`(leaf|path|id)는 폐기했다(2026-08-09).
+    # BE `SellerProductCreateRequest.categoryId` 는 **Long 필수**라 이름·경로 문자열을
+    # 받는 필드가 없다 — 고를 여지가 애초에 없었고, 기본값 leaf 가 등록 실패의 원인이었다.
+    # ── 옵션별 재고 와이어 모드 (#524, blocked:spring) ──────────────────────────
+    # I-10/I-11 재고를 어느 형식으로 보낼지. BE 마이그레이션 순서(1단계 expand SQL →
+    # PR B 배포 → 2단계 contract SQL)에 AI 배포가 물리지 않도록 코드가 두 형식을 다 안다.
+    #   quantity: 구 계약 stockQuantity(정수) — 현재 배포된 BE 가 받는 유일한 형식.
+    #   stocks:   신 계약 stocks[{optionId,quantity}] — BE PR B 배포 확인 후 이 값으로 전환.
+    # quantity 모드에서 옵션별 재고 발화는 반영하지 않고 안내한다(BE 가 저장할 곳이 없다).
+    seller_stock_wire_mode: Literal["quantity", "stocks"] = "quantity"
     # 초안 대기 게이트(수정/승인안내/취소/딴주제 분류) LLM 상한 — 실패 시 일반 흐름 폴백.
     seller_pending_gate_timeout_s: float = 8.0
     # 4-2 HITL 실행(hitl.py): confirm 시점 I-9 재조회(stale 검증)의 페이지 순회 상한 —
@@ -1435,6 +1449,15 @@ class Settings(BaseSettings):
     # 12건 중 11건 오분류) 롤백 경로를 남긴다(OPEN-G8).
     profile_graph_delta_enabled: bool = True
 
+    # ── 그래프 저장 안전장치 보존 기간 (이슈 #358, SPEC-PROFILE-GRAPH-149 §11) ──
+    # 멱등 원장(profile_graph_idempotency) 보존. 재전송이 최초 응답을 찾을 수 있는 창이다.
+    # **두 값 모두 🔴 C-23 잔여(정책·법무 미정)라 잠정값**이며, 만료 행을 실제로 지우는 스윕 잡은
+    # #358 범위 밖이다 — 지금 이 값들이 바꾸는 동작은 아래 REQ-PGRAPH-044 기동 검증뿐이다.
+    graph_idempotency_ttl_h: float = Field(default=24.0, gt=0.0)
+    # 변경 감사(profile_graph_audit) 보존. **전체 초기화가 지우지 않는다**(REQ-PGRAPH-062) —
+    # 파괴 동작이 추적 불가가 되면 안 되므로, 여기 남는 것은 "무엇을" 이 아니라 "언제" 다.
+    graph_audit_retention_days: float = Field(default=90.0, gt=0.0)
+
     # ── 프로필 개인화 강도 (이슈 #119, SPEC-PROFILE-001 §5.1 v0.6.0 · REQ-REC-005-A) ──
     # 프로필을 **어느 소비처에** 주입할지. 기본 rerank_only 인 근거: decompose(fast tier, 한 호출에
     # intent 라우팅+필터+장바구니 의도가 얹힌다)의 _SYSTEM 에 프로필 사용 규칙이 없어 LLM 이 취향을
@@ -1676,18 +1699,21 @@ class Settings(BaseSettings):
     # `size` 상한은 폐지됐다. 최악 구제 체인이 꼬리 예약 창을 넘지 않게 DESIGN-SHARED-BUDGET-384 §4에 따라
     # `rescue_budget_mode=narrow`도 함께 올린다. 다시 끄려면 `SPRING_MAX_RETRIES=0`을 설정한다.
     spring_max_retries: int = Field(default=1, ge=0, le=1)
-    # [#277] conditions 를 검색 뒤로 미룬 턴은 첫 이벤트 앞에 I-1 이 최대 2회 직렬이라,
-    # 재시도까지 얹으면 first-token 상한을 넘어 이벤트 0건·504가 될 수 있다. 한 번의 일시
-    # 지연을 살리는 대가가 턴 전체의 침묵이므로 기본값은 그 턴만 재시도를 끈다.
-    # #394 는 원복됐지만 이 값은 False를 유지한다. 이제 이 스킵은 무동작이 아니라 미룬 턴의 실제
-    # 재시도를 끄는 유효한 가드이며 first-token 여유를 지킨다. #306의 원복은 별도 판단이다.
-    search_retry_on_deferred_conditions: bool = False
+    # [#306] `SEARCH_RETRY_ON_DEFERRED_CONDITIONS` 는 폐지됐다 — #277 이 미룬 턴만 I-1 재시도를
+    # 끄고 그 롤백 손잡이로 두었던 필드다. 그 스킵의 근거(미룬 턴의 첫 SSE 가 검색 뒤라
+    # 재시도가 first-token 상한을 먹는다)는 #396 이 `progress` 를 검색 **앞**으로 보내며
+    # 사라졌고, 이제 폭주 방지는 `rescue_budget_mode` 의 런타임 좁히기가 맡는다. 재시도를
+    # 끄려면 `SPRING_MAX_RETRIES=0`, 미루기를 끄려면 `RELAXATION_MAX_ROUNDS=0` 을 쓴다.
     # [#427, DESIGN-SHARED-BUDGET-384 §3 D7] 구제 체인(F-1/#343/자동완화 probe) 예산 집행
     # 강도 — observe: 판정만 계산·로그(반사실), 실제 집행 없음.
     # narrow: 잔여 예산이 모자란 단의 타임아웃을 좁혀 시도한다(건너뛰지 않는다). narrow_skip:
     # narrow 로도 부족한(최소 하한 미만) 단은 건너뛴다. §4 Lv0~Lv2 등급의 런타임 스위치이며,
     # #394(spring_max_retries) 원복과 함께 narrow로 올렸다(§4 결론). narrow는 잔여 예산이 모자란
     # 단의 타임아웃을 좁혀도 시도하며 건너뛰지 않고, narrow_skip은 채택하지 않았다.
+    # [#306] **observe 로 되돌리려면 `SPRING_MAX_RETRIES=0` 을 함께 지정해야 한다** — 미룬 턴
+    # 재시도 억제가 사라져 직렬 합이 `3 × 3.0 × 2 = 18.0` 이 됐고, observe 는 꼬리 예약을 뺀
+    # 창(30.0-15.0=15.0)과도 비교하므로 기동이 거절된다(narrow 이상은 런타임이 그 예약을 실제로
+    # 집행하므로 이 비교를 건너뛴다).
     rescue_budget_mode: Literal["observe", "narrow", "narrow_skip"] = "narrow"
     # 구제 체인 한 단에 줄 수 있는 최소 타임아웃 — 미만이면 시도해도 성공 가망이 없다고 보고
     # narrow_skip 모드에서 그 단을 건너뛴다(본검색 제외, 본검색은 항상 시도한다). 실측(#385)
@@ -2306,7 +2332,7 @@ class Settings(BaseSettings):
         단 상한(`stage_cap = spring_search_timeout_s * attempts`)으로 다시 씌운다(R5). 그
         상한 clamp 가 의미를 가지려면 하한이 **어떤 단에서도** 상한보다 작아야 한다 —
         `attempts >= 1` 이라 `stage_cap` 의 최솟값은 `spring_search_timeout_s`
-        (attempts=1, 억제되는 단)다. 그래서 `rescue_stage_min_timeout_s <
+        (attempts=1, 즉 `SPRING_MAX_RETRIES=0` 배포)다. 그래서 `rescue_stage_min_timeout_s <
         spring_search_timeout_s` 하나만 확인하면 모든 단에서 하한이 상한 아래임이 보장된다.
 
         이 부등식이 깨지면(`RESCUE_STAGE_MIN_TIMEOUT_S >= SPRING_SEARCH_TIMEOUT_S`) 상한
@@ -2407,17 +2433,18 @@ class Settings(BaseSettings):
 
         **이 식은 단일 I-1 호출 예산만 본다**(#277). 종전의 배타성 전제는 실측으로 반증됐다:
         본 검색이 1 차 타임아웃 뒤 2 차에 0 건으로 성공하면 재시도를 쓰고도 완화 probe 가 돈다.
-        기본 설정은 미룬 턴의 재시도를 건너뛰어 첫 이벤트 앞 직렬 합을
-        `3 * spring_search_timeout_s`(9s, #383 보정 후)로 묶는다. `SEARCH_RETRY_ON_DEFERRED_
-        CONDITIONS=true`로 종전 동작을 되살리면 세 호출이 각각 재시도해 최대 18s가 되고, #277의
-        이벤트 0건·504 조합도 다시 열린다.
+        [#306] 미룬 턴 재시도 억제가 제거돼 세 호출이 **모두** 재시도하므로 직렬 합은
+        `3 * spring_search_timeout_s * (spring_max_retries + 1)`(기본값 18s)이다 — 종전
+        비대칭(12s)은 사라졌다. #277 의 이벤트 0건·504 조합이 다시 열리지 않는 이유는 이
+        검증식이 아니라 `rescue_budget_mode=narrow` 의 런타임 좁히기다(미룬 턴 본검색을
+        `(30 - 꼬리 예약 - 경과)/남은 단 수` ≈ 4.8s 로 묶는다).
 
         **직렬 합 계산은 `_rescue_chain_stage_counts`/`_rescue_chain_serial_budget_s`
         (#427 D7) 로 위임한다** — 런타임 좁히기(`app/agents/buyer/recommendation/
         graph.py::stream_recommendation`)와 이 기동 검증이 **같은 함수**에서 계수를 얻어야
         한쪽만 고쳐지는 드리프트(#383 이 고친 것과 같은 실패 모드)를 구조적으로 막는다. 계수
-        정의(각 항의 출처·§1(d) 각주①의 억제 스코프 비대칭·"오늘 기본값에서 3"인 근거)는 그
-        두 함수의 docstring 참조 — 여기서 다시 적지 않는다(드리프트 방지 원칙 그대로).
+        정의(각 항의 출처·"오늘 기본값에서 3"인 근거)는 그 두 함수의 docstring 참조 —
+        여기서 다시 적지 않는다(드리프트 방지 원칙 그대로).
 
         [PR #452 리뷰 R3] **게이트(=`deferred_calls == 0`, `graph.py`의 `may_auto_relax`가
         False)는 first-token 비교에만 적용한다** — 구매자 30s 상한·observe 꼬리 예약 비교는
@@ -2444,9 +2471,13 @@ class Settings(BaseSettings):
         `observe` 는 아무것도 집행하지 않으므로 설정 자체가 안전해야 한다. **집행이 런타임에
         있거나 기동에 있거나, 둘 중 하나는 항상 있다.**
 
-        **계약 무변경**: 이 검증은 내부 기동 로직이고 AI→Spring 3s 규약과 미룬 턴 재시도
-        스킵은 api-spec §2.9(c)(v0.20.2)에 이미 등재돼 있다 — 이 변경으로 와이어·명세를
-        건드리지 않는다(`spring_search_timeout_s` 기본값도 3.0 이라 오늘 값은 그대로다).
+        [#306] **`observe` 로 되돌리려면 `SPRING_MAX_RETRIES=0` 을 함께 지정해야 한다** —
+        억제 제거로 직렬 합이 18.0 이 되어 위 꼬리 예약 비교(30.0-15.0=15.0)를 넘기 때문이다.
+        `PROGRESS_EVENTS_ENABLED=false` 도 같은 짝 규칙을 따른다(#406 이 먼저 만든 제약).
+
+        **계약 무변경**: 이 검증은 내부 기동 로직이고 AI→Spring 3s 규약은 api-spec §2.9(c)에
+        이미 등재돼 있다 — 이 변경으로 와이어를 건드리지 않는다(#306 이 갱신한 것은 같은 절의
+        BE 관측 포인트 수치 서술이다, v0.32.5).
         """
         budget = self.spring_search_timeout_s * (self.spring_max_retries + 1)
         if budget >= self.stream_total_timeout_buyer_s:
@@ -2479,12 +2510,6 @@ class Settings(BaseSettings):
             counts=counts,
             search_timeout_s=self.spring_search_timeout_s,
             spring_max_retries=self.spring_max_retries,
-            search_retry_on_deferred_conditions=self.search_retry_on_deferred_conditions,
-        )
-        recovery_prefix = (
-            "disable SEARCH_RETRY_ON_DEFERRED_CONDITIONS, "
-            if self.search_retry_on_deferred_conditions
-            else ""
         )
         # [PR #452 리뷰 G3] 아래 두 recovery 문구는 서로 다른 검사를 향한다 — 섞어 쓰면 R3 가
         # 코드에서 없앤 혼동(미루지 않는 설정인데 "deferred"·"disable deferral" 오류가 뜬다)을
@@ -2494,8 +2519,8 @@ class Settings(BaseSettings):
         # RELAXATION_MAX_ROUNDS=0/RELAXATION_AUTO_FIELDS=[] 는 검사를 통째로 없애지 않고
         # auto_relax 항 하나만 뺀다(main·rescue 항은 그대로 남는다, R3 이후).
         recovery_physical = (
-            recovery_prefix
-            + "lower SPRING_SEARCH_TIMEOUT_S (the per-call budget), drop the auto-relax term "
+            "lower SPRING_MAX_RETRIES, lower SPRING_SEARCH_TIMEOUT_S (the per-call budget), "
+            "drop the auto-relax term "
             "with RELAXATION_MAX_ROUNDS=0 or RELAXATION_AUTO_FIELDS=[] (this only removes the "
             "auto-relax stage — the main search and, if enabled, the rescue fallback still "
             "count), or drop the rescue-fallback term with CATEGORY_EXPAND_ENABLED=false"
@@ -2504,8 +2529,8 @@ class Settings(BaseSettings):
         # (`may_auto_relax=False` 턴은 이 체인이 `conditions` 뒤라 검증 대상이 아니다)
         # "disable deferral" 표현이 정확하다.
         recovery_deferred = (
-            recovery_prefix
-            + "lower SPRING_SEARCH_TIMEOUT_S, disable deferral with RELAXATION_MAX_ROUNDS=0 "
+            "lower SPRING_MAX_RETRIES, lower SPRING_SEARCH_TIMEOUT_S, disable deferral with "
+            "RELAXATION_MAX_ROUNDS=0 "
             "or RELAXATION_AUTO_FIELDS=[], or drop the rescue-fallback call with "
             "CATEGORY_EXPAND_ENABLED=false"
         )
@@ -2741,6 +2766,16 @@ class Settings(BaseSettings):
             raise ValueError(
                 "PROFILE_IDLE_CLAIM_TTL_S must exceed the two-stage LLM timeout budget "
                 "for all configured batch waves"
+            )
+        # REQ-PGRAPH-044 — 멱등 원장은 감사 로그보다 오래 살면 안 된다. 원장이 더 오래 살면
+        # 재전송이 최초 응답을 재생하는데 그 변경의 감사 근거는 이미 사라진 구간이 생긴다.
+        # SPEC §11 이 "두 값의 대소로 정확성을 맞추려는 설정은 금지한다"고 못박았으므로 런타임
+        # 보정이 아니라 기동 시점 fail-fast 다. 경계는 포함(같은 길이는 허용) — 배타로 재면
+        # 24h == 1day 인 정상 구성이 죽는다.
+        if self.graph_idempotency_ttl_h * 3600 > self.graph_audit_retention_days * 86400:
+            raise ValueError(
+                "GRAPH_IDEMPOTENCY_TTL_H must not exceed GRAPH_AUDIT_RETENTION_DAYS "
+                "(replay must always find its audit record)"
             )
         if self.state_store_pool_min_size < 0:
             raise ValueError("STATE_STORE_POOL_MIN_SIZE must be non-negative")
