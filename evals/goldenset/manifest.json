@@ -4,7 +4,7 @@
     "agreementRateFormula": "(340 - gradeErrorLabelCount) / 340",
     "appliedDisputes": 44,
     "gradeErrorLabelCount": 37,
-    "note": "#329 권고 8(agreement 인쇄) 1차 이행 — adjudicator-omx-01의 dispute 45건 재검증·반영 결과.",
+    "note": "#329 권고 8(agreement 인쇄) 1차 이행 — adjudicator-omx-01의 dispute 45건 재검증·반영 결과. #474 신규 6건은 독립 adjudicator 검수 범위 밖이다.",
     "partiallyRejectedDisputes": 1,
     "partiallyRejectedNote": "buy-pers-0004: 인용 2건 중 productId 3700228373는 이미 relevant(grade2)로 라벨되어 있어 '암묵 0' 주장이 사실과 다름(반려) — 나머지 1건(8108120723)은 사실 확인되어 반영.",
     "reviewScope": {
@@ -12,7 +12,15 @@
       "implicitZeroSampleReviewed": 820,
       "invDirCasesReviewed": 36
     },
-    "totalDisputes": 45
+    "totalDisputes": 45,
+    "unadjudicatedCaseIds": [
+      "buy-colr-0001",
+      "buy-colr-0002",
+      "buy-colr-0003",
+      "buy-colr-0004",
+      "buy-colr-0005",
+      "buy-colr-0006"
+    ]
   },
   "adjudicators": [
     {
@@ -38,14 +46,14 @@
         "category_mapping_failure": 9,
         "cold_start": 2,
         "failure": 5,
-        "guest": 68,
+        "guest": 74,
         "member": 35,
         "multi_constraint": 12,
         "personalization": 11,
         "personalization_overreach": 6,
         "repurchase": 8,
-        "search": 62,
-        "single_need": 71
+        "search": 68,
+        "single_need": 77
       },
       "holdout": {
         "category_mapping_failure": 6,
@@ -58,38 +66,44 @@
         "single_need": 18
       }
     },
-    "dev": 103,
+    "dev": 109,
     "holdout": 24,
-    "total": 127
+    "total": 133
   },
   "createdAt": "2026-08-02",
-  "datasetHash": "ef3a5af8b303041d9f44c156d687e3572feed33d2e85469dce1e0aa49a7ecf37",
+  "datasetHash": "675520d999dc1fbf0a4b32e13914205bc61c606c9adc2f65833eb67fc133ae50",
   "datasetName": "buyer-goldenset",
-  "datasetVersion": "2.2.0",
+  "datasetVersion": "2.3.0",
   "files": [
     {
-      "bytes": 21520,
+      "bytes": 21877,
       "path": "CHANGELOG.md",
       "records": 0,
-      "sha256": "50f35d3548982b3aabab7a46e819a029ddde54d9499e349f8fbd5dd562ec1e88"
+      "sha256": "1998ef36e8859f95cfff6f272ddd96e7ab40d75716d88682346eb77d63c3f1b8"
     },
     {
-      "bytes": 28828,
+      "bytes": 29409,
       "path": "GUIDE.md",
       "records": 0,
-      "sha256": "245bf30585594573c720673bfc8ea734317d8dbd3d73ae1ec5e4ac1eff829084"
+      "sha256": "1f38f32cbbfeb2a9d6ea2cf8543436292fd67c2f0b03ba78a930ee2840bfb40d"
     },
     {
       "bytes": 7863,
       "path": "README.md",
       "records": 0,
-      "sha256": "9fca8c65711191d02552e0735fc979fad68d93889d04bd9d4d3724ed94f7b23d"
+      "sha256": "995dcee7bebcf5c74b29693877b34586065244defdec55d6cd80dce3eefa0df3"
     },
     {
       "bytes": 110,
       "path": "__init__.py",
       "records": 0,
       "sha256": "f3752f48ee915e79685ff539e71941fb3a6a37853ffd063cd10b8b4ee8289e2b"
+    },
+    {
+      "bytes": 5579,
+      "path": "add_color_synonym_cases.py",
+      "records": 0,
+      "sha256": "36566c0195d2844df4c7fa45765252657be49bf842f96eb0e6d2aed13229edee"
     },
     {
       "bytes": 12089,
@@ -101,13 +115,13 @@
       "bytes": 6336,
       "path": "audit/leakage_report.json",
       "records": 0,
-      "sha256": "e6d6b5301e8c3d2b4920313fa75c4671c816f4d55a457a17110ec593f05b8fbb"
+      "sha256": "8388c2a394bf8035b7230d6b290762d704cb2b6725af472712eeb0b3095b5ac0"
     },
     {
       "bytes": 3242,
       "path": "audit/leakage_report.md",
       "records": 0,
-      "sha256": "40b2a4e05de02fd3a93727b2254b05ae6a3910c4bc393f63940a1c34a9667941"
+      "sha256": "5c6fbb2e6f2587e3c8c13798efd4ab0b3a303f930d45c3d019619b67f1aa534b"
     },
     {
       "bytes": 3589,
@@ -122,16 +136,16 @@
       "sha256": "e359a4b795df6187512d66af05a084af934ef7174ac926ba6ebcb0640a719129"
     },
     {
-      "bytes": 142395,
+      "bytes": 149349,
       "path": "cases/buyer_dev.jsonl",
-      "records": 103,
-      "sha256": "c1bab25161324a4248ade092aabb623ef2287a846787fd9390276ac2fe570cf8"
+      "records": 109,
+      "sha256": "a98e1b03de19598df8ad6f3fb2e60f8a03675bc5981edc0abd1d9ad428537b2b"
     },
     {
       "bytes": 22815,
       "path": "cases/buyer_holdout.jsonl",
       "records": 24,
-      "sha256": "d1713422c334098f514beb3ca76c2b15263c23587dc33f55cfccc87c0bf9080a"
+      "sha256": "3b91a8870f6e97109d53f97805fc33b0e9c39209bbde39f57801882317d2dcdd"
     },
     {
       "bytes": 11195,
@@ -152,10 +166,10 @@
       "sha256": "d4203b8d31ef2bbc4c46d5bff6e1eb672c189ffc449299a898eaeb9adf687e3b"
     },
     {
-      "bytes": 536944,
+      "bytes": 554992,
       "path": "fixtures/search_responses.json",
       "records": 0,
-      "sha256": "9b95d071e0075a8a976bdeabfe1dfc11bf2aa63ca31bc277afa3cc52baf13c1e"
+      "sha256": "31de711d4458d33d325d29959652d15b12e0496f3ba3890257a6efa2cb16fef1"
     },
     {
       "bytes": 18965,
@@ -182,10 +196,16 @@
       "sha256": "1073256fe6495f4113940581952cdbb0017f33d15c1ab069c8abdafb9b02d390"
     },
     {
+      "bytes": 2215,
+      "path": "refresh_manifest.py",
+      "records": 0,
+      "sha256": "96eed6df64632fab79443aa1878e183d4ad723b6b7aa9a95e1011c9a1affe304"
+    },
+    {
       "bytes": 30674,
       "path": "schema.py",
       "records": 0,
-      "sha256": "22a6890d313ec69d9a5e724c930c0e475cf27ee5d2d4fa66494b1e6832cf5d46"
+      "sha256": "cbd5248cc71ea296adb9b7f2b8d35fab84aa4a5e2e5867d9db3a84e903328e98"
     },
     {
       "bytes": 8507,
@@ -219,6 +239,10 @@
     {
       "id": "labeler-02",
       "role": "labeler"
+    },
+    {
+      "id": "labeler-03",
+      "role": "labeler"
     }
   ],
   "provenance": {
@@ -240,7 +264,7 @@
         "target": 8
       },
       "guest": {
-        "actual": 68,
+        "actual": 74,
         "target": 30
       },
       "invDirGroupsMin": {
@@ -269,7 +293,7 @@
         "target": 8
       },
       "single_need": {
-        "actual": 71,
+        "actual": 77,
         "target": 24
       }
     },

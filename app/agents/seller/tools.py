@@ -225,10 +225,29 @@ async def get_sales_timeseries(
     )
     total_sales = sum(point.sales for point in window_points)
     total_orders = sum(point.order_count for point in window_points)
+    # [#489] salesCount(판매 **수량**)는 nullable — granularity=summary 응답에는
+    # 수량 필드가 없고 BE 미배포 구간에서도 null 이다. null 을 0 으로 섞으면
+    # "안 팔림"으로 오독되므로 값이 있는 포인트만 더하고, 전량 null 이면 표기
+    # 자체를 생략한다(#197 silent-mismatch 재도입 금지).
+    measured_quantities = [p.sales_count for p in window_points if p.sales_count is not None]
+    if not measured_quantities:
+        quantity_note = ""
+    elif len(measured_quantities) == len(window_points):
+        quantity_note = f", 판매 {sum(measured_quantities):,}개"
+    else:
+        # 일부 포인트만 수량이 오면(미배포 구간 혼재) 몇 개 기준 합계인지 밝힌다.
+        quantity_note = (
+            f", 판매 {sum(measured_quantities):,}개"
+            f"({len(measured_quantities)}/{len(window_points)}개 포인트 집계)"
+        )
     # 상세 포함+상한(안 1, 2026-07-17 확정): 워커가 추이를 직접 서술할 수 있도록
     # 포인트별 수치를 나열하되 seller_summary_max_points 로 컨텍스트 폭주를 막는다.
     shown = window_points[: settings.seller_summary_max_points]
-    detail_lines = ", ".join(f"{p.date} {p.sales:,}원/{p.order_count}건" for p in shown)
+    detail_lines = ", ".join(
+        f"{p.date} {p.sales:,}원/{p.order_count}건"
+        + (f"/{p.sales_count}개" if p.sales_count is not None else "")
+        for p in shown
+    )
     omitted = len(window_points) - len(shown)
     omitted_note = f" (외 {omitted}개 포인트 생략)" if omitted > 0 else ""
     # STL period(seller_stl_period)는 "일" 단위 요일 주기 전제 — daily 일 때만 이상 감지.
@@ -268,7 +287,8 @@ async def get_sales_timeseries(
     else:
         anomaly_note = ""
     return (
-        f"기간 {from_date}~{to_date} 총매출 {total_sales:,}원, 주문 {total_orders}건.\n"
+        f"기간 {from_date}~{to_date} 총매출 {total_sales:,}원, 주문 {total_orders}건"
+        f"{quantity_note}.\n"
         f"{granularity} 상세: {detail_lines}{omitted_note}.{anomaly_note} "
         f"{_reference_note(from_date, to_date)}"
     )
@@ -444,14 +464,38 @@ async def get_funnel(runtime: ToolRuntime[SellerContext], from_date: str, to_dat
 # '신뢰 불가'로 취급하고 다른 도구로 우회한다(능동적 오정보).
 # 남는 오해석 위험은 '권위'가 아니라 '집계 단위'(건수≠수량, 상품별 합 > 합계)라
 # 노트도 그쪽만 통제한다.
+# [#489] 그 '집계 단위' 통제의 ① 항이 이제 대안 필드를 지시한다 — salesQuantity
+# 가 같은 행에 실리기 시작했으므로, 수량 질문을 막기만 하고 어디로 보낼지
+# 알려주지 않으면 워커가 건수를 수량으로 우회 사용한다.
 _BEHAVIOR_PURCHASE_RULES_NOTE = (
     "※ purchaseComplete 는 주문 기준 집계(PAID 주문의 상품별 주문 건수)이며 "
     "퍼널 4단(구매)과 같은 정본이다 — 이벤트 유실과 무관하니 0 은 실제 '구매 "
     "없음'으로 읽어도 된다. ① 한 주문에 같은 상품을 여러 개 담아도 1 — 건수이지 "
-    "수량이 아니므로 수량 질문의 근거로 쓰지 말 것. ② 상품별 값의 합이 "
+    "수량이 아니다. 수량은 같은 행의 salesQuantity(PAID SUM(quantity), 취소·"
+    "반품 제외, #489)를 쓸 것. ② 상품별 값의 합이 "
     "합계(eventType 집계)보다 클 수 있다(한 주문에 자사 상품이 여러 종) — 버그 "
     "아님. ③ 부분 취소·반품이 반영돼 과거 기간을 재조회하면 값이 줄 수 있다."
 )
+
+
+# [#489] I-13 counts 키 단일 출처 — 2026-08-06 개정으로 4종 → 5종(removeFromCart
+# 편입). 종전엔 표시 행·꼬리 합계 키 튜플·꼬리 출력 3곳이 각각 4종을 하드코딩해
+# 어휘가 늘 때마다 누락 지점이 생겼다. 순서는 퍼널 진행 순이며, 집합 자체는
+# rows 정렬 기준(활동량 = counts 합)과 동일하다.
+_BEHAVIOR_COUNT_KEYS = (
+    "productView",
+    "addToCart",
+    "removeFromCart",
+    "checkoutStart",
+    "purchaseComplete",
+)
+_BEHAVIOR_COUNT_LABELS = {
+    "productView": "조회",
+    "addToCart": "담기",
+    "removeFromCart": "삭제",
+    "checkoutStart": "결제시작",
+    "purchaseComplete": "구매",
+}
 
 
 # 군집 문구에 나열할 소속 상품 id 상한 — 대군집이 컨텍스트를 폭주시키지 않게.
@@ -465,6 +509,9 @@ def _summarize_behavior_clusters(rows: list, settings) -> str:
     없다 = 패턴이 없다"로 오해석하지 않게. 중심값은 원 피처 단위(비율·log 조회)라
     LLM 이 그대로 서술 근거로 쓸 수 있다.
     """
+    # [#489] 피처는 의도적으로 4종 유지 — removeFromCart 를 넣으면 군집 라벨·
+    # 실루엣·중심값 해석이 전부 바뀐다(Moe 2003 유형론 재정의). 어휘 확장과
+    # 분석 피처 변경은 별개 결정이라 이번 스코프 밖이다.
     activities = [
         {
             "product_id": row.product_id,
@@ -530,6 +577,8 @@ def _summarize_ratio_outliers(rows: list, settings) -> str:
     - 방문자당 조회(view/visitors): 소수 방문자의 반복 조회(크롤러/봇) 신호.
       visitors 결측 상품은 이 지표에서 제외한다(결측 0 위장 금지).
     """
+    # [#489] 지표는 의도적으로 종전 3종 유지 — removeFromCart 기반 "삭제율" 신설은
+    # Tukey fence 를 새 분포 위에 세우는 일이라 별도 검증이 필요하다(이번 스코프 밖).
     per_metric: dict[str, list[tuple[str, float]]] = {
         "조회/구매": [],
         "담기율": [],
@@ -586,6 +635,62 @@ def _summarize_ratio_outliers(rows: list, settings) -> str:
     )
 
 
+def _format_sales_quantity(row) -> str:
+    """I-13 salesQuantity 표기 (#489). 0 과 null 을 절대 뭉개지 않는다.
+
+    `0` = "안 팔림"(조회했고 값이 0), `null` = "미조회"(eventType 필터에
+    purchase_complete 가 없어 BE 가 계산조차 하지 않음). `x or '-'` 같은 falsy
+    축약을 쓰면 0 이 '-' 로 뭉개져 churn_rate 에서 잡았던 silent-mismatch(#197)를
+    그대로 재현한다 — 명시 분기를 유지할 것.
+    """
+    if row.sales_quantity is None:
+        return "판매수량 -(미조회)"
+    return f"판매 {row.sales_quantity}개"
+
+
+def _format_dwell(row) -> str:
+    """I-13 체류시간 표기 (#489). 표본 수 없이 평균·중앙값만 내보내지 않는다.
+
+    명세: `dwellSampleCount` 없이 평균·중앙값만 해석하면 안 된다(표본이 적으면
+    판정 보류 — conversion 워커의 유의성 판정 원칙과 동일). 그래서 표본이 없거나
+    0 이면 중앙값·평균이 실려 와도 수치를 감추고 사유만 남긴다. 주 지표는
+    medianDwellSeconds 이고 avg 는 롱테일 왜곡 확인용 참고값이라 순서를 고정한다.
+    """
+    if not row.dwell_sample_count:
+        return ", 체류 -(표본 없음)"
+    parts = []
+    if row.median_dwell_seconds is not None:
+        parts.append(f"중앙 {row.median_dwell_seconds:.0f}초")
+    if row.avg_dwell_seconds is not None:
+        parts.append(f"평균 {row.avg_dwell_seconds:.0f}초")
+    if not parts:
+        # 표본 수만 오고 수치가 비는 건 계약상 없는 조합 — 관대 수신하되 표면화한다.
+        return f", 체류 -(수치 없음, n={row.dwell_sample_count})"
+    return f", 체류 {'·'.join(parts)}(n={row.dwell_sample_count})"
+
+
+def _dwell_source_note(rows: list) -> str:
+    """체류 산출 근거 각주 — 행마다 반복하지 않고 요약 말미에 1회 붙인다 (#489).
+
+    next_event 기준은 세션의 마지막 조회가 표본에서 빠진다(page_leave 미수집 —
+    구조적 한계). 이 한계를 안 알리면 LLM 이 체류시간을 실제 관심도의 완전한
+    측정치로 서술한다. 기준이 섞여 있으면(향후 page_leave 승격 구간) 구간 비교
+    금지를 경고한다 — 판정 기준 변경 시 집계 구간을 나눈다는 명세 규약.
+    """
+    sources = {row.dwell_source for row in rows if row.dwell_source}
+    if not sources:
+        return ""
+    if sources == {"next_event"}:
+        return (
+            " ※ 체류시간은 다음 이벤트까지의 차분(next_event)이라 세션의 마지막"
+            " 조회가 표본에서 빠진다 — 실제보다 짧게 나올 수 있다."
+        )
+    return (
+        f" ※ 체류시간 산출 기준 혼재({'/'.join(sorted(sources))}) — 기준이 바뀐"
+        " 구간이라 앞뒤 값을 직접 비교하지 말 것."
+    )
+
+
 def _summarize_behavior(result: BehaviorEventsResult) -> str:
     """I-13 응답을 groupBy 3형에 맞춰 요약한다(REALIGN ②-3 — 확정 명세 기준)."""
     settings = get_settings()
@@ -597,25 +702,32 @@ def _summarize_behavior(result: BehaviorEventsResult) -> str:
         shown = result.rows[: settings.seller_summary_max_products]
         lines = []
         for row in shown:
-            c = row.counts
+            counts_text = " ".join(
+                f"{_BEHAVIOR_COUNT_LABELS[key]} {row.counts.get(key, 0)}"
+                for key in _BEHAVIOR_COUNT_KEYS
+            )
             rate = f"{row.view_to_cart_rate:.1%}" if row.view_to_cart_rate is not None else "-"
+            visitors = row.unique_visitors if row.unique_visitors is not None else "-"
             lines.append(
                 f"[{row.product_id}] {row.product_name or '이름없음'} "
-                f"조회 {c.get('productView', 0)} 담기 {c.get('addToCart', 0)} "
-                f"결제시작 {c.get('checkoutStart', 0)} 구매 {c.get('purchaseComplete', 0)} "
-                f"(조회→담기 {rate}, 방문자 {row.unique_visitors if row.unique_visitors is not None else '-'})"
+                f"{counts_text} {_format_sales_quantity(row)} "
+                f"(조회→담기 {rate}, 방문자 {visitors}{_format_dwell(row)})"
             )
         omitted_rows = result.rows[len(shown) :]
         if omitted_rows:
-            tail = {
-                key: sum(r.counts.get(key, 0) for r in omitted_rows)
-                for key in ("productView", "addToCart", "checkoutStart", "purchaseComplete")
-            }
-            omitted_note = (
-                f" 외 {len(omitted_rows)}건(저활동) 합계: "
-                f"조회 {tail['productView']} 담기 {tail['addToCart']} "
-                f"결제시작 {tail['checkoutStart']} 구매 {tail['purchaseComplete']}"
+            tail_text = " ".join(
+                f"{_BEHAVIOR_COUNT_LABELS[key]} {sum(r.counts.get(key, 0) for r in omitted_rows)}"
+                for key in _BEHAVIOR_COUNT_KEYS
             )
+            # [#489] 수량 꼬리 합계는 null(미조회)을 0 으로 섞으면 안 되므로 값이
+            # 있는 행만 더하고 몇 건 기준인지 남긴다. 전량 null 이면 생략한다.
+            measured = [r.sales_quantity for r in omitted_rows if r.sales_quantity is not None]
+            tail_quantity = (
+                f" 판매 {sum(measured)}개({len(measured)}/{len(omitted_rows)}건 집계)"
+                if measured
+                else ""
+            )
+            omitted_note = f" 외 {len(omitted_rows)}건(저활동) 합계: {tail_text}{tail_quantity}"
         else:
             omitted_note = ""
         # [#290] 상품 군집화(Chen 2012 k-means + Moe 2003 유형론) — 절단 전 전체 rows 로
@@ -623,8 +735,14 @@ def _summarize_behavior(result: BehaviorEventsResult) -> str:
         cluster_note = _summarize_behavior_clusters(result.rows, settings)
         # [#290] abuse Contextual 트랙 — 브랜드 내 비율 분포의 Tukey 상위 fence 초과.
         ratio_note = _summarize_ratio_outliers(result.rows, settings)
+        dwell_note = _dwell_source_note(result.rows)
         return (
-            f"상품별 {len(shown)}건: " + "; ".join(lines) + omitted_note + cluster_note + ratio_note
+            f"상품별 {len(shown)}건: "
+            + "; ".join(lines)
+            + omitted_note
+            + cluster_note
+            + ratio_note
+            + dwell_note
         )
     if result.counts:  # groupBy=eventType
         return "유형별 합계: " + ", ".join(f"{k}={v}" for k, v in result.counts.items())
@@ -648,15 +766,21 @@ async def get_behavior_events(
     product_id: int | None = None,
     group_by: str | None = None,
 ) -> str:
-    """브랜드 상품의 행동 이벤트를 집계 조회한다(I-13, behavior_events 원천 — 07/17 확정).
+    """브랜드 상품의 행동 이벤트를 집계 조회한다(I-13, behavior_events 원천).
 
-    상품 연계 4종(product_view/add_to_cart/checkout_start/purchase_complete)만
-    집계된다 — 전역 행동(검색·페이지뷰 등)은 이 도구로 조회 불가.
+    상품 연계 **5종**(product_view/add_to_cart/remove_from_cart/checkout_start/
+    purchase_complete)만 집계된다 — 전역 행동(검색·페이지뷰 등)은 이 도구로
+    조회 불가. [2026-08-06 개정, #489] remove_from_cart 편입(4종 → 5종).
+
+    groupBy=product 행에는 판매 수량(salesQuantity)과 체류시간 4종이 함께 온다.
+    ⚠️ event_type 을 좁혀 호출하면 그 필터에 없는 지표는 **0 이 아니라 미조회**로
+    떨어진다 — purchase_complete 를 빼면 판매 수량이, product_view 를 빼면
+    체류시간이 계산되지 않는다. 수량·체류가 궁금하면 필터를 걸지 말 것.
 
     Args:
         from_date: 조회 시작일(YYYY-MM-DD).
         to_date: 조회 종료일(YYYY-MM-DD).
-        event_type: 이벤트 유형 필터(선택, 복수) — 4종 중 선택, 미지정 시 전체.
+        event_type: 이벤트 유형 필터(선택, 복수) — 5종 중 선택, 미지정 시 전체.
         product_id: 특정 상품으로 좁힐 때(선택, 숫자).
         group_by: product(기본, 상품별) | eventType(유형 합계) | date(일자별 시계열).
     """
@@ -697,6 +821,10 @@ async def _point_spike_note(brand_id: int, from_date: str, to_date: str, series:
         if day is None:
             continue  # 비정상 행 관대 수신
         dates.append(str(day))
+        # [#489] series 키는 동적이라 date 외 정수값을 전부 더한다 — 2026-08-06
+        # removeFromCart 편입으로 **코드 변경 없이 총량 정의가 5종 합으로 바뀐다**.
+        # 스파이크 판정은 같은 분포 안의 상대 검정(robust z)이라 유효하지만, 개정
+        # 전후 구간의 절대 총량을 직접 비교하면 안 된다.
         totals.append(float(sum(v for k, v in point.items() if k != "date" and isinstance(v, int))))
     try:
         spikes = outliers.mad_spikes(
@@ -1408,6 +1536,8 @@ async def get_reviews(
         to_date: 조회 종료일 YYYY-MM-DD(선택).
         product_id: 특정 상품으로 한정(선택, 자사 상품만).
         rating: 별점 필터, 1~5 콤마 나열(선택, 예: "1,2" — 낮은 별점만).
+            stats=True 집계에도 동일하게 적용된다 — 총건수·평균·분포·상품별이
+            해당 별점만으로 계산된다(I-31 확정, #494).
         sort: latest(기본)/rating — rating 은 낮은 별점부터 고정(선택).
         stats: True 면 집계 모드(총건수/평균/분포/상품별) — 목록 대신 통계만.
         limit: 반환 상한(선택, 서버 기본 20·최대 100).
@@ -1421,14 +1551,24 @@ async def get_reviews(
         else "(기준: 최근 7일 기본 적용)"
     )
     if stats:
+        # [#494] rating 은 집계에도 적용되는 필터다(I-31) — 안 넘기면 전 별점 합산
+        # byProduct 가 돌아오는데 에러도 경고도 없어, 워커가 그것을 '저평점이 몰린
+        # 상품'으로 서술한다. 조용히 틀리는 경로라 전달 + 스코프 명시를 함께 건다.
         try:
             agg = await get_spring_client().get_review_stats(
-                brand_id, from_=from_date, to=to_date, product_id=product_id
+                brand_id, from_=from_date, to=to_date, product_id=product_id, rating=rating
             )
         except SpringUnavailableError as exc:
             return f"Error: 리뷰 집계 조회에 실패했습니다({exc})."
+        # 집계가 어느 별점 범위로 계산됐는지 워커에게 명시한다 — get_order_events 의
+        # ignored_status_note 와 같은 결(거긴 '무시됨', 여긴 '적용됨' 고지).
+        # rating 미지정 시 빈 문자열이라 기존 출력과 바이트 동일하다(회귀 방지).
+        rating_scope = f"(별점 {rating} 한정)" if rating else ""
         if agg.total_count == 0:
-            return f"조회 기간에 리뷰가 없습니다. {period_note}"
+            # 별점을 걸고 0건인 것은 '리뷰가 없다'와 다르다 — 스코프를 빼면 워커가
+            # 리뷰 자체의 부재로 오독한다.
+            empty_scope = f"별점 {rating} " if rating else ""
+            return f"조회 기간에 {empty_scope}리뷰가 없습니다. {period_note}"
         # averageRating null 은 "평점 0점"이 아니라 "산정 불가"다(I-16 규칙).
         avg_note = (
             f"평균 {agg.average_rating}점" if agg.average_rating is not None else "평균 산정 불가"
@@ -1443,7 +1583,7 @@ async def get_reviews(
         )
         by_product_note = f" 상품별: {by_product}." if by_product else ""
         return (
-            f"리뷰 집계: 총 {agg.total_count}건, {avg_note}. 분포: {dist_note}."
+            f"리뷰 집계{rating_scope}: 총 {agg.total_count}건, {avg_note}. 분포: {dist_note}."
             f"{by_product_note} {period_note}"
         )
     try:

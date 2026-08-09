@@ -13,6 +13,70 @@
 
 ---
 
+## [2026-08-09] 유닛 테스트는 로컬 BE가 살아 있어도 TCP를 열면 안 된다
+- 증상: 로컬 Spring BE가 8080에서 실행 중이고 `.env`의 내부 토큰이 채워지면 재구매·완화 유닛
+  테스트가 실제 응답을 받아 CI와 다른 단언 결과를 냈다.
+- 원인: PG 연결은 `tests/unit/conftest.py`에서 구조적으로 격리했지만, httpx/anyio가 만드는 TCP
+  연결에는 같은 차단 경계가 없었고 `INTERNAL_API_TOKEN`도 공통 환경 초기화에서 빠져 있었다.
+- 규칙: 유닛 테스트는 `tests/unit/` 범위에서만 실제 TCP를 `ConnectionRefusedError`로 거부하고,
+  로컬 서비스·토큰 유무와 무관하게 CI의 연결 실패 degrade 경로를 검증한다.
+- 관련: `tests/conftest.py` · `tests/unit/conftest.py` · `tests/unit/test_network_isolation.py` · #474
+
+## [2026-08-09] datasetHash 규칙을 바꾸면 연결된 baseline을 즉시 재생성한다
+- 증상: `audit/holdout_runs.jsonl`을 해시 대상에서 제외한 뒤 datasetHash는 바뀌었지만,
+  `dev-v2.3`와 `trivial_empty` baseline은 이전 hash를 계속 가리켰다.
+- 원인: 재현 가능한 파일 목록을 고친 후 baseline 산출물의 `datasetHash` 연결을 재검증하지 않았다.
+- 규칙: datasetHash 입력·제외 규칙을 바꾼 커밋에서는 모든 현재 baseline을 재생성하고, 산출물의
+  hash가 manifest와 같은지 확인한다. append-only 런타임 로그는 해시에서 제외한다.
+- 관련: `evals/goldenset/refresh_manifest.py::HASH_EXCLUDED_PATHS` ·
+  `tests/unit/test_goldenset_audit.py` · #474
+
+## [2026-08-08] `ruff format` 을 인자 없이 돌려 무관한 파일 30개가 diff 에 딸려 왔다
+- 증상: #438 작업 중 `CLAUDE.md` "자동 정리: `uv run ruff check --fix && uv run ruff format`" 을
+  문자 그대로 인자 없이(= 저장소 전체 대상) 돌렸더니, 이번 이슈와 무관한 파일 30개가 순수 포맷
+  변경으로 딸려 들어왔다 — `data-analysis/generate_dummy.py` 만 +1189줄,
+  `docs/research/research-275-harness/*`·`evals/ablation/*`·`evals/scoring/*`·여러
+  `tests/unit/test_*.py`·`.github/scripts/review_mode.py`. `git status --porcelain` 으로 발견해
+  `git checkout --` 로 그 파일들만 원복했다.
+- 원인: 저장소에 **사전 존재하던 포맷 드리프트**다. CI 와 pre-commit 훅이 실제로 강제하는 것은
+  다르다 — CI 는 `ruff check` 만 돌고(`ruff format --check` 는 안 돈다), pre-commit 의
+  `ruff-format` 훅은 **스테이징된 파일에만** 걸린다. 그래서 한 번도 커밋 경로를 타지 않은
+  파일들(분석 스크립트·연구 하네스 등)은 포맷되지 않은 채로 남아 있고, 그 상태에서 전체
+  `ruff format` 을 돌리면 무관한 파일이 한꺼번에 재포맷된다. `CLAUDE.md` 의 문구를 그대로
+  따르면 누구나 이걸 밟는다.
+- 왜 나쁜가: 한 커밋 = 한 논리 단위 규약이 깨지고, 리뷰어가 실제 변경을 포맷 노이즈 속에서
+  찾아야 하며, 무관한 파일을 건드려 다른 레인과 충돌할 수 있다.
+- 규칙: 커밋 전 자동 정리는 **이번에 실제로 고친 파일에만 스코프를 좁혀** 건다
+  (`uv run ruff format <파일들>`). 전체 대상 `ruff format` 은 "포맷 드리프트 정리" 를 목적으로
+  하는 **별도 PR** 에서만 돌린다. 돌렸다면 `git status --porcelain` 으로 의도 밖 파일이 없는지
+  반드시 확인하고, 있으면 `git checkout --` 로 되돌린 뒤 커밋한다. (`uv run ruff check` 는
+  전체로 돌려도 안전하다 — 이번 사고는 `format` 쪽이다.)
+- 관련: #438 · `CLAUDE.md` "커밋 워크플로" 2단계 · `.pre-commit-config.yaml`(ruff-format 은
+  스테이징 파일 한정) · `.github/workflows` 의 CI 는 `ruff check` 만 실행
+
+## [2026-08-08] 응답 픽스처 계약 테스트는 "요청 파라미터 누락"을 못 잡는다 (#494)
+- 증상: `get_reviews(stats=True, rating="1,2")` 가 rating 을 쿼리스트링에 **안 실어** 전 별점
+  합산 `byProduct` 를 받아왔다. HTTP 200, 예외 없음, 숫자도 자연스러움 — 워커는 그것을
+  "1–2점이 몰린 상품"으로 서술했다. 명세(I-31)가 대표 사용례로 든 질문이 조용히 틀렸다.
+  `passed=True` 로 끝나므로 **로그·구조화 트레이스에도 안 남는다.**
+- 원인: `SpringClient.get_review_stats` 시그니처에 `rating` 이 아예 없었다. 도구 층은 인자를
+  받아서(`tools.py` 시그니처·docstring 에 존재) 클라이언트에 넘기지 않고 **버렸다** — 무시
+  사실을 출력에 적지도 않았다. 기존 테스트는 응답 JSON 픽스처를 고정해 파싱만 검증해서,
+  요청이 무엇을 보냈는지는 아무도 보지 않았다.
+- 규칙:
+  - **필터 인자를 받는 클라이언트 메서드에는 요청 쿼리스트링 스냅샷 테스트를 별도로 둔다.**
+    응답 shape 검증(픽스처 계약 테스트)과 요청 파라미터 검증은 서로 다른 실패를 잡는다 —
+    후자가 없으면 인자 누락이 200 뒤에 숨는다. 실린 것뿐 아니라 **안 실려야 할 것**
+    (집계 모드의 sort/limit/offset)도 같이 못 박는다.
+  - 도구가 인자를 받아 하위로 안 넘길 때 선택지는 둘뿐 — **넘기거나, 무시를 코드로 강제하고
+    그 사실을 출력 문자열에 적거나.** 조용히 버리는 세 번째는 없다
+    (선례: `get_order_events` 의 `ignored_status_note`).
+  - 집계 결과를 문장으로 내보낼 때는 **어떤 필터가 적용된 집계인지 스코프를 함께 적는다.**
+    "리뷰 집계: 총 18건"과 "리뷰 집계(별점 1,2 한정): 총 18건"은 워커에게 전혀 다른 사실이다.
+  - 0건 응답도 같은 함정 — "리뷰가 없습니다"와 "별점 1,2 리뷰가 없습니다"를 구분한다.
+- 관련: `app/services/spring_client.py` `get_review_stats`, `app/agents/seller/tools.py`
+  `get_reviews`, `docs/api-spec.md` §4.20(I-31), 이슈 #494
+
 ## [2026-08-08] TTL 만료를 엄격 부등호로 재면 판정이 시계 분해능에 걸린다 (리눅스만 통과)
 - 증상: `period_confirm.load_pending` 의 TTL 테스트(`test_pending_expires_after_ttl`, ttl=0)가
   **리눅스 CI 에서는 늘 통과하는데 Windows 로컬에서 실패**했다 — 만료됐어야 할 대기가

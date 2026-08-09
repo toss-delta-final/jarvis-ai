@@ -30,7 +30,7 @@ from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.language_models.chat_models import BaseChatModel
 
 from app.core.config import LLMProvider, get_settings
-from app.core.llm import ModelTier, resolve_provider_model
+from app.core.llm import LLMNotConfigured, ModelTier, resolve_provider_model
 from app.core.tracing import current_request_trace
 
 logger = logging.getLogger(__name__)
@@ -153,8 +153,22 @@ def init_seller_model(role: SellerRole) -> BaseChatModel:
     Literal 밖 역할은 KeyError 로 즉시 실패 — 신규 역할(예: chart 복원 §12)은
     SellerRole·ROLE_TIER 에 먼저 등록한다. 같은 실효 provider 설정은 같은 인스턴스를
     공유한다(lru_cache).
+
+    **판매자 레인은 `LLM_PROVIDER=scripted`(#438 부하 테스트 스텁)를 지원하지 않는다** —
+    명시적으로 먼저 검사해 뜻이 분명한 예외를 던진다. 이 함수는 `LLMClient`(app/core/llm.py)를
+    거치지 않고 `init_chat_model(model_provider=...)` 로 langchain 모델을 직접 만들기 때문에,
+    검사 없이 흘려보내면 `model_provider="scripted"` 가 langchain 안 어딘가에서 알아보기
+    힘든 예외로 죽는다(#438 D5 — 판매자 스텁 구현은 이번 범위 밖, 무료 모드는 구매자 레인
+    전용, evals/benchmark/README.md 참조).
     """
     settings = get_settings()
+    if settings.llm_provider == "scripted":
+        raise LLMNotConfigured(
+            "LLM_PROVIDER=scripted has no seller-lane implementation (#438) — the free "
+            "load-test mode only covers the buyer recommendation lane. Set LLM_PROVIDER to "
+            "openai/anthropic to exercise seller endpoints, or skip seller scenarios in the "
+            "load-test manifest."
+        )
     tier = ROLE_TIER[role]
     resolved = resolve_provider_model(settings, tier, with_tools=True)
     temperature = None
