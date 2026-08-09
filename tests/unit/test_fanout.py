@@ -46,6 +46,14 @@ def _ids(result: ProductSearchResult) -> list[int]:
     return [p.product_id for p in result.products]
 
 
+def _event(record: logging.LogRecord, event: str) -> bool:
+    """JSON message 구조화 이벤트를 caplog에서 찾는다."""
+    try:
+        return json.loads(record.getMessage()).get("event") == event
+    except (json.JSONDecodeError, TypeError):
+        return False
+
+
 def test_merge_interleaves_round_robin() -> None:
     """leg 순서대로 한 개씩 번갈아 뽑는다 — 한 카테고리가 앞을 독점하지 않는다."""
     merged, _ = _merge_fanout_results([(0, _res(1, 2, 3)), (1, _res(4, 5))], cap=30)
@@ -2410,7 +2418,7 @@ async def test_post_suppress_fallback_also_fully_suppressed_degrades_to_zero_res
     suggestions = next(e for e in events if e["type"] == "suggestions")["data"]
     revert_chip = next(c for c in suggestions["chips"] if c.get("revert") is not None)
     assert revert_chip["estCount"] == 8  # 원래(1라운드) 억제 수 그대로 — 재검색분으로 안 바뀜
-    zero_log = next(r for r in caplog.records if r.msg == "recommend_zero_result")
+    zero_log = next(r for r in caplog.records if _event(r, "recommend_zero_result"))
     assert zero_log.post_suppress_fallback_attempted is True
 
 
@@ -2586,7 +2594,7 @@ async def test_f1_fallback_success_log_includes_elapsed_ms(
             map_categories=_broad_mapper(),
         )
     )
-    record = next(r for r in caplog.records if r.msg == "category_expand_zero_fallback")
+    record = next(r for r in caplog.records if _event(r, "category_expand_zero_fallback"))
     assert isinstance(record.elapsed_ms, int)
     assert record.elapsed_ms >= 0
 
@@ -2621,7 +2629,7 @@ async def test_post_suppress_fallback_success_log_includes_elapsed_ms(
     )
     done = next(e for e in events if e["type"] == "done")["data"]
     assert done["finishReason"] != "zero_result"  # 재판정이 구제했다
-    record = next(r for r in caplog.records if r.msg == "category_expand_post_suppress_fallback")
+    record = next(r for r in caplog.records if _event(r, "category_expand_post_suppress_fallback"))
     assert isinstance(record.elapsed_ms, int)
     assert record.elapsed_ms >= 0
 
@@ -2680,7 +2688,7 @@ async def test_post_suppress_fallback_reapply_failure_counts_rescue_elapsed_once
     )
     assert warn.reason == "post_filter boom"
 
-    zero_log = next(r for r in caplog.records if r.msg == "recommend_zero_result")
+    zero_log = next(r for r in caplog.records if _event(r, "recommend_zero_result"))
     # [#363 R4] 왕복 1회분(delay_s ≈ 50ms)만 반영돼야 한다 — 이중 계상 버그가 재발하면 같은
     # 구간이 두 번 더해져 대략 2배(≈100ms)로 튄다. 상한을 1.5배 지점에 둬 그 둘을 가른다.
     assert zero_log.rescue_elapsed_ms >= round(delay_s * 1000 * 0.5)
@@ -2726,7 +2734,7 @@ async def test_post_suppress_fallback_unfiltered_search_failure_counts_rescue_el
     done = next(e for e in events if e["type"] == "done")["data"]
     assert done["finishReason"] == "zero_result"
 
-    zero_log = next(r for r in caplog.records if r.msg == "recommend_zero_result")
+    zero_log = next(r for r in caplog.records if _event(r, "recommend_zero_result"))
     assert zero_log.post_suppress_fallback_attempted is True
     assert zero_log.rescue_elapsed_ms >= round(delay_s * 1000 * 0.5)
     assert zero_log.rescue_elapsed_ms < round(delay_s * 1000 * 1.5)
@@ -2770,8 +2778,8 @@ async def test_recommend_pipeline_logs_rescue_elapsed_when_fallback_succeeds_may
     done = next(e for e in events if e["type"] == "done")["data"]
     assert done["finishReason"] != "zero_result"  # 재판정이 구제해 성공 종결로 내려갔다
 
-    pipeline_log = next(r for r in caplog.records if r.msg == "recommend_pipeline")
-    assert not any(r.msg == "recommend_zero_result" for r in caplog.records)  # 상호 배타 확인
+    pipeline_log = next(r for r in caplog.records if _event(r, "recommend_pipeline"))
+    assert not any(_event(r, "recommend_zero_result") for r in caplog.records)  # 상호 배타 확인
     assert pipeline_log.rescue_elapsed_ms >= round(delay_s * 1000 * 0.5)
     assert pipeline_log.rescue_elapsed_ms < round(delay_s * 1000 * 1.5)
     # candidates 가 #343 에서 이미 채워져 자동완화 루프 자체가 안 돈다(게이트가 `not candidates`).
@@ -2822,7 +2830,7 @@ async def test_recommend_pipeline_logs_may_auto_relax_true_when_relaxable_field_
     done = next(e for e in events if e["type"] == "done")["data"]
     assert done["finishReason"] != "zero_result"
 
-    pipeline_log = next(r for r in caplog.records if r.msg == "recommend_pipeline")
+    pipeline_log = next(r for r in caplog.records if _event(r, "recommend_pipeline"))
     assert pipeline_log.may_auto_relax is True
 
 
@@ -2934,7 +2942,7 @@ async def test_worst_case_rescue_chain_sequential_stages_before_first_sse(
     elapsed_before_first_sse = first_sse_at - turn_started_at
     assert elapsed_before_first_sse >= 3 * delay_s
 
-    zero_log = next(r for r in caplog.records if r.msg == "recommend_zero_result")
+    zero_log = next(r for r in caplog.records if _event(r, "recommend_zero_result"))
     assert zero_log.post_suppress_fallback_attempted is True
     assert zero_log.rescue_elapsed_ms > 0  # #343 폴백 왕복(결과는 전량 억제)에 쓴 소요
     assert zero_log.relax_probes == 2  # 자동완화 1 + 칩 probe 1(같은 유일 필드 ratingMin 재시도)
@@ -3511,7 +3519,7 @@ async def test_expanded_turn_zero_result_after_exact_exclusion_logs_had_candidat
         )
     done = next(e for e in events if e["type"] == "done")["data"]
     assert done["finishReason"] == "zero_result"  # 전량 억제로 후보가 남지 않았다
-    zero_result_logs = [r for r in caplog.records if r.msg == "recommend_zero_result"]
+    zero_result_logs = [r for r in caplog.records if _event(r, "recommend_zero_result")]
     assert zero_result_logs, "recommend_zero_result 로그가 없다"
     record = zero_result_logs[0]
     assert record.had_candidates is True  # 검색 자체는 히트가 있었다
@@ -3540,7 +3548,7 @@ async def test_search_itself_zero_result_logs_had_candidates_false(
         )
     done = next(e for e in events if e["type"] == "done")["data"]
     assert done["finishReason"] == "zero_result"
-    zero_result_logs = [r for r in caplog.records if r.msg == "recommend_zero_result"]
+    zero_result_logs = [r for r in caplog.records if _event(r, "recommend_zero_result")]
     assert zero_result_logs, "recommend_zero_result 로그가 없다"
     record = zero_result_logs[0]
     assert record.had_candidates is False
@@ -3646,7 +3654,7 @@ async def test_non_widened_turn_still_respects_lowered_embedding_rerank_limit(
                 map_categories=_n_leg_mapper(3),
             )
         )
-    pipeline_logs = [r for r in caplog.records if r.msg == "recommend_pipeline"]
+    pipeline_logs = [r for r in caplog.records if _event(r, "recommend_pipeline")]
     assert pipeline_logs, "recommend_pipeline 로그가 없다"
     assert pipeline_logs[0].compressed == 20  # embedding_rerank_limit 이 그대로 존중된다(30 아님)
 
@@ -3676,7 +3684,7 @@ async def test_widened_split_turn_keeps_effective_cap_despite_lowered_embedding_
                 map_categories=_n_leg_mapper(5),
             )
         )
-    pipeline_logs = [r for r in caplog.records if r.msg == "recommend_pipeline"]
+    pipeline_logs = [r for r in caplog.records if _event(r, "recommend_pipeline")]
     assert pipeline_logs, "recommend_pipeline 로그가 없다"
     assert pipeline_logs[0].compressed == 50  # effective_cap(5*10) 이 유지된다(20 아님)
 

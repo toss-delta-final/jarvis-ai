@@ -279,30 +279,38 @@ elapsed_once`·기존 성공 경로 테스트로 각각 지연을 주입해 수�
 이어간다 — relaxation(#113)·기동 가드 보정(#288, §5)과 교차하는 영역이라 별도 설계 문서가
 필요하다(이번 PR 범위 밖).
 
-## 8. 실측 결과 — 표본 대기가 아니라 표본 원천 미생성 (2026-08-09)
+## 8. 실측 결과 — 싱크는 수정됐지만 운영 표본은 아직 없다 (2026-08-10)
 
-**판정: 오늘 시점 운영 실측값은 없다.** §2의 "다음 배포부터 잴 수 있다"는 전제는 싱크에서
-깨졌다. `app/core/logging.py::configure_logging`은 `logging.basicConfig(level=..., format="%(asctime)s
+**판정: 오늘 시점 운영 실측값은 없다.** `app/core/logging.py::configure_logging`은 `logging.basicConfig(level=..., format="%(asctime)s
 %(levelname)s %(name)s %(message)s")`만 설정한다. 표준 `logging.Formatter`는 format 문자열에 없는
-`LogRecord` 속성을 렌더링하지 않으므로, `logger.info("recommend_zero_result", extra={...})`의
+`LogRecord` 속성을 렌더링하지 않으므로, 수정 전 `logger.info("recommend_zero_result", extra={...})`의
 `rescue_elapsed_ms`·`may_auto_relax` 등은 LogRecord에는 붙어도 컨테이너 stdout 문자열에서는 폐기된다.
-재현은 이 설정으로 해당 로그 호출을 실행한 뒤 렌더 결과가
+수정 전 재현은 이 설정으로 해당 로그 호출을 실행한 뒤 렌더 결과가
 `INFO app.agents.buyer.recommendation.graph recommend_zero_result`까지만 남고 extra 키가 없는지를
-확인하면 된다. `app/`의 `extra={` 호출은 14개 파일 92곳으로 같은 포맷 경로를 타며, docker
-json-file 드라이버가 보관하는 stdout도 `max-size=10m`, `max-file=3`으로 최대 30MB다.
+확인하면 된다. 이 문제는 #385 후속에서 **구제 체인 4개 이벤트만** `log_structured()`로 JSON message와
+기존 `extra` 양쪽에 싣도록 수정했다. 따라서 평문 formatter의 렌더 줄도 파서가 받는 `{"event": ...}`
+JSON을 포함하고, 기존 `record.rescue_elapsed_ms`류 테스트의 LogRecord 속성도 유지한다. `app/`의 나머지
+88개 `extra={` 호출은 여전히 미렌더 상태다. docker json-file 드라이버는 `max-size=10m`, `max-file=3`으로
+총 30MB만 보관하므로 JSON 줄 증가로 회전이 빨라져 표본 축적 창이 짧아질 수 있다.
 
 `chat_request`만은 예외다. `app/core/observability.py`가 `logger.info(json.dumps(record))`로 JSON을
 message 자체에 실으므로 오늘도 `latencyFirstToken`·`latencyTotal`·`errorType`·`lane`·`role`을
-정상 출력한다. 반면 기존 테스트가 `caplog.records`의 `zero_log.rescue_elapsed_ms`처럼 LogRecord
-속성만 읽었기 때문에 포맷 단계의 폐기를 잡지 못했다. 즉 운영 표본은 아직 "쌓일 시간"이 부족한
-것이 아니라, 구제 체인 이벤트의 표본이 원천적으로 생성되지 않는다.
+정상 출력한다. 기존 테스트가 `caplog.records`의 `zero_log.rescue_elapsed_ms`처럼 LogRecord 속성만
+읽어 포맷 단계의 폐기를 잡지 못했던 것이 원인이다. 이제 sink는 고쳐졌지만, 아직 배포·축적·승인된
+운영 로그 조회가 없으므로 실측값은 없다.
 
-### 8.1 선행 조치와 범위
+### 8.1 싱크 수정 범위와 남은 전제
 
-싱크 수정은 이슈 #385 범위 밖이며 별도 이슈가 선행돼야 한다. 선택지는 (a) 구제 체인 이벤트만
-국소적으로 JSON message로 만드는 방법과 (b) `configure_logging`을 전역 JSON 포맷터로 바꾸는
-방법이다. (b)는 92개 `extra=` 호출 전체, 로그 볼륨, 위 30MB 회전 상한에 영향을 주므로 이 문서는
-둘 중 하나를 채택하거나 구현하지 않는다.
+채택한 방식은 `recommend_zero_result`, `recommend_pipeline`, `category_expand_zero_fallback`,
+`category_expand_post_suppress_fallback`만 JSON message로 만드는 국소 수정이다. 전역 JSON formatter는
+기각했다. `chat_request`가 이미 JSON message를 쓰므로 바깥 JSON 레코드 안의 문자열로 이중 인코딩되고,
+`aggregate_observability.py::parse_log_line`이 최상위 `event`를 찾지 못해 기존 관측 파이프라인을 버린다.
+전역 extras 렌더도 기각했다. `raw`·`query`·`canonical` 같은 카테고리 문자열을 포함한 나머지 88개 호출을
+새로 stdout에 노출해 PII 규약을 회귀시킨다.
+
+이 수정만으로는 실측값이 생기지 않는다. 이 브랜치가 `dev`에 병합된 뒤 `main`으로 승격되어 **배포**돼야
+하고, 그 뒤 표본 축적 기간이 지나야 한다. 운영 로그 접근은 사람 승인 게이트이므로 이 작업에서는 조회하지
+않았다. `.github/workflows/deploy.yml`은 수정하지 않았다.
 
 ### 8.2 운영 표본이 생긴 뒤의 집계 규약
 

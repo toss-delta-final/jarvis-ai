@@ -4,12 +4,18 @@ from __future__ import annotations
 
 import csv
 import json
+import logging
 from types import SimpleNamespace
 
 import pytest
 
+from app.core.logging import log_structured
 from scripts import aggregate_rescue_chain
+from scripts import aggregate_observability
 from tests.unit import test_fanout
+
+
+_PLAIN_FORMATTER = logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
 
 
 def _line(event: str, **overrides: object) -> str:
@@ -283,7 +289,9 @@ async def test_expected_field_names_match_actual_zero_and_pipeline_log_records(m
         monkeypatch, caplog
     )
     pipeline_record = next(
-        record for record in caplog.records if record.msg == "recommend_pipeline"
+        record
+        for record in caplog.records
+        if json.loads(record.getMessage()).get("event") == "recommend_pipeline"
     )
     assert expected_pipeline_fields <= set(pipeline_record.__dict__)
 
@@ -302,5 +310,98 @@ async def test_expected_field_names_match_actual_zero_and_pipeline_log_records(m
             map_categories=test_fanout._two_leg_mapper(),
         )
     )
-    zero_record = next(record for record in caplog.records if record.msg == "recommend_zero_result")
+    zero_record = next(
+        record
+        for record in caplog.records
+        if json.loads(record.getMessage()).get("event") == "recommend_zero_result"
+    )
     assert expected_zero_fields <= set(zero_record.__dict__)
+
+
+def test_structured_log_renders_fields_with_plain_formatter_and_preserves_extra(caplog) -> None:
+    """렌더된 sink 문자열과 LogRecord extra를 함께 검증한다."""
+    logger = logging.getLogger("tests.rescue-render")
+    caplog.set_level(logging.INFO, logger=logger.name)
+
+    log_structured(logger, "recommend_zero_result", rescue_elapsed_ms=123, may_auto_relax=True)
+
+    record = caplog.records[-1]
+    assert _PLAIN_FORMATTER.format(record).endswith(
+        '{"event": "recommend_zero_result", "rescue_elapsed_ms": 123, "may_auto_relax": true}'
+    )
+    assert record.rescue_elapsed_ms == 123
+    assert record.may_auto_relax is True
+
+
+@pytest.mark.asyncio
+async def test_actual_rescue_turns_round_trip_from_rendered_logs_into_aggregator(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """구제 이벤트는 평문 sink에서도 JSON으로 남고 기존 LogRecord 필드를 보존한다."""
+    await test_fanout.test_recommend_pipeline_logs_rescue_elapsed_when_fallback_succeeds_may_auto_relax_false(
+        monkeypatch, caplog
+    )
+    pipeline_record = next(
+        record
+        for record in caplog.records
+        if json.loads(record.getMessage()).get("event") == "recommend_pipeline"
+    )
+    pipeline_line = _PLAIN_FORMATTER.format(pipeline_record)
+    parsed_pipeline = aggregate_rescue_chain.parse_log_line(pipeline_line)
+    assert parsed_pipeline is not None
+    assert parsed_pipeline["rescue_elapsed_ms"] == pipeline_record.rescue_elapsed_ms
+    assert parsed_pipeline["may_auto_relax"] is pipeline_record.may_auto_relax
+    assert pipeline_record.rescue_elapsed_ms > 0
+
+    caplog.clear()
+
+    async def empty_search(filters, exclude_product_ids=None):
+        return test_fanout._res()
+
+    await test_fanout._collect(
+        test_fanout.run_buyer_turn(
+            test_fanout._req(session_id="rendered-rescue-zero"),
+            test_fanout._member_num(),
+            llm=test_fanout.FakeLLM(),
+            search=empty_search,
+            push_fn=test_fanout._RecordingPush(),
+            map_categories=test_fanout._two_leg_mapper(),
+        )
+    )
+    zero_record = next(
+        record
+        for record in caplog.records
+        if json.loads(record.getMessage()).get("event") == "recommend_zero_result"
+    )
+    zero_line = _PLAIN_FORMATTER.format(zero_record)
+    parsed_zero = aggregate_rescue_chain.parse_log_line(zero_line)
+    assert parsed_zero is not None
+    assert parsed_zero["event"] == "recommend_zero_result"
+    assert zero_record.rescue_elapsed_ms == parsed_zero["rescue_elapsed_ms"]
+
+    aggregate = aggregate_rescue_chain.aggregate_lines([pipeline_line, zero_line])
+    assert aggregate["first_token"]["event_counts"] == {
+        "recommend_zero_result": 1,
+        "recommend_pipeline": 1,
+    }
+
+
+def test_chat_request_json_message_stays_parseable_by_existing_observability_aggregator() -> None:
+    """전역 JSON formatter를 도입하지 않아 chat_request의 기존 JSON message를 보존한다."""
+    logger = logging.getLogger("tests.chat-request-render")
+    record = logger.makeRecord(
+        logger.name,
+        logging.INFO,
+        __file__,
+        0,
+        json.dumps({"event": "chat_request", "latencyFirstToken": 12}),
+        (),
+        None,
+    )
+
+    line = _PLAIN_FORMATTER.format(record)
+
+    assert aggregate_observability.parse_log_line(line) == {
+        "event": "chat_request",
+        "latencyFirstToken": 12,
+    }

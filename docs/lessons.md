@@ -13,6 +13,16 @@
 
 ---
 
+## [2026-08-10] `extra=` 검증은 렌더된 sink 문자열까지 확인한다
+- 증상: 구제 체인 이벤트가 `extra`에 계측 필드를 넣었고 caplog의 `record.rescue_elapsed_ms` 단언도
+  통과했지만, 표준 formatter가 `%(message)s`만 출력해 운영 stdout에서는 필드가 전부 사라졌다.
+- 원인: LogRecord 속성 보존과 formatter 렌더는 별도 단계인데, 테스트가 전자만 확인했다.
+- 규칙: stdout/file sink로 소비되는 구조화 로그는 실제 formatter로 레코드를 렌더한 뒤 파서·집계기까지
+  왕복하는 회귀 테스트를 둔다. `extra=` 속성 단언은 호환성 검증으로만 남긴다.
+- 관련: `app/core/logging.py::log_structured` · `tests/unit/test_aggregate_rescue_chain.py` · #385
+
+---
+
 ## [2026-08-09] 분포 분리 테스트는 변이 뒤 순위가 실제로 바뀌는 표본을 써야 한다
 - 증상: #385의 `may_auto_relax=False` 분리 테스트가 False 표본 하나(1ms)와 True 표본 둘
   (100/200ms)을 썼더니, False를 True 분포에 잘못 섞는 변이가 통과했다.

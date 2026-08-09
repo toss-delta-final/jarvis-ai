@@ -42,6 +42,14 @@ def _guest() -> Identity:
     return Identity(user_id=None, is_guest=True, seller_id=None, subject=None)
 
 
+def _event(record: object, event: str) -> bool:
+    """JSON message 구조화 이벤트를 caplog에서 찾는다."""
+    try:
+        return json.loads(record.getMessage()).get("event") == event  # type: ignore[attr-defined]
+    except (json.JSONDecodeError, TypeError):
+        return False
+
+
 async def _committed_observer(request, identity, observer=None):  # noqa: ANN001
     owner_id = buyer_owner_id(identity, get_settings())
     context = await session_context._default_repository.touch(
@@ -1978,7 +1986,7 @@ async def test_pipeline_logs_stage_candidate_counts(caplog) -> None:
                 _req(), _guest(), llm=llm, search=_make_search(products), push_fn=_RecordingPush()
             )
         )
-    rec = next((r for r in caplog.records if r.msg == "recommend_pipeline"), None)
+    rec = next((r for r in caplog.records if _event(r, "recommend_pipeline")), None)
     assert rec is not None, "단계별 후보 수 구조화 로그가 있어야 한다"
     assert rec.received == 5  # Spring/merge 수신
     assert rec.after_dedup == 5  # guest → 최근구매 dedup 없음
@@ -3295,7 +3303,7 @@ async def test_recommendation_relaxation_probe_applies_persisted_repurchase(
     assert "products.ready" in _types(events)
     exposed = _only_list(push.pushes[0]).product_ids
     assert exposed == [101]
-    pipeline = next(record for record in caplog.records if record.msg == "recommend_pipeline")
+    pipeline = next(record for record in caplog.records if _event(record, "recommend_pipeline"))
     assert pipeline.after_dedup == len(exposed) == 1
 
 
