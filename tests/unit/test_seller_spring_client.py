@@ -1074,6 +1074,54 @@ async def test_get_reviews_url_params_and_parsing() -> None:
     assert result.rows[0].product_name == "여행용 파우치"
 
 
+async def test_get_reviews_parses_null_content_without_failing_the_page() -> None:
+    """[#518] content·authorNickname 이 null 인 행이 섞여도 페이지 전체가 살아야 한다.
+
+    DDL 이 `content TEXT NULL` 이라 별점만 남긴 리뷰가 실재한다. 구 스키마의
+    `content: str = ""` 는 키 결측만 흡수하고 명시적 null 은 거부해서, 한 행 때문에
+    ValidationError → SpringUnavailableError → 리뷰 조회 **전체**가 degrade 됐다.
+    응답 픽스처가 아니라 이 실패 모드 자체를 고정한다.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "success": True,
+                "data": {
+                    "rows": [
+                        {
+                            "reviewId": 7,
+                            "productId": 3,
+                            "productName": "여행용 파우치",
+                            "rating": 5,
+                            "content": None,
+                            "authorNickname": None,
+                            "createdAt": "2026-07-21T12:00:00+09:00",
+                        },
+                        {
+                            "reviewId": 8,
+                            "productId": 3,
+                            "productName": "여행용 파우치",
+                            "rating": 2,
+                            "content": "지퍼가 일주일 만에 고장났어요",
+                            "authorNickname": "자비스",
+                            "createdAt": "2026-07-22T12:00:00+09:00",
+                        },
+                    ],
+                    "total": 2,
+                },
+            },
+        )
+
+    result = await _client(handler).get_reviews(12)
+
+    assert result.total == 2
+    assert result.rows[0].content is None
+    assert result.rows[0].author_nickname is None
+    assert result.rows[1].content == "지퍼가 일주일 만에 고장났어요"
+
+
 async def test_get_review_stats_parses_null_average() -> None:
     """stats=true 쿼리 강제 + 리뷰 0건이면 averageRating null(0 아님, I-16 규칙) 보존."""
     captured: dict = {}
