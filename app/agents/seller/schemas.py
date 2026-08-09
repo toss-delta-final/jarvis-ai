@@ -322,7 +322,7 @@ class DraftProposal(BaseModel):
     )
     changes: list[DraftChange] = Field(
         default_factory=list,
-        description="변경 목록 — delete 는 status ON_SALE→HIDDEN 1건으로 표현(soft delete 가시화)",
+        description="변경 목록 — delete 는 status <조회값>→DELETED 1건으로 표현(soft delete 가시화). DELETED 는 HIDDEN(숨김)과 다른 상태이며 되돌릴 수 없다",
     )
     summary: str = Field(description="diff 카드 보조 한 줄 요약(예: '가격 12,900원으로 인하')")
     clarification: str = Field(

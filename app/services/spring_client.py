@@ -484,10 +484,29 @@ class WishlistError(Exception):
     """
 
 
+# ── I-11/I-12 상품 쓰기 예외 (api-spec §4.5 — 정본 Notion I-11·I-12, 2026-08-05 개정) ──
+#
+# 삭제는 `status=DELETED` 전이이며 `HIDDEN`(숨김·판매정지)과 **다른 상태**다(BE 02 D41).
+# 아래 409 두 종은 "재시도하면 되는 장애"가 아니라 **"안 되는 일"** 이라 SpringUnavailableError
+# 로 뭉개면 HITL 이 재confirm 을 권해 판매자가 무한 재시도에 갇힌다 — I-30 과 같은 규약으로
+# error.code 기반 전용 예외로 분리한다. SpringUnavailableError 하위가 아니다(catch-all 회피).
+
+
+class ProductAlreadyDeleted(Exception):
+    """I-12 409 ALREADY_DELETED — 이미 삭제된 상품(멱등 200 금지). `error.code` 가 정확히
+    이 값일 때만 낸다. `HIDDEN`→`DELETED` 는 정상 전이라 여기 해당하지 않는다."""
+
+
+class ProductDeletedNotEditable(Exception):
+    """I-11 409 PRODUCT_DELETED — 삭제된 상품은 수정·복구 대상이 아니다(삭제는 I-12 전용
+    전이). 404 가 아닌 이유: 상품은 실제로 존재하고 주문 내역·매출 통계에도 남아 있어
+    에이전트가 "없는 상품"이라 답하면 사실과 다르다."""
+
+
 # ── I-30 발송 처리 예외 (이슈 #297, §4.19 — 🔶 초안, BE 협의 전) ──────────────────
 #
 # HITL 쓰기(발송)는 "이미 된 일"과 "방금 한 일"과 "안 되는 일"을 구분해야 거짓 성공
-# 보고를 막는다(I-12 ALREADY_HIDDEN 논리) — SpringUnavailableError 로 뭉개면 셋 다
+# 보고를 막는다(I-12 ALREADY_DELETED 논리) — SpringUnavailableError 로 뭉개면 셋 다
 # "재시도 가능한 장애"가 되므로 error.code 기반 전용 예외로 분리한다. 이 예외들은
 # SpringUnavailableError 하위가 아니다 — 도구/HITL 의 catch-all 에 삼켜지지 않는다.
 
@@ -1653,7 +1672,12 @@ class SpringClient:
         limit: int | None = None,
         offset: int | None = None,
     ) -> SellerProductList:
-        """I-9 자사 상품 목록 조회 (§4.5). status: ON_SALE/HIDDEN. draft/product 도구의 before 소스."""
+        """I-9 자사 상품 목록 조회 (§4.5). status: ON_SALE/HIDDEN. draft/product 도구의 before 소스.
+
+        **`DELETED` 는 여기 나오지 않는다** — 판매자에게 보이지 않는 것이 삭제의 정의라
+        BE 가 status 미지정(전량)에서도 빼고, `status=DELETED` 를 명시해도 400 이 아니라
+        빈 `rows` 다(존재 비노출, §4.5). 삭제한 상품이 목록에 없는 것은 정상이다.
+        """
         params: dict = {}
         if status:
             params["status"] = status
@@ -1690,21 +1714,32 @@ class SpringClient:
     async def update_product(
         self, brand_id: int, product_id: int, patch: ProductUpdate
     ) -> ProductUpdateResult:
-        """I-11 상품 수정 (§4.5). 바꿀 필드만 전송 — 재고도 이 API로 통합(별도 재고 API 없음)."""
+        """I-11 상품 수정 (§4.5). 바꿀 필드만 전송 — 재고도 이 API로 통합(별도 재고 API 없음).
+
+        삭제된 상품 수정은 409 `PRODUCT_DELETED` 전용 예외 — 재시도 대상이 아니다(§4.5).
+        `status` 로 `DELETED` 를 보내는 것도 BE 가 거부한다(삭제는 I-12 전용 전이).
+        """
         data = await self._request(
             "PATCH",
             f"/internal/seller/{brand_id}/products/{product_id}",
             operation="update_product",
             json_body=patch.model_dump(by_alias=True, exclude_none=True),
+            error_code_map={"PRODUCT_DELETED": ProductDeletedNotEditable},
         )
         return self._validate(ProductUpdateResult, data)
 
     async def delete_product(self, brand_id: int, product_id: int) -> ProductDeleteResult:
-        """I-12 상품 삭제(soft) (§4.5). 물리 삭제 없음 — status=HIDDEN 전환."""
+        """I-12 상품 삭제(soft) (§4.5). 물리 삭제 없음 — **status=DELETED** 전환.
+
+        `HIDDEN`(숨김·판매정지)과 다른 상태다 — 숨김은 판매자 목록에 남지만 삭제는
+        목록에서도 빠지고 되돌릴 수 없다. `HIDDEN`→`DELETED` 는 정상 전이이며, 이미
+        `DELETED` 면 409 `ALREADY_DELETED` 전용 예외(멱등 200 아님).
+        """
         data = await self._request(
             "DELETE",
             f"/internal/seller/{brand_id}/products/{product_id}",
             operation="delete_product",
+            error_code_map={"ALREADY_DELETED": ProductAlreadyDeleted},
         )
         return self._validate(ProductDeleteResult, data)
 
