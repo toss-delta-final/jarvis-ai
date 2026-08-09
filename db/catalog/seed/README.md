@@ -106,18 +106,17 @@ collation 무관한 codepoint 지문을 **추가**해 정본과 대조한다(`di
 
 I-1 색상 질의 확장(§4.6 제안, `docs/specs/PROPOSAL-I1-COLOR-ARRAY-258.md`)이 근거로 삼는
 색상 표기 동의어 사전의 정본과 적재 절차. 오프라인 구축 파이프라인(`app.pipelines.
-color_synonym_seed.build`, I-17 수확 → LLM 배정 → 검증)이 만든 검수 큐를 사람이 1차 검수한
+color_synonym_seed.build`, I-17 수확 → LLM 배정 → 검증)이 만든 검수 큐를 사람이 1·2차 검수한
 결과를 repo 에 고정한다.
 
 ## 무엇이 정본인가
 
 정본은 **두 파일**로 나뉜다 — 하나는 손으로 유지하고, 하나는 그로부터 파생된다.
 
-- **`color_synonyms_review.json`**(사람이 유지) — 1차 검수 결과. `approved`(승인, `{term,
-  canonical, note}`)와 `rejected`(반려, `{term, note}`) 두 배열만 담는다. 지금은 46행이
-  승인됐고(`db/catalog/seed/color_synonyms.json` 의 789행 중), `rejected` 는 비어 있지만
-  스키마는 지원한다 — 향후 명백히 색상이 아닌 표기(오·탈자, 상품명 파편 등)를 사람이 반려로
-  확정할 때 쓴다.
+- **`color_synonyms_review.json`**(사람이 유지) — 1·2차 검수 결과. `approved`(승인, `{term,
+  canonical, note}`)와 `rejected`(반려, `{term, note}`) 두 배열만 담는다. 지금은 93행이
+  승인됐고 40행은 반려됐다(`db/catalog/seed/color_synonyms.json` 의 789행 중). 수식어 결합,
+  복합색, 데님 밝기 축, 판단이 갈린 재질·상품명 조각은 `pending_review`로 남긴다.
 - **`color_synonyms.json`**(생성물, 789행) — `scripts/derive_color_synonym_seed.py` 가
   라이브 pg-catalog `color_synonyms` 테이블(기계 산출: term/canonical/provenance/doc_count)
   위에 `color_synonyms_review.json` 오버레이를 적용해 만든다. 각 행은 `term` / `canonical`
@@ -156,8 +155,8 @@ docker exec -i jarvis-ai-pg-catalog-1 psql -U jarvis -d catalog < db/catalog/ini
 uv run python scripts/derive_color_synonym_seed.py --check
 ```
 
-이 왕복은 **바이트 안정**이다 — 복원된 `color_synonyms` 는 승인 46행이 `status='approved',
-provenance='human'` 그대로 다시 들어오지만, 오버레이가 그 46개 term 을 전부 덮고 있어
+이 왕복은 **바이트 안정**이다 — 복원된 `color_synonyms` 는 승인·반려된 사람 검수 행이
+`provenance='human'` 그대로 다시 들어오지만, 오버레이가 그 term 을 전부 덮고 있어
 재파생 결과 정본은 복원 전과 완전히 동일하다(실측 확인: 임시 DB 에 적재 → 재파생 →
 커밋본과 바이트 동일). 이 안정성은 **오버레이가 DB 의 human 행을 빠짐없이 덮는다**는 전제
 위에 서 있고, 그 전제는 위 검증(오버레이 누락 시 실패)이 기동 시점이 아니라 파생 시점에
@@ -209,11 +208,11 @@ seed_from_file(
 
 ## 행 수·지문
 
-- 총 **789행**, 그중 승인(`approved`) **46행**(앵커 15 + 동의어 31), 나머지 743행은
-  `pending_review`(2026-08-07 기준, 승인 확대는 별도 검수 작업).
+- 총 **789행**, 그중 승인(`approved`) **93행**(앵커 22 + 동의어 71), 반려(`rejected`) **40행**,
+  나머지 656행은 `pending_review`(2026-08-10 2차 검수 기준).
 - codepoint sha256 지문(term·canonical·status·provenance·doc_count 전 필드,
   `scripts/derive_color_synonym_seed.py::row_fingerprint`):
-  `e1525ab0e7afa4da5ef6f90d3ce71599051e9ff400c2584a3fc361809d332c9a`
+  `5f81f4ee1a50982da93cfd6f52a274512ab95eba602d01dcaf6d65ccf94be5c1`
 - 사전이 갱신되면(재수확 또는 검수 확대) **`tests/unit/test_color_synonym_seed_data.py`** 의
   `EXPECTED_ROW_COUNT`/`EXPECTED_CODEPOINT_SHA256`(및 관련 승인 수 상수)를 함께 갱신한다.
   한쪽만 고치면 다른 쪽 테스트가 새 정본을 옛 지문과 비교해 실패한다.
