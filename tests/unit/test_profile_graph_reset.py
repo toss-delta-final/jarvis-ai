@@ -229,6 +229,41 @@ async def test_reset_honours_if_match() -> None:
     assert document is not None and len(document.edges) == 1  # 아무것도 안 지워졌다
 
 
+async def test_reset_retry_after_a_crash_between_write_and_complete_replays(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[PR #540 리뷰] 초기화도 같은 크래시 창이 있다 — 재시도가 `409` 가 아니라 재생이어야 한다.
+
+    문서를 교체한 뒤 감사·완료 전에 끊기면 revision 이 이미 올라가 있어, 원래 `If-Match` 로 온
+    재시도가 CAS 에 걸린다. §7.2 는 "재전송이면 최초 응답 재생"을 요구한다.
+    """
+    await _seed(revision=42)
+    original = graph_journal.record_audit
+
+    async def _fail_once(**kwargs):
+        raise TimeoutError("pg-profile timed out")
+
+    monkeypatch.setattr(graph_journal, "record_audit", _fail_once)
+    with pytest.raises(graph_journal.GraphStoreUnavailable):
+        await graph_journal.reset_graph(
+            user_id=int(USER), if_match="g42", request_id="req-1", now=NOW
+        )
+
+    document = await (await get_profile_store()).get_graph(USER)
+    assert document is not None and document.revision == 43  # 교체는 이미 됐다
+
+    monkeypatch.setattr(graph_journal, "record_audit", original)
+    retry = await graph_journal.reset_graph(
+        user_id=int(USER), if_match="g42", request_id="req-1-retry", now=NOW
+    )
+
+    assert retry.replayed is True
+    assert retry.graph_version == "g43"
+    document = await (await get_profile_store()).get_graph(USER)
+    assert document is not None and document.revision == 43  # 두 번 오르지 않았다
+    assert len(await graph_journal.list_audit(user_id=int(USER))) == 1
+
+
 async def test_reset_invalidates_the_users_ledger_entries() -> None:
     """초기화는 그 사용자의 원장을 무효화한다 (REQ-PGRAPH-028 잔여, AC-PGRAPH-15).
 

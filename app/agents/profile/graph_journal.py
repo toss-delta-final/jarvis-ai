@@ -280,9 +280,23 @@ async def _ensure_schema(pool: AsyncConnectionPool) -> None:
                         object_fp text,
                         graph_version_before text NOT NULL,
                         graph_version_after text NOT NULL,
+                        mutation_fp text,
                         created_at timestamptz NOT NULL DEFAULT now()
                     )
                     """
+                )
+                # 기존 볼륨에도 컬럼을 더한다(빈 볼륨만 위 CREATE 가 담당한다).
+                await conn.execute(
+                    "ALTER TABLE profile_graph_audit ADD COLUMN IF NOT EXISTS mutation_fp text"
+                )
+                # **감사 쓰기를 멱등으로 만든다.** 크래시 재개가 "감사는 썼는데 완료 표시 전에
+                # 끊긴" 지점에서 다시 시작하면 같은 변경이 두 행이 되고, 그건 REQ-PGRAPH-080
+                # ("모든 상태 변경은 감사 행을 남긴다" = 한 변경 한 행)을 깬다. 파생 키가 그
+                # 변경의 자연 키이므로 그걸로 막는다. 부분 인덱스인 이유는 구 행의
+                # `derived_key` 가 NULL 이라 전체 UNIQUE 면 하나만 남기 때문이다.
+                await conn.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_profile_graph_audit_mutation "
+                    "ON profile_graph_audit (mutation_fp) WHERE mutation_fp IS NOT NULL"
                 )
                 # **어휘가 바뀌면 제약과 기존 행이 함께 이행돼야 한다.**
                 #
@@ -410,11 +424,19 @@ async def claim(
     scope_id: str | None,
     lease_s: float,
     request_fp: str | None = None,
+    takeover: bool = False,
 ) -> str | None:
     """이 요청의 실행권을 선점한다 — 이미 진행 중이거나 완료됐으면 `None`.
 
     `None` 은 "실패"가 아니라 **분기 신호**다. 호출부는 `lookup()` 으로 `completed` 면 최초
     응답을 재생하고, `processing` 이면 다른 워커가 진행 중이라고 판정한다.
+
+    `takeover=True` 는 **lease 가 아직 살아 있어도** `processing` 을 재선점한다. 호출부가
+    그래프 락을 쥐고 있을 때만 쓴다 — 그 락(`mutation_lock`, 실 pg 에서는 advisory lock)이
+    사용자당 그래프 변경의 **진짜** 상호배제라, 그것을 쥔 채 `processing` 잔재를 봤다면 원래
+    주인은 지금 돌고 있지 않다(크래시했거나 예외로 빠져나갔다). 그 상황에서 lease 만료를
+    기다리면 재시도가 최대 TTL 동안 틀린 답을 받는다(PR #540 리뷰). `completed` 는 여전히
+    재선점하지 않는다 — 그건 부작용 2회다.
     """
     if lease_s < 0:
         raise ValueError("lease_s must be non-negative")
@@ -428,12 +450,22 @@ async def claim(
             lease_s=lease_s,
             token=token,
             request_fp=request_fp,
+            takeover=takeover,
         )
+
+    # `takeover` 면 lease 만료 조건만 뺀다 — `status='processing'` 조건은 그대로다(완료분은
+    # 절대 재선점하지 않는다).
+    lease_clause = (
+        ""
+        if takeover
+        else "AND (profile_graph_idempotency.lease_expires_at IS NULL "
+        "OR profile_graph_idempotency.lease_expires_at <= now())"
+    )
 
     async def _run() -> str | None:
         async with pool.connection() as conn:
             cur = await conn.execute(
-                """
+                f"""
                 INSERT INTO profile_graph_idempotency
                     (derived_key, user_id, scope_id, request_fp,
                      status, claim_token, lease_expires_at, updated_at)
@@ -446,10 +478,9 @@ async def claim(
                     request_fp = EXCLUDED.request_fp,
                     updated_at = now()
                 WHERE profile_graph_idempotency.status = 'processing'
-                  AND (profile_graph_idempotency.lease_expires_at IS NULL
-                       OR profile_graph_idempotency.lease_expires_at <= now())
+                  {lease_clause}
                 RETURNING claim_token
-                """,
+                """,  # noqa: S608 - lease_clause 는 위에서 만든 리터럴 두 개 중 하나다
                 (key, int(user_id), scope_id, request_fp, token, float(lease_s)),
             )
             row = await cur.fetchone()
@@ -466,13 +497,18 @@ def _fallback_claim(
     lease_s: float,
     token: str,
     request_fp: str | None,
+    takeover: bool = False,
 ) -> str | None:
     entries = _fallback_table("idempotency")
     entry = entries.get(key)
     if entry is not None:
         if entry.status == "completed":
             return None
-        if entry.lease_deadline is not None and entry.lease_deadline > _monotonic():
+        if (
+            not takeover
+            and entry.lease_deadline is not None
+            and entry.lease_deadline > _monotonic()
+        ):
             return None  # 진행 중이고 lease 가 살아 있다
     entries[key] = _FallbackEntry(
         user_id=int(user_id),
@@ -480,6 +516,8 @@ def _fallback_claim(
         status="processing",
         claim_token=token,
         lease_deadline=_monotonic() + lease_s,
+        # 의도(payload)는 재선점해도 **보존한다** — 크래시 재개가 그걸로 응답을 재구성한다.
+        response_payload=entry.response_payload if entry is not None else None,
         request_fp=request_fp,
         created_at=entry.created_at if entry is not None else _monotonic(),
     )
@@ -518,6 +556,36 @@ async def complete(key: str, token: str, response_payload: dict) -> bool:
                 RETURNING derived_key
                 """,
                 (Jsonb(response_payload), key, token),
+            )
+            return await cur.fetchone() is not None
+
+    return await run_with_query_timeout(_run())
+
+
+async def record_intent(key: str, token: str, payload: dict) -> bool:
+    """문서를 쓰기 **직전에** "무엇을 하려는지"를 원장에 적는다 (§7.2 저널 선행 기록).
+
+    이게 크래시 재개의 근거다. 문서 쓰기와 완료 표시는 서로 다른 저장소라 한 트랜잭션에 못
+    묶이므로(§7.1 다중 항목 원자성 없음), 그 사이에 끊기면 "이 요청이 무엇을 만들려 했는가"를
+    알 방법이 없어진다 — 재개가 응답을 재구성하지 못하고, 재시도는 `404`/`409` 를 받는다.
+
+    상태는 `processing` 그대로 두고 payload 만 채운다. 완료는 `complete()` 가 표시한다.
+    """
+    pool = await _get_pool()
+    if pool is None:
+        entry = _fallback_table("idempotency").get(key)
+        if entry is None or entry.status != "processing" or entry.claim_token != token:
+            return False
+        entry.response_payload = dict(payload)
+        return True
+
+    async def _run() -> bool:
+        async with pool.connection() as conn:
+            cur = await conn.execute(
+                "UPDATE profile_graph_idempotency SET response_payload = %s, updated_at = now() "
+                "WHERE derived_key = %s AND status = 'processing' AND claim_token = %s "
+                "RETURNING derived_key",
+                (Jsonb(payload), key, token),
             )
             return await cur.fetchone() is not None
 
@@ -625,6 +693,11 @@ class AuditRecord:
     edge_id_after: str | None = None
     predicate: str | None = None
     object_fp: str | None = None
+    # 이 변경의 자연 키 **지문** — 감사 쓰기를 멱등으로 만든다(크래시 재개가 두 행을 남기지
+    # 않게). 파생 키 원문을 그대로 두지 않는 이유는 그 안에 `userId` 원문이 들어 있기
+    # 때문이다(REQ-PGRAPH-043 규약) — 감사에는 raw userId 를 남길 수 없다(REQ-PGRAPH-081).
+    # 유일성 판정에만 쓰이므로 되돌릴 수 없는 지문으로 충분하다.
+    mutation_fp: str | None = None
 
 
 def _fingerprint(value: str | None) -> str | None:
@@ -649,11 +722,18 @@ async def record_audit(
     edge_id_after: str | None = None,
     predicate: str | None = None,
     object_label: str | None = None,
+    mutation_key: str | None = None,
 ) -> None:
     """변경 감사 1행을 남긴다 — 주체·대상은 지문으로만.
 
     `object_label` 은 **여기서 즉시 지문화되고 원문은 어디에도 저장되지 않는다.** 호출부가
     라벨을 넘기는 이유는 지문을 만들기 위해서지 기록하기 위해서가 아니다.
+
+    `mutation_key`(파생 키)를 주면 **멱등**이다 — 같은 변경의 두 번째 쓰기는 무시된다. 크래시
+    재개가 "감사는 썼는데 완료 표시 전에 끊긴" 지점에서 다시 시작할 수 있으므로 필요하다.
+    없으면 한 변경이 두 행이 되어 REQ-PGRAPH-080("한 변경 = 한 감사 행")을 깬다.
+    파생 키는 **지문으로 바꿔** 저장한다 — 그 안에 `userId` 원문이 들어 있고 감사에는 남길 수
+    없다(REQ-PGRAPH-081). 유일성 판정에만 쓰이므로 되돌릴 수 없는 값으로 충분하다.
     """
     if action not in AUDIT_ACTIONS:
         raise ValueError(f"unknown graph audit action: {action}")
@@ -669,11 +749,17 @@ async def record_audit(
         edge_id_after=edge_id_after,
         predicate=predicate,
         object_fp=_fingerprint(object_label),
+        mutation_fp=_fingerprint(mutation_key),
     )
 
     pool = await _get_pool()
     if pool is None:
-        _fallback_table("audit").setdefault(record.actor_fp, []).append(record)
+        rows = _fallback_table("audit").setdefault(record.actor_fp, [])
+        if record.mutation_fp is not None and any(
+            existing.mutation_fp == record.mutation_fp for existing in rows
+        ):
+            return  # 실 pg 의 UNIQUE 와 같은 판정 — 두 경로가 갈리면 안 된다
+        rows.append(record)
         return
 
     async def _run() -> None:
@@ -682,8 +768,10 @@ async def record_audit(
                 """
                 INSERT INTO profile_graph_audit
                     (request_id, actor_fp, action, edge_id_before, edge_id_after,
-                     predicate, object_fp, graph_version_before, graph_version_after)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     predicate, object_fp, graph_version_before, graph_version_after,
+                     mutation_fp)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (mutation_fp) WHERE mutation_fp IS NOT NULL DO NOTHING
                 """,
                 (
                     record.request_id,
@@ -695,6 +783,7 @@ async def record_audit(
                     record.object_fp,
                     record.graph_version_before,
                     record.graph_version_after,
+                    record.mutation_fp,
                 ),
             )
 
@@ -813,21 +902,38 @@ async def apply_edge_mutation(
             if replayed is not None:
                 return replayed
 
-            if document is None or not any(e.edge_id == edge_id for e in document.edges):
-                # 원장·감사를 건드리기 전에 끝낸다 — 진행 중 표식조차 만들지 않아야 그 사용자의
-                # 다음 정당한 요청이 막히지 않는다.
+            # **404 판정은 원장을 보고 한다** (api-spec §3.9.2, PR #540 리뷰).
+            #
+            # 원장에 이 파생 키의 행이 있으면 그 요청은 **이미 접수돼 적어도 일부가 적용된**
+            # 것이다. 문서 쓰기는 됐는데 감사·완료 전에 끊긴 창(평범한 pg 일시 장애로도 열린다)
+            # 에서는 대상 edge 가 이미 사라져 있는데, 그걸 "없으니 404"로 판정하면 api-spec 이
+            # ⚠️ 로 금지한 **"edge 존재 여부로 뭉뚱그리기"** 를 그대로 하는 것이다. 게다가 이
+            # 판정이 원장을 안 보면 TTL 이 지나도 같은 404 라 **자가 복구도 안 된다.**
+            pending = await lookup(key, request_fp=request_fp)
+            if pending is None and (
+                document is None or not any(e.edge_id == edge_id for e in document.edges)
+            ):
+                # 흔적이 아예 없다 → 진짜 없는 대상이다. 원장·감사를 건드리기 전에 끝낸다.
                 raise GraphEdgeNotFound(edge_id)
 
             token = await claim(
-                key, user_id=user_id, scope_id=edge_id, lease_s=ttl, request_fp=request_fp
+                key,
+                user_id=user_id,
+                scope_id=edge_id,
+                lease_s=ttl,
+                request_fp=request_fp,
+                # 그래프 락을 쥐고 있으므로 `processing` 잔재의 주인은 지금 돌고 있지 않다 —
+                # lease 만료를 기다리면 재시도가 최대 TTL 동안 틀린 답을 받는다.
+                takeover=pending is not None,
             )
             if token is None:
-                # 완료분은 위에서 걸렀으니 여기 오는 것은 **진행 중**뿐이다 — 다른 워커가 같은
-                # 요청을 들고 있다. "진행 중"이라는 상태를 와이어에 만들지 않기 위해(§2.5 에
-                # 그런 코드가 없다) 최신 버전으로 충돌을 알린다.
-                raise GraphVersionConflict(graph_version(document.revision))
+                # 완료분은 위에서 걸렀으니 여기 오는 것은 **진행 중 + lease 살아 있음**뿐이다 —
+                # 다른 워커가 같은 요청을 들고 있다. "진행 중"이라는 상태를 와이어에 만들지
+                # 않기 위해(§2.5 에 그런 코드가 없다) 최신 버전으로 충돌을 알린다.
+                raise GraphVersionConflict(graph_version(document.revision) if document else "g0")
 
             return await _apply_claimed(
+                resume_payload=pending.response_payload if pending else None,
                 store=store,
                 document=document,
                 user_id=user_id,
@@ -1037,33 +1143,61 @@ async def reset_graph(
                 return replayed
 
             before = graph_version(document.revision) if document else "g0"
-            if normalize_if_match(if_match) != before:
+            # **CAS 판정도 원장을 보고 한다** (PR #540 리뷰) — 문서 교체 뒤 감사·완료 전에
+            # 끊기면 revision 이 이미 올라가 있어, 원래 `If-Match` 로 온 재시도가 여기 걸려
+            # `409` 를 받는다. §7.2 는 "재전송이면 최초 응답 재생"을 요구한다.
+            pending = await lookup(key)
+            if pending is None and normalize_if_match(if_match) != before:
                 raise GraphVersionConflict(before)
 
-            token = await claim(key, user_id=user_id, scope_id="ALL", lease_s=ttl)
+            token = await claim(
+                key,
+                user_id=user_id,
+                scope_id="ALL",
+                lease_s=ttl,
+                takeover=pending is not None,  # 그래프 락 보유 — 위 `claim` 주석과 같은 근거
+            )
             if token is None:
                 raise GraphVersionConflict(before)
 
+            if pending is not None and pending.response_payload:
+                # 크래시 재개 — 교체가 이미 끝났는지 의도한 revision 으로 판정한다.
+                intended = pending.response_payload.get("graphVersion", "")
+                if document is not None and graph_version(document.revision) == intended:
+                    await record_audit(
+                        user_id=user_id,
+                        request_id=request_id,
+                        action="graphReset",
+                        graph_version_before=normalize_if_match(if_match),
+                        graph_version_after=intended,
+                        mutation_key=key,
+                    )
+                    await complete(key, token, pending.response_payload)
+                    return GraphMutationResult(graph_version=intended, replayed=True)
+
             revision = await next_revision(user_id=user_id, existing=document)
+            after = graph_version(revision)
             purged = await store.purge_personal_data(str(user_id))
             turns = await _delete_transcripts(user_id)
             # 진행 중인 이 초기화의 키는 남긴다 — 지우면 아래 `complete` 가 쓴 표식이 사라져
             # 초기화 재전송이 다시 실행된다.
             await invalidate_ledger(user_id=user_id, keep=key)
+            payload = {"graphVersion": after, "purged": {**purged, "conversationTurns": turns}}
+            # 문서 교체 **전에** 의도를 남긴다 — 교체 뒤 끊기면 재개가 이 값으로 응답을 재구성한다.
+            await record_intent(key, token, payload)
             await store.set_graph(
                 str(user_id),
                 empty_document(now).model_copy(update={"revision": revision, "purged_at": now}),
             )
 
-            after = graph_version(revision)
             await record_audit(
                 user_id=user_id,
                 request_id=request_id,
                 action="graphReset",
                 graph_version_before=before,
                 graph_version_after=after,
+                mutation_key=key,
             )
-            payload = {"graphVersion": after, "purged": {**purged, "conversationTurns": turns}}
             await complete(key, token, payload)
             return GraphMutationResult(graph_version=after, replayed=False)
         except GraphMutationError:
@@ -1179,22 +1313,48 @@ async def _apply_claimed(
     key: str,
     token: str,
     settings,
+    resume_payload: dict | None = None,
 ) -> GraphMutationResult:
     """claim 을 쥔 상태의 본체 — 실패 경로마다 반드시 claim 을 푼다."""
+    if action == "edgeDelete":
+        mutate = lambda doc: apply_suppression(doc, edge_id=edge_id, now=now)  # noqa: E731
+    else:
+        if predicate is None or node is None:
+            await release(key, token)
+            raise ValueError("edgeUpdate requires predicate and node")
+        mutate = lambda doc: apply_correction(  # noqa: E731
+            doc, edge_id=edge_id, predicate=predicate, node=node, now=now, settings=settings
+        )
+
+    if resume_payload is not None:
+        # **크래시 재개** (§7.2, PR #540 리뷰). 이전 시도가 의도를 적어 뒀다는 뜻이다.
+        # 문서에 이미 반영됐는지는 순수 변형으로 판정한다 — 반영됐다면 같은 변경이 더 할 일이
+        # 없어 `changed=False` 가 나온다. revision 비교로 하지 않는 이유는 그 사이 배치
+        # consolidation 이 revision 을 더 올렸을 수 있어서다.
+        _, probe = mutate(document)
+        if not probe.changed:
+            # 문서 쓰기까지는 끝났다 — 남은 단계(감사·완료)만 마저 하고 **최초 의도한 응답**을
+            # 돌려준다. 감사는 파생 키로 멱등이라 이미 썼다면 두 번 남지 않는다.
+            await record_audit(
+                user_id=user_id,
+                request_id=request_id,
+                action=action,
+                graph_version_before=normalize_if_match(if_match),
+                graph_version_after=resume_payload.get("graphVersion", ""),
+                edge_id_before=edge_id,
+                edge_id_after=resume_payload.get("edgeId"),
+                mutation_key=key,
+            )
+            await complete(key, token, resume_payload)
+            return _result_from(resume_payload, action=action, fallback_edge_id=edge_id)
+        # 아직 반영 안 됐다 — 아래 정상 경로가 처음부터 다시 한다.
+
     before = graph_version(document.revision)
     if normalize_if_match(if_match) != before:
         await release(key, token)
         raise GraphVersionConflict(before)
 
-    if action == "edgeDelete":
-        updated, outcome = apply_suppression(document, edge_id=edge_id, now=now)
-    else:
-        if predicate is None or node is None:
-            await release(key, token)
-            raise ValueError("edgeUpdate requires predicate and node")
-        updated, outcome = apply_correction(
-            document, edge_id=edge_id, predicate=predicate, node=node, now=now, settings=settings
-        )
+    updated, outcome = mutate(document)
 
     if not outcome.changed:
         # 상태를 바꾸지 않았다 — 감사 행도 revision 도 남기지 않고 claim 을 되돌린다.
@@ -1204,6 +1364,16 @@ async def _apply_claimed(
         return GraphMutationResult(graph_version=before, replayed=True, edge_id=edge_id)
 
     after = graph_version(document.revision + 1)
+    payload = {
+        "graphVersion": after,
+        "edgeId": outcome.edge_id_after,
+        "merged": outcome.merged,
+        "suppressed": action == "edgeDelete",
+    }
+    # **문서를 쓰기 전에 의도를 남긴다** (§7.2 저널 선행 기록). 문서 쓰기와 완료 표시는 서로
+    # 다른 저장소라 한 트랜잭션에 못 묶이므로, 그 사이에 끊기면 재개가 "무엇을 만들려 했는지"를
+    # 알 방법이 없다 — 그러면 재시도가 최초 응답 대신 404/409 를 받는다.
+    await record_intent(key, token, payload)
     await store.set_graph(
         str(user_id), updated.model_copy(update={"revision": document.revision + 1})
     )
@@ -1224,13 +1394,8 @@ async def _apply_claimed(
         edge_id_after=outcome.edge_id_after,
         predicate=outcome.predicate,
         object_label=outcome.object_label,
+        mutation_key=key,
     )
-    payload = {
-        "graphVersion": after,
-        "edgeId": outcome.edge_id_after,
-        "merged": outcome.merged,
-        "suppressed": action == "edgeDelete",
-    }
     await complete(key, token, payload)
     return GraphMutationResult(
         graph_version=after,
@@ -1238,4 +1403,17 @@ async def _apply_claimed(
         edge_id=outcome.edge_id_after,
         merged=outcome.merged,
         suppressed=action == "edgeDelete",
+    )
+
+
+def _result_from(
+    payload: dict, *, action: str, fallback_edge_id: str | None = None
+) -> GraphMutationResult:
+    """저장된 의도 payload → 결과. 재개·재생이 **최초 응답과 같은 값**을 돌려주게 한다."""
+    return GraphMutationResult(
+        graph_version=payload.get("graphVersion", ""),
+        replayed=True,
+        edge_id=payload.get("edgeId", fallback_edge_id),
+        merged=bool(payload.get("merged")),
+        suppressed=bool(payload.get("suppressed", action == "edgeDelete")),
     )

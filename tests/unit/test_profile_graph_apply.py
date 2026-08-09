@@ -3,17 +3,22 @@
 **이 이슈 완료 조건 대부분이 여기서 처음으로 함께 검증된다.** 앞 단계들이 각각 원장·감사·변형을
 따로 세웠다면, 여기서는 그것들이 §7.2 의 순서대로 엮이는지를 잰다.
 
-    잠금 → 재전송이면 최초 응답 재생 → 대상 부재면 404 → 원장 claim → revision CAS
-      → 순수 변형(no-op 이면 claim 해제) → 문서 쓰기 → 감사 → 원장 완료
+    잠금 → 완료분이면 최초 응답 재생 → **원장에 흔적이 없고** 대상도 없으면 404
+      → 원장 claim(잔재면 takeover) → 재개 판정 → revision CAS
+      → 순수 변형(no-op 이면 claim 해제) → 의도 기록 → 문서 쓰기 → 감사 → 원장 완료
 
-순서가 계약인 이유 셋:
+순서가 계약인 이유 넷:
   - **재전송 판정이 404 판정보다 앞이다.** 삭제가 성공하면 그 edge 는 문서에서 사라지므로,
     뒤집으면 정상적인 네트워크 재시도가 전부 `404` 를 받는다 — 실제로는 성공했는데 호출자에게는
-    실패로 보인다. 이 순서는 아래 `test_replay_...` 가 실제로 잡아낸 것이다.
+    실패로 보인다. 이 순서는 `test_replay_...` 가 실제로 잡아낸 것이다.
+  - **404 판정은 원장을 본다** (PR #540 리뷰). 문서 쓰기는 됐는데 감사·완료 전에 끊긴 창에서는
+    대상이 이미 없는데, 그걸 "없으니 404"로 뭉뚱그리면 api-spec §3.9.2 가 ⚠️ 로 금지한 바로 그
+    판정이 된다. 원장에 흔적이 있으면 **재개**이지 404 가 아니다.
   - **404·409 판정이 감사보다 앞이다.** 상태를 바꾸지 않은 요청은 감사 행을 남기지 않는다
     (REQ-PGRAPH-080). 저널을 선행 기록하는 설계라 롤백(`release`)이 그 조항의 집행이다.
   - **감사·원장 완료가 문서 쓰기보다 뒤다.** 문서가 안 바뀌었는데 "바꿨다"는 기록만 남으면
-    감사가 거짓이 되고, 원장은 일어나지 않은 일의 응답을 재생한다.
+    감사가 거짓이 되고, 원장은 일어나지 않은 일의 응답을 재생한다. 그 사이 창은 **의도 기록**
+    (`record_intent`)이 메운다 — 재개가 그 값으로 최초 응답을 재구성한다.
 """
 
 from __future__ import annotations
@@ -482,24 +487,159 @@ async def test_crashed_claim_is_resumed_after_the_lease_expires() -> None:
     assert len(await graph_journal.list_audit(user_id=int(USER))) == 1
 
 
-async def test_a_live_claim_is_not_stolen_from_the_worker_holding_it() -> None:
-    """lease 가 살아 있으면 재선점하지 않는다 — 진행 중인 워커의 작업을 빼앗으면 부작용이 2회다."""
-    await _seed(revision=42)
-    key = graph_journal.derived_key("edgeDelete", USER, SONY, "g42")
-    assert await graph_journal.claim(key, user_id=int(USER), scope_id=SONY, lease_s=60)
+async def test_retry_after_a_crash_between_write_and_complete_replays_instead_of_404(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[PR #540 리뷰] **문서 쓰기는 됐는데 완료 표시 전에 끊긴** 뒤의 재시도는 `200 replayed` 다.
 
-    with pytest.raises(GraphVersionConflict):
+    이 창은 SIGKILL 뿐 아니라 **평범한 일시 장애**로도 열린다 — `record_audit` 이 pg blip 으로
+    실패하면 호출자는 `503` 을 받는데 그때 문서는 이미 쓰였고 원장은 `processing` 이다. 그 뒤의
+    정상적인 재시도가 `404` 를 받으면 api-spec §3.9.2 가 ⚠️ 로 금지한 "edge 존재 여부로 뭉뚱그리기"
+    를 그대로 하는 것이다.
+
+    자가 복구도 안 되던 자리다 — 404 판정이 claim 보다 앞이고 원장을 아예 보지 않아 TTL 이 지나도
+    같은 답이 나왔다.
+    """
+    await _seed(revision=42)
+    boom = {"n": 0}
+    original = graph_journal.record_audit
+
+    async def _fail_once(**kwargs):
+        boom["n"] += 1
+        if boom["n"] == 1:
+            raise TimeoutError("pg-profile timed out")
+        return await original(**kwargs)
+
+    monkeypatch.setattr(graph_journal, "record_audit", _fail_once)
+
+    with pytest.raises(GraphStoreUnavailable):
         await graph_journal.apply_edge_mutation(
             user_id=int(USER),
             action="edgeDelete",
             edge_id=SONY,
             if_match="g42",
-            request_id="req-2",
+            request_id="req-1",
             now=NOW,
         )
 
+    # 문서는 이미 바뀌었고 원장은 미완료다 — 크래시 창이 재현됐다.
     document = await (await get_profile_store()).get_graph(USER)
-    assert document is not None and document.revision == 42  # 아무 일도 안 일어났다
+    assert document is not None and document.edges == []
+    key = graph_journal.derived_key("edgeDelete", USER, SONY, "g42")
+    hit = await graph_journal.lookup(key)
+    assert hit is not None and hit.status == "processing"
+
+    retry = await graph_journal.apply_edge_mutation(
+        user_id=int(USER),
+        action="edgeDelete",
+        edge_id=SONY,
+        if_match="g42",
+        request_id="req-1-retry",
+        now=NOW,
+    )
+
+    assert retry.replayed is True
+    assert retry.graph_version == "g43"
+    # 부작용은 1회 — revision 이 두 번 오르지 않았고 감사도 한 행이다.
+    document = await (await get_profile_store()).get_graph(USER)
+    assert document is not None and document.revision == 43
+    assert len(await graph_journal.list_audit(user_id=int(USER))) == 1
+
+
+async def test_a_genuinely_absent_edge_is_still_404() -> None:
+    """원장에 흔적이 없으면 여전히 `404` 다 — 재개 경로가 진짜 오류를 삼키면 안 된다."""
+    await _seed(revision=42)
+
+    with pytest.raises(GraphEdgeNotFound):
+        await graph_journal.apply_edge_mutation(
+            user_id=int(USER),
+            action="edgeDelete",
+            edge_id="e_nonexistent",
+            if_match="g42",
+            request_id="req-1",
+            now=NOW,
+        )
+
+
+async def test_resume_does_not_write_a_second_audit_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """감사를 쓴 **뒤** 끊긴 경우, 재개가 감사를 두 번 남기면 안 된다 (REQ-PGRAPH-080).
+
+    "한 변경 = 한 감사 행"이므로 재개는 감사 쓰기에 대해 멱등이어야 한다.
+    """
+    await _seed(revision=42)
+    original = graph_journal.complete
+
+    async def _fail_complete(*args, **kwargs):
+        raise TimeoutError("pg-profile timed out")
+
+    monkeypatch.setattr(graph_journal, "complete", _fail_complete)
+    with pytest.raises(GraphStoreUnavailable):
+        await graph_journal.apply_edge_mutation(
+            user_id=int(USER),
+            action="edgeDelete",
+            edge_id=SONY,
+            if_match="g42",
+            request_id="req-1",
+            now=NOW,
+        )
+    assert len(await graph_journal.list_audit(user_id=int(USER))) == 1  # 감사는 이미 남았다
+
+    monkeypatch.setattr(graph_journal, "complete", original)
+    retry = await graph_journal.apply_edge_mutation(
+        user_id=int(USER),
+        action="edgeDelete",
+        edge_id=SONY,
+        if_match="g42",
+        request_id="req-1-retry",
+        now=NOW,
+    )
+
+    assert retry.replayed is True
+    assert len(await graph_journal.list_audit(user_id=int(USER))) == 1  # 두 번 안 남는다
+
+
+async def test_a_completed_request_is_never_re_executed_even_by_takeover() -> None:
+    """**완료분은 어떤 경우에도 재실행하지 않는다** — 그게 "부작용 1회"의 마지막 방어선이다.
+
+    크래시 재개를 위해 `processing` 잔재는 lease 가 살아 있어도 재선점하지만(`claim(takeover=)`),
+    `completed` 는 그 대상이 아니다. 재선점하면 같은 변경이 두 번 적용된다.
+
+    **이전 판(`lease 가 살아 있으면 재선점하지 않는다`)은 폐기했다.** 그래프 락이 사용자당 그래프
+    변경의 진짜 상호배제라, 그 락을 쥔 채 `processing` 잔재를 봤다면 원래 주인은 지금 돌고 있지
+    않다 — lease 만료를 기다리면 재시도가 최대 TTL 동안 `404`/`409` 를 받는다(PR #540 리뷰).
+    """
+    await _seed(revision=42)
+    first = await graph_journal.apply_edge_mutation(
+        user_id=int(USER),
+        action="edgeDelete",
+        edge_id=SONY,
+        if_match="g42",
+        request_id="req-1",
+        now=NOW,
+    )
+    key = graph_journal.derived_key("edgeDelete", USER, SONY, "g42")
+
+    # 완료분은 takeover 로도 재선점되지 않는다.
+    assert (
+        await graph_journal.claim(key, user_id=int(USER), scope_id=SONY, lease_s=60, takeover=True)
+        is None
+    )
+
+    retry = await graph_journal.apply_edge_mutation(
+        user_id=int(USER),
+        action="edgeDelete",
+        edge_id=SONY,
+        if_match="g42",
+        request_id="req-2",
+        now=NOW,
+    )
+
+    assert retry.replayed is True and retry.graph_version == first.graph_version
+    document = await (await get_profile_store()).get_graph(USER)
+    assert document is not None and document.revision == 43  # 두 번 적용되지 않았다
+    assert len(await graph_journal.list_audit(user_id=int(USER))) == 1
 
 
 # ─────────── 저장소 장애 (완료 조건 7) ───────────

@@ -20,6 +20,10 @@ CREATE TABLE IF NOT EXISTS profile_graph_audit (
     object_fp text,                         -- 라벨의 peppered HMAC. 라벨 원문 금지
     graph_version_before text NOT NULL,
     graph_version_after text NOT NULL,
+    -- 이 변경의 자연 키(파생 키) **지문** — 감사 쓰기를 멱등으로 만든다. 크래시 재개가 "감사는
+    -- 썼는데 완료 표시 전에 끊긴" 지점에서 다시 시작하면 한 변경이 두 행이 되고, 그건
+    -- REQ-PGRAPH-080 을 깬다. 파생 키 원문에는 userId 가 들어 있어 지문으로 바꿔 담는다.
+    mutation_fp text,
     created_at timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT profile_graph_audit_action_check CHECK (action IN (
         'edgeUpdate', 'edgeDelete', 'graphReset', 'personalizationToggle'
@@ -28,6 +32,9 @@ CREATE TABLE IF NOT EXISTS profile_graph_audit (
 
 CREATE INDEX IF NOT EXISTS idx_profile_graph_audit_actor
     ON profile_graph_audit (actor_fp, created_at DESC);
+-- 감사 쓰기 멱등 — 부분 인덱스인 이유는 구 행의 mutation_fp 가 NULL 이기 때문이다.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_profile_graph_audit_mutation
+    ON profile_graph_audit (mutation_fp) WHERE mutation_fp IS NOT NULL;
 -- revision 하한 조회용 — 문서가 손상돼도 revision 이 되돌아가면 안 된다(REQ-PGRAPH-042).
 CREATE INDEX IF NOT EXISTS idx_profile_graph_audit_version
     ON profile_graph_audit (actor_fp, graph_version_after);
