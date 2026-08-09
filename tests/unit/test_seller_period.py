@@ -564,3 +564,81 @@ def test_confirmation_and_disclosure_text_reveal_the_comparison_dates() -> None:
         assert resolution.comparison is not None
         assert resolution.comparison.date_from.isoformat() in text
         assert resolution.comparison.date_to.isoformat() in text
+
+
+# ── [#518] 버킷 분할 (I-31 리뷰 추이) ─────────────────────────────────────────
+
+
+def _spans(from_: str, to: str, unit: str, max_buckets: int = 12) -> list[tuple[str, str]]:
+    result = period.split_buckets(
+        dt.date.fromisoformat(from_), dt.date.fromisoformat(to), unit, max_buckets=max_buckets
+    )
+    return [(start.isoformat(), end.isoformat()) for start, end in result]
+
+
+def test_split_buckets_weekly_anchors_on_from_not_calendar_week() -> None:
+    """주 버킷은 from 앵커 7일 고정창이다 — 달력 주면 첫 조각이 2~3일로 잘린다.
+
+    2026-07-01 은 수요일이라 달력 주(월 시작) 규칙이면 첫 구간이 07-01~07-05(5일)로
+    나온다. 그 구간만 건수가 작게 나와 판매자가 없는 급락을 읽는다.
+    """
+    assert _spans("2026-07-01", "2026-07-31", "weekly") == [
+        ("2026-07-01", "2026-07-07"),
+        ("2026-07-08", "2026-07-14"),
+        ("2026-07-15", "2026-07-21"),
+        ("2026-07-22", "2026-07-28"),
+        ("2026-07-29", "2026-07-31"),
+    ]
+
+
+def test_split_buckets_monthly_uses_calendar_boundary_and_clips_ends() -> None:
+    """월 버킷만 달력 경계다 — "7월/8월"이라는 판매자 어휘가 곧 경계이기 때문."""
+    assert _spans("2026-07-15", "2026-09-03", "monthly") == [
+        ("2026-07-15", "2026-07-31"),
+        ("2026-08-01", "2026-08-31"),
+        ("2026-09-01", "2026-09-03"),
+    ]
+
+
+def test_split_buckets_monthly_handles_leap_february() -> None:
+    """윤년 2월은 29일까지다 — 30/31 고정이면 3월 1일이 2월 버킷에 섞인다."""
+    assert _spans("2028-02-01", "2028-03-02", "monthly") == [
+        ("2028-02-01", "2028-02-29"),
+        ("2028-03-01", "2028-03-02"),
+    ]
+
+
+def test_split_buckets_never_exceeds_requested_end() -> None:
+    """마지막 구간은 to 를 넘지 않는다 — 넘기면 기간 밖 리뷰가 함께 집계된다."""
+    assert _spans("2026-07-01", "2026-07-03", "weekly") == [("2026-07-01", "2026-07-03")]
+    assert _spans("2026-07-01", "2026-07-01", "daily") == [("2026-07-01", "2026-07-01")]
+
+
+def test_split_buckets_covers_every_day_exactly_once() -> None:
+    """분할은 기간을 빠짐없이·겹침없이 덮는다(세 단위 공통 불변식)."""
+    for unit in period.BUCKET_UNITS:
+        days: list[dt.date] = []
+        for start, end in period.split_buckets(
+            dt.date(2026, 7, 1), dt.date(2026, 9, 30), unit, max_buckets=200
+        ):
+            cursor = start
+            while cursor <= end:
+                days.append(cursor)
+                cursor += dt.timedelta(days=1)
+        assert days == sorted(set(days))  # 겹침 없음
+        assert days[0] == dt.date(2026, 7, 1) and days[-1] == dt.date(2026, 9, 30)
+        assert len(days) == 92  # 누락 없음
+
+
+def test_split_buckets_rejects_over_max() -> None:
+    """상한 초과는 ValueError — 도구가 "Error:" 로 옮긴다(조회 전 거절)."""
+    assert len(_spans("2026-07-01", "2026-07-12", "daily")) == 12  # 경계는 통과
+    with pytest.raises(ValueError, match="12개를 넘습니다"):
+        _spans("2026-07-01", "2026-07-13", "daily")
+
+
+def test_split_buckets_rejects_unknown_unit_and_reversed_period() -> None:
+    with pytest.raises(ValueError, match="daily/weekly/monthly"):
+        _spans("2026-07-01", "2026-07-31", "yearly")
+    with pytest.raises(ValueError, match="시작일이 종료일보다 뒤"):
+        _spans("2026-07-31", "2026-07-01", "weekly")

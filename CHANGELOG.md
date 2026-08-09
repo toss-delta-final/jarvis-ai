@@ -17,11 +17,25 @@
   코드·마케팅명 등 40건은 반려로 고정했다. 생성 JSON·SQL은 검수 오버레이에서 재파생한다.
 
 ### Added
+- **#518 — 리뷰 분석에 기간별 추이(`bucket`)와 긍부정 감성 집계 추가** (api-spec 계약 무변경).
+  `get_reviews(stats=True, bucket="daily|weekly|monthly")` 가 기간을 구간으로 나눠 I-31 집계를
+  한 번의 도구 호출로 모아 온다 — 워커가 구간마다 호출하면 추이 하나가 도구 호출 한도(8)를
+  넘긴다. 실패한 구간은 `조회 실패` 로 남기고 **0건으로 뭉개지 않는다**(못 본 구간을 급락으로
+  서술하는 것을 막는다). 집계 출력에는 긍정(4-5점)·중립(3점)·부정(1-2점) 건수와 **비율**을
+  함께 싣는다 — 비율을 워커가 암산하면 verifier F2(근거 대조)가 근거 없는 수치로 강등한다.
+  리뷰 워커 프롬프트는 5단계로 늘려 만족 요인(`rating="4,5"`)까지 읽는다.
 - **#385 — 구제 체인 JSONL 재실행 집계기와 실측 불가 판정 근거**. `recommend_zero_result`·
   `recommend_pipeline` 합집합의 first-token 기여분과 0건 종결 진입 하한, `UPSTREAM_TIMEOUT` 상한을
   Markdown·CSV로 남긴다.
 
 ### Fixed
+- **#518 — 내용 없는 리뷰 한 행이 리뷰 조회 전체를 죽이던 문제** (api-spec §4.20, 계약 무변경).
+  DDL 이 `content TEXT NULL` 이라 별점만 남긴 리뷰가 실재하는데 `SellerReviewRow.content` 가
+  `str = ""` 였다. 기본값은 키 **결측**만 흡수하고 명시적 `null` 은 거부하므로, rows 한 행만
+  content 가 null 이어도 ValidationError → SpringUnavailableError 로 그 페이지 전체가 degrade
+  됐다 — 판매자에게는 "리뷰 조회에 실패했습니다" 로만 보였다. `content`·`authorNickname` 을
+  nullable 로 열고 표시 폴백(`(내용 없음)`·`익명`)을 도구에 둔다. `extra="allow"` 는 여분 필드만
+  다루지 이 경로를 구제하지 못한다(#489 와 층위가 다르다).
 - **#385 — 구제 체인 4개 구조화 이벤트가 평문 logging sink에서 계측 필드를 잃던 문제**. JSON message와
   기존 `extra`를 함께 기록해 `aggregate_rescue_chain.py`가 운영 stdout 줄을 그대로 파싱하면서도 기존
   `LogRecord` 속성 기반 검증을 보존한다. 전역 formatter는 `chat_request` 이중 인코딩과 카테고리 문자열
@@ -75,6 +89,9 @@
   구 G1(`verifier.run_chart_checks`)과 결정 D-4 는 폐기.
 
 ### Docs
+- **#518 — api-spec §3.2 `findings[].analysisType` 표에 `"review"` 등재** (v0.32.5, 사본
+  드리프트 정정). v0.25.0(#297)이 리뷰 워커를 6종째로 붙일 때 이 열거 표만 5종에 멈춰 있었다
+  — 코드·실 와이어는 처음부터 6종이라 신설 협의가 아니라 문서 정정이다.
 - **#357 — 개인화 그래프 협의 항목 표기를 정리해 BE 협의 트랙을 닫았다** (api-spec §3.8·§5,
   v0.32.2 / `SPEC-PROFILE-GRAPH-149` v0.3.1). `C-20`(4)·`C-21`(3)·`C-22`(1)(2)·`C-28` 을 🔴 → 🟢 로
   내렸다. **계약 내용은 한 글자도 바뀌지 않았고 상태 표기만 바뀌었다** — 네 항목 모두 **답이 이미

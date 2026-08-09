@@ -13,6 +13,27 @@
 
 ---
 
+## [2026-08-09] pydantic 의 `str = ""` 기본값은 **키 결측**만 흡수한다 — nullable 컬럼에는 `| None` 이 필요하다
+- 증상: I-31 리뷰 조회에서 `rows[]` 중 **한 행만** `content: null` 이어도 그 페이지 전체가
+  `ValidationError` → `SpringUnavailableError` → 도구 degrade 로 죽었다. 판매자에게는
+  "리뷰 조회에 실패했습니다" 로만 보여서, 부분 결측이 원인이라는 단서가 표면에 없었다.
+- 원인: `SellerReviewRow.content: str = ""` 였다. 기본값은 **키가 아예 없을 때** 쓰이는 값이지
+  타입 허용 범위가 아니다 — 명시적 `null` 이 오면 pydantic 은 기본값과 무관하게 `str` 에
+  `None` 을 넣기를 거부한다. 베이스의 `extra="allow"` 도 여분 필드만 다루므로 이 경로를
+  구제하지 못한다(#489 가 고친 `extra="ignore"` 필드 소실과는 층위가 다르다). DDL 은
+  `content TEXT NULL` 이었고 별점만 남기는 리뷰는 흔한 입력이었다.
+- 규칙: 스키마 필드를 쓸 때 **DDL/명세의 NULL 허용 여부를 기본값이 아니라 타입으로** 옮긴다.
+  `X = ""`·`X = 0` 은 "이 필드는 절대 null 이 아니다" 는 선언이며, 확신이 없으면 `| None` 이
+  기본이다(#197 의 "기본값 0 금지" 와 같은 취지 — 그쪽은 오독, 이쪽은 전량 실패). 그리고
+  **행 단위 결측이 페이지 전체를 죽이는지**를 스키마 리뷰의 상시 질문으로 둔다: 한 행짜리
+  정상 픽스처만 있으면 이 실패 모드는 테스트에 잡히지 않는다 — null 행과 정상 행을 **섞은**
+  응답으로 고정한다.
+- 관련: `app/schemas/spring.py`(SellerReviewRow) · `app/agents/seller/tools.py`(표시 폴백) ·
+  `tests/unit/test_seller_spring_client.py::test_get_reviews_parses_null_content_without_failing_the_page` ·
+  이슈 #518 · api-spec §4.20
+
+---
+
 ## [2026-08-10] 구조화 로그의 message 형식을 바꾸면 선택자도 전수 이관한다
 - 증상: #385가 구조화 이벤트의 message를 JSON으로 바꾼 뒤, 예산 테스트 4건이 옛
   `record.message == "recommend_pipeline"` 선택자를 써 `StopIteration` 또는 `None`으로 실패했다.
