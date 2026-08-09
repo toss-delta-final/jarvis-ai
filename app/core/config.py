@@ -1774,6 +1774,7 @@ class Settings(BaseSettings):
     progress_mapping_message: str = "카테고리를 찾고 있어요"
     progress_expanding_message: str = "어떤 상품이 필요한지 넓혀 보고 있어요"
     progress_searching_message: str = "상품을 검색하고 있어요"
+    progress_retrying_message: str = "검색이 지연돼 다시 시도하고 있어요"
     progress_relaxing_message: str = "조건을 조금 넓혀 다시 찾고 있어요"
     progress_reranking_message: str = "가장 잘 맞는 걸 고르고 있어요"
     progress_publishing_message: str = "추천 목록을 준비하고 있어요"

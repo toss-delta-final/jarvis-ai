@@ -259,12 +259,34 @@ async def _run_recommend_needs_expansion(thread_id: str) -> list[dict]:
     )
 
 
+async def _run_recommend_with_retry_signal(thread_id: str) -> list[dict]:
+    """#406 — 본검색이 실제 재시도 진입을 알린 턴의 retrying 문구 driver."""
+    from app.services import spring_client
+
+    async def _search(filters, exclude_product_ids=None):  # noqa: ANN001
+        spring_client.notify_search_retry()
+        return ProductSearchResult(
+            products=list(DEFAULT_PRODUCTS), total_count=len(DEFAULT_PRODUCTS)
+        )
+
+    return await _collect(
+        run_buyer_turn(
+            _req("무선 이어폰 추천해줘", thread_id),
+            _member(),
+            llm=FakeLLM(decompose=DEFAULT_DECOMPOSE),
+            search=_search,
+            push_fn=_RecordingPush(),
+        )
+    )
+
+
 _NEW_STAGE_DRIVERS = {
     "mapping": _run_recommend_with_mapping,
     "searching": _run_recommend_with_mapping,
     "reranking": _run_recommend_with_mapping,
     "publishing": _run_recommend_with_mapping,
     "relaxing": _run_recommend_needs_relaxation,
+    "retrying": _run_recommend_with_retry_signal,
     "expanding": _run_recommend_needs_expansion,
 }
 
@@ -321,29 +343,27 @@ _PROGRESS_STAGES = (
     "mapping",
     "expanding",
     "searching",
+    "retrying",
     "relaxing",
     "reranking",
     "publishing",
 )
 
 
-def test_progress_data_accepts_all_seven_registered_stages() -> None:
-    """#396 — 계약(§3.1 v0.27.0)이 확정한 어휘 7종 전부를 `ProgressData` 가 받아들인다."""
+def test_progress_data_accepts_all_eight_registered_stages() -> None:
+    """#406 — 계약(§3.1 v0.29.5)이 확정한 어휘 8종 전부를 `ProgressData` 가 받아들인다."""
     for stage in _PROGRESS_STAGES:
         assert ProgressData(stage=stage).stage == stage
 
 
 def test_progress_data_rejects_unregistered_stage() -> None:
-    """R7-1 — `stage` 는 `Literal`(7종)이라 계약(§3.1)에 없는 값은 생성 자체가 거부된다.
+    """R7-1 — `stage` 는 `Literal`(8종)이라 계약(§3.1)에 없는 값은 생성 자체가 거부된다.
 
-    `retrying`은 비범위로 못박혀(#396) 어휘에 등재되지 않았고, `bogus`는 임의의 미등재 값이다.
-    계약이 확정한 어휘를 코드가 강제한다는 요지를 고정한다 — 어휘를 넓히려면 §3.1 개정과
-    이 `Literal`을 함께 고쳐야 한다.
+    `retrying`은 #406으로 §3.1 v0.29.5에 등재돼 어휘가 8종이 됐다. 계약이 확정한 어휘를
+    코드가 강제한다는 요지를 고정한다 — 어휘를 넓히려면 §3.1 개정과 이 `Literal`을 함께 고친다.
     """
     from pydantic import ValidationError
 
-    with pytest.raises(ValidationError):
-        ProgressData(stage="retrying")
     with pytest.raises(ValidationError):
         ProgressData(stage="bogus")
 
@@ -641,6 +661,7 @@ async def test_progress_mapping_absent_when_turn_has_no_category_signal(
         ("mapping", "progress_mapping_message"),
         ("expanding", "progress_expanding_message"),
         ("searching", "progress_searching_message"),
+        ("retrying", "progress_retrying_message"),
         ("relaxing", "progress_relaxing_message"),
         ("reranking", "progress_reranking_message"),
         ("publishing", "progress_publishing_message"),
@@ -654,6 +675,8 @@ async def test_progress_message_key_absent_for_new_stage_when_config_empty(
     (기존 `analyzing` 테스트와 같은 규약 — `test_progress_message_key_absent_when_config_message_empty`.)
     """
     monkeypatch.setattr(get_settings(), "progress_events_enabled", True)
+    if stage == "retrying":
+        monkeypatch.setattr(get_settings(), "spring_max_retries", 1)
     monkeypatch.setattr(get_settings(), message_field, "")
     events = await _NEW_STAGE_DRIVERS[stage](f"empty-msg-{stage}-289")
     frame = next(e for e in events if e["type"] == "progress" and e["data"]["stage"] == stage)

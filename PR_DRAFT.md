@@ -1,53 +1,40 @@
 # 변경 요약
 
-#474 색상 고유어/정본 표기 MFT 6건과 I-1 색상 배열 mock 충실도, 승인 사전 기반 on/off A/B 측정을 추가한다.
+I-1 Spring 검색이 재시도 가능한 실패 뒤 실제 다음 시도에 들어갈 때, 구매자 스트림이 `retrying`
+progress를 즉시 한 번만 내보내도록 ContextVar 관측 seam과 본검색 queue/task 드레인을 추가했다.
 
-## 후속 범위 확대 (사람 지시)
-
-사람의 명시 지시로 원래 #474 범위 밖이었던 두 후속을 이 브랜치에 함께 포함한다. 로컬 환경에
-떠 있는 Spring BE가 유닛 테스트 결과를 바꾸는 문제와 manifest 규칙 변경 뒤 현행 baseline이 낡은
-hash를 가리켜도 전수 테스트가 통과하던 문제는 모두 #474 산출물의 신뢰성을 직접 훼손하므로,
-별도 이슈로 분리하지 않고 같은 검증 경계에서 닫는다.
-
-- A — `INTERNAL_API_TOKEN`을 테스트 공통 환경에서 비우고 `tests/unit/` TCP만
-  `ConnectionRefusedError`로 차단했다. 8080 listener가 살아 있는 상태에서 가드를 제거한 변이는
-  `test_network_isolation.py`가 `DID NOT RAISE ConnectionRefusedError`로 실패했고, 복구 뒤
-  재구매·완화 323건과 전체 `uv run pytest`로 `.env` 무변경 수용 기준을 확인한다.
-- B — `evals/**/baselines/**` JSON의 중첩된 `datasetVersion`/`datasetHash` 쌍 중 현행 manifest
-  버전만 비교하고 최소 한 건 이상을 요구한다. `trivial_empty/results.json` hash 첫 글자를 바꾼
-  변이는 파일 경로·기록 hash·manifest hash를 출력하며 실패했고, 원복 뒤 통과한다.
-
-| 케이스 | recall@10 off→on | nDCG@10 off→on | 노출(축없음/일치/불일치) |
-|---|---:|---:|---|
-| buy-colr-0001/3/5 | 0→1 | 0→0.445734 | 6/0/0 → 6/3/0 |
-| buy-colr-0002/4/6 | 1→1 | 0.445734→0.445734 | 6/3/0 → 6/3/0 |
-
-| baseline | 처리 | 사유 |
-|---|---|---|
-| audit leakage report | 재실행 | dataset 2.3.0 감사 |
-| filter_axes trivial_empty | 재실행 | 지정된 결정론 baseline |
-| scoring dev-v2.3 | 신규 sibling | v2.2와 직접 비교 금지; 신규 케이스 임베딩 결측은 degrade |
-| ablation/personalization/model_eval | 기존 hash 고정 | 실 LLM baseline, 이번 범위 밖 |
-
-STEP-1: 기존 color 15건 노출 9→9, 정답 탈락 0건, behaviorChecks 18/18→18/18, overall nDCG@10 0.766540→0.766540.
+기본 `spring_max_retries=0`(#394 한시 조치)에서는 신호가 물리적으로 발화하지 않아 기존 인라인
+`await gather(...)` 경로를 그대로 유지한다. 발화 0회인 신호 때문에 모든 추천 턴의 취소·ContextVar·trace
+의미를 자식 task로 바꾸지 않기 위한 D1 게이트다.
 
 ## 관련
 
-Closes #474
+Closes #406
+
+- api-spec §3.1, v0.29.5
+- `retrying`은 본검색만 배선한다. 구제 체인·`_run_search_unfiltered`·자동 완화 probe의 재시도는
+  이번 범위 밖이라 신호를 내지 않는다.
+- v0.29.4는 열려 있는 PR #502(#472 정본 전수 대조)가 선점했다. #502가 이 PR보다 늦게 병합되면
+  api-spec 버전 번호에 구멍이 남을 수 있다.
 
 ## 체크리스트
 
-- [x] `uv run pytest` 통과 — `5040 passed, 156 deselected, 1 warning in 315.35s` (d3b83d3, 로컬 CI 동등 실행)
-- [x] `uv run ruff check` 통과
+- [x] `uv run pytest` 통과 — `5282 passed, 156 deselected, 1 warning in 327.08s`
+- [x] `uv run ruff check` 통과 — `All checks passed!`
 - [x] CHANGELOG 갱신
-- [x] 계약 문서 무변경
-- [x] `docs/lessons.md` 기록 — 런타임 로그는 datasetHash에서 제외
-- [x] 신원은 JWT `sub`에서만 도출 · productId는 string — eval fixture/앱 계약 무변경
+- [x] 계약 `progress.stage` 추가에 맞춰 `docs/api-spec.md` §3.1 동기화
+- [x] `docs/lessons.md` 기록 — 전체 `ruff format`은 변경 파일로 범위를 제한한다(#406)
+- [x] 신원은 JWT `sub`에서만 도출 · productId는 string
 
 ## 리뷰 노트
 
-- labelSource는 `model`, 신규 6건 adjudicator는 독립 검수 부재로 비어 있다.
-- dev-v2.2와 2.3.0 점수는 직접 비교하지 않는다. 실 LLM/임베딩 baseline은 외부 의존성 때문에 재실행하지 않았다.
-- 신규 쌍은 off 팔에서 의도적으로 달라져 INV 그룹에 등록하지 않았다.
-- 변이 시험 실측: MUT1(색상 mock 무력화)·MUT2(on-arm 확장 off)는 각각 A/B 비공허성 테스트를,
-  MUT3(manifest `files[]`에서 `__init__.py` 제거)는 완전성 테스트를 정상 실패시켰다.
+- `observe_search_retry`는 `create_task` 생성 시점에 복사된 ContextVar에서만 동작하고, with scope는
+  즉시 닫는다. 따라서 retrying frame을 yield해도 observer·budget·suppression이 다음 턴으로 새지 않는다.
+- 조기 스트림 종료에서는 검색 task를 동기 `cancel()`만 하며 await하지 않는다(#84 취소 규율).
+- 기본값 `spring_max_retries=0`은 변경하지 않았다. 이 상태에서는 `retrying`이 실제 와이어에 나오지
+  않으며 #394 원복 시에만 D1의 retry-progress 경로가 열린다.
+- 변이 시험: M1(드레인 제거)은 T1을 `TimeoutError`로, non-deferred/deferred 실제 httpx 재시도
+  회귀를 각각 progress frame 누락 단언으로 실패시켰다. M2(재시도 게이트 제거)는 T2의
+  `retrying` 부재 단언을, M3(1회 플래그 제거)는 T3의 `2 == 1` 단언을 실패시켰다.
+- 변이 시험: M4(notify 제거)는 T6 성공 재시도 case의 `0 == 1` 단언을, M5(비재시도 종료 notify)는
+  T6 400 case의 `1 == 0` 단언을 실패시켰다. 모두 즉시 원복 후 회귀·전체 스위트를 재실행했다.
