@@ -131,6 +131,11 @@ def get_synonym_map(dsn: str, *, ttl_s: float) -> dict[str, list[str]]:
             _cache[dsn] = (now + max(0.0, ttl_s), _LOAD_FAILED)
         _log.warning("색상 동의어 사전 로드 실패 — TTL 만료까지 재시도 보류", exc_info=True)
         raise
+    if not mapping:
+        _log.warning(
+            "색상 동의어 확장이 켜져 있으나 승인 행이 0건이라 확장이 무동작입니다. "
+            "color_synonyms 시드 적재와 status='approved' 승격 여부를 확인하세요."
+        )
     with _cache_lock:
         now = time.monotonic()
         cached = _cache.get(dsn)

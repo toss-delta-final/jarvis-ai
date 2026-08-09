@@ -10,6 +10,11 @@
 ## [Unreleased]
 
 ### Fixed
+- **#461 — 색상 동의어 확장이 켜진 상태에서 승인 사전이 비어도 조용히 무동작하던 경로를
+  관측 가능하게 했다**. 승인 `color_synonyms` 행이 0건이면 TTL 캐시 로드 경계에서 사유와
+  시드 적재·`approved` 승격 조치를 한국어 WARNING으로 남기며, 같은 TTL 창에서는 재경고하지
+  않는다. 빈 사전은 기존 단수 `color` 와이어로 degrade하고, 색상 축 부재 통과·부분일치 판정은
+  계속 Spring BE 소관임을 회귀로 고정했다(계약·기본 플래그 무변경).
 - **#494 — I-31 집계 모드가 `rating` 필터를 버려 저평점 상품을 틀리게 지목하던 문제** (api-spec
   §4.20, 계약 무변경 — 코드가 확정 명세를 못 따라간 단방향 드리프트). `SpringClient.get_review_stats`
   시그니처에 `rating` 이 없어 `get_reviews(stats=True, rating="1,2")` 가 별점을 쿼리스트링에 싣지

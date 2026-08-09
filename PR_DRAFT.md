@@ -1,53 +1,65 @@
-# 변경 요약
+## 변경 요약
 
-#474 색상 고유어/정본 표기 MFT 6건과 I-1 색상 배열 mock 충실도, 승인 사전 기반 on/off A/B 측정을 추가한다.
+- A — 색상 동의어 확장이 켜진 채 승인 사전이 비면, TTL 캐시의 실제 로드 경계에서 원인과 조치를
+  담은 한국어 WARNING을 한 번 남긴다. 빈 맵은 확장값을 주입하지 않아 기존 단수 `color` 와이어로
+  degrade하며, 기동 시 pg-catalog를 강제 조회하지 않는 이유를 코드 주석으로 고정했다.
+- B — 정본 I-1 3갈래 판정의 ②(상품에 색상 축이 없으면 통과)와 부분일치의 주체가 Spring BE라는
+  사실을 회귀로 고정했다. AI 사후필터는 색상 축을 판정하지 않고, 확장 on/off 모두 `color`를 Spring
+  payload 축으로 유지하며 배열 원소를 변형하지 않는다.
 
-## 후속 범위 확대 (사람 지시)
+### dev 실측 상태 (origin/dev `f1f621e`)
 
-사람의 명시 지시로 원래 #474 범위 밖이었던 두 후속을 이 브랜치에 함께 포함한다. 로컬 환경에
-떠 있는 Spring BE가 유닛 테스트 결과를 바꾸는 문제와 manifest 규칙 변경 뒤 현행 baseline이 낡은
-hash를 가리켜도 전수 테스트가 통과하던 문제는 모두 #474 산출물의 신뢰성을 직접 훼손하므로,
-별도 이슈로 분리하지 않고 같은 검증 경계에서 닫는다.
-
-- A — `INTERNAL_API_TOKEN`을 테스트 공통 환경에서 비우고 `tests/unit/` TCP만
-  `ConnectionRefusedError`로 차단했다. 8080 listener가 살아 있는 상태에서 가드를 제거한 변이는
-  `test_network_isolation.py`가 `DID NOT RAISE ConnectionRefusedError`로 실패했고, 복구 뒤
-  재구매·완화 323건과 전체 `uv run pytest`로 `.env` 무변경 수용 기준을 확인한다.
-- B — `evals/**/baselines/**` JSON의 중첩된 `datasetVersion`/`datasetHash` 쌍 중 현행 manifest
-  버전만 비교하고 최소 한 건 이상을 요구한다. `trivial_empty/results.json` hash 첫 글자를 바꾼
-  변이는 파일 경로·기록 hash·manifest hash를 출력하며 실패했고, 원복 뒤 통과한다.
-
-| 케이스 | recall@10 off→on | nDCG@10 off→on | 노출(축없음/일치/불일치) |
-|---|---:|---:|---|
-| buy-colr-0001/3/5 | 0→1 | 0→0.445734 | 6/0/0 → 6/3/0 |
-| buy-colr-0002/4/6 | 1→1 | 0.445734→0.445734 | 6/3/0 → 6/3/0 |
-
-| baseline | 처리 | 사유 |
+| 이슈 완료 조건 | 상태 | 이번 변경 |
 |---|---|---|
-| audit leakage report | 재실행 | dataset 2.3.0 감사 |
-| filter_axes trivial_empty | 재실행 | 지정된 결정론 baseline |
-| scoring dev-v2.3 | 신규 sibling | v2.2와 직접 비교 금지; 신규 케이스 임베딩 결측은 degrade |
-| ablation/personalization/model_eval | 기존 hash 고정 | 실 LLM baseline, 이번 범위 밖 |
+| api-spec §4.6 `color: string[]`·3갈래 판정 | v0.28.4에서 완료 | 무변경 |
+| `color_synonyms` approved 승격·SQL 반영 | 46행 완료 | 무변경 |
+| 두 플래그 기본값 off | DB 없는 CI 연결 누적 회귀 방지 | 무변경 |
+| 색상 A/B 하네스 | #474/#501에서 완료 | 실행·기록만 |
+| approved 0건 조용한 무동작 가드 | 미구현 | A로 추가 |
+| 색상 축 부재 통과의 AI 정합 회귀 | 미구현 | B로 추가 |
 
-STEP-1: 기존 color 15건 노출 9→9, 정답 탈락 0건, behaviorChecks 18/18→18/18, overall nDCG@10 0.766540→0.766540.
+### 색상 A/B 실측
+
+`uv run pytest tests/eval/test_goldenset_eval.py -q -m eval -k color`는 `2 passed, 2 deselected`였고,
+`evaluate_color_expansion()` 결과는 이 브랜치의 변경 전 #474 기록과 동일하다. A/B는 런타임
+관측·회귀만 추가하며 하네스·시드·골든셋을 변경하지 않았으므로 수치 변화가 없다.
+
+| 케이스 | recall@10 off→on | nDCG@10 off→on | 노출(축없음/일치/불일치) off→on |
+|---|---:|---:|---|
+| buy-colr-0001 | 0→1 | 0→0.445734 | 6/0/0 → 6/3/0 |
+| buy-colr-0002 | 1→1 | 0.445734→0.445734 | 6/3/0 → 6/3/0 |
+| buy-colr-0003 | 0→1 | 0→0.445734 | 6/0/0 → 6/3/0 |
+| buy-colr-0004 | 1→1 | 0.445734→0.445734 | 6/3/0 → 6/3/0 |
+| buy-colr-0005 | 0→1 | 0→0.445734 | 6/0/0 → 6/3/0 |
+| buy-colr-0006 | 1→1 | 0.445734→0.445734 | 6/3/0 → 6/3/0 |
 
 ## 관련
 
-Closes #474
+Closes #461
 
 ## 체크리스트
 
-- [x] `uv run pytest` 통과 — `5040 passed, 156 deselected, 1 warning in 315.35s` (d3b83d3, 로컬 CI 동등 실행)
+- [x] `uv run pytest` 통과 — `5277 passed, 156 deselected` (로컬 전체)
 - [x] `uv run ruff check` 통과
 - [x] CHANGELOG 갱신
-- [x] 계약 문서 무변경
-- [x] `docs/lessons.md` 기록 — 런타임 로그는 datasetHash에서 제외
-- [x] 신원은 JWT `sub`에서만 도출 · productId는 string — eval fixture/앱 계약 무변경
+- [x] 계약 문서 무변경 (`docs/api-spec.md` 무접촉)
+- [x] `docs/lessons.md` 기록
+- [x] 신원은 JWT `sub`에서만 도출 · productId는 string — 이 변경은 검색 관측·회귀에 한정
 
 ## 리뷰 노트
 
-- labelSource는 `model`, 신규 6건 adjudicator는 독립 검수 부재로 비어 있다.
-- dev-v2.2와 2.3.0 점수는 직접 비교하지 않는다. 실 LLM/임베딩 baseline은 외부 의존성 때문에 재실행하지 않았다.
-- 신규 쌍은 off 팔에서 의도적으로 달라져 INV 그룹에 등록하지 않았다.
-- 변이 시험 실측: MUT1(색상 mock 무력화)·MUT2(on-arm 확장 off)는 각각 A/B 비공허성 테스트를,
-  MUT3(manifest `files[]`에서 `__init__.py` 제거)는 완전성 테스트를 정상 실패시켰다.
+### 변이 시험
+
+- A — 빈 승인 사전 WARNING 블록을 임시 삭제한 뒤
+  `uv run pytest tests/unit/test_color_synonym_wiring.py -q -k 'empty_approved_dictionary'` 실행:
+  `2 failed, 1 passed, 9 deselected`. 두 테스트 모두 `assert 0 == 1`로 `"승인 행이 0건"` 로그가
+  없음을 검출했다. 원복 뒤 대상 테스트는 통과했다.
+- B — `apply_ai_side_filters`에 임시 색상 완전일치 하드필터를 주입한 뒤
+  `uv run pytest tests/unit/test_color_synonym_wiring.py -q -k ai_side_filters_leave_all_color_cases` 실행:
+  `1 failed, 11 deselected`. 색상 축 없음·불일치 상품이 탈락해 전체 목록 동일성 단언이 실패했다.
+  원복 뒤 대상 테스트는 통과했다.
+
+### 범위 밖
+
+- `docs/api-spec.md`, 플래그 기본값, deploy/Variables/인프라, 승인 시드·SQL 재생성, decompose 프롬프트,
+  골든셋·baseline, 확장 상한 튜너블은 변경하지 않았다.

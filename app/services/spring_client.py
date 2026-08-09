@@ -778,12 +778,14 @@ async def search_products(filters: ProductSearchFilters) -> ProductSearchResult:
     color_values: list[str] | None = None
     # 계약 게이트: api-spec §4.6 color가 string→string[]으로 개정되고 BE가 배포된 뒤에만 on.
     # off면 색상 사전 캐시/DB를 아예 건드리지 않아 기존 와이어를 바이트 단위로 보존한다.
+    # 승인 건수는 pg-catalog 조회 뒤에야 알 수 있으므로 기동 차단으로 바꾸지 않는다. 기동 시 DB를
+    # 강제하면 DB 없는 환경의 연결 누적 회귀를 되살리고, 보조 품질 경로가 앱 기동을 죽이게 된다.
     if settings.color_synonym_expansion_enabled and filters.color and filters.color.strip():
         try:
             from app.pipelines import color_synonyms  # noqa: PLC0415 - lazy DB 경로
 
             mapping = await _load_color_synonym_map(settings)
-            if mapping is not None:
+            if mapping:
                 color_values = color_synonyms.expand_color(filters.color, mapping)
         except Exception:
             # 색상 확장은 보조 품질 경로다. DB 장애가 본 검색을 죽이지 않게 기존 단수로 degrade.
