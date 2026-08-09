@@ -20,7 +20,7 @@ from collections.abc import Awaitable, Callable
 
 import pytest
 
-from app.agents.profile import processed_events, session_activity
+from app.agents.profile import graph_journal, processed_events, session_activity
 from app.agents.profile import store as profile_store_module
 from app.core import conversation, pg_store, session_context
 from tests.conftest import close_pg_pools_on_loop, pg_pool_tasks
@@ -40,6 +40,12 @@ async def _open_session_activity() -> None:
     # 꽂아 실 pg 경로를 아예 타지 않는다.
     session_activity.set_pool(None)
     await session_activity.touch_session(208, f"it-sess-{uuid.uuid4().hex}")
+
+
+async def _open_graph_journal() -> None:
+    # `reset()` 이 아니라 `set_pool(None)` — reset 은 InMemory 폴백을 꽂아 실 pg 경로를 안 탄다.
+    graph_journal.set_pool(None)
+    assert await graph_journal._get_pool() is not None
 
 
 async def _open_conversation() -> None:
@@ -65,6 +71,7 @@ async def _open_session_context() -> None:
 _PG_MODULES = [
     pytest.param(_open_processed_events, processed_events, "close_pool", id="processed_events"),
     pytest.param(_open_session_activity, session_activity, "close_pool", id="session_activity"),
+    pytest.param(_open_graph_journal, graph_journal, "close_pool", id="graph_journal"),
     pytest.param(_open_conversation, conversation, "close_store", id="conversation"),
     pytest.param(_open_pg_store, pg_store, "close_store", id="pg_store"),
     pytest.param(_open_profile_store, profile_store_module, "close_store", id="profile_store"),

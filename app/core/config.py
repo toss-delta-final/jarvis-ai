@@ -1449,6 +1449,15 @@ class Settings(BaseSettings):
     # 12건 중 11건 오분류) 롤백 경로를 남긴다(OPEN-G8).
     profile_graph_delta_enabled: bool = True
 
+    # ── 그래프 저장 안전장치 보존 기간 (이슈 #358, SPEC-PROFILE-GRAPH-149 §11) ──
+    # 멱등 원장(profile_graph_idempotency) 보존. 재전송이 최초 응답을 찾을 수 있는 창이다.
+    # **두 값 모두 🔴 C-23 잔여(정책·법무 미정)라 잠정값**이며, 만료 행을 실제로 지우는 스윕 잡은
+    # #358 범위 밖이다 — 지금 이 값들이 바꾸는 동작은 아래 REQ-PGRAPH-044 기동 검증뿐이다.
+    graph_idempotency_ttl_h: float = Field(default=24.0, gt=0.0)
+    # 변경 감사(profile_graph_audit) 보존. **전체 초기화가 지우지 않는다**(REQ-PGRAPH-062) —
+    # 파괴 동작이 추적 불가가 되면 안 되므로, 여기 남는 것은 "무엇을" 이 아니라 "언제" 다.
+    graph_audit_retention_days: float = Field(default=90.0, gt=0.0)
+
     # ── 프로필 개인화 강도 (이슈 #119, SPEC-PROFILE-001 §5.1 v0.6.0 · REQ-REC-005-A) ──
     # 프로필을 **어느 소비처에** 주입할지. 기본 rerank_only 인 근거: decompose(fast tier, 한 호출에
     # intent 라우팅+필터+장바구니 의도가 얹힌다)의 _SYSTEM 에 프로필 사용 규칙이 없어 LLM 이 취향을
@@ -2757,6 +2766,16 @@ class Settings(BaseSettings):
             raise ValueError(
                 "PROFILE_IDLE_CLAIM_TTL_S must exceed the two-stage LLM timeout budget "
                 "for all configured batch waves"
+            )
+        # REQ-PGRAPH-044 — 멱등 원장은 감사 로그보다 오래 살면 안 된다. 원장이 더 오래 살면
+        # 재전송이 최초 응답을 재생하는데 그 변경의 감사 근거는 이미 사라진 구간이 생긴다.
+        # SPEC §11 이 "두 값의 대소로 정확성을 맞추려는 설정은 금지한다"고 못박았으므로 런타임
+        # 보정이 아니라 기동 시점 fail-fast 다. 경계는 포함(같은 길이는 허용) — 배타로 재면
+        # 24h == 1day 인 정상 구성이 죽는다.
+        if self.graph_idempotency_ttl_h * 3600 > self.graph_audit_retention_days * 86400:
+            raise ValueError(
+                "GRAPH_IDEMPOTENCY_TTL_H must not exceed GRAPH_AUDIT_RETENTION_DAYS "
+                "(replay must always find its audit record)"
             )
         if self.state_store_pool_min_size < 0:
             raise ValueError("STATE_STORE_POOL_MIN_SIZE must be non-negative")
