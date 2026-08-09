@@ -10,6 +10,29 @@
 
 ---
 
+## 2026-08-09 · `model_copy(update=…)` 는 검증을 거치지 않는다
+
+**증상**: 테스트에서 `SellerProductRow.model_copy(update={"stocks": [{...}]})` 로 만든 픽스처가
+`AttributeError: 'dict' object has no attribute 'option_id'` 로 죽었다. 같은 dict 를 **생성자**에
+넣은 `_OPTIONED_ROW` 는 멀쩡했다.
+
+**원인**: pydantic v2 의 `model_copy` 는 **`update` 값을 검증하지 않고 그대로 `__dict__` 에 꽂는다**
+(문서화된 동작이다 — 성능을 위해 의도적으로 건너뛴다). 생성자·`model_validate` 만 강제 변환을 한다.
+
+프로덕션 경로는 안전하다 — I-9 응답은 `SpringClient._validate` 를 타므로 `row.stocks` 원소는 늘
+`SellerStockRow` 다. **테스트 픽스처에서만 나는 함정**이고, 그래서 더 헷갈린다: 코드가 틀린 줄 알고
+프로덕션 코드에 방어를 넣고 싶어진다.
+
+**규칙**
+- 중첩 모델을 갈아끼우는 픽스처는 **생성자로 만든다.** `model_copy(update=…)` 는 스칼라 필드
+  (`price`, `status`, 설정값 등)에만 쓴다.
+- `model_copy(update=…)` 로 중첩을 넣어야 한다면 값도 **모델 인스턴스로** 준다
+  (`[SellerStockRow(optionId=None, quantity=100)]`) — dict 를 주면 조용히 dict 로 남는다.
+- 이 실패를 **프로덕션 코드에 `isinstance` 방어를 넣어 막지 않는다.** 실 응답은 검증을 거치므로
+  그 방어는 영원히 죽은 코드가 되고, 진짜 계약 위반을 가려 버린다.
+
+---
+
 ## 2026-08-09 · 조용한 부분 실패가 시끄러운 실패보다 나쁘다 (#524)
 
 **증상(예방)**: `seller_stock_wire_mode="stocks"` 를 BE PR B 배포 전에 켜면,

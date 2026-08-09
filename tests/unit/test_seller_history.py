@@ -371,6 +371,16 @@ _OPTIONED_ROW = SellerProductRow(
     ],
 )
 
+# 옵션이 하나뿐인 상품. **생성자로 만든다** — model_copy(update=…) 는 검증을 거치지 않아
+# dict 를 SellerStockRow 로 바꿔 주지 않는다(실 응답은 항상 _validate 를 타 모델이다).
+_SINGLE_OPTION_ROW = SellerProductRow(
+    productId=101,
+    name="감귤청",
+    price=15000,
+    stockQuantity=5,
+    stocks=[{"optionId": 10, "optionName": "블랙/M", "quantity": 5}],
+)
+
 
 def _stock_mode(monkeypatch: pytest.MonkeyPatch, mode: str) -> None:
     """history 가 보는 wire_mode 만 바꾼다 — 나머지 설정은 실값 그대로."""
@@ -410,10 +420,7 @@ def test_apply_allows_stock_recommendation_on_single_option(
 ) -> None:
     """옵션이 하나뿐이면 모호함이 없다 — 종전대로 초안을 만든다."""
     _stock_mode(monkeypatch, "stocks")
-    single = _OPTIONED_ROW.model_copy(
-        update={"stocks": [{"optionId": 10, "optionName": "블랙/M", "quantity": 5}]}
-    )
-    set_spring_client(_StubSpring(rows=[single]))
+    set_spring_client(_StubSpring(rows=[_SINGLE_OPTION_ROW]))
 
     async def run():
         await _save(recs=_rec_set(_stock_rec()))
