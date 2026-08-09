@@ -1,6 +1,5 @@
 """chat_request 파서 재사용과 조인·가격 근거 unknown 처리를 검증한다."""
 
-from app.core.config import Settings
 from evals.benchmark.server_join import apply_price_evidence, join_records
 from evals.benchmark.stats import summarize_group
 
@@ -50,13 +49,14 @@ def test_empty_price_table_turns_server_zero_cost_into_unknown() -> None:
         "model_ids": ["gpt-5-nano"],
         "cost_usd": 0.0,
     }
-    settings = Settings()
-    assert settings.model_price_in_per_1k == {}
-    assert settings.model_price_out_per_1k == {}
+    # #437 — Settings() 기본 단가표는 더 이상 빈 dict 가 아니다(gpt-5-nano/gpt-5.6-luna 내장
+    # 기본값). 이 테스트가 실제로 지키려는 불변식은 "빈 단가표면 서버의 costUsd 0 을 unknown
+    # 으로 강등한다"이므로, 그 조건을 명시적 빈 dict 로 재현해 불변식을 그대로 유지한다.
+    empty_prices: dict[str, float] = {}
     apply_price_evidence(
         [record],
-        input_prices=settings.model_price_in_per_1k,
-        output_prices=settings.model_price_out_per_1k,
+        input_prices=empty_prices,
+        output_prices=empty_prices,
     )
     assert record["cost_usd"] is None
     assert "price_missing" in record["cost_unknown_reason"]
