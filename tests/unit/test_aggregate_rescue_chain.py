@@ -289,9 +289,7 @@ async def test_expected_field_names_match_actual_zero_and_pipeline_log_records(m
         monkeypatch, caplog
     )
     pipeline_record = next(
-        record
-        for record in caplog.records
-        if json.loads(record.getMessage()).get("event") == "recommend_pipeline"
+        record for record in caplog.records if record.event == "recommend_pipeline"
     )
     assert expected_pipeline_fields <= set(pipeline_record.__dict__)
 
@@ -311,9 +309,7 @@ async def test_expected_field_names_match_actual_zero_and_pipeline_log_records(m
         )
     )
     zero_record = next(
-        record
-        for record in caplog.records
-        if json.loads(record.getMessage()).get("event") == "recommend_zero_result"
+        record for record in caplog.records if record.event == "recommend_zero_result"
     )
     assert expected_zero_fields <= set(zero_record.__dict__)
 
@@ -331,6 +327,7 @@ def test_structured_log_renders_fields_with_plain_formatter_and_preserves_extra(
     )
     assert record.rescue_elapsed_ms == 123
     assert record.may_auto_relax is True
+    assert record.event == "recommend_zero_result"
 
 
 @pytest.mark.asyncio
@@ -342,9 +339,7 @@ async def test_actual_rescue_turns_round_trip_from_rendered_logs_into_aggregator
         monkeypatch, caplog
     )
     pipeline_record = next(
-        record
-        for record in caplog.records
-        if json.loads(record.getMessage()).get("event") == "recommend_pipeline"
+        record for record in caplog.records if record.event == "recommend_pipeline"
     )
     pipeline_line = _PLAIN_FORMATTER.format(pipeline_record)
     parsed_pipeline = aggregate_rescue_chain.parse_log_line(pipeline_line)
@@ -369,9 +364,7 @@ async def test_actual_rescue_turns_round_trip_from_rendered_logs_into_aggregator
         )
     )
     zero_record = next(
-        record
-        for record in caplog.records
-        if json.loads(record.getMessage()).get("event") == "recommend_zero_result"
+        record for record in caplog.records if record.event == "recommend_zero_result"
     )
     zero_line = _PLAIN_FORMATTER.format(zero_record)
     parsed_zero = aggregate_rescue_chain.parse_log_line(zero_line)

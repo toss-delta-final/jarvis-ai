@@ -48,10 +48,7 @@ def _ids(result: ProductSearchResult) -> list[int]:
 
 def _event(record: logging.LogRecord, event: str) -> bool:
     """JSON message 구조화 이벤트를 caplog에서 찾는다."""
-    try:
-        return json.loads(record.getMessage()).get("event") == event
-    except (json.JSONDecodeError, TypeError):
-        return False
+    return getattr(record, "event", None) == event
 
 
 def test_merge_interleaves_round_robin() -> None:

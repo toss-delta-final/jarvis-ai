@@ -31,7 +31,7 @@ def log_structured(logger: logging.Logger, event: str, /, **fields: object) -> N
     """구조화 이벤트를 JSON message와 LogRecord extra에 함께 남긴다."""
     logger.info(
         json.dumps({"event": event, **fields}, ensure_ascii=False, default=str),
-        extra=fields,
+        extra={"event": event, **fields},
         stacklevel=2,
     )
 

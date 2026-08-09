@@ -13,6 +13,17 @@
 
 ---
 
+## [2026-08-10] 구조화 로그의 message 형식을 바꾸면 선택자도 전수 이관한다
+- 증상: #385가 구조화 이벤트의 message를 JSON으로 바꾼 뒤, 예산 테스트 4건이 옛
+  `record.message == "recommend_pipeline"` 선택자를 써 `StopIteration` 또는 `None`으로 실패했다.
+- 원인: 첫 수정에서 일부 caplog 선택자만 JSON 파싱으로 바꾸고, 저장소 전체의 message/msg/getMessage
+  기반 이벤트 선택을 전수 검색하지 않았다.
+- 규칙: 구조화 로그의 message 표현을 바꿀 때는 안정적인 LogRecord extra 선택자(여기서는 `event`)를
+  함께 제공하고, 이벤트명으로 message/msg/getMessage를 고르는 모든 호출부를 grep으로 0건 확인한다.
+- 관련: `app/core/logging.py::log_structured` · `tests/unit/test_rescue_budget_427.py` · #385
+
+---
+
 ## [2026-08-10] `extra=` 검증은 렌더된 sink 문자열까지 확인한다
 - 증상: 구제 체인 이벤트가 `extra`에 계측 필드를 넣었고 caplog의 `record.rescue_elapsed_ms` 단언도
   통과했지만, 표준 formatter가 `%(message)s`만 출력해 운영 stdout에서는 필드가 전부 사라졌다.

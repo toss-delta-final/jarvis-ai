@@ -44,10 +44,7 @@ def _guest() -> Identity:
 
 def _event(record: object, event: str) -> bool:
     """JSON message 구조화 이벤트를 caplog에서 찾는다."""
-    try:
-        return json.loads(record.getMessage()).get("event") == event  # type: ignore[attr-defined]
-    except (json.JSONDecodeError, TypeError):
-        return False
+    return getattr(record, "event", None) == event
 
 
 async def _committed_observer(request, identity, observer=None):  # noqa: ANN001
