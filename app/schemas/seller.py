@@ -17,6 +17,7 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
+from app.core.config import get_settings
 from app.schemas.chat import ChatRequest
 
 
@@ -47,6 +48,12 @@ class SellerChatRequest(ChatRequest):
         default="",
         description="현재 턴 사용자 원문 질의. confirm 승인 시엔 비운다(발화≠동의), 그 외 필수.",
     )
+    # [#506, api-spec §3.2 v0.30.0] 이미지 기반 상품 등록 초안 — 이미지를 **새로 첨부한
+    # 턴에만** 실린다(후속 턴 미전송은 FE 계약). alias 는 CamelModel 이 imageUrls 로 생성.
+    image_urls: list[str] | None = Field(
+        default=None,
+        description="새로 첨부한 상품 이미지의 canonical S3 URL 목록(MVP 1장). 후속 턴엔 싣지 않는다",
+    )
 
     @model_validator(mode="after")
     def _validate_message_and_confirm(self) -> "SellerChatRequest":
@@ -54,12 +61,47 @@ class SellerChatRequest(ChatRequest):
 
         - action=='confirm': draftId 필수. 빈 draftId 를 일반 발화로 흘리면 승인이
           조용히 무시되어 FE 가 원인을 알 수 없다. message 는 요구하지 않는다(발화 아님).
+          imageUrls 는 금지 — confirm 은 draftId 만 되보내는 계약이다(§3.2).
         - 그 외(일반 발화): message 필수. 빈 발화를 라우팅·파이프라인에 흘리지 않는다
           (message 를 선택 필드로 낮춘 뒤에도 일반 발화의 필수성을 여기서 지킨다).
         """
         if self.action == "confirm":
             if not (self.draft_id and self.draft_id.strip()):
                 raise ValueError("action=='confirm' 이면 draftId 가 필요합니다")
+            if self.image_urls:
+                raise ValueError("confirm 요청에는 imageUrls 를 실을 수 없습니다")
         elif not (self.message and self.message.strip()):
             raise ValueError("message 가 필요합니다")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_image_urls(self) -> "SellerChatRequest":
+        """imageUrls 2차 방어(#506) — 1차 방어는 FE 서버 라우트(업로드 검증)다.
+
+        - 개수: `seller_image_max_count`(MVP 1장 — 2장째는 FE 가 교체로 처리).
+        - 길이: `seller_image_url_max_len`(DB VARCHAR(500)) — presigned URL(서명
+          쿼리스트링 포함, 만료됨)은 보통 1,000자를 넘어 여기서 함께 걸린다.
+        - 형식: http(s) canonical URL 만. `X-Amz-Signature` 는 길이와 무관하게 명시
+          거부한다 — 통과해 저장되면 만료 시점에 상품 이미지가 조용히 죽는다(§2.3).
+        """
+        if not self.image_urls:
+            return self
+        settings = get_settings()
+        if len(self.image_urls) > settings.seller_image_max_count:
+            raise ValueError(
+                f"imageUrls 는 최대 {settings.seller_image_max_count}장까지 지원합니다"
+            )
+        for url in self.image_urls:
+            stripped = url.strip()
+            if not stripped:
+                raise ValueError("imageUrls 항목이 비어 있습니다")
+            if not stripped.startswith(("https://", "http://")):
+                raise ValueError("imageUrls 는 http(s) URL 이어야 합니다")
+            if len(stripped) > settings.seller_image_url_max_len:
+                raise ValueError(
+                    f"imageUrls 항목이 {settings.seller_image_url_max_len}자를 초과합니다 — "
+                    "canonical URL 만 허용됩니다(presigned URL 금지)"
+                )
+            if "X-Amz-Signature" in stripped:
+                raise ValueError("presigned URL 은 허용되지 않습니다 — canonical URL 을 보내주세요")
         return self

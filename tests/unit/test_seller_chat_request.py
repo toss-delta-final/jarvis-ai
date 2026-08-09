@@ -68,3 +68,67 @@ def test_message_length_validator_inherited() -> None:
     cap = get_settings().chat_message_max_chars
     with pytest.raises(ValidationError):
         SellerChatRequest(session_id="s", thread_id="t", message="x" * (cap + 1))
+
+
+# ── [#506] imageUrls (api-spec §3.2 v0.30.0) ────────────────────────────────────
+
+
+def test_image_urls_camelcase_accepted() -> None:
+    r = SellerChatRequest.model_validate(
+        {
+            "sessionId": "s",
+            "threadId": "t",
+            "message": "이 상품 29,900원에 100개 등록해줘",
+            "imageUrls": ["https://cdn.example.com/seller/7/ab12.jpg"],
+        }
+    )
+    assert r.image_urls == ["https://cdn.example.com/seller/7/ab12.jpg"]
+
+
+def test_image_urls_default_none() -> None:
+    r = SellerChatRequest(session_id="s", thread_id="t", message="x")
+    assert r.image_urls is None
+
+
+def test_image_urls_over_count_rejected() -> None:
+    """MVP 1장 상한 — 2장째는 FE 가 교체로 처리하는 계약이라 서버는 거부한다."""
+    with pytest.raises(ValidationError):
+        SellerChatRequest.model_validate(
+            {
+                "sessionId": "s",
+                "threadId": "t",
+                "message": "x",
+                "imageUrls": ["https://a/1.jpg", "https://a/2.jpg"],
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "bad_url",
+    [
+        "ftp://bucket/x.jpg",  # 스킴 위반
+        "   ",  # 공백
+        "https://bucket.s3.amazonaws.com/x.jpg?X-Amz-Signature=abc",  # presigned
+        "https://cdn.example.com/" + "a" * 500 + ".jpg",  # 길이 초과(>500)
+    ],
+)
+def test_image_urls_invalid_rejected(bad_url: str) -> None:
+    """canonical URL 2차 방어 — presigned 저장 시 만료 시점에 이미지가 조용히 죽는다."""
+    with pytest.raises(ValidationError):
+        SellerChatRequest.model_validate(
+            {"sessionId": "s", "threadId": "t", "message": "x", "imageUrls": [bad_url]}
+        )
+
+
+def test_confirm_with_image_urls_rejected() -> None:
+    """confirm 은 draftId 만 — 이미지 등 부가 페이로드는 계약 위반(§3.2 함정 9)."""
+    with pytest.raises(ValidationError):
+        SellerChatRequest.model_validate(
+            {
+                "sessionId": "s",
+                "threadId": "t",
+                "action": "confirm",
+                "draftId": "d-1",
+                "imageUrls": ["https://a/1.jpg"],
+            }
+        )
