@@ -38,7 +38,7 @@ import logging
 import math
 import threading
 from types import TracebackType
-from typing import Literal, TypeVar
+from typing import Callable, Literal, TypeVar
 
 import httpx
 from pydantic import BaseModel, ValidationError
@@ -130,6 +130,10 @@ _search_retry_suppressed: ContextVar[bool] = ContextVar("search_retry_suppressed
 _search_budget_override: ContextVar[float | None] = ContextVar(
     "search_budget_override", default=None
 )
+# [#406] 호출 시그니처를 넓히지 않고 I-1 실제 재시도 진입만 관측하는 일회성 seam이다.
+_search_retry_observer: ContextVar[Callable[[], None] | None] = ContextVar(
+    "search_retry_observer", default=None
+)
 
 
 class SearchBudgetExceeded(TimeoutError):
@@ -207,6 +211,28 @@ def narrow_search_budget(budget_s: float) -> Iterator[None]:
         yield
     finally:
         _search_budget_override.reset(token)
+
+
+@contextmanager
+def observe_search_retry(callback: Callable[[], None]) -> Iterator[None]:
+    """현재 호출 컨텍스트의 I-1 실제 재시도 진입을 `callback`으로 관측한다 (#406)."""
+    token = _search_retry_observer.set(callback)
+    try:
+        yield
+    finally:
+        _search_retry_observer.reset(token)
+
+
+def notify_search_retry() -> None:
+    """현재 컨텍스트의 재시도 관측자에게 실제 재시도 진입을 알린다 (#406)."""
+    callback = _search_retry_observer.get()
+    if callback is None:
+        return
+    try:
+        callback()
+    except Exception:
+        # 관측 실패가 I-1 검색 자체를 중단시키면 진행 신호가 가용성을 해치는 역전이 된다.
+        _log.warning("spring_search_retry_observer_failed", exc_info=True)
 
 
 def _color_synonym_limiter(dsn: str, max_concurrency: int) -> threading.BoundedSemaphore:
@@ -854,6 +880,7 @@ async def search_products(filters: ProductSearchFilters) -> ProductSearchResult:
                         "statusClass": _failure_status_class(exc),
                     },
                 )
+                notify_search_retry()
         # 응답 파싱·검증도 같은 경계 안 — 200 이지만 스키마 불일치인 malformed 응답도
         # SEARCH_FAILED degrade(§7)로 흐르게 한다(ValidationError 가 그대로 새어 500 되지 않게).
         # 역직렬화와 같은 이유로 스레드에 넘긴다 — N× model_validate 가 파싱 비용의 본체다.

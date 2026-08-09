@@ -34,6 +34,78 @@
 
 ---
 
+## [2026-08-10] 구조화 로그의 message 형식을 바꾸면 선택자도 전수 이관한다
+- 증상: #385가 구조화 이벤트의 message를 JSON으로 바꾼 뒤, 예산 테스트 4건이 옛
+  `record.message == "recommend_pipeline"` 선택자를 써 `StopIteration` 또는 `None`으로 실패했다.
+- 원인: 첫 수정에서 일부 caplog 선택자만 JSON 파싱으로 바꾸고, 저장소 전체의 message/msg/getMessage
+  기반 이벤트 선택을 전수 검색하지 않았다.
+- 규칙: 구조화 로그의 message 표현을 바꿀 때는 안정적인 LogRecord extra 선택자(여기서는 `event`)를
+  함께 제공하고, 이벤트명으로 message/msg/getMessage를 고르는 모든 호출부를 grep으로 0건 확인한다.
+- 관련: `app/core/logging.py::log_structured` · `tests/unit/test_rescue_budget_427.py` · #385
+
+---
+
+## [2026-08-10] `extra=` 검증은 렌더된 sink 문자열까지 확인한다
+- 증상: 구제 체인 이벤트가 `extra`에 계측 필드를 넣었고 caplog의 `record.rescue_elapsed_ms` 단언도
+  통과했지만, 표준 formatter가 `%(message)s`만 출력해 운영 stdout에서는 필드가 전부 사라졌다.
+- 원인: LogRecord 속성 보존과 formatter 렌더는 별도 단계인데, 테스트가 전자만 확인했다.
+- 규칙: stdout/file sink로 소비되는 구조화 로그는 실제 formatter로 레코드를 렌더한 뒤 파서·집계기까지
+  왕복하는 회귀 테스트를 둔다. `extra=` 속성 단언은 호환성 검증으로만 남긴다.
+- 관련: `app/core/logging.py::log_structured` · `tests/unit/test_aggregate_rescue_chain.py` · #385
+
+---
+
+## [2026-08-09] 분포 분리 테스트는 변이 뒤 순위가 실제로 바뀌는 표본을 써야 한다
+- 증상: #385의 `may_auto_relax=False` 분리 테스트가 False 표본 하나(1ms)와 True 표본 둘
+  (100/200ms)을 썼더니, False를 True 분포에 잘못 섞는 변이가 통과했다.
+- 원인: 최근접 순위 p50은 `[100, 200]`과 `[1, 100, 200]`에서 모두 100이라, "작은 False 값을
+  넣었다"는 사실만으로 분리 결함을 검출하지 못했다.
+- 규칙: 분위수·분모 분리 회귀 테스트는 의도한 잘못된 결합을 실제로 적용한 변이에서 적어도 하나의
+  단언값이 달라지는 손계산 표본을 사용하고, 변이 실행으로 그 실패를 확인한다.
+- 관련: `tests/unit/test_aggregate_rescue_chain.py` · #385
+## [2026-08-10] 동시 레인의 완료 조건은 이슈가 아니라 최신 dev에서 다시 실측한다
+- 증상: 이슈 완료 조건에 "미구현"으로 표시된 항목을 그대로 믿고 승인 0건 가드를 구현했는데,
+  같은 조건을 다른 레인(PR #502)이 이미 dev 에 넣어 둔 상태였다. back-merge 때 같은 판정이 두
+  곳에 생겨 한쪽을 걷어내야 했다.
+- 원인: 착수 시점에 `origin/dev` 를 fetch 하지 않고 베이스 커밋(`f1f621e`) 기준으로만 실측했다.
+  그 사이 dev 는 34커밋 앞서 있었고, 문제의 코드는 "docs 전용"이라고 적힌 PR(#502, 커밋
+  `13c84e3`)이 함께 실어 커밋 제목·본문으로는 검색되지 않았다.
+- 규칙: 동시 레인이 여럿이면 착수 전 `git fetch origin` 후 **`origin/dev` 기준으로** 완료 조건을
+  실측한다. 이슈 본문의 체크박스와 완료 조건 표는 작성 시점 스냅샷이라 근거가 아니다. 커밋 제목이
+  docs 라도 코드가 실려 있을 수 있으니 `git log -S<심볼> origin/dev -- <경로>` 로 심볼 단위 확인을
+  한다.
+- 관련: `app/pipelines/color_synonyms.py::_warn_empty_map_once` · PR #502 · #505
+
+---
+
+## [2026-08-09] 전체 `ruff format` 은 현재 변경 범위를 벗어난 포맷 churn을 만든다 (#406)
+- 증상: #406 검증에서 인자 없는 `uv run ruff format`을 실행해 이슈와 무관한 26개 파일이 순수
+  포맷 변경으로 워킹트리에 함께 남았다.
+- 원인: 저장소에는 CI가 강제하지 않는 기존 포맷 드리프트가 있고, 전체 format은 그 드리프트까지
+  현재 작업의 변경으로 흡수한다.
+- 규칙: format은 이번에 수정한 파일 목록만 인자로 넘기고, 전체 검증은 `uv run ruff check`로 한다.
+- 관련: #406 · `.github/workflows/ci.yml` · `docs/lessons.md`
+
+---
+
+## [2026-08-09] `asyncio.run` 을 타는 유닛 테스트는 Windows 에서만 TCP 차단에 걸린다
+- 증상: `tests/unit/test_personalization_scope.py::test_live_wrapper_routes_profile_for_all_scopes`
+  가 로컬(Windows)에서만 `ConnectionRefusedError: unit tests must not open live TCP connections`
+  로 실패한다. httpx 는 `MockTransport` 라 실제 요청이 없는데도 그렇다. 같은 코드가 CI 는 통과한다.
+- 원인: `LiveBuyerAdapter.__call__` 이 `asyncio.run` 을 쓰는데, Windows 기본 루프인
+  `ProactorEventLoop` 는 self-pipe 를 **TCP 루프백 socketpair** 로 만든다. `tests/unit/conftest.py`
+  의 `_TcpRefusingSocket` 이 AF_INET `connect` 를 전부 거부하므로 루프 생성 자체가 죽는다
+  (뒤따르는 `AttributeError: 'ProactorEventLoop' object has no attribute '_ssock'` 이 그 흔적).
+  POSIX 는 AF_UNIX socketpair 라 같은 가드에 걸리지 않는다 — 그래서 OS 별로 갈린다.
+- 규칙: 유닛 테스트에서 **주입·배선 경로만** 검증할 거면 `asyncio.run` 을 타는 실행기를 통째로
+  부르지 말고 경계 함수(여기서는 `profile_for_scope`)의 입력을 가로채고 내부 어댑터는 대역으로
+  바꾼다. 로컬 실패를 보고 "환경 탓"으로 넘기기 전에 **변경 전 baseline 에서도 같은 실패가
+  나는지** 먼저 확인한다(`git stash push -u -m <고유태그>` → 확인 → `git stash apply <sha>` → drop).
+- 관련: `tests/unit/conftest.py:23-36`, `evals/model_eval/adapter.py::LiveBuyerAdapter.__call__`,
+  `tests/unit/test_personalization_scope.py::_resolved_markdowns` (#484)
+
+---
+
 ## [2026-08-09] 계약 어휘 동기화의 완료 조건은 "신규 값 등장"이 아니라 "구 값 0건"이다
 - 증상: BE 가 `ProductStatus.DELETED` 를 신설했는데, #472 사본 동기화가 api-spec §4.5 **표**를
   정본에 맞춘 뒤 §4.5 를 "확정·구현 완료"로 표시했다. 실제로는 §3.2 산문이 `status=HIDDEN` 으로
