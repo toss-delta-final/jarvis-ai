@@ -31,6 +31,18 @@ from app.core.tracing import current_request_trace
 
 ModelTier = Literal["fast", "smart"]
 
+# #438 D6/R3 G1 — scripted(부하 테스트 스텁) 모델 id 정본. 서버 로그 chat_request.model_ids 에
+# 이 id 가 실려 manifest 가 그대로 실으므로, 운영자가 provider 라벨을 잘못 붙여도 산출물
+# 자체가 스텁임을 증언한다(D6). 관측 경로(record_model_call → resolve_model_id, 이 값을 쓴다)와
+# usage 경로(app/core/llm_scripted.py::_record_loadtest_usage)가 여기 값을 함께 가져다 쓴다 —
+# 두 곳에 리터럴을 따로 적으면 드리프트 시 tier 당 서로 다른 id 가 새어 manifest 의
+# model_ids 가 스텁 id 4개로 불어난다(R3 G1 실측). llm_scripted 는 이미 이 모듈의 LLMError 를
+# import 하므로(순환 없음) 정본을 여기 두고 llm_scripted 가 가져다 쓰는 방향이 자연스럽다.
+LOADTEST_MODEL_IDS: dict[str, str] = {
+    "fast": "scripted-stub-fast",
+    "smart": "scripted-stub-smart",
+}
+
 
 @dataclass(frozen=True)
 class ResolvedModel:
@@ -140,6 +152,9 @@ def resolve_model_id(settings: Settings, tier: ModelTier) -> str:
     if tier not in ("fast", "smart"):
         raise LLMError(f"unknown tier: {tier!r}")
 
+    if settings.llm_provider == "scripted":
+        # #438 D6 — 산출물 자기표기. LOADTEST_MODEL_IDS(이 모듈, 위)가 정본이다.
+        return LOADTEST_MODEL_IDS[tier]
     if settings.llm_provider == "openai":
         return {
             "fast": settings.openai_fast_model_id,
@@ -175,6 +190,11 @@ def resolve_provider_model(
     model_id = resolve_model_id(settings, tier)
 
     provider = settings.llm_provider
+    if provider == "scripted":
+        # #438 D5 — 부하 테스트 스텁은 API 키가 전혀 필요 없다. config.py 의 G1 validator 가
+        # local/test 밖 기동을 이미 막으므로 여기서는 무조건 통과시킨다(오탐일 수 없다 — 설정값이
+        # 곧 사실이다).
+        return ResolvedModel(provider=provider, tier=tier, model_id=model_id, api_key="")
     if provider == "openai":
         if not settings.openai_api_key:
             raise LLMNotConfigured("openai API key is not configured")
@@ -502,6 +522,12 @@ def get_llm() -> LLMClient | None:
     키가 없는 개발·CI 에서 네트워크 호출 없이 곧바로 미구성 경로(LLM_UNAVAILABLE)로 빠지게 한다.
     """
     settings = get_settings()
+    if settings.llm_provider == "scripted":
+        # 지연 import — llm_scripted 는 이 모듈의 LLMError 를 참조하므로 모듈 top-level에서
+        # 서로를 import 하면 순환이 생긴다(#438 D5). 키를 전혀 요구하지 않고 항상 돌려준다.
+        from app.core.llm_scripted import LoadTestLLM
+
+        return LoadTestLLM()
     try:
         fast = resolve_provider_model(settings, "fast")
         smart = resolve_provider_model(settings, "smart")

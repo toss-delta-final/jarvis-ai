@@ -22,6 +22,7 @@ from app.agents.buyer.recommendation.decompose import _FILTER_AXES
 from app.agents.buyer.recommendation.state import RouteDecision
 from app.core.text import _strip_unsafe
 from app.schemas.spring import ProductSearchFilters
+from app.pipelines.artifact_store import EXTRAS_NAME_PRESENT_KEY
 
 if TYPE_CHECKING:
     from app.pipelines.artifact_store import ArtifactStore, CatalogArtifact
@@ -169,18 +170,28 @@ def _extract_name_from_search_doc(search_doc: str) -> str:
     (`dedup_exposed_names`, 이번 턴 노출 집합 + 스레드 누적 `last_reco` 범위)다. `_strip_unsafe`
     도 호출부가 적용한다(이 함수는 순수 추출만 한다).
 
-    **알려진 한계(닫지 않음, 후속 이슈 후보)** — 이름 없는 상품이 노출 집합 + 누적 어디와도
-    겹치지 않는 **유일한 카테고리 폴백**이면 여전히 이름처럼 쓰인다. 카테고리 사전
-    (`db/catalog/seed/categories.json`)으로 폴백 여부를 판별해 닫는 방법이 있으나, 그 사전은
-    `"DIY자재/용품 > 반제품"` 같은 경로형이고 `ProductChange.category` 는 `"여행용품"` 처럼
-    leaf 형이라(테스트 픽스처로 확인) 문자열이 그대로 대조되지 않는다 — 추천 hot path 를
-    카테고리 사전 서브시스템에 묶는 것은 이 레인 범위 밖이다.
+    [#468] 유일한 카테고리 폴백은 `name_from_artifact`가 적재 시점 플래그의 **정확한 bool
+    False**로 미리 버린다. 카테고리 사전(`db/catalog/seed/categories.json`) 대조는 사전이
+    `"DIY자재/용품 > 반제품"` 같은 경로형이고 `ProductChange.category`는 `"여행용품"`처럼 leaf
+    형이라 문자열이 맞지 않아 기각했다. 남은 한계는 플래그가 아직 없는 미재적재 행이며, 이들은
+    #435 호환을 위해 기존처럼 상위 `dedup_exposed_names` 가드에 맡긴다.
     """
     for line in search_doc.split("\n"):
         stripped = line.strip()
         if stripped:
             return stripped
     return ""
+
+
+def name_from_artifact(artifact: CatalogArtifact) -> str:
+    """적재 시점 이름 부재가 확정된 artifact만 카테고리 폴백을 버린다 (#468).
+
+    extras는 AI DB에서 읽는 신뢰 경계 밖 값이므로 정확한 bool False만 판정한다. 키가 없거나
+    비정상 값이면 미재적재 구 행과 같은 호환 경로로 `_extract_name_from_search_doc`을 쓴다.
+    """
+    if artifact.extras.get(EXTRAS_NAME_PRESENT_KEY) is False:
+        return ""
+    return _extract_name_from_search_doc(artifact.search_doc)
 
 
 def dedup_exposed_names(
@@ -383,6 +394,6 @@ async def rank_by_profile(
         for pid in ranked
         if (art := artifacts.get(pid))
         # G3 — 판매자 입력(search_doc)을 프롬프트에 싣기 전 신뢰경계를 통과시킨다.
-        and (cleaned := _strip_unsafe(_extract_name_from_search_doc(art.search_doc)))
+        and (cleaned := _strip_unsafe(name_from_artifact(art)))
     }
     return ranked, reasons, names

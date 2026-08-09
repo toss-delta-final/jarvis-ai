@@ -73,6 +73,7 @@ from app.core.llm import LLMClient, LLMError, LLMNotConfigured, get_llm, is_outp
 from app.pipelines import embedding as _embedding
 from app.pipelines import color_synonym_seed
 from app.pipelines.artifact_store import (
+    EXTRAS_NAME_PRESENT_KEY,
     FAILURE_STREAK_KIND_ITEM,
     FAILURE_STREAK_KIND_PAGE,
     ArtifactStore,
@@ -321,6 +322,7 @@ async def _finish_change(
     여기서 삼키지 않는다 — 호출부(``_drain``)가 그대로 전파받아 페이지 커서를 전진시키지
     않는다(자연 복구).
     """
+    extras = {**extras, EXTRAS_NAME_PRESENT_KEY: bool((change.name or "").strip())}
     doc = _embedding.build_search_doc({**product, "extras": extras})
     vec = embed([doc])[0]
     store.upsert(

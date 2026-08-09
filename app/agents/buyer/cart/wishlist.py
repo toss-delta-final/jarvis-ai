@@ -53,11 +53,16 @@ _WISHLIST_UNRESOLVED_DEFAULT = "어떤 상품을 찜할까요? 추천을 먼저 
 _WISHLIST_UNRESOLVED_WITH_RECO = (
     "어떤 상품을 찜할까요? 추천해 드린 상품 중에서 이름을 말씀해 주시면 찜해 드릴게요."
 )
+_WISHLIST_UNRESOLVED_AFTER_PUSH_FAILURE = "어떤 상품을 찜할까요? 추천 목록 전달에 문제가 있었어요. 다시 추천을 요청해 주시면 도와드릴게요."
 
 
-def _wishlist_add_unresolved_notice(has_last_reco: bool) -> str:
-    """찜 담기 미해소 문구 — `has_last_reco` 가 False 면 오늘 문구 그대로."""
-    return _WISHLIST_UNRESOLVED_WITH_RECO if has_last_reco else _WISHLIST_UNRESOLVED_DEFAULT
+def _wishlist_add_unresolved_notice(has_last_reco: bool, *, has_push_failed: bool = False) -> str:
+    """찜 담기 미해소 문구 — 추천 목록이 있으면 그 문구가 실패 마커보다 우선한다."""
+    if has_last_reco:
+        return _WISHLIST_UNRESOLVED_WITH_RECO
+    if has_push_failed:
+        return _WISHLIST_UNRESOLVED_AFTER_PUSH_FAILURE
+    return _WISHLIST_UNRESOLVED_DEFAULT
 
 
 def _display_wishlist_name(item: WishlistItem) -> str:
@@ -299,6 +304,7 @@ async def stream_wishlist_add(
     settings,
     allowed_product_ids: set[int] | None = None,
     has_last_reco: bool = False,
+    has_push_failed: bool = False,
     add_wishlist_fn=None,
     observer=None,
 ) -> AsyncIterator[str]:
@@ -330,9 +336,9 @@ async def stream_wishlist_add(
     ):
         yield sse(
             "token",
-            TokenData(text=_wishlist_add_unresolved_notice(has_last_reco)).model_dump(
-                by_alias=True
-            ),
+            TokenData(
+                text=_wishlist_add_unresolved_notice(has_last_reco, has_push_failed=has_push_failed)
+            ).model_dump(by_alias=True),
         )
         yield _done()
         return

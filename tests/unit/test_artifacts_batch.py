@@ -165,6 +165,45 @@ async def test_batch_processes_and_upserts():
     assert store.get_cursor() == "c1"
 
 
+@pytest.mark.parametrize(
+    ("name", "expected_present"),
+    [("여행 방수 파우치", True), (None, False), ("   ", False)],
+)
+async def test_batch_records_name_presence_without_changing_search_doc(
+    name: str | None, expected_present: bool
+) -> None:
+    """[#468 I-17] 원본 이름 유무는 extras 플래그로만 남기고 임베딩 입력은 그대로 유지한다.
+
+    이 플래그를 빼면 이름 없는 상품의 category 첫 줄이 상품명처럼 추천 문맥에 실리고,
+    search_doc 생성을 플래그 때문에 바꾸면 기존 임베딩이 드리프트한다.
+    """
+    from app.pipelines.artifact_store import EXTRAS_NAME_PRESENT_KEY
+
+    store = CatalogArtifactStore()
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(items=[_change(1, name=name)], next_cursor="c1", has_more=False)
+
+    await run_artifacts_batch(
+        fetch=fetch, llm=_EnrichLLM(), embed=_embed, store=store, settings=get_settings()
+    )
+
+    artifact = store.get(1)
+    assert artifact is not None
+    assert artifact.extras[EXTRAS_NAME_PRESENT_KEY] is expected_present
+    expected_doc = _embedding.build_search_doc(
+        {
+            "name": name,
+            "description": "설명",
+            "category": "여행용품",
+            "brand": "트래블",
+            "attributes": {"방수": True},
+            "extras": {"tags": ["여행", "방수"], "attributes": {"소재": "나일론"}},
+        }
+    )
+    assert artifact.search_doc == expected_doc
+
+
 async def test_batch_uses_raw_product_fields_without_retaining_separate_copies():
     store = CatalogArtifactStore()
 
