@@ -2770,7 +2770,7 @@ async def test_pg_i20_gates_before_waiting_for_active_stream(pg_repo, monkeypatc
     session_id = prefix + "-i20-active-stream"
     await repo.touch(BuyerSessionInput(session_id, "T1", "member", "7"))
     registry = ActiveStreamRegistry()
-    assert registry.acquire("stream-1", owner_id="7", session_id=session_id)
+    assert await registry.acquire("stream-1", owner_id="7", session_id=session_id)
     snapshot_started = asyncio.Event()
 
     class _SnapshotStore:
@@ -2801,7 +2801,7 @@ async def test_pg_i20_gates_before_waiting_for_active_stream(pg_repo, monkeypatc
 
     assert not snapshot_started.is_set()
     assert not task.done()
-    registry.release("stream-1")
+    await registry.release("stream-1")
     outcome = await task
 
     assert snapshot_started.is_set()
@@ -3477,7 +3477,7 @@ async def test_pg_idle_prephase_failure_is_abandoned_and_fresh_sweep_completes(
             raise RuntimeError("snapshot unavailable")
 
     if failure == "active":
-        assert registry.acquire("active", owner_id="7", session_id=session_id)
+        assert await registry.acquire("active", owner_id="7", session_id=session_id)
     coordinator = SessionLifecycleCoordinator(
         repo,
         registry,
@@ -3490,7 +3490,7 @@ async def test_pg_idle_prephase_failure_is_abandoned_and_fresh_sweep_completes(
         outcome = await coordinator.process_idle_transient(claim)
         assert outcome.status == ("skipped" if failure == "active" else "retryable")
     if failure == "active":
-        registry.release("active")
+        await registry.release("active")
 
     assert (await repo.get_context(session_id)).state == "active"
     async with pool.connection() as conn:

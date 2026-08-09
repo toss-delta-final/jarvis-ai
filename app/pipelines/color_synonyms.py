@@ -16,6 +16,8 @@ _cache_lock = threading.Lock()
 # DB 가 죽어 있는 동안 TTL 창당 재연결 시도를 1회로 유계화한다(#258 CI hang 회귀).
 _cache: dict[str, tuple[float, dict[str, list[str]] | object]] = {}
 _LOAD_FAILED = object()
+_empty_map_warning_lock = threading.Lock()
+_empty_map_warning_until: dict[str, float] = {}
 
 
 class ColorSynonymLoadUnavailable(Exception):
@@ -100,9 +102,24 @@ def reset_cache() -> None:
     """테스트·운영 수동 갱신용 인프로세스 사전 캐시 초기화."""
     with _cache_lock:
         _cache.clear()
+    with _empty_map_warning_lock:
+        _empty_map_warning_until.clear()
 
 
-def get_synonym_map(dsn: str, *, ttl_s: float) -> dict[str, list[str]]:
+def _warn_empty_map_once(dsn: str, *, expires_at: float, enabled: bool) -> None:
+    """확장 중 빈 승인 사전의 무동작을 해당 TTL 창에 한 번만 알린다."""
+    if not enabled:
+        return
+    with _empty_map_warning_lock:
+        if _empty_map_warning_until.get(dsn, 0.0) >= expires_at:
+            return
+        _empty_map_warning_until[dsn] = expires_at
+    _log.warning(
+        "색상 동의어 사전 비어 있음 — status='approved' AND canonical IS NOT NULL 0행, 확장 무동작"
+    )
+
+
+def get_synonym_map(dsn: str, *, ttl_s: float, warn_if_empty: bool = False) -> dict[str, list[str]]:
     """dsn별 승인 사전을 monotonic TTL 동안 재사용하며 DB 조회 중 캐시 락을 놓는다.
 
     실패도 같은 TTL 동안 캐시한다(negative caching, #258 CI hang 회귀) — DB 가 죽어 있으면
@@ -114,7 +131,10 @@ def get_synonym_map(dsn: str, *, ttl_s: float) -> dict[str, list[str]]:
     if cached is not None and now < cached[0]:
         if cached[1] is _LOAD_FAILED:
             raise ColorSynonymLoadUnavailable(dsn)
-        return cached[1]  # type: ignore[return-value]
+        mapping = cached[1]  # type: ignore[assignment]
+        if not mapping:
+            _warn_empty_map_once(dsn, expires_at=cached[0], enabled=warn_if_empty)
+        return mapping  # type: ignore[return-value]
     # TTL 갱신 창에는 같은 dsn 쿼리가 겹칠 수 있지만, DB 호출 동안 전역 캐시 락을 잡아 다른
     # 검색 스레드의 wait_for 예산을 락 대기로 소모시키는 것보다 낫다. 결과 반영 시 먼저 끝난
     # 스레드의 유효 값을 재확인해 같은 dsn 캐시를 불필요하게 덮어쓰지 않는다.
@@ -131,17 +151,17 @@ def get_synonym_map(dsn: str, *, ttl_s: float) -> dict[str, list[str]]:
             _cache[dsn] = (now + max(0.0, ttl_s), _LOAD_FAILED)
         _log.warning("색상 동의어 사전 로드 실패 — TTL 만료까지 재시도 보류", exc_info=True)
         raise
-    if not mapping:
-        _log.warning(
-            "색상 동의어 확장이 켜져 있으나 승인 행이 0건이라 확장이 무동작입니다. "
-            "color_synonyms 시드 적재와 status='approved' 승격 여부를 확인하세요."
-        )
     with _cache_lock:
         now = time.monotonic()
         cached = _cache.get(dsn)
         if cached is not None and now < cached[0] and cached[1] is not _LOAD_FAILED:
+            if not cached[1]:
+                _warn_empty_map_once(dsn, expires_at=cached[0], enabled=warn_if_empty)
             return cached[1]  # type: ignore[return-value]
-        _cache[dsn] = (now + max(0.0, ttl_s), mapping)
+        expires_at = now + max(0.0, ttl_s)
+        _cache[dsn] = (expires_at, mapping)
+        if not mapping:
+            _warn_empty_map_once(dsn, expires_at=expires_at, enabled=warn_if_empty)
         return mapping
 
 

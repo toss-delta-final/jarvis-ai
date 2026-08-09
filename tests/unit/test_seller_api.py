@@ -732,12 +732,16 @@ def test_analysis_route_emits_report_between_token_and_done(
     assert "chartDataHint" not in data["findings"][0]
     # limitations — degrade finding(evidence==[])의 summary 모음
     assert data["limitations"] == ["데이터 확보 실패 — 분석 실행 오류(응답 시간 초과)"]
+    # [#504] 차트 기간 별도 지정 없음 → chartPeriod null, 실패 사유 없음 → 빈 배열
+    assert data["chartPeriod"] is None
+    assert data["chartUnavailable"] == []
     # charts — 구 chart 이벤트 직렬화 형식 그대로 이관
     assert data["chartRequested"] is True
     chart_data = data["charts"][0]
     assert chart_data["title"] == "일별 매출"
     assert chart_data["chartType"] == "line"  # 와이어 camelCase
     assert chart_data["unit"] == "KRW"
+    assert chart_data["aggregate"] == "sum"  # [#504] 소스 레지스트리 집계 방식(기본 sum)
     assert chart_data["series"][0]["label"] == "매출"
     assert chart_data["series"][0]["points"][0] == {"x": "07-01", "y": 1240000}
     assert chart_data["summary"] == "6월 대비 12% 감소"
@@ -779,6 +783,96 @@ def test_analysis_report_event_allows_empty_charts(monkeypatch: pytest.MonkeyPat
         data = events[2]["data"]
         assert data["charts"] == []
         assert data["chartRequested"] is overrides["chart_requested"]
+
+
+def test_analysis_report_event_chart_fields_504(monkeypatch: pytest.MonkeyPatch) -> None:
+    """[#504] chartPeriod(다를 때만)·chartUnavailable(부분 성공 공존)·unit RATING·
+    aggregate avg — 재설계 신필드 직렬화 계약."""
+    import datetime as dt
+
+    from app.agents.seller.charts import ChartUnavailable
+    from app.agents.seller.schemas import ChartPoint, ChartSeries, ChartSet, ChartSpec
+
+    rating_chart = ChartSpec(
+        title="상품별 평균 평점",
+        chart_type="bar",
+        unit="RATING",
+        aggregate="avg",
+        series=[ChartSeries(label="평점", points=[ChartPoint(x="감귤청 500ml", y=4.6)])],
+        summary="상품 42개 중 상위 15개만 표시했습니다.",
+    )
+    result = _report_pipeline_result(
+        charts=ChartSet(charts=[rating_chart]),
+        chart_period=(dt.date(2026, 8, 1), dt.date(2026, 8, 7)),
+        chart_unavailable=(
+            ChartUnavailable(
+                reason="unsupported_axes", message="'퍼널'은(는) 그래프로 만들 수 없습니다."
+            ),
+        ),
+    )
+
+    async def fake_pipeline(question, context, *, today, emit, recent_turns=(), screen=None):
+        return result
+
+    monkeypatch.setattr(seller_api, "route_question", _route_stub("analysis"))
+    monkeypatch.setattr(seller_api, "run_analysis_pipeline", fake_pipeline)
+
+    events = _collect_seller(_request("차트 보여줘"))
+    data = next(e for e in events if e["type"] == "report")["data"]
+
+    # 차트 기간이 분석 기간과 다르면 chartPeriod 를 싣는다
+    assert data["chartPeriod"] == {"from": "2026-08-01", "to": "2026-08-07"}
+    # 부분 성공 — charts 와 chartUnavailable 이 동시에 나간다
+    assert data["charts"][0]["unit"] == "RATING"
+    assert data["charts"][0]["aggregate"] == "avg"
+    assert data["chartUnavailable"] == [
+        {"reason": "unsupported_axes", "message": "'퍼널'은(는) 그래프로 만들 수 없습니다."}
+    ]
+
+
+def test_analysis_report_event_chart_period_equal_is_omitted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#504] 차트 기간이 분석 기간과 같으면 chartPeriod 는 null — "없으면 period 와
+    같다"는 FE 계약이라 같은 값을 중복으로 싣지 않는다."""
+    import datetime as dt
+
+    result = _report_pipeline_result(
+        chart_period=(dt.date(2026, 7, 1), dt.date(2026, 7, 31))  # == period
+    )
+
+    async def fake_pipeline(question, context, *, today, emit, recent_turns=(), screen=None):
+        return result
+
+    monkeypatch.setattr(seller_api, "route_question", _route_stub("analysis"))
+    monkeypatch.setattr(seller_api, "run_analysis_pipeline", fake_pipeline)
+
+    events = _collect_seller(_request("차트 보여줘"))
+    data = next(e for e in events if e["type"] == "report")["data"]
+    assert data["chartPeriod"] is None
+
+
+def test_analysis_report_event_chart_only_title(monkeypatch: pytest.MonkeyPatch) -> None:
+    """[#504] chart_only 턴 — 제목이 "판매 분석 그래프"로 나간다(FE 는 title 을 그대로
+    쓰므로 이 값이 화면 구분의 전부다). 보고서 재료 없이도 이벤트가 성립한다."""
+    result = _report_pipeline_result(
+        verified=None,
+        recommendations=None,
+        findings=None,
+        chart_only=True,
+    )
+
+    async def fake_pipeline(question, context, *, today, emit, recent_turns=(), screen=None):
+        return result
+
+    monkeypatch.setattr(seller_api, "route_question", _route_stub("analysis"))
+    monkeypatch.setattr(seller_api, "run_analysis_pipeline", fake_pipeline)
+
+    events = _collect_seller(_request("최근 7일 매출 그래프만"))
+    data = next(e for e in events if e["type"] == "report")["data"]
+    assert data["title"] == "판매 분석 그래프"
+    assert data["body"] == "" and data["findings"] == []
+    assert data["charts"][0]["title"] == "일별 매출"
 
 
 def test_analysis_route_no_report_event_for_non_report_kind(

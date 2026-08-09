@@ -566,6 +566,11 @@ class ProductChange(CamelModel):
 
     콘텐츠 필드는 enrichment·search_doc 조립 입력 — AI 는 저장하지 않고 산출물 생성에만 사용.
     미정의 status 는 페이지 전체 계약 위반으로 거부해 해당 페이지 artifact·커서를 보존한다.
+
+    **`DELETED`(BE 02 D41)를 여기 추가하지 않는다** — Spring 이 `!= ON_SALE` 을 전부
+    `"HIDDEN"` 으로 실어 보내므로(`ProductChangesResponse.Item.hidden()`) 삭제·숨김이
+    AI 에겐 같은 신호(생성물 제거)이고 동작이 동일하다. 3값으로 넓히면 위 fail-closed
+    규약과 충돌해 정상 페이지가 전량 실패한다.
     """
 
     product_id: (
@@ -914,7 +919,12 @@ class ChurnResult(SellerAggregateModel):
     churnRate 는 소수(fraction, 0.6=60%, round3 — DTO 주석 명시) — % 변환은 표시
     계층(tools)만 한다(스키마는 와이어 값 보존). 응답의 brandId/from/to/inactiveDays
     에코는 extra="allow" 로 흡수한다. 코호트 0명이면 cohortSize=0·churnRate=0.0·
-    빈 signals·빈 members 로 온다(BE short-circuit)."""
+    빈 signals·빈 members 로 온다(BE short-circuit).
+
+    [#495 주의] 코호트 0명의 churnRate 는 정본(노션 I-16)이 null 인데 본 사본
+    api-spec §4.4(v0.19.1)는 0.0 으로 적어 어긋나 있다 — 런타임은 tools 의
+    cohort_size == 0 조기 반환이 먼저라 어느 값이 와도 무해하다. 사본 정정 자체는
+    전수 대조(#472) 소관이라 여기서는 표시만 남긴다."""
 
     # [#197 PR 리뷰] 기본값 0.0 금지 — churnRate 키 결측이 조용히 "이탈률 0.0%"로
     # 렌더링되는 silent-mismatch(이 PR 이 제거한 #194 패턴)를 이 필드만 재도입하지
@@ -956,7 +966,10 @@ class AccountEventsResult(SellerAggregateModel):
 
 class SellerProductRow(CamelModel):
     """I-9 rows[] 항목. originalPrice 는 구매자 SpringProduct.listPrice 와 필드명이 달라
-    별도 모델로 유지한다(§2.4)."""
+    별도 모델로 유지한다(§2.4).
+
+    `status` 는 `ON_SALE`|`HIDDEN` 만 온다 — `DELETED` 는 BE 가 목록에서 제외한다(§4.5).
+    """
 
     product_id: int
     name: str
@@ -1001,7 +1014,7 @@ class ProductUpdate(CamelModel):
     category: str | None = None
     description: str | None = None
     image_url: str | None = None
-    status: str | None = None  # ON_SALE | HIDDEN
+    status: str | None = None  # ON_SALE | HIDDEN — DELETED 는 BE 가 거부(삭제는 I-12 전용)
 
 
 class ProductCreateResult(SellerAggregateModel):
@@ -1018,10 +1031,13 @@ class ProductUpdateResult(SellerAggregateModel):
 
 
 class ProductDeleteResult(SellerAggregateModel):
-    """I-12 200 응답 — soft delete, {productId, status:"HIDDEN"}."""
+    """I-12 200 응답 — soft delete, {productId, status:"DELETED"} (§4.5, 정본 Notion I-12).
+
+    `HIDDEN`(숨김·판매정지)이 아니다 — 숨김은 판매자 목록에 남고 삭제는 목록에서도 빠진다.
+    """
 
     product_id: int
-    status: str = "HIDDEN"
+    status: str = "DELETED"
 
 
 # ── I-29/I-30/I-31 판매자 주문·리뷰 (§4.18~§4.20, 이슈 #297 — 🔶 초안, BE 협의 전) ──

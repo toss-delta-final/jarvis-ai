@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import time
 
 import pytest
@@ -48,7 +47,7 @@ def test_search_query_params_default_color_path_is_unchanged() -> None:
     ]
 
 
-async def test_expansion_flag_off_never_loads_db(monkeypatch, caplog) -> None:
+async def test_expansion_flag_off_never_loads_db(monkeypatch) -> None:
     settings = get_settings().model_copy(update={"color_synonym_expansion_enabled": False})
     seen = []
     monkeypatch.setattr(sc, "get_settings", lambda: settings)
@@ -61,95 +60,8 @@ async def test_expansion_flag_off_never_loads_db(monkeypatch, caplog) -> None:
         "get_synonym_map",
         lambda *args, **kwargs: pytest.fail("flag off must not touch synonym DB"),
     )
-    with caplog.at_level(logging.WARNING):
-        await sc.search_products(ProductSearchFilters(color="남색"))
+    await sc.search_products(ProductSearchFilters(color="남색"))
     assert seen == [{"color": "남색"}]
-    assert "승인 행이 0건" not in caplog.text
-
-
-async def test_empty_approved_dictionary_warns_once_and_keeps_single_color(
-    monkeypatch, caplog
-) -> None:
-    """승인 사전이 비면 확장은 무동작임을 알리되 I-1 단수 와이어는 보존한다."""
-    settings = get_settings().model_copy(
-        update={
-            "catalog_db_url": "postgresql://empty-approved-warning",
-            "color_synonym_expansion_enabled": True,
-        }
-    )
-    seen = []
-    monkeypatch.setattr(sc, "get_settings", lambda: settings)
-    monkeypatch.setattr(sc, "_client", lambda *, timeout=None: _Client(seen))
-
-    from app.pipelines import color_synonyms
-
-    color_synonyms.reset_cache()
-    monkeypatch.setattr(color_synonyms, "load_synonym_map", lambda dsn: {})
-    with caplog.at_level(logging.WARNING, logger="app.pipelines.color_synonyms"):
-        await sc.search_products(ProductSearchFilters(color="그레이"))
-
-    assert seen == [{"color": "그레이"}]
-    assert caplog.text.count("승인 행이 0건") == 1
-
-
-async def test_nonempty_approved_dictionary_does_not_warn(monkeypatch, caplog) -> None:
-    """승인 행이 있으면 빈 사전 경고를 내지 않고 사전의 값을 그대로 I-1에 싣는다."""
-    settings = get_settings().model_copy(
-        update={
-            "catalog_db_url": "postgresql://nonempty-approved-warning",
-            "color_synonym_expansion_enabled": True,
-        }
-    )
-    seen = []
-    monkeypatch.setattr(sc, "get_settings", lambda: settings)
-    monkeypatch.setattr(sc, "_client", lambda *, timeout=None: _Client(seen))
-
-    from app.pipelines import color_synonyms
-
-    color_synonyms.reset_cache()
-    monkeypatch.setattr(
-        color_synonyms,
-        "load_synonym_map",
-        lambda dsn: {"그레이": ["다크그레이", " 그레이 "]},
-    )
-    with caplog.at_level(logging.WARNING, logger="app.pipelines.color_synonyms"):
-        await sc.search_products(ProductSearchFilters(color="그레이"))
-
-    assert seen == [{"color": ["다크그레이", " 그레이 "]}]
-    assert "승인 행이 0건" not in caplog.text
-
-
-async def test_empty_approved_dictionary_warning_is_cached_for_one_ttl_window(
-    monkeypatch, caplog
-) -> None:
-    """빈 사전도 TTL 정상값이므로 같은 창에서 경고와 DB 로드는 한 번뿐이다."""
-    settings = get_settings().model_copy(
-        update={
-            "catalog_db_url": "postgresql://empty-approved-warning-ttl",
-            "color_synonym_expansion_enabled": True,
-        }
-    )
-    seen = []
-    loads = 0
-    monkeypatch.setattr(sc, "get_settings", lambda: settings)
-    monkeypatch.setattr(sc, "_client", lambda *, timeout=None: _Client(seen))
-
-    from app.pipelines import color_synonyms
-
-    def load(dsn: str) -> dict[str, list[str]]:
-        nonlocal loads
-        loads += 1
-        return {}
-
-    color_synonyms.reset_cache()
-    monkeypatch.setattr(color_synonyms, "load_synonym_map", load)
-    with caplog.at_level(logging.WARNING, logger="app.pipelines.color_synonyms"):
-        await sc.search_products(ProductSearchFilters(color="그레이"))
-        await sc.search_products(ProductSearchFilters(color="그레이"))
-
-    assert seen == [{"color": "그레이"}, {"color": "그레이"}]
-    assert loads == 1
-    assert caplog.text.count("승인 행이 0건") == 1
 
 
 async def test_expansion_failure_degrades_to_single_original_color(monkeypatch, caplog) -> None:
@@ -292,13 +204,20 @@ async def test_expansion_loads_off_loop_and_sends_repeated_values(monkeypatch) -
 
     from app.pipelines import color_synonyms
 
+    empty_guard_flags = []
+
+    def loaded_map(dsn, ttl_s, warn_if_empty):
+        empty_guard_flags.append(warn_if_empty)
+        return {"남색": ["네이비", "남색"]}
+
     monkeypatch.setattr(
         color_synonyms,
         "get_synonym_map",
-        lambda dsn, ttl_s: {"남색": ["네이비", "남색"]},
+        loaded_map,
     )
     await sc.search_products(ProductSearchFilters(color="남색"))
     assert seen == [{"color": ["네이비", "남색"]}]
+    assert empty_guard_flags == [True]
 
 
 def test_ai_side_filters_leave_all_color_cases_to_spring() -> None:

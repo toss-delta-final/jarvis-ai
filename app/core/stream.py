@@ -9,7 +9,10 @@
   (c) 타임아웃 — 역할 공통 first-token 상한 초과 시 스트림 전 504, 역할별 전체 상한
       (구매자 stream_total_timeout_buyer_s, 판매자·미지정 stream_total_timeout_s) 초과 시 절단(§2.9 c)
 
-MVP 단일 인스턴스 전제. 다중 인스턴스 확장 시 레지스트리를 Redis 로 이관한다.
+레지스트리가 프로세스 로컬인 동안 워커 다중화는 금지다. 레지스트리 자체는 이제
+`STREAM_REGISTRY_BACKEND=shared` 로 워커 간 공유로 올릴 수 있지만(#476,
+`docs/specs/DESIGN-SHARED-STREAM-REGISTRY-476.md`), 다른 프로세스 로컬 상태의 선행조건이
+남으므로 증설 판단과 전환 순서는 `docs/specs/OPS-SCALEOUT-476.md`를 따른다.
 """
 
 from __future__ import annotations
@@ -17,7 +20,6 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Callable
 from contextlib import nullcontext
-from dataclasses import dataclass
 from typing import Any, Literal
 
 from fastapi import HTTPException, Request, status
@@ -30,10 +32,44 @@ from app.core.conversation import TurnStatus
 from app.core.errors import new_request_id
 from app.core.logging import get_logger
 from app.core.observability import RequestObservation, identifier_fingerprint
+from app.core.session_context import SessionStateUnavailable
+from app.core.stream_registry import (
+    ActiveStreamRegistry,
+    InMemorySharedStreamStore,
+    PostgresSharedStreamStore,
+    SharedStreamRegistry,
+    SharedStreamStore,
+    StreamScopeFence,
+    build_registry,
+    close_stream_registry,
+    get_registry,
+    initialize_stream_registry,
+    registry_is_process_local,
+    set_registry,
+)
 from app.core.tracing import RequestTrace, bind_request_trace
 from app.schemas.chat import DoneData, ErrorData
 
 logger = get_logger(__name__)
+
+# 레지스트리 구현은 app/core/stream_registry.py 로 분리했다. 기존 import 경로를 유지하기 위해
+# 여기서 재수출한다.
+__all__ = [
+    "ActiveStreamRegistry",
+    "InMemorySharedStreamStore",
+    "PostgresSharedStreamStore",
+    "SharedStreamRegistry",
+    "SharedStreamStore",
+    "StreamScopeFence",
+    "build_registry",
+    "close_stream_registry",
+    "get_registry",
+    "initialize_stream_registry",
+    "open_stream",
+    "registry_is_process_local",
+    "registry_key",
+    "set_registry",
+]
 
 _SSE_HEADERS = {
     "Cache-Control": "no-cache",
@@ -41,104 +77,35 @@ _SSE_HEADERS = {
 }
 
 
-@dataclass
-class _ScopeIdleWaiters:
-    event: asyncio.Event
-    count: int = 0
+def _note_active_streams(
+    observer: RequestObservation | None,
+    registry: ActiveStreamRegistry,
+) -> None:
+    """관측 실패가 스트림 슬롯·응답 수명주기를 바꾸지 않게 활성 수 표본을 격리한다."""
+    if observer is None:
+        return
+    try:
+        observer.note_active_streams(registry.active_count())
+    except Exception:
+        logger.warning("active stream observation failed code=ACTIVE_STREAM_OBSERVATION_FAILED")
 
 
-class ActiveStreamRegistry:
-    """인메모리 활성 스트림 레지스트리 (§2.9 a). acquire/release 는 await 를 끼지 않아
-    이벤트 루프 상에서 원자적이다 (check-then-add 사이 선점 없음)."""
+async def _renew_stream_lease(registry: ActiveStreamRegistry, stream_key: str) -> None:
+    """공유 백엔드 lease 연장을 이미 도는 폴링 tick 에 얹는다 (#476, SPEC §4).
 
-    def __init__(self) -> None:
-        self._active: dict[str, tuple[str, str] | None] = {}
-        self._fences: dict[tuple[str, str], StreamScopeFence] = {}
-        self._scope_idle: dict[tuple[str, str], _ScopeIdleWaiters] = {}
-
-    def acquire(
-        self,
-        stream_key: str,
-        *,
-        owner_id: str | None = None,
-        session_id: str | None = None,
-    ) -> bool:
-        """활성 등록. buyer scope가 fenced 상태이거나 key가 활성이면 False."""
-        if (owner_id is None) != (session_id is None):
-            raise ValueError("owner_id and session_id must be provided together")
-        if stream_key in self._active:
-            return False
-        scope = (owner_id, session_id) if owner_id is not None and session_id is not None else None
-        if scope is not None and scope in self._fences:
-            return False
-        self._active[stream_key] = scope
-        if scope is not None:
-            waiters = self._scope_idle.get(scope)
-            if waiters is not None:
-                waiters.event.clear()
-        return True
-
-    def release(self, stream_key: str) -> None:
-        """활성 해제 (중복 해제 무해)."""
-        scope = self._active.pop(stream_key, None)
-        if scope is not None and scope not in self._active.values():
-            waiters = self._scope_idle.get(scope)
-            if waiters is not None:
-                waiters.event.set()
-
-    def is_active(self, stream_key: str) -> bool:
-        return stream_key in self._active
-
-    def acquire_fence(self, owner_id: str, session_id: str) -> StreamScopeFence | None:
-        """해당 buyer session scope에 active stream이 없을 때 non-blocking fence를 획득한다."""
-        scope = (owner_id, session_id)
-        if scope in self._fences or scope in self._active.values():
-            return None
-        token = StreamScopeFence(owner_id=owner_id, session_id=session_id)
-        self._fences[scope] = token
-        return token
-
-    def release_fence(self, token: StreamScopeFence) -> None:
-        """발급한 동일 token 객체만 fence를 해제할 수 있다."""
-        scope = (token.owner_id, token.session_id)
-        if self._fences.get(scope) is not token:
-            raise ValueError("stream scope fence token is not active")
-        del self._fences[scope]
-
-    def is_fenced(self, owner_id: str, session_id: str) -> bool:
-        return (owner_id, session_id) in self._fences
-
-    async def wait_for_scope_idle(self, owner_id: str, session_id: str) -> None:
-        """해당 buyer session scope의 기존 stream이 모두 종료될 때까지 event 기반 대기한다."""
-        scope = (owner_id, session_id)
-        while scope in self._active.values():
-            waiters = self._scope_idle.get(scope)
-            if waiters is None or waiters.event.is_set():
-                waiters = _ScopeIdleWaiters(asyncio.Event())
-                self._scope_idle[scope] = waiters
-            waiters.count += 1
-            try:
-                await waiters.event.wait()
-            finally:
-                waiters.count -= 1
-                if waiters.count == 0 and self._scope_idle.get(scope) is waiters:
-                    del self._scope_idle[scope]
-
-
-@dataclass(frozen=True)
-class StreamScopeFence:
-    """Owner/session registry fence identity token."""
-
-    owner_id: str
-    session_id: str
-
-
-_registry = ActiveStreamRegistry()
-
-
-def get_registry() -> ActiveStreamRegistry:
-    """활성 스트림 레지스트리 싱글턴."""
-    return _registry
+    `lease_renewal_due()` 는 **sync** 라 인메모리 백엔드에서는 코루틴조차 만들지 않고 즉시
+    False 다 — 프레임마다 DB 를 치지 않고, 기본 배포의 핫 패스는 그대로다. 연장 실패가 스트림을
+    죽이지 않게 `_note_active_streams` 와 같은 예외 격리를 유지한다(부기 실패가 응답 수명주기를
+    바꾸면 안 된다 — #48 슬롯 누수의 성질).
+    """
+    if not registry.lease_renewal_due(stream_key):
+        return
+    try:
+        await registry.renew_lease(stream_key)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.warning("stream lease renewal failed code=STREAM_LEASE_RENEW_FAILED")
 
 
 def registry_key(identity: Identity, thread_id: str) -> str:
@@ -357,7 +324,7 @@ class _ResponseLifecycle:
                 else:
                     await self._pump.cancel_and_wait()
             finally:
-                self._registry.release(self._stream_key)
+                await self._registry.release(self._stream_key)
                 if self._observer is not None:
                     await _safe_finish(
                         self._observer,
@@ -435,6 +402,9 @@ async def open_stream(
     role 미지정은 기존 전체 상한을 유지한다. 명시하지 않은 호출자가 조용히 더 좁은 구매자
     상한으로 잘리지 않도록, 역할을 명시한 호출자만 좁은 예산을 받는다.
 
+    활성 스트림 표본은 실제 열린 수다. acquire 성공 표본은 자신을 포함하고, 409 거절 표본은
+    자신을 제외한다.
+
     [#427, DESIGN-SHARED-BUDGET-384 §3 D2] `inner_factory` 는 이 함수가 실제로 `deadline`
     계산에 쓰는 `start`(`loop.time()`)를 받는다 — 구제 체인 공유 예산(`rescue_deadline`)이
     이 스트림의 실제 데드라인과 같은 원점에서 파생돼야 `rescue_deadline ≤ deadline` 부등식이
@@ -448,12 +418,29 @@ async def open_stream(
     trace = observer.trace if observer is not None else None
 
     buyer_session = getattr(observer, "buyer_session", None)
-    if not registry.acquire(
-        stream_key,
-        owner_id=buyer_session.owner_id if buyer_session is not None else None,
-        session_id=buyer_session.session_id if buyer_session is not None else None,
-    ):
+    try:
+        acquired = await registry.acquire(
+            stream_key,
+            owner_id=buyer_session.owner_id if buyer_session is not None else None,
+            session_id=buyer_session.session_id if buyer_session is not None else None,
+        )
+    except SessionStateUnavailable:
+        # 공유 백엔드 저장소 장애 — fail-closed. fail-open 하면 다중 워커에서 §2.9(a) 가드가
+        # 사라져 동시 스트림이 조용히 겹친다(#476 SPEC §6). 계약에 이미 있는 503
+        # STATE_UNAVAILABLE 로 나간다(app.core.errors 매핑, 새 오류 코드 없음).
         if observer is not None:
+            await _safe_finish(
+                observer,
+                stream_key,
+                loop.time(),
+                TurnStatus.FAILED,
+                "STATE_UNAVAILABLE",
+                "store_unavailable",
+            )
+        raise
+    if not acquired:
+        if observer is not None:
+            _note_active_streams(observer, registry)
             await _safe_finish(
                 observer,
                 stream_key,
@@ -471,6 +458,7 @@ async def open_stream(
         )
 
     if observer is not None:
+        _note_active_streams(observer, registry)
         try:
             # 슬롯 확보 후에만 사용자 메시지 저장(§6.3 a, 유령 턴 방지). 이제 실제 pg-profile
             # I/O 라 DB 오류·클라이언트 disconnect 로 예외를 던질 수 있다 — release 없이
@@ -481,7 +469,7 @@ async def open_stream(
             # disconnect 로 이 DB 쓰기 중 취소되면 CancelledError(BaseException)라 아래
             # except Exception 으로는 안 잡혀 release 가 스킵됐었다(슬롯 영구 누수, PR #48
             # 후속 리뷰) — 명시적으로 잡아 슬롯을 풀고 CANCELLED 로 마감 후 취소를 재전파한다.
-            registry.release(stream_key)
+            await registry.release(stream_key)
             await _safe_finish(
                 observer,
                 stream_key,
@@ -492,7 +480,7 @@ async def open_stream(
             )
             raise
         except Exception:
-            registry.release(stream_key)
+            await registry.release(stream_key)
             await _safe_finish(
                 observer,
                 stream_key,
@@ -508,7 +496,7 @@ async def open_stream(
         agen = inner_factory(start)
     except Exception:
         # 그래프 진입 검증 등 inner_factory 동기 예외 — 슬롯·턴 누수 방지.
-        registry.release(stream_key)
+        await registry.release(stream_key)
         if observer is not None:
             await _safe_finish(
                 observer, stream_key, loop.time(), TurnStatus.FAILED, "INTERNAL", "tool_error"
@@ -543,7 +531,7 @@ async def open_stream(
                 first_reply.cancel()
             await pump.cancel_and_wait()
         finally:
-            registry.release(stream_key)
+            await registry.release(stream_key)
 
     first: str | None = None
     try:
@@ -565,6 +553,9 @@ async def open_stream(
                     detail={"code": "UPSTREAM_TIMEOUT", "message": "상류(LLM) 응답 지연"},
                 )
             completed, _ = await asyncio.wait({first_reply}, timeout=min(remaining, poll))
+            await _renew_stream_lease(registry, stream_key)
+            if observer is not None:
+                _note_active_streams(observer, registry)
             if first_reply in completed:
                 try:
                     result = first_reply.result()
@@ -681,6 +672,9 @@ async def open_stream(
                     yield done_frame
                     break
                 completed, _ = await asyncio.wait({next_reply}, timeout=min(remaining, poll))
+                await _renew_stream_lease(registry, stream_key)
+                if observer is not None:
+                    _note_active_streams(observer, registry)
                 if next_reply not in completed:
                     # 아직 이벤트 없음(제너레이터 유휴) — (b) 연결 종료 조기 감지.
                     if await request.is_disconnected():
