@@ -125,9 +125,12 @@ def test_seller_request_exports_one_correlated_root(
 
     monkeypatch.setattr(seller_api, "route_question", route)
     monkeypatch.setattr(seller_api, "build_general_agent", lambda today, checkpointer=None: Agent())
+    # [#346] 발화는 **기간 표현이 없어야** 한다. general 레인은 해석 불가 기간을 모델 호출
+    # 앞에서 되묻기로 끊으므로("오늘"), 그런 발화를 쓰면 graph/llm span 이 아예 안 생겨
+    # 트레이스 상관관계를 재려는 이 테스트가 엉뚱한 이유로 깨진다.
     response = client.post(
         "/seller/chat",
-        json={"sessionId": "s1", "threadId": "t1", "message": "오늘 날씨 알려줘"},
+        json={"sessionId": "s1", "threadId": "t1", "message": "매출 알려줘"},
         headers=_seller_headers(),
     )
 
@@ -1466,7 +1469,7 @@ async def test_all_seller_spring_operations_trace_timeout_without_changing_mappi
             "spring.get_account_events",
             "GET",
             lambda: client.get_account_events(
-                "2026-06-01", "2026-07-31", event_type="private-event"
+                71727374757677, "2026-06-01", "2026-07-31", event_type="private-event"
             ),
         ),
         (

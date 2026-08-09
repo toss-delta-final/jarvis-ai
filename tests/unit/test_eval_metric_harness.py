@@ -6,7 +6,11 @@ import pytest
 from app.core.config import get_settings
 from app.schemas.spring import LIST_MAX_PRODUCTS
 from evals.goldenset.loader import load_cases
-from evals.metrics.harness import OfflineBuyerAdapter, _filter_products_by_requested_price
+from evals.metrics.harness import (
+    OfflineBuyerAdapter,
+    _filter_products_by_requested_color,
+    _filter_products_by_requested_price,
+)
 from evals.metrics.runner import evaluate, load_evaluation_fixtures
 
 
@@ -120,6 +124,35 @@ def test_price_filter_never_crashes_on_non_numeric_price() -> None:
         products, httpx.QueryParams({"minPrice": "0", "maxPrice": "500"})
     )
     assert [p["productId"] for p in result] == [1]
+
+
+# #474 — I-1 색상 배열 계약과 동일한 mock 필터
+def test_color_filter_keeps_missing_none_and_blank_color_axes_as_passthrough() -> None:
+    products = [
+        {"productId": 1},
+        {"productId": 2, "attributes": {"색상": None}},
+        {"productId": 3, "attributes": {"색상": "  "}},
+        {"productId": 4, "attributes": {"색상": "레드"}},
+    ]
+
+    result = _filter_products_by_requested_color(products, httpx.QueryParams([("color", "네이비")]))
+
+    assert [product["productId"] for product in result] == [1, 2, 3]
+
+
+def test_color_filter_uses_all_repeated_params_with_normalized_partial_or_match() -> None:
+    products = [
+        {"productId": 1, "attributes": {"색상": "다크그레이"}},
+        {"productId": 2, "attributes": {"색상": "네이비"}},
+        {"productId": 3, "attributes": {"색상": "레드"}},
+    ]
+
+    result = _filter_products_by_requested_color(
+        products,
+        httpx.QueryParams([("color", "  그레이 "), ("color", " 네이비 ")]),
+    )
+
+    assert [product["productId"] for product in result] == [1, 2]
 
 
 def test_case_transport_applies_price_filter_to_search_response() -> None:

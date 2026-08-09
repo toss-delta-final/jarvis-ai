@@ -203,10 +203,17 @@ async def test_expansion_loads_off_loop_and_sends_repeated_values(monkeypatch) -
 
     from app.pipelines import color_synonyms
 
+    empty_guard_flags = []
+
+    def loaded_map(dsn, ttl_s, warn_if_empty):
+        empty_guard_flags.append(warn_if_empty)
+        return {"남색": ["네이비", "남색"]}
+
     monkeypatch.setattr(
         color_synonyms,
         "get_synonym_map",
-        lambda dsn, ttl_s: {"남색": ["네이비", "남색"]},
+        loaded_map,
     )
     await sc.search_products(ProductSearchFilters(color="남색"))
     assert seen == [{"color": ["네이비", "남색"]}]
+    assert empty_guard_flags == [True]

@@ -21,7 +21,7 @@ ROOT = Path("evals/goldenset")
 def test_committed_dev_and_holdout_are_separate() -> None:
     dev = load_cases("dev")
     holdout = load_cases("holdout")
-    assert len(dev) == 103
+    assert len(dev) == 109
     assert len(holdout) == 24
     assert {case.split for case in dev} == {"dev"}
     assert {case.split for case in holdout} == {"holdout"}
@@ -135,7 +135,21 @@ def test_fixture_requests_equal_case_expected_filters() -> None:
     for path in (ROOT / "cases" / "buyer_dev.jsonl", ROOT / "cases" / "buyer_holdout.jsonl"):
         for line in path.read_text().splitlines():
             case = json.loads(line)
-            assert responses[case["searchFixtureId"]]["request"] == case["expectedFilters"]
+            fixture_request = responses[case["searchFixtureId"]]["request"]
+            if case["caseId"].startswith("buy-colr-"):
+                twins = [
+                    json.loads(row)
+                    for row in (ROOT / "cases" / "buyer_dev.jsonl").read_text().splitlines()
+                    if json.loads(row)["searchFixtureId"] == case["searchFixtureId"]
+                ]
+                assert {key: value for key, value in fixture_request.items() if key != "color"} == {
+                    key: value for key, value in case["expectedFilters"].items() if key != "color"
+                }
+                assert fixture_request["color"] in {
+                    twin["expectedFilters"]["color"] for twin in twins
+                }
+            else:
+                assert fixture_request == case["expectedFilters"]
 
 
 def test_holdout_non_failure_cases_have_live_distractors() -> None:
