@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 from collections.abc import Awaitable, Callable
@@ -23,7 +24,7 @@ from typing import Any
 from langchain.tools import ToolRuntime
 from langchain_core.tools import BaseTool, tool
 
-from app.agents.seller import calc
+from app.agents.seller import calc, period
 from app.agents.seller.analysis import outliers, proportions, segmentation, timeseries
 from app.agents.seller.context import SellerContext
 from app.core.config import get_settings
@@ -1516,6 +1517,117 @@ async def get_orders(
 # 값은 BE 400 VALIDATION_ERROR. 도구가 호출 전 선검증한다(#496, _ACCOUNT_EVENTS_GROUP_BY 패턴).
 _REVIEW_SORT = ("latest", "ratingAsc")
 
+# [#518] 감성 구간 — I-31 distribution(P-3 형태, 키는 문자열 "1"~"5") 위에서만 센다.
+# 별점은 BE 가 준 집계라 워커가 원문을 읽어 세는 것보다 정확하고, 숨김 리뷰·표본 절단의
+# 영향을 받지 않는다. 3점을 중립으로 떼는 것은 이슈 #518 이 정한 경계다.
+_REVIEW_NEGATIVE_STARS = ("1", "2")
+_REVIEW_NEUTRAL_STARS = ("3",)
+_REVIEW_POSITIVE_STARS = ("4", "5")
+
+
+def _review_sentiment_note(distribution: dict[str, int], total: int) -> str:
+    """별점 분포 → 긍정·중립·부정 건수와 비율 한 문장.
+
+    비율까지 **도구가** 계산해 내보내는 이유: verifier F2(check_evidence_grounded)가
+    finding 의 유의 수치를 도구 출력 문자열과 대조한다. 건수만 주면 워커가 "긍정 62%"
+    라고 쓰는 순간 그 숫자가 도구 출력에 없어 근거 없는 수치로 잡히고, 피하려면 워커가
+    calculate 를 추가로 불러야 해 seller_tool_call_limit(8)을 갉아먹는다. 숫자는 도구가,
+    해석은 LLM 이 맡는다는 #518 의 분리 원칙과도 같은 방향이다.
+
+    합계는 distribution 이 아니라 인자로 받은 total(totalCount)로 나눈다 — BE 가 분포에
+    없는 별점을 총계에만 반영하는 경우 자체 합산은 100%를 넘는 비율을 만든다.
+    """
+    if total <= 0:
+        return ""
+    segments = []
+    for label, stars in (
+        ("긍정(4-5점)", _REVIEW_POSITIVE_STARS),
+        ("중립(3점)", _REVIEW_NEUTRAL_STARS),
+        ("부정(1-2점)", _REVIEW_NEGATIVE_STARS),
+    ):
+        count = sum(distribution.get(star, 0) for star in stars)
+        segments.append(f"{label} {count}건 {round(count * 100 / total, 1)}%")
+    return " 감성: " + ", ".join(segments) + "."
+
+
+async def _get_reviews_bucketed(
+    brand_id: int,
+    *,
+    from_date: str,
+    to_date: str,
+    product_id: int | None,
+    rating: str | None,
+    unit: str,
+    max_buckets: int,
+) -> str:
+    """[#518] 기간을 버킷으로 나눠 I-31 집계를 구간별로 조회한다(추이).
+
+    팬아웃을 **도구 안**에 두는 이유: 워커가 구간마다 get_reviews 를 부르면 12구간짜리
+    추이 하나가 seller_tool_call_limit(8)을 통째로 넘긴다. 여기서 한 번에 처리하면
+    도구 호출은 1회로 유지되고, 왕복도 순차 12회(최악 36s, 판매자 스트림 상한 90s 를
+    잠식)가 아니라 동시 1회분으로 끝난다.
+
+    부분 실패는 그 구간만 '조회 실패' 로 적고 나머지는 살린다(§3.4 degrade 규약).
+    실패 구간을 '0건' 으로 적지 않는 것이 핵심이다 — 리뷰가 없는 구간과 못 본 구간은
+    다른 사실이고, 뭉개면 워커가 없는 급락을 서술한다(I-16 averageRating null 규칙과
+    같은 결).
+    """
+    try:
+        spans = period.split_buckets(
+            date.fromisoformat(from_date),
+            date.fromisoformat(to_date),
+            unit,
+            max_buckets=max_buckets,
+        )
+    except ValueError as exc:
+        return f"Error: {exc}. 더 넓은 단위(daily→weekly→monthly)나 좁은 기간을 쓰세요."
+
+    client = get_spring_client()
+    results = await asyncio.gather(
+        *(
+            client.get_review_stats(
+                brand_id,
+                from_=start.isoformat(),
+                to=end.isoformat(),
+                product_id=product_id,
+                rating=rating,
+            )
+            for start, end in spans
+        ),
+        return_exceptions=True,
+    )
+
+    lines: list[str] = []
+    failed = 0
+    for (start, end), outcome in zip(spans, results, strict=True):
+        label = f"{start.isoformat()}~{end.isoformat()}"
+        if isinstance(outcome, BaseException):
+            failed += 1
+            lines.append(f"{label} 조회 실패")
+            continue
+        if outcome.total_count == 0:
+            lines.append(f"{label} 0건")
+            continue
+        avg = (
+            f" 평균 {outcome.average_rating}점"
+            if outcome.average_rating is not None
+            else " 평균 산정 불가"
+        )
+        negative = sum(outcome.distribution.get(star, 0) for star in _REVIEW_NEGATIVE_STARS)
+        positive = sum(outcome.distribution.get(star, 0) for star in _REVIEW_POSITIVE_STARS)
+        lines.append(f"{label} {outcome.total_count}건{avg}(부정 {negative}건·긍정 {positive}건)")
+
+    if failed == len(spans):
+        return "Error: 리뷰 추이 조회에 실패했습니다(전 구간 조회 실패)."
+    rating_scope = f"(별점 {rating} 한정)" if rating else ""
+    failed_note = f" {failed}개 구간은 조회하지 못했습니다 — 0건과 다릅니다." if failed else ""
+    unit_label = {"daily": "일별", "weekly": "주별", "monthly": "월별"}[unit]
+    return (
+        f"리뷰 추이{rating_scope}({unit_label}, {len(spans)}구간): "
+        + "; ".join(lines)
+        + f".{failed_note} {_reference_note(from_date, to_date)}"
+    )
+
 
 @tool
 @_traced_tool("tool.get_reviews")
@@ -1528,14 +1640,15 @@ async def get_reviews(
     rating: str | None = None,
     sort: str | None = None,
     stats: bool = False,
+    bucket: str | None = None,
     limit: int | None = None,
     offset: int | None = None,
 ) -> str:
     """자사 상품 리뷰(VISIBLE 만)를 조회한다(I-31, api-spec §4.20).
 
     기간을 생략하면 최근 7일이 기본 적용된다(서버 규칙). stats=True 면 목록 대신
-    집계(총건수·평균·별점 분포·상품별)만 반환한다 — 전반 요약은 집계를 먼저 보고,
-    문제 리뷰 원문이 필요할 때 rating 필터로 목록을 조회하는 순서를 권장한다.
+    집계(총건수·평균·별점 분포·상품별·긍부정 감성 비율)만 반환한다 — 전반 요약은 집계를
+    먼저 보고, 문제 리뷰 원문이 필요할 때 rating 필터로 목록을 조회하는 순서를 권장한다.
 
     Args:
         from_date: 조회 시작일 YYYY-MM-DD(선택 — 생략 시 최근 7일).
@@ -1547,6 +1660,9 @@ async def get_reviews(
         sort: latest(기본)/ratingAsc — ratingAsc 는 낮은 별점부터(문제 파악용, 선택).
             ratingDesc 는 존재하지 않는다 — 높은 별점은 rating="4,5" 필터로 얻는다.
         stats: True 면 집계 모드(총건수/평균/분포/상품별) — 목록 대신 통계만.
+        bucket: daily/weekly/monthly — 기간을 나눠 구간별 집계 추이를 한 번에 조회한다
+            (선택, stats=True 이고 from_date·to_date 를 둘 다 준 경우만).
+            "주별 추이" 질문에 이 인자를 쓰면 구간마다 따로 호출할 필요가 없다.
         limit: 반환 상한(선택, 서버 기본 20·최대 100).
         offset: 페이지 오프셋(선택).
     """
@@ -1557,6 +1673,23 @@ async def get_reviews(
         if from_date and to_date
         else "(기준: 최근 7일 기본 적용)"
     )
+    if bucket is not None:
+        # bucket 은 stats 전용이다 — 목록 모드로 열어 주면 구간 수 × limit 만큼 원문이
+        # 쏟아져 워커 입력을 덮고, 어차피 추이는 집계로만 읽힌다. 기간도 필수다:
+        # 서버 기본 7일은 요청마다 오늘이 달라져 버킷 경계를 고정할 수 없다.
+        if not stats:
+            return "Error: bucket 은 stats=True 집계 모드에서만 쓸 수 있습니다."
+        if not (from_date and to_date):
+            return "Error: bucket 을 쓰려면 from_date·to_date 를 모두 지정해야 합니다."
+        return await _get_reviews_bucketed(
+            brand_id,
+            from_date=from_date,
+            to_date=to_date,
+            product_id=product_id,
+            rating=rating,
+            unit=bucket,
+            max_buckets=settings.seller_review_bucket_max,
+        )
     if stats:
         # [#494] rating 은 집계에도 적용되는 필터다(I-31) — 안 넘기면 전 별점 합산
         # byProduct 가 돌아오는데 에러도 경고도 없어, 워커가 그것을 '저평점이 몰린
@@ -1589,9 +1722,13 @@ async def get_reviews(
             for p in agg.by_product
         )
         by_product_note = f" 상품별: {by_product}." if by_product else ""
+        # [#518] 감성 요약은 rating 미지정일 때만 붙인다 — 별점을 걸고 온 집계에 긍부정
+        # 비율을 얹으면 분모가 그 별점 범위라 "부정 100%" 같은 자명한 수가 나오고,
+        # #494 가 세운 rating 지정 경로의 출력도 회귀한다.
+        sentiment_note = "" if rating else _review_sentiment_note(agg.distribution, agg.total_count)
         return (
             f"리뷰 집계{rating_scope}: 총 {agg.total_count}건, {avg_note}. 분포: {dist_note}."
-            f"{by_product_note} {period_note}"
+            f"{by_product_note}{sentiment_note} {period_note}"
         )
     # [#496] sort 화이트리스트 선검증 — BE 도 400 VALIDATION_ERROR 로 거부하지만(api-spec
     # §4.20), 폐기된 구 어휘 `rating` 은 LLM 이 여전히 낼 수 있고 왕복 1회(3s 타임아웃
@@ -1618,9 +1755,14 @@ async def get_reviews(
     if not result.rows:
         return f"조회 조건에 해당하는 리뷰가 없습니다. {period_note}"
     shown = result.rows[: settings.seller_summary_max_reviews]
+    # [#518] content·authorNickname 은 nullable 이다(별점만 남기는 리뷰가 실재한다).
+    # f-string 에 그대로 넣으면 판매자 화면에 "None" 이 찍히고, 그보다 나쁘게는 워커가
+    # 그 행을 불만 유형 분류에 집어넣는다 — 내용이 **없다**는 사실을 문구로 세워
+    # 프롬프트가 분류 대상에서 뺄 수 있게 한다(#495 의 '라벨없음' 과 같은 규약).
     lines = [
         f"[리뷰 {row.review_id}] {row.product_name}(productId={row.product_id}) "
-        f"★{row.rating} {row.created_at[:10]} {row.author_nickname}: {row.content}"
+        f"★{row.rating} {row.created_at[:10]} {row.author_nickname or '익명'}: "
+        f"{row.content or '(내용 없음)'}"
         for row in shown
     ]
     omitted = len(result.rows) - len(shown)
