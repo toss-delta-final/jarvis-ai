@@ -124,10 +124,10 @@ def test_degrade_notice_defaults():
 
 
 def test_search_retry_defaults_fit_first_token_budget():
-    """기본값(3s×1=3s, #394 로 재시도 한시적 비활성)이 first-token 10s 예산 안에 들어온다 (#133)."""
+    """기본값(3s×2=6s, 사람 지시로 #394 원복)이 first-token 10s 예산 안에 들어온다 (#133)."""
     settings = Settings(_env_file=None)
 
-    assert settings.spring_max_retries == 0
+    assert settings.spring_max_retries == 1
     assert settings.spring_search_timeout_s * (settings.spring_max_retries + 1) < (
         settings.stream_first_token_timeout_s
     )
@@ -236,7 +236,12 @@ def test_deferred_retry_guard_rejects_default_serial_budget():
     # 분기 직렬 합은 3 × (3.0×2) = 18.0 이고, observe 모드(기본) 꼬리 예약 비교(30-15=15.0)
     # 를 넘는다.
     with pytest.raises(ValidationError) as exc_info:
-        Settings(_env_file=None, search_retry_on_deferred_conditions=True, spring_max_retries=1)
+        Settings(
+            _env_file=None,
+            search_retry_on_deferred_conditions=True,
+            spring_max_retries=1,
+            rescue_budget_mode="observe",
+        )
 
     message = str(exc_info.value)
     assert "RESCUE_BUDGET_MODE=observe" in message
@@ -251,6 +256,7 @@ def test_deferred_retry_guard_allows_empty_auto_relax_fields():
     """자동 완화 목록이 비면 미룸이 없어 직렬 합 검증 대상이 아니다."""
     settings = Settings(
         _env_file=None,
+        rescue_budget_mode="observe",
         relaxation_auto_fields=[],
         search_retry_on_deferred_conditions=True,
     )
@@ -279,6 +285,7 @@ def test_deferred_retry_guard_allows_reduced_timeout_and_default_off():
         _env_file=None,
         search_retry_on_deferred_conditions=True,
         spring_timeout_s=2.0,
+        spring_max_retries=0,
     )
 
     # [#383] 계수를 손으로 복제(`2 * ...`)하면 드리프트가 생긴다 — 헬퍼로 계산한다.
@@ -305,7 +312,12 @@ def test_deferred_retry_default_path_rejects_serial_budget_when_retries_zero():
     from pydantic import ValidationError
 
     with pytest.raises(ValidationError) as exc_info:
-        Settings(_env_file=None, spring_max_retries=0, spring_search_timeout_s=6.0)
+        Settings(
+            _env_file=None,
+            spring_max_retries=0,
+            spring_search_timeout_s=6.0,
+            rescue_budget_mode="observe",
+        )
 
     message = str(exc_info.value)
     assert "RESCUE_BUDGET_MODE=observe" in message
@@ -319,6 +331,7 @@ def test_deferred_retry_default_path_allows_disabled_relaxation():
     """완화를 끄면 가드 off의 12s 조합도 첫 이벤트 앞 직렬 호출이 없어 통과한다."""
     settings = Settings(
         _env_file=None,
+        rescue_budget_mode="observe",
         spring_max_retries=0,
         spring_timeout_s=6.0,
         relaxation_max_rounds=0,
@@ -413,7 +426,13 @@ def test_startup_guard_observe_tail_still_checked_when_auto_relax_disabled():
     from pydantic import ValidationError
 
     with pytest.raises(ValidationError) as exc_info:
-        Settings(_env_file=None, relaxation_max_rounds=0, spring_search_timeout_s=8.0)
+        Settings(
+            _env_file=None,
+            relaxation_max_rounds=0,
+            spring_max_retries=0,
+            spring_search_timeout_s=8.0,
+            rescue_budget_mode="observe",
+        )
 
     assert "RESCUE_BUDGET_MODE=observe" in str(exc_info.value)
 
@@ -432,8 +451,10 @@ def test_startup_guard_first_token_check_still_gated_by_deferral_when_auto_relax
     """
     settings = Settings(
         _env_file=None,
+        rescue_budget_mode="observe",
         relaxation_max_rounds=0,
         spring_search_timeout_s=6.0,
+        spring_max_retries=0,
         progress_events_enabled=False,
     )
     assert settings.relaxation_max_rounds == 0
@@ -562,6 +583,7 @@ def test_startup_guard_catches_unsuppressed_worst_case_that_scenario_a_alone_mis
     with pytest.raises(ValidationError) as exc_info:
         Settings(
             _env_file=None,
+            rescue_budget_mode="observe",
             relaxation_max_rounds=0,
             spring_max_retries=1,
             spring_search_timeout_s=4.0,
@@ -762,10 +784,10 @@ def test_deferred_first_event_i1_calls_grows_with_intersection_and_caps_at_round
 
 
 def test_default_settings_pass_deferred_serial_budget_by_formula():
-    """기본값(`spring_max_retries=0`)은 항별 값 매김으로도 9.0 < 10.0 이라 기동이 통과한다
-    (#383 R5). `retries=0` 이면 `budget == spring_timeout_s` 라 억제된 항(본 검색·자동완화
-    probe)과 구제 폴백 항의 값이 갈리지 않는 경계 조건이다 — 이 테스트는 총 호출 수만이
-    아니라 **항별로 나눈 값 매김**을 명시적으로 계산해도 여전히 9.0 임을 고정한다.
+    """기본값(`spring_max_retries=1`)은 항별 값 매김으로 12.0s이고 꼬리 예약 창 15.0s 안이다
+    (#383 R5, #394 원복). progress가 기본 on이라 first-token 관문은 검색 전에 지나며, 그래서
+    옛 `9.0 < first-token 10.0` 단언은 더 이상 성립하지 않는다. 이 테스트는 억제된 본검색·
+    자동완화 2항(각 3.0s)과 재시도되는 구제 폴백 1항(6.0s)을 분리한 값 매김을 고정한다.
 
     [PR #452 리뷰 R6 — 재조준] 구제 항만 떼던 하위 호환 래퍼(#383 R5)가 죽은 코드로 삭제됐다
     — 여기서 뗀 값은 `_rescue_chain_stage_counts(...).rescue` 로 조립한다(기본 설정은 미룸
@@ -790,7 +812,8 @@ def test_default_settings_pass_deferred_serial_budget_by_formula():
     assert rescue_calls == 1
     assert suppressed_calls == 2
     serial_budget = suppressed_calls * settings.spring_timeout_s + rescue_calls * budget
-    assert serial_budget == 9.0 < settings.stream_first_token_timeout_s
+    assert serial_budget == 12.0
+    assert serial_budget < settings.stream_total_timeout_buyer_s - settings.rescue_tail_reserve_s
 
 
 def test_deferred_retry_guard_off_meters_rescue_fallback_at_full_retry_budget():
@@ -810,10 +833,16 @@ def test_deferred_retry_guard_off_meters_rescue_fallback_at_full_retry_budget():
     from pydantic import ValidationError
 
     with pytest.raises(ValidationError, match=r"\(3 calls\)"):
-        Settings(_env_file=None, spring_max_retries=1, spring_search_timeout_s=4.0)
+        Settings(
+            _env_file=None,
+            spring_max_retries=1,
+            spring_search_timeout_s=4.0,
+            rescue_budget_mode="observe",
+        )
 
     assert Settings(
         _env_file=None,
+        rescue_budget_mode="observe",
         spring_max_retries=1,
         spring_search_timeout_s=4.0,
         category_expand_enabled=False,
@@ -833,10 +862,16 @@ def test_deferred_first_event_i1_calls_category_expand_enabled_false_lowers_sett
     from pydantic import ValidationError
 
     with pytest.raises(ValidationError, match=r"\(3 calls\)"):
-        Settings(_env_file=None, spring_max_retries=0, spring_search_timeout_s=6.0)
+        Settings(
+            _env_file=None,
+            spring_max_retries=0,
+            spring_search_timeout_s=6.0,
+            rescue_budget_mode="observe",
+        )
 
     assert Settings(
         _env_file=None,
+        rescue_budget_mode="observe",
         spring_max_retries=0,
         spring_search_timeout_s=6.0,
         category_expand_enabled=False,
@@ -860,6 +895,7 @@ def test_deferred_retry_guard_off_rejects_serial_budget_tie():
     with pytest.raises(ValidationError) as exc_info:
         Settings(
             _env_file=None,
+            rescue_budget_mode="observe",
             spring_search_timeout_s=4.0,
             stream_total_timeout_buyer_s=12.0,
             rescue_tail_reserve_s=0.0,
@@ -871,6 +907,7 @@ def test_deferred_retry_guard_off_rejects_serial_budget_tie():
         _env_file=None,
         spring_search_timeout_s=4.0,
         stream_total_timeout_buyer_s=12.1,
+        spring_max_retries=0,
         rescue_tail_reserve_s=0.0,
     )
 
