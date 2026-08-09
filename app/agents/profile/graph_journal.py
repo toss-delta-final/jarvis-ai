@@ -30,9 +30,21 @@ from typing import Literal, get_args
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
+from app.agents.profile.graph_errors import (
+    GraphEdgeNotFound,
+    GraphMutationError,
+    GraphStoreUnavailable,
+    GraphVersionConflict,
+)
+from app.agents.profile.graph_models import GraphDocument, GraphNode
+from app.agents.profile.graph_mutations import apply_correction, apply_suppression
 from app.core.config import get_settings
 from app.core.observability import identifier_fingerprint
-from app.core.pg_resilience import hardened_pg_conninfo, run_with_query_timeout
+from app.core.pg_resilience import (
+    hardened_pg_conninfo,
+    is_state_store_unavailable,
+    run_with_query_timeout,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -703,3 +715,238 @@ async def list_audit(*, user_id: int) -> list[AuditRecord]:
             return [AuditRecord(*row) for row in await cur.fetchall()]
 
     return await run_with_query_timeout(_run())
+
+
+# ── 조립 — 잠금 · 저널 · CAS · 감사 · 롤백 (§7.2) ──────────────────────────────
+#
+# 순서 자체가 계약이다.
+#
+#   1. per-user 그래프 잠금
+#   2. 문서 읽기 → 대상 부재면 404 (**원장·감사를 건드리기 전에**)
+#   3. 원장 claim → 실패하면 재전송 분기(completed 면 최초 응답 재생)
+#   4. `revision` CAS → 불일치면 claim 해제 후 409 + 최신 버전
+#   5. 순수 변형 → `changed=False` 면 claim 해제 후 no-op 응답
+#   6. 문서 쓰기
+#   7. 감사 기록 (**여기서 처음 생긴다**)
+#   8. 원장 완료
+#
+# 404·409·no-op 판정이 감사보다 앞이고 롤백이 붙는 이유는 REQ-PGRAPH-080 이다 — 상태를 바꾸지
+# 않은 요청은 감사 행을 남기지 않는다. 감사·원장 완료가 문서 쓰기보다 뒤인 이유는 그 반대다 —
+# 문서가 안 바뀌었는데 기록만 남으면 감사가 거짓이 되고 원장이 일어나지 않은 일을 재생한다.
+
+
+@dataclass(frozen=True)
+class GraphMutationResult:
+    """#360 이 와이어로 옮길 최소 결과. 라벨은 없다 — 필요하면 현재 문서에서 다시 읽는다."""
+
+    graph_version: str
+    replayed: bool = False
+    edge_id: str | None = None
+    merged: bool = False
+    suppressed: bool = False
+
+
+def graph_version(revision: int) -> str:
+    """와이어 버전 토큰. **[HARD] 불투명** — 클라이언트는 파싱·순서 비교를 하지 않는다(§5.3)."""
+    return f"g{revision}"
+
+
+async def apply_edge_mutation(
+    *,
+    user_id: int,
+    action: str,
+    edge_id: str,
+    if_match: str,
+    request_id: str,
+    now: str,
+    predicate: str | None = None,
+    node: GraphNode | None = None,
+    lease_s: float | None = None,
+) -> GraphMutationResult:
+    """edge 수정·삭제를 저널·CAS·멱등 아래에서 적용한다.
+
+    `GraphVersionConflict`·`GraphEdgeNotFound`·`GraphStoreUnavailable` 을 던진다 — 상태 코드
+    매핑은 호출자가 생기는 #360 몫이다(`graph_errors` docstring).
+    """
+    if action not in ("edgeUpdate", "edgeSuppress"):
+        raise ValueError(f"unsupported edge mutation action: {action}")
+
+    # 지연 임포트로 순환을 끊는다 — `store` 는 테스트 격리를 위해 이 모듈의 `reset()` 을 부르고
+    # (`reset_profile_store`), 여기는 그 저장소를 쓴다. 모듈 최상단에서 서로를 부르면 import 가
+    # 반쪽 초기화 상태에서 터진다.
+    from app.agents.profile.store import get_profile_store
+
+    store = await get_profile_store()
+    settings = get_settings()
+    key = derived_key(action, user_id, edge_id, if_match)
+    # 파생 키에는 **요청 본문이 들어가지 않는다**(REQ-PGRAPH-043). 그래서 스테일한 `If-Match` 를
+    # 든 다른 본문이 같은 키를 만들 수 있고, 그대로 재생하면 호출자가 보내지도 않은 변경의
+    # 결과를 성공으로 받는다. 본문 지문을 함께 실어 그 경우를 충돌로 떨어뜨린다.
+    request_fp = _request_fingerprint(action, predicate, node)
+    ttl = settings.session_end_claim_ttl_s if lease_s is None else lease_s
+
+    async with store.graph_lock(str(user_id)):
+        try:
+            document = await store.get_graph(str(user_id))
+
+            # **재전송 판정이 404 판정보다 앞이다.** 삭제가 성공하면 그 edge 는 문서에서 사라지므로,
+            # 순서를 뒤집으면 정상적인 네트워크 재시도가 전부 `404` 를 받는다 — 실제로는 성공했는데
+            # 호출자에게는 실패로 보인다(REQ-PGRAPH-043 의 "원장이 없으면 재시도가 틀린 답을
+            # 받는다"가 가리키는 그 상황이다).
+            try:
+                replayed = await _replay_if_completed(key, document, request_fp=request_fp)
+            except LedgerRequestMismatch as exc:
+                # 같은 키·다른 본문 — 재생하면 호출자가 보내지도 않은 변경의 결과를 성공으로
+                # 받는다. 스테일한 선행조건으로 온 것이므로 충돌이 맞는 답이다.
+                raise GraphVersionConflict(
+                    graph_version(document.revision) if document else ""
+                ) from exc
+            if replayed is not None:
+                return replayed
+
+            if document is None or not any(e.edge_id == edge_id for e in document.edges):
+                # 원장·감사를 건드리기 전에 끝낸다 — 진행 중 표식조차 만들지 않아야 그 사용자의
+                # 다음 정당한 요청이 막히지 않는다.
+                raise GraphEdgeNotFound(edge_id)
+
+            token = await claim(
+                key, user_id=user_id, scope_id=edge_id, lease_s=ttl, request_fp=request_fp
+            )
+            if token is None:
+                # 완료분은 위에서 걸렀으니 여기 오는 것은 **진행 중**뿐이다 — 다른 워커가 같은
+                # 요청을 들고 있다. "진행 중"이라는 상태를 와이어에 만들지 않기 위해(§2.5 에
+                # 그런 코드가 없다) 최신 버전으로 충돌을 알린다.
+                raise GraphVersionConflict(graph_version(document.revision))
+
+            return await _apply_claimed(
+                store=store,
+                document=document,
+                user_id=user_id,
+                action=action,
+                edge_id=edge_id,
+                if_match=if_match,
+                request_id=request_id,
+                now=now,
+                predicate=predicate,
+                node=node,
+                key=key,
+                token=token,
+                settings=settings,
+            )
+        except GraphMutationError:
+            raise
+        except Exception as exc:
+            if is_state_store_unavailable(exc):
+                # 문서 무손상은 예외가 아니라 **쓰기 순서**로 보장된다 — 문서 쓰기 전에 죽으면
+                # 아무것도 안 바뀌었고, 쓴 뒤에 죽으면 원장 `processing` 잔재가 남아 lease
+                # 재선점으로 재개된다.
+                raise GraphStoreUnavailable(str(exc)) from exc
+            raise
+
+
+def _request_fingerprint(action: str, predicate: str | None, node: GraphNode | None) -> str | None:
+    """요청 본문의 지문 — 같은 파생 키·다른 본문을 가르는 재료.
+
+    `edgeSuppress` 는 본문이 없어(경로에 신원과 대상이 전부 있다) `None` 이다 — 같은 키면 같은
+    요청이 맞다. `edgeUpdate` 만 `(predicate, nodeId)` 로 지문을 만든다. 라벨이 아니라
+    `node_id` 를 쓰는 것은 그것이 이미 정규화된 값이라 표기 변형이 다른 지문을 만들지 않기
+    때문이다.
+    """
+    if action != "edgeUpdate" or predicate is None or node is None:
+        return None
+    return identifier_fingerprint(f"{predicate}|{node.node_id}")
+
+
+async def _replay_if_completed(
+    key: str, document: GraphDocument | None, *, request_fp: str | None = None
+) -> GraphMutationResult | None:
+    """이미 완료된 같은 요청이면 최초 응답을 그대로 돌려준다 (REQ-PGRAPH-043).
+
+    `None` 이면 재전송이 아니다 — 호출부가 정상 경로로 진행한다. TTL 이 지난 원장은 미스라
+    여기서도 `None` 이고, 그 뒤 판정은 `revision` CAS 가 맡는다(안전한 방향의 degrade).
+    """
+    # 본문 지문이 다르면 `LedgerRequestMismatch` 가 올라온다 — 호출부가 409 로 옮긴다.
+    hit = await lookup(key, request_fp=request_fp)
+    if hit is None or hit.status != "completed" or not hit.response_payload:
+        return None
+    payload = hit.response_payload
+    fallback = graph_version(document.revision) if document else payload.get("graphVersion", "")
+    return GraphMutationResult(
+        graph_version=payload.get("graphVersion", fallback),
+        replayed=True,
+        edge_id=payload.get("edgeId"),
+        merged=bool(payload.get("merged")),
+        suppressed=bool(payload.get("suppressed")),
+    )
+
+
+async def _apply_claimed(
+    *,
+    store,
+    document: GraphDocument,
+    user_id: int,
+    action: str,
+    edge_id: str,
+    if_match: str,
+    request_id: str,
+    now: str,
+    predicate: str | None,
+    node: GraphNode | None,
+    key: str,
+    token: str,
+    settings,
+) -> GraphMutationResult:
+    """claim 을 쥔 상태의 본체 — 실패 경로마다 반드시 claim 을 푼다."""
+    before = graph_version(document.revision)
+    if normalize_if_match(if_match) != before:
+        await release(key, token)
+        raise GraphVersionConflict(before)
+
+    if action == "edgeSuppress":
+        updated, outcome = apply_suppression(document, edge_id=edge_id, now=now)
+    else:
+        if predicate is None or node is None:
+            await release(key, token)
+            raise ValueError("edgeUpdate requires predicate and node")
+        updated, outcome = apply_correction(
+            document, edge_id=edge_id, predicate=predicate, node=node, now=now, settings=settings
+        )
+
+    if not outcome.changed:
+        # 상태를 바꾸지 않았다 — 감사 행도 revision 도 남기지 않고 claim 을 되돌린다.
+        # **되돌리지 않으면 뒤따르는 진짜 변경이 막힌다** — 파생 키에 본문이 없어서 같은
+        # `If-Match` 로 온 다른 수정이 같은 키를 쓰기 때문이다(테스트로 고정).
+        await release(key, token)
+        return GraphMutationResult(graph_version=before, replayed=True, edge_id=edge_id)
+
+    after = graph_version(document.revision + 1)
+    await store.set_graph(
+        str(user_id), updated.model_copy(update={"revision": document.revision + 1})
+    )
+
+    # 문서 쓰기가 성공한 **뒤에만** 기록한다.
+    await record_audit(
+        user_id=user_id,
+        request_id=request_id,
+        action=action,
+        graph_version_before=before,
+        graph_version_after=after,
+        edge_id_before=outcome.edge_id_before,
+        edge_id_after=outcome.edge_id_after,
+        predicate=outcome.predicate,
+        object_label=outcome.object_label,
+    )
+    payload = {
+        "graphVersion": after,
+        "edgeId": outcome.edge_id_after,
+        "merged": outcome.merged,
+        "suppressed": action == "edgeSuppress",
+    }
+    await complete(key, token, payload)
+    return GraphMutationResult(
+        graph_version=after,
+        replayed=False,
+        edge_id=outcome.edge_id_after,
+        merged=outcome.merged,
+        suppressed=action == "edgeSuppress",
+    )
