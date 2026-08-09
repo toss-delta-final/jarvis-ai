@@ -607,6 +607,24 @@ class Settings(BaseSettings):
     seller_report_score_threshold: int = 21  # 보고서 검증 통과 점수(21/30)
     seller_report_max_retries: int = 3  # 검증 루프 상한
     seller_draft_ttl_minutes: int = 10  # HITL 미승인 draft 만료
+    # ── 이미지 기반 상품 등록 초안 (#506, api-spec §3.2 v0.31.0) ─────────────────
+    # imageUrls 요청 필드 상한 — MVP 는 1장(2장째 첨부는 FE 가 교체로 처리).
+    seller_image_max_count: int = 1
+    # image_url 길이 2차 방어(FE 서버 라우트가 1차) — DB VARCHAR(500) 계약과 동일값.
+    # presigned URL(서명 쿼리스트링)은 보통 1,000자를 넘어 여기서 걸린다.
+    seller_image_url_max_len: int = 500
+    # vision 분석(이미지 첨부 턴 1회) 상한 — 워커 예산(seller_worker_timeout_s)과
+    # 분리한다: 분석은 product 워커 진입 전 입구에서 별도 수행된다.
+    seller_vision_timeout_s: float = 20.0
+    # 카테고리 스냅샷(#506) — BE 조회 없이 AI 가 로컬 JSON 으로 보유한다.
+    # 파일 교체 = 배포(정합 리스크는 스냅샷 meta.version 으로 추적).
+    seller_category_snapshot_path: str = "app/data/seller_categories.json"
+    seller_category_candidates_k: int = 5  # 초안 에이전트에 주입할 카테고리 후보 수
+    # confirm 시 Spring I-10 `category`(자유 문자열)에 쓸 값 — BE 와 맞출 유일한 지점.
+    # leaf(말단 명칭) | path("A > B > C") | id(스냅샷 id 그대로).
+    seller_category_write_mode: Literal["leaf", "path", "id"] = "leaf"
+    # 초안 대기 게이트(수정/승인안내/취소/딴주제 분류) LLM 상한 — 실패 시 일반 흐름 폴백.
+    seller_pending_gate_timeout_s: float = 8.0
     # 4-2 HITL 실행(hitl.py): confirm 시점 I-9 재조회(stale 검증)의 페이지 순회 상한 —
     # I-9 에 productId 필터가 없어 목록을 넘겨가며 찾는다(페이지 크기 = seller_list_default_limit).
     seller_draft_lookup_max_pages: int = 10

@@ -9,6 +9,20 @@
 
 ## [Unreleased]
 
+### Added
+- **#506 — 이미지 기반 상품 등록 초안** (api-spec §3.2, v0.31.0 — 추가 전용, 기존 op 와이어
+  불변). 판매자가 채팅에 상품 사진을 첨부하면(`imageUrls`, 새로 첨부한 턴에만) vision 이 1회
+  분석해 등록 초안(`draft{op:"create"}`)을 만들고, FE 등록 미리보기 카드용 **`preview{}`**(11키
+  고정·null 계약·서버 포맷 완료·`sections` source/warning/note)를 함께 싣는다. 카테고리는 BE
+  조회 없이 **로컬 스냅샷**(`app/data/seller_categories.json`, 파일 교체=배포)이 후보 검색·
+  `categoryPath` 변환·검증의 단일 원천이고, LLM 은 주입된 후보 id 중에서만 고른다(계약값은
+  코드). 초안 대기 중 발화는 입구 게이트가 분류한다 — 수정→새 draftId 발급+**이전 draft
+  무효화**(옛 카드 confirm 차단), 승인 텍스트→버튼 안내(발화≠동의 유지), "취소"→폐기(LLM 0회
+  단축경로), 딴 주제→차단 안내(초안 유지). create 의 `image_url` 금지를 해제하고 confirm 실행이
+  I-10 에 `image_url`·카테고리 쓰기 값(`seller_category_write_mode`, 기본 leaf — **BE 정렬 1건
+  잔여**)을 전달한다. 신규 모듈 `vision/category_catalog/preview/draft_session`, 수신 검증
+  (canonical URL ≤500자·presigned 거부)은 요청 스키마+hitl 이중 방어.
+
 ### Changed
 - **#504 — 판매자 분석 차트 재설계: 좌표 생성 주체를 LLM → 코드로 전환** (api-spec §3.2,
   v0.30.0 · `docs/specs/DESIGN-SELLER-CHART-V2.md`). 구 구조는 `graph_agent`(도구 없음,
@@ -96,7 +110,7 @@
   와이어 계약 무변경.
 
 ### Added
-- **#406 — 구매자 `progress`에 `retrying` stage를 추가** (api-spec §3.1, v0.30.1). I-1 검색이 재시도 가능한 실패 뒤 실제 다음 시도에 들어갈 때만 즉시 내보내며, 기본 `spring_max_retries=0`(#394 한시 조치)에서는 기존 인라인 검색 경로를 그대로 유지한다.
+- **#406 — 구매자 `progress`에 `retrying` stage를 추가** (api-spec §3.1, v0.31.1). I-1 검색이 재시도 가능한 실패 뒤 실제 다음 시도에 들어갈 때만 즉시 내보내며, 기본 `spring_max_retries=0`(#394 한시 조치)에서는 기존 인라인 검색 경로를 그대로 유지한다.
 - **#346 — 비교(기준) 기간 어휘 양 레인 지원** (`직전 동일 기간`·`지난달 대비`·`전월 동기간`·
   `작년 대비`·`전년 동기간`). `period.resolve_comparison(expr, base)` 가 본 기간을 받아 환산하고
   (`직전 동일 기간` 은 보충값이 없어 확인 불필요 — `tools._previous_period` 와 같은 정의,
