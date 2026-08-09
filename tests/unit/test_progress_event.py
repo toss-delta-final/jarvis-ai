@@ -351,7 +351,7 @@ _PROGRESS_STAGES = (
 
 
 def test_progress_data_accepts_all_eight_registered_stages() -> None:
-    """#406 — 계약(§3.1 v0.31.4)이 확정한 어휘 8종 전부를 `ProgressData` 가 받아들인다."""
+    """#406 — 계약(§3.1 v0.32.1)이 확정한 어휘 8종 전부를 `ProgressData` 가 받아들인다."""
     for stage in _PROGRESS_STAGES:
         assert ProgressData(stage=stage).stage == stage
 
@@ -359,7 +359,7 @@ def test_progress_data_accepts_all_eight_registered_stages() -> None:
 def test_progress_data_rejects_unregistered_stage() -> None:
     """R7-1 — `stage` 는 `Literal`(8종)이라 계약(§3.1)에 없는 값은 생성 자체가 거부된다.
 
-    `retrying`은 #406으로 §3.1 v0.31.4에 등재돼 어휘가 8종이 됐다. 계약이 확정한 어휘를
+    `retrying`은 #406으로 §3.1 v0.32.1에 등재돼 어휘가 8종이 됐다. 계약이 확정한 어휘를
     코드가 강제한다는 요지를 고정한다 — 어휘를 넓히려면 §3.1 개정과 이 `Literal`을 함께 고친다.
     """
     from pydantic import ValidationError
