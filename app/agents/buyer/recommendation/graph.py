@@ -49,6 +49,7 @@ from app.agents.buyer.recommendation.state import (
     get_repurchase_store,
 )
 from app.core.config import _rescue_chain_stage_counts
+from app.core.logging import log_structured
 from app.core.llm import LLMClient, LLMError, resolve_model_id
 from app.core.text import _strip_unsafe
 from app.core.tracing import current_request_trace, trace_span
@@ -1358,9 +1359,10 @@ async def stream_recommendation(
                 # `decision.category_expanded` 자체는 건드리지 않는다(칩 억제는 그대로 유지해야
                 # 한다 — 실제로 안 쓴 확장 leg 8개를 카테고리 칩으로 보여주면 더 큰 거짓말이 된다).
                 category_expand_notice_suppressed = True
-                logger.info(
+                log_structured(
+                    logger,
                     "category_expand_zero_fallback",
-                    extra={
+                    **{
                         "legs": len(decision.category_legs),
                         "elapsed_ms": _f1_fallback_elapsed_ms,
                     },
@@ -1540,9 +1542,10 @@ async def stream_recommendation(
                         # (F-1 과 같은 원칙, 883행 참조). `decision.category_expanded` 자체는
                         # 건드리지 않는다.
                         category_expand_notice_suppressed = True
-                        logger.info(
+                        log_structured(
+                            logger,
                             "category_expand_post_suppress_fallback",
-                            extra={
+                            **{
                                 "legs": len(decision.category_legs),
                                 "elapsed_ms": _post_suppress_fallback_elapsed_ms,
                             },
@@ -1864,9 +1867,10 @@ async def stream_recommendation(
         # `recommend_pipeline` 구조화 로그(§)까지 못 간다 — 원인별 빈도(특히 검색은 히트가
         # 있었는데 하류 억제가 전량을 지운 케이스, #343 갭)를 잴 수단이 없어 여기 별도로 남긴다.
         # PII 금지: 카테고리 문자열·상품 id 는 싣지 않고 개수만 싣는다.
-        logger.info(
+        log_structured(
+            logger,
             "recommend_zero_result",
-            extra={
+            **{
                 # False = 검색 자체 0건 / True = 히트는 있었는데 하류 억제가 전량을 지움
                 "had_candidates": had_candidates,
                 "suppressed_categories": len(suppressed_by_cat),
@@ -2219,9 +2223,10 @@ async def stream_recommendation(
     # [#101 #8] 관측성 — 파이프라인 후보 깔때기를 한 줄 구조화 로그로 남긴다(recall 손실·자원 진단).
     # received(수신) → after_dedup(최근구매 제외 후) → compressed(embedding_rerank_limit 절단 후)
     # → final(노출). 임베딩 재정렬 degrade 사유는 backend(_log.warning), rerank degrade 는 여기서.
-    logger.info(
+    log_structured(
+        logger,
         "recommend_pipeline",
-        extra={
+        **{
             "received": received,
             "after_dedup": matched_after_dedup,
             "compressed": len(candidates),

@@ -226,7 +226,7 @@ async def test_observe_mode_never_calls_narrow_search_budget(
     assert "products.ready" in _types(events)  # 오늘 동작 그대로 정상 완료
     assert not calls, "observe 모드인데 narrow_search_budget 가 집행됐다"
 
-    log = next(r for r in caplog.records if r.message == "recommend_pipeline")
+    log = next(r for r in caplog.records if getattr(r, "event", None) == "recommend_pipeline")
     # 반사실 — 집행하지 않았어도 "narrow 였다면 이랬을 값"이 남는다.
     assert log.rescue_stage_narrowed_timeout_ms is not None
     assert log.rescue_budget_mode == "observe"
@@ -267,7 +267,7 @@ async def test_main_search_is_never_skipped_even_under_extreme_budget_pressure(
         f"음수/0 예산이 그대로 집행됐다: {calls[0]}"
     )
 
-    log = next(r for r in caplog.records if r.message == "recommend_pipeline")
+    log = next(r for r in caplog.records if getattr(r, "event", None) == "recommend_pipeline")
     assert log.rescue_budget_mode == "narrow_skip"
     assert log.rescue_stage_narrowed_timeout_ms is not None
     # 이 턴은 본검색만 돈다(DEFAULT_PRODUCTS 는 0건이 아니라 자동완화 루프에 들어가지 않는다) —
@@ -438,7 +438,7 @@ async def test_narrow_mode_h4_relaxing_frame_implies_the_probe_actually_ran(
     assert "products.ready" in _types(events)  # 완화가 실제로 후보를 되살렸다
     assert "error" not in _types(events)
 
-    log = next(r for r in caplog.records if r.message == "recommend_pipeline")
+    log = next(r for r in caplog.records if getattr(r, "event", None) == "recommend_pipeline")
     assert log.rescue_budget_mode == "narrow"
     assert log.rescue_stage_skipped_budget is False, (
         "narrow 모드는 skip 도 narrow 로 강등해 실제로 시도했다 — 건너뛴 단이 있었다고 오보하면 안 된다"
@@ -737,7 +737,11 @@ async def test_narrow_skip_mode_skips_auto_relax_without_emitting_relaxing_frame
     assert rating_chip["value"] == 4.5, "건너뛰지 않고 자동완화가 실제로 채택됐다"
 
     log = next(
-        (r for r in caplog.records if r.message in ("recommend_zero_result", "recommend_pipeline")),
+        (
+            r
+            for r in caplog.records
+            if getattr(r, "event", None) in ("recommend_zero_result", "recommend_pipeline")
+        ),
         None,
     )
     assert log is not None

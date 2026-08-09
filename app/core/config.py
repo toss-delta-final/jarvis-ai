@@ -540,6 +540,11 @@ class Settings(BaseSettings):
     # 서버 페이지 상한(limit≤100)과 별개인 "도구 응답 상세도" 상한이다.
     seller_summary_max_orders: int = 10  # I-29 주문 rows 상세 나열 상한(건)
     seller_summary_max_reviews: int = 10  # I-31 리뷰 rows 상세 나열 상한(건)
+    # [#518] get_reviews(bucket=) 팬아웃 상한 — 버킷 1개당 I-31 왕복 1회다. 상한이
+    # 없으면 731일(seller_period_max_days) × daily = 731 회가 판매자 스트림 상한
+    # 90s(§2.9 c) 안에서 동시에 나간다. 12 는 "주별 3개월"·"월별 1년"이 한 번에
+    # 들어오는 값이며, 초과 요청은 조회 전에 거절하고 더 넓은 단위를 안내한다.
+    seller_review_bucket_max: int = 12  # I-31 bucket 팬아웃 구간 수 상한
 
     # ── 판매자 분석 계산 층 (이슈 #290, app/agents/seller/analysis/ 주입) ──
     # 근거 논문·산식은 docs/worker-papers.md — 아래 기본값은 논문 권장값이다.
