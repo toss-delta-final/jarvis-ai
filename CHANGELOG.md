@@ -913,23 +913,35 @@
 - **#347 — Claude PR Review 에 `skip-claude-review` 라벨 게이트 추가** — 워크플로 job `if:` 에 라벨 조건을 더해, 리뷰가 불필요한 PR(대량 병합 정합·실험 브랜치)을 PR 단위로 끌 수 있게 했다. 기본 동작(라벨 없음 = 리뷰 실행)은 불변이며, 라벨 부착/제거는 다음 push 부터 적용된다. 계약(api-spec) 무변경.
 
 ### Fixed
-- **#437 — 운영 `costUsd` 가 항상 0 이던 문제(모델 단가표가 배포 env 에 주입되지 않음)** —
+- **#437 — 운영 `costUsd` 가 항상 0 이던 문제(모델 단가표가 배포 env 에 주입되지 않음) +
+  deploy.yml 조건부 주입 손잡이 4종(사용자 승인으로 인프라까지 확장)** —
   `model_price_in_per_1k`/`model_price_out_per_1k` 기본값이 빈 dict 이고 `deploy.yml` env
   고정 목록에 `MODEL_PRICE_*` 가 없어, 운영은 항상 빈 단가표로 돌아 모든 턴 `costUsd=0`이
-  났다. 인프라(`deploy.yml`)는 이 이슈 범위 밖이라 코드 쪽에서 할 수 있는 것만 한다: (1)
-  `app/core/model_pricing.py` 신설 — `evals/model_eval/pricing_manifest.json`(EVAL-OBS-PLAN-001
-  §3.4 "비용축과 동일 소스 사용")과 글자 그대로 일치하는 `gpt-5-nano`/`gpt-5.6-luna` 기본
-  단가표를 코드에 싣고(런타임 컨테이너에 `evals/` 가 없어 직접 import 불가, 값 복제 + 테스트로
-  드리프트 고정) `Settings` 필드 기본값으로 배선(`default_factory` 복사본 — 인스턴스 간 공유
-  가변 기본값 방지). 환경변수 주입은 표 전체를 치환한다(병합 아님), 빈 문자열(`deploy.yml` 이
-  미설정 vars 를 빈 문자열로 쓰는 관례)도 예외 없이 기본표로 해석한다. (2) 기동 시 1회
-  `log_model_price_table_status` — 활성 모델(`resolve_model_id` 의 fast/smart) 단가 누락 시
-  `MODEL_PRICE_MISSING_AT_STARTUP`, env 미주입(기본표 사용 중) 시 `MODEL_PRICE_DEFAULTS_IN_USE`,
-  완전 주입 시 `MODEL_PRICE_TABLE_READY` 를 남긴다 — 어떤 경우에도 기동을 거부하지 않는다
-  (경고 수준까지만). Anthropic 모델 단가는 repo 에 출처 있는 값이 없어 싣지 않았다 —
-  `LLM_PROVIDER=anthropic` 기동은 `MODEL_PRICE_MISSING_AT_STARTUP` 경고로 드러난다. (3)
-  `.env.example`·`DEPLOY.md` 에 두 env 키와 **아직 `deploy.yml` 에 배선되지 않았다**는 사실을
-  문서화(배선은 별도 운영 작업).
+  났다. 코드 쪽: (1) `app/core/model_pricing.py` 신설 — `evals/model_eval/pricing_manifest.json`
+  (EVAL-OBS-PLAN-001 §3.4 "비용축과 동일 소스 사용")과 글자 그대로 일치하는
+  `gpt-5-nano`/`gpt-5.6-luna` 기본 단가표를 코드에 싣고(런타임 컨테이너에 `evals/` 가 없어
+  직접 import 불가, 값 복제 + 테스트로 드리프트 고정) `Settings` 필드 기본값으로 배선
+  (`default_factory` 복사본 — 인스턴스 간 공유 가변 기본값 방지). 환경변수 주입은 표 전체를
+  치환한다(병합 아님), 빈 문자열(`deploy.yml` 이 미설정 vars 를 빈 문자열로 쓰는 관례)도 예외
+  없이 기본표로 해석한다. (2) 기동 시 1회 `log_model_price_table_status` — 활성 모델
+  (`resolve_model_id` 의 fast/smart) 단가 누락 시 `MODEL_PRICE_MISSING_AT_STARTUP`, env
+  미주입(기본표 사용 중) 시 `MODEL_PRICE_DEFAULTS_IN_USE`, 완전 주입 시
+  `MODEL_PRICE_TABLE_READY` 를 남긴다 — 어떤 경우에도 기동을 거부하지 않는다(경고 수준까지만).
+  Anthropic 모델 단가는 repo 에 출처 있는 값이 없어 싣지 않았다 — `LLM_PROVIDER=anthropic`
+  기동은 `MODEL_PRICE_MISSING_AT_STARTUP` 경고로 드러난다.
+  인프라 쪽(사용자 승인 후 확장, PR #532/#406 이 `SPRING_MAX_RETRIES` 기본값을 0→1로 원복한
+  것에 대한 운영 롤백 손잡이 부재도 함께 해소): (3) `.github/workflows/deploy.yml` 에
+  `MODEL_PRICE_IN_PER_1K`·`MODEL_PRICE_OUT_PER_1K`·`SPRING_MAX_RETRIES`·`RESCUE_BUDGET_MODE`
+  네 키의 **조건부(A) env 주입**을 배선했다 — GitHub Variable 미등록이면 그 줄 자체를
+  env 파일에 쓰지 않아 코드 기본값이 그대로 적용된다(무조건 생성 시 빈 문자열이 되어
+  `SPRING_MAX_RETRIES`(int)·`RESCUE_BUDGET_MODE`(Literal)의 기동을 깨뜨리는 것을 피한다 —
+  `MODEL_PRICE_*` 는 이미 `NoDecode`+수동 `json.loads` 로 빈 문자열 내성이 있었지만 네 키를
+  한 PR 에서 같은 규약으로 통일했다). `set -e` 아래서 조건 분기가 비영 종료로 배포를 죽이지
+  않도록 `if ... fi` 로 작성했고, Variable 값에 작은따옴표를 쓸 수 없다는 제약이 생겼다(모두
+  JSON·정수·리터럴 enum 값이라 해당 없음). (4) `.env.example`·`DEPLOY.md` §2 에 네 키의
+  형식·허용값·조건부 주입 규약과, `PROGRESS_EVENTS_ENABLED=false` 단독 롤백이 더 이상 불가능해
+  `SPRING_MAX_RETRIES=0` 과 반드시 짝지어야 한다는 사실(`tests/unit/test_progress_event.py::
+  test_progress_events_disabled_rejects_startup_with_retries_enabled` 로 고정됨)을 문서화했다.
 - **#474 브랜치 후속 — 유닛 테스트가 로컬 Spring BE의 TCP 응답에 따라 달라지던 환경 의존을 차단** —
   `INTERNAL_API_TOKEN`을 공통 테스트 환경에서 비우고 `tests/unit/`에서만 실제 TCP 연결을
   `ConnectionRefusedError`로 거부해 CI의 서비스 미기동 degrade 경로를 고정했다.

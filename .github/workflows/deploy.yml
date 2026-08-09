@@ -119,6 +119,36 @@ jobs:
             CORS_ORIGINS=${{ vars.CORS_ORIGINS }}
             ENVEOF
 
+            # 3b. [#437/#532] 조건부 env 주입 — Variable 미등록이면 그 줄 자체를 아예 생략해
+            #     (A) 코드 기본값이 그대로 적용되게 한다. 위 heredoc 처럼 무조건 KEY=${{ vars.X }}
+            #     로 쓰면 미등록 시 빈 문자열이 되는데, SPRING_MAX_RETRIES(int)·RESCUE_BUDGET_MODE
+            #     (Literal)는 빈 문자열 파싱에 기동이 죽는다(MODEL_PRICE_* 는 이미 NoDecode +
+            #     수동 json.loads 로 빈 문자열 내성이 있지만, 네 키를 한 PR 에서 같은 규약으로
+            #     통일한다). `${{ vars.X }}` 는 workflow 렌더 시점에 텍스트로 치환되므로 heredoc
+            #     안에서는 셸 `if` 를 쓸 수 없어 이 블록을 heredoc 밖에 둔다.
+            #     ⚠️ 스크립트 상단에 `set -e` 가 걸려 있다 — `[ -n "$v" ] && printf ...` 는 조건이
+            #     거짓일 때 비영 종료라 배포 전체가 중단될 수 있으므로 반드시 `if ... fi` 로 쓴다.
+            #     ⚠️ 값에 작은따옴표(')를 쓰지 말 것 — 아래는 렌더된 텍스트를 작은따옴표로 감싸
+            #     셸에 넘기므로 값 안의 '가 인용을 깨뜨린다(JSON 단가표·정수·리터럴 enum 값은
+            #     해당 없음, quoted heredoc 으로 감싸는 대안은 YAML 블록 스칼라 들여쓰기가 값에
+            #     섞여 들어가는 함정이 있어 채택하지 않는다).
+            MODEL_PRICE_IN_PER_1K_V='${{ vars.MODEL_PRICE_IN_PER_1K }}'
+            if [ -n "$MODEL_PRICE_IN_PER_1K_V" ]; then
+              printf 'MODEL_PRICE_IN_PER_1K=%s\n' "$MODEL_PRICE_IN_PER_1K_V" >> "$ENV_FILE"
+            fi
+            MODEL_PRICE_OUT_PER_1K_V='${{ vars.MODEL_PRICE_OUT_PER_1K }}'
+            if [ -n "$MODEL_PRICE_OUT_PER_1K_V" ]; then
+              printf 'MODEL_PRICE_OUT_PER_1K=%s\n' "$MODEL_PRICE_OUT_PER_1K_V" >> "$ENV_FILE"
+            fi
+            SPRING_MAX_RETRIES_V='${{ vars.SPRING_MAX_RETRIES }}'
+            if [ -n "$SPRING_MAX_RETRIES_V" ]; then
+              printf 'SPRING_MAX_RETRIES=%s\n' "$SPRING_MAX_RETRIES_V" >> "$ENV_FILE"
+            fi
+            RESCUE_BUDGET_MODE_V='${{ vars.RESCUE_BUDGET_MODE }}'
+            if [ -n "$RESCUE_BUDGET_MODE_V" ]; then
+              printf 'RESCUE_BUDGET_MODE=%s\n' "$RESCUE_BUDGET_MODE_V" >> "$ENV_FILE"
+            fi
+
             # 4. 교체 — 8000 포트를 새 컨테이너가 이어받아야 하므로 중지 후 기동
             #    docker run 뒤의 || true 는 필수: 기동 명령 자체가 실패해도
             #    스크립트를 중단시키지 않고 아래 롤백 경로로 흘려보내기 위함
