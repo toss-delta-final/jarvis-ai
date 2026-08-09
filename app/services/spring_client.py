@@ -541,6 +541,28 @@ class InvalidStock(Exception):
     판매자가 무한 재confirm 에 갇힌다(I-12 ALREADY_DELETED 와 같은 규약)."""
 
 
+class ProductCategoryInvalid(Exception):
+    """I-10 400 PRODUCT_CATEGORY_INVALID (#541) — `categoryId` 가 없는 카테고리이거나
+    **대분류**다(BE `SellerProductService.create` → `Category.isRoot()` 거부).
+
+    AI 는 소분류만 담긴 스냅샷에서 id 를 고르므로 정상 경로에서는 나지 않는다. 여기
+    도달하는 건 **스냅샷이 정본 DB 보다 낡은** 경우뿐이다(파일 교체 = 배포, #506).
+    같은 초안을 다시 confirm 해도 결과가 같으므로 안내는 "재시도"가 아니라 **"카테고리를
+    다시 말해 새 초안"** 이다. SpringUnavailableError 하위가 아니다(catch-all 회피)."""
+
+
+class ProductFieldMissing(Exception):
+    """I-10 422 MISSING_FIELD (#541) — BE 가 필수값(name·price·stockQuantity·categoryId)
+    누락으로 거부. 본문의 `error.message` 에 누락 필드명이 실린다(BE `requireFields`).
+
+    정상 경로에서는 `validate_draft` 가 4종을 모두 강제하므로 나지 않는다. 실제로 여기
+    오는 경로는 **와이어 형식 불일치**다 — 예: `seller_stock_wire_mode="stocks"` 를 BE
+    PR B 배포 전에 켜면 `stockQuantity` 를 안 실어 구 BE 가 누락으로 거부한다(#524 가
+    말한 "등록은 시끄럽게 실패한다"의 그 지점). 종전엔 매핑이 없어 이 시끄러운 실패가
+    `SpringUnavailableError` → "일시적인 오류(재시도 가능)" 로 **조용해졌다**.
+    설정·배포를 고쳐야 풀리는 문제라 재시도 안내를 하면 안 된다."""
+
+
 # ── I-30 발송 처리 예외 (이슈 #297, §4.19 — 🔶 초안, BE 협의 전) ──────────────────
 #
 # HITL 쓰기(발송)는 "이미 된 일"과 "방금 한 일"과 "안 되는 일"을 구분해야 거짓 성공
@@ -1745,13 +1767,22 @@ class SpringClient:
 
         [#524] 422 `INVALID_STOCK` 은 전용 예외다 — 등록 시점엔 옵션이 없어 `optionId` 는
         항상 null 이므로 여기 오는 건 수량 문제뿐이지만, 코드 구분을 I-11 과 대칭으로 둔다.
+
+        [#541] 400 `PRODUCT_CATEGORY_INVALID`·422 `MISSING_FIELD` 도 전용 예외다. 둘 다
+        **재시도로 풀리지 않는** 실패(스냅샷 낡음 / 와이어 형식 불일치)인데 매핑이 없어
+        `SpringUnavailableError` 로 낙성돼 판매자에게 "일시적인 오류(재시도 가능)" 로
+        보였다 — 등록이 계속 실패하는데 원인은 화면 어디에도 없었다.
         """
         data = await self._request(
             "POST",
             f"/internal/seller/{brand_id}/products",
             operation="create_product",
             json_body=payload.model_dump(by_alias=True, exclude_none=True),
-            error_code_map={"INVALID_STOCK": InvalidStock},
+            error_code_map={
+                "INVALID_STOCK": InvalidStock,
+                "PRODUCT_CATEGORY_INVALID": ProductCategoryInvalid,
+                "MISSING_FIELD": ProductFieldMissing,
+            },
         )
         return self._validate(ProductCreateResult, data)
 

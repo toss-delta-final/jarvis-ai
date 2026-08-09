@@ -30,7 +30,9 @@ from app.services.spring_client import (
     OrderInvalidTransition,
     OrderItemNotFound,
     ProductAlreadyDeleted,
+    ProductCategoryInvalid,
     ProductDeletedNotEditable,
+    ProductFieldMissing,
     SpringUnavailableError,
     set_spring_client,
 )
@@ -1223,3 +1225,39 @@ def test_create_invalid_stock_stops_without_success_report() -> None:
     outcome = _run_confirm(record)
     assert outcome.status == "stale"
     assert "등록했습니다" not in outcome.text
+
+
+# ── [#541] I-10 카테고리·필수값 거부가 "일시적 오류" 로 뭉개지지 않는다 ────────────
+
+
+def test_create_category_invalid_guides_new_draft_not_retry() -> None:
+    """400 PRODUCT_CATEGORY_INVALID — 스냅샷이 낡아 서버가 카테고리를 거부한 경우.
+
+    같은 초안을 다시 confirm 해도 결과가 같으므로 재시도가 아니라 **카테고리를 다시
+    말해 새 초안**을 권해야 한다. 매핑 전에는 SpringUnavailableError 로 낙성돼
+    "일시적인 오류(재시도 가능)"가 나갔고, 판매자는 원인을 알 길이 없었다.
+    """
+    spring = _StubSpring()
+    spring.create_error = ProductCategoryInvalid("PRODUCT_CATEGORY_INVALID")
+    set_spring_client(spring)
+    record = _record(op="create", product_id=None, changes=_create_changes())
+    outcome = _run_confirm(record)
+    assert outcome.status == "stale"
+    assert "카테고리" in outcome.text
+    assert "등록했습니다" not in outcome.text
+
+
+def test_create_missing_field_does_not_promise_retry() -> None:
+    """422 MISSING_FIELD — 와이어 형식 불일치(#524 stocks 선전환 등).
+
+    판매자가 초안을 고쳐서 풀 수 있는 문제가 아니라 담당자 확인이 필요하다. 그래서
+    다른 stale 분기와 달리 "다시 요청해 주세요"(_STALE_RETRY_GUIDE)를 붙이지 않는다.
+    """
+    spring = _StubSpring()
+    spring.create_error = ProductFieldMissing("MISSING_FIELD")
+    set_spring_client(spring)
+    record = _record(op="create", product_id=None, changes=_create_changes())
+    outcome = _run_confirm(record)
+    assert outcome.status == "stale"
+    assert "등록했습니다" not in outcome.text
+    assert hitl._STALE_RETRY_GUIDE not in outcome.text
