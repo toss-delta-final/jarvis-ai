@@ -231,7 +231,10 @@ async def consolidate(user_id: str, *, llm, settings) -> ConsolidationResult:
 def _summary_input(document: GraphDocument, facts: list[FactRecord]) -> list[str]:
     """요약 LLM 입력 = 살아 있는 취향의 근거 fact + 트리플이 없는 fact.
 
-    `suppressed`·`superseded` edge 는 **즉시 제외**한다(REQ-PGRAPH-022). 그 edge 가 근거로 삼은
+    **사용자가 지운 취향(tombstone)과 `superseded` edge 는 즉시 제외**한다(REQ-PGRAPH-022).
+    삭제된 edge 는 문서에서 물리 삭제되므로(#499) `edges` 조회로는 잡히지 않는다 — 그러면
+    "문서에 없는 edge_key 는 통과"라는 아래 규칙에 걸려 **지운 취향이 요약으로 되돌아온다.**
+    그래서 `document.tombstones` 를 별도로 본다. 그 edge 가 근거로 삼은
     fact 원문도 함께 뺀다 — 원문이 잔여 fact 로 새어 들어가면 edge 만 숨기고 내용은 그대로
     요약되는 셈이라 억제가 무의미해진다. 한 fact 가 여러 취향을 담고 그중 하나만 지워졌어도
     **통째로** 뺀다: 그 원문에는 지운 취향이 그대로 적혀 있어 살리면 되살아난다(삭제가 이긴다).
@@ -246,11 +249,15 @@ def _summary_input(document: GraphDocument, facts: list[FactRecord]) -> list[str
     폭주 방지용 상한이 개인화 내용을 결정해서는 안 된다 — 상한 값을 바꾸면 요약이 함께 바뀐다.
     """
     status_by_key = {edge.edge_key: edge.status for edge in document.edges}
+    tombstoned = {tombstone.edge_id for tombstone in document.tombstones}
 
     selected: list[str] = []
     for record in facts:
         # 문서에 없는 edge_key(절단 등)는 삭제 신호가 아니므로 통과시킨다 — 저장 한계가
-        # 개인화 내용을 줄이지 않게 하는 것이 위 규칙과 같은 취지다.
+        # 개인화 내용을 줄이지 않게 하는 것이 위 규칙과 같은 취지다. **단 tombstone 은 다르다** —
+        # "문서에 없음"이 저장 한계가 아니라 사용자 삭제라는 사실이라, 여기서 갈라야 한다.
+        if any(triple.get("edge_id") in tombstoned for triple in record.graph_triples):
+            continue
         statuses = (
             status_by_key.get(triple.get("edge_key"), "active") for triple in record.graph_triples
         )

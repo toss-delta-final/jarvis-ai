@@ -146,11 +146,15 @@ async def test_suppressed_preference_does_not_return_to_summary() -> None:
     prompt = llm.summary_inputs[0]
     assert "소니" not in prompt
     assert "애플" in prompt  # 제외가 선택적이다 — 전부 지운 게 아니다
-    # 상태는 계속 suppressed 여야 한다 — 새 근거가 되살리지 않는다.
+    # 새 근거가 지운 취향을 되살리지 않는다. #499 로 삭제가 즉시 물리 삭제가 되면서, 확인할
+    # 것이 "상태가 suppressed 인가"에서 **"문서에 아예 없고 라벨 원문도 남지 않았는가"**로
+    # 바뀌었다 — 차단은 tombstone 이 맡는다.
     document = await store.get_graph("7")
     assert document is not None
-    sony_edge = next(e for e in document.edges if e.node_id == "brand:소니")
-    assert sony_edge.status == "suppressed"
+    assert all(edge.node_id != "brand:소니" for edge in document.edges)
+    assert all(node.node_id != "brand:소니" for node in document.nodes)
+    assert "소니" not in repr(document.model_dump(mode="json"))
+    assert make_edge_id("likes|brand:소니") in {t.edge_id for t in document.tombstones}
 
 
 async def test_superseded_edge_is_excluded_from_summary_input() -> None:
