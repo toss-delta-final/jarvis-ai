@@ -519,6 +519,26 @@
   없어 운영이 코드 기본값을 그대로 쓰는데, `color_synonyms` 테이블은 fresh 볼륨에서만
   자동 생성돼(PR #273) 운영 pg-catalog 에 시드가 없을 가능성이 높다 — 플래그 on 은 운영
   DB 시드 적재 후 별도 단계다. (api-spec §4.6, v0.28.4)
+- **api-spec §4.6 사본 동기화 — 정본 대조 잔여 3건, 사람 승인 2026-08-08 — 신설 협의 아님** —
+  정본(Notion API 명세서 I-1)을 직접 대조해 나온 드리프트 4건 중 `color`(v0.28.4)를 뺀 남은
+  3건을 옮겼다. (1) **리뷰 0건 규약**: 정본은 리뷰 0건이면 `rating: 0.0`·`reviewCount: 0`
+  (I-17과 동일 규약)으로 확정하는데, 사본은 `null`/미전송이면 rating이 지배한다고만 적어
+  null과 0을 둘 다 상정하고 있었다 — `[].rating`·`[].reviewCount` 행에 정본 규약을 명시하되
+  `null` 관대 수신 서술(AI 스키마가 `float | None`·`int | None`이라 BE가 필드를 안 실어도
+  죽지 않는 방어)은 지우지 않고 나란히 적었다. (2) **I-1 실패 응답표 신설**: 사본 §4.6에
+  실패 응답표가 0건이던 것을 정본 표(400 `VALIDATION_ERROR`·401 `INTERNAL_TOKEN_INVALID`
+  ×2·500 `INTERNAL_ERROR`) 그대로 옮기고, 「실패가 아닌 것 — 0건과 모순된 조건」(전부 200 —
+  0건 정상·존재하지 않는 `categoryName`·`brandName` 일부 미존재·`minPrice>maxPrice`·전
+  파라미터 생략) 표도 함께 옮겼다 — 마지막 행은 이미 §4.17이 인용해 둔 정본 문구를 반복하지
+  않고 그쪽을 가리켜 중복을 피했다. (3) **`brandName` 두 가지**: (a) 행 끝의 낡은 "BE 배열
+  수용 협의 대상" 문구를 걷어내고 2026-07-27 정본 확정·BE 구현 완료(`InternalProductController
+  #search`의 `@RequestParam List<String> brandName`, `origin/main 4c6b287`) 사실로 교체하고
+  "전부 미존재일 때만 0건" 규칙을 명시했다. (b) 정본이 미해결로 남긴 "⚠️ 부분 매칭 규칙은
+  LLM 팀 확인 필요"가 사본에 아예 없던 것을 🔴 **정본 미해결 · AI 팀 회신 필요**로 등재했다 —
+  참고 실측(브랜드 2,368개 중 영문 포함 496·한영 혼합 209·공백 포함 173·다른 브랜드명의
+  접두사인 이름 179개)만 병기하고 답은 정하지 않는다(사람 결정 대기). 이 작업은 사본을
+  정본에 옮겨 적는 것뿐이라 계약 자체를 바꾸지 않는다 — `app/`·`tests/`·`scripts/` 무변경.
+  (api-spec §4.6, v0.28.5)
 - **#425 — overspecified_zero 는 완화 축이 없어 재검색이 안 돈다, 정의된 동작으로 판정** —
   combo_matrix 매트릭스가 README·`expected_behavior.jsonl` 의 `expected` 서술("0건이면 자동 완화·
   완화 칩으로 대안 제시")과 실측(combo-0031: `searchCallCount=1`·`finishReason=zero_result`,
