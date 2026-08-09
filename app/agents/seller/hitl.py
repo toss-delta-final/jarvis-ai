@@ -58,7 +58,9 @@ from app.services.spring_client import (
     OrderInvalidTransition,
     OrderItemNotFound,
     ProductAlreadyDeleted,
+    ProductCategoryInvalid,
     ProductDeletedNotEditable,
+    ProductFieldMissing,
     get_spring_client,
 )
 
@@ -516,6 +518,35 @@ async def _execute_draft(record: DraftRecord) -> tuple[str, str]:
                 "stale",
                 "재고 수량이 서버에서 거부되어 등록을 중단했습니다. "
                 f"재고를 다시 확인해 말씀해 주세요. {_STALE_RETRY_GUIDE}",
+            )
+        except ProductCategoryInvalid:
+            # [#541] 위 spring_category_id 선검증은 **스냅샷 기준**이라 스냅샷이 정본 DB
+            # 보다 낡으면 통과한 id 가 서버에서 거부된다. 안내를 위 stale 분기와 같은
+            # 문안으로 맞춘다 — 판매자에게는 같은 사건("카테고리가 더 이상 유효하지 않다")
+            # 이고, 어느 쪽이 먼저 걸렸는지는 판매자가 알 필요도 구분할 방법도 없다.
+            logger.warning(
+                "seller create rejected category snapshot_id=%s — 스냅샷 재생성 필요",
+                values.get("category"),
+            )
+            return (
+                "stale",
+                "초안의 카테고리가 서버에서 거부되어 등록을 중단했습니다(카테고리 목록 갱신). "
+                "등록할 상품 종류를 다시 말씀해 주시면 새 초안을 만들어 드리겠습니다.",
+            )
+        except ProductFieldMissing:
+            # [#541] validate_draft 가 필수 4종을 모두 강제하므로 값 누락으로는 오지
+            # 않는다 — 여기 오면 **와이어 형식이 서버와 어긋난 것**이다(대표적으로
+            # seller_stock_wire_mode 를 BE 배포보다 먼저 켠 경우). 판매자가 초안을
+            # 고쳐서 풀 수 있는 문제가 아니므로 재시도·재초안을 권하지 않는다.
+            logger.error(
+                "seller create rejected MISSING_FIELD — 와이어 형식 불일치 의심 "
+                "(stock_wire_mode=%s)",
+                get_settings().seller_stock_wire_mode,
+            )
+            return (
+                "stale",
+                "서버가 등록 요청을 받아들이지 않아 등록을 중단했습니다(필수 항목 누락). "
+                "같은 내용으로 다시 시도해도 결과가 같아 담당자 확인이 필요합니다.",
             )
         return (
             "executed",

@@ -14,6 +14,18 @@
 
 ### Added
 
+- **#541 — `draft.preview{}` 카테고리 2칸 표기** (api-spec-seller §6.1, v0.31.3-seller).
+  `preview.categoryMajor`("패션의류/잡화")·`categorySubPath`("남성의류 > 셔츠/남방")
+  **추가 전용** 2키(11 → 13). 판매자 카테고리는 대분류 / 중·소분류 **두 칸**으로 정해지는데
+  (정본 DB 가 2단이고 소분류 `name` 이 병합형 — §6) 그 두 칸을 FE 가 `categoryPath` 를
+  `" > "` 로 쪼개서 만들 수 없다: 대분류 이름에 슬래시가 들어가고(`패션의류/잡화`) 토막
+  수가 2개일 수도 3개일 수도 있다. 쪼개기는 스냅샷을 쥔 서버가 한다("계약값은 코드").
+  불변식 `categoryPath == categoryMajor + " > " + categorySubPath` 를 테스트로 고정했고,
+  둘째 칸은 `leaf`(=`path[-1]`)가 아니라 `path[1:]` 다 — leaf 기준이면 3칸 스냅샷에서
+  중분류가 조용히 빠져 카드와 실제 등록 값이 달라진다. 표시 계층 마스킹
+  (`_masked_preview`) 목록에도 두 키를 함께 넣었다. FE 는 기존대로 `categoryPath` 만
+  써도 되며, 두 칸 UI 를 그릴 때만 새 키를 쓴다.
+
 - **#524 — 판매자 재고 옵션별 전환 선대응(듀얼모드)** (api-spec-seller §2·§3 — 🔶 `blocked:spring`).
   BE 정본은 I-10/I-11 재고를 `stockQuantity` 정수에서 `stocks[{optionId,quantity}]` 로 바꾸지만
   **BE 코드(PR B)는 아직 없다**(머지된 것은 docs + 마이그레이션 SQL 뿐 — jarvis-back `bba0f9e`
@@ -38,6 +50,23 @@
   **"재조회 후 새 초안"** 이다. `SpringUnavailableError` 하위가 아니라 catch-all 에 삼켜지지 않는다.
 
 ### Fixed
+
+- **#541 — I-10 카테고리·필수값 거부가 "일시적인 오류(재시도 가능)" 로 뭉개지던 문제**
+  (api-spec-seller §6.2). `create_product` 에만 `error_code_map` 이 없어(update 는
+  `PRODUCT_DELETED`, delete 는 `ALREADY_DELETED` 를 이미 매핑) 400
+  `PRODUCT_CATEGORY_INVALID` 와 422 `MISSING_FIELD` 가 `SpringUnavailableError` 로
+  낙성됐다. 그래서 **#506 의 카테고리 사고가 판매자에게 "등록 중 오류"로만 보였다** —
+  매번 실패하는 상태인데 재시도를 권하는 안내가 나갔다. 전용 예외
+  `ProductCategoryInvalid`·`ProductFieldMissing` 로 분리한다(둘 다
+  `SpringUnavailableError` 하위 아님 — catch-all 회피).
+  - 카테고리 거부는 **스냅샷이 정본 DB 보다 낡을 때만** 난다(AI 는 소분류만 담긴
+    스냅샷에서 고른다). 안내는 재시도가 아니라 "카테고리를 다시 말해 새 초안"이고,
+    서버 로그에 거부된 스냅샷 id 를 남긴다(스냅샷 재생성 신호).
+  - 필수값 누락은 값이 빠진 게 아니라 **와이어 형식 불일치**의 신호다(`validate_draft`
+    가 4종을 이미 강제한다) — 대표 경로가 `seller_stock_wire_mode="stocks"` 를 BE PR B
+    배포 전에 켠 경우다(§4 의 "등록은 시끄럽게 실패한다"가 실제로 시끄러워지는 지점).
+    판매자가 초안을 고쳐 풀 문제가 아니라 담당자 확인이 필요해, 다른 stale 분기와 달리
+    "다시 요청해 주세요"(`_STALE_RETRY_GUIDE`)를 붙이지 않는다.
 
 - **#524 — `stocks` 모드를 설정만 믿고 보내던 문제(조용한 부분 실패)** (api-spec-seller §4).
   BE PR B 배포 전에 `stocks` 로 켜면 `{price, stocks}` 를 보냈을 때 구 BE 가 `stocks` 키를

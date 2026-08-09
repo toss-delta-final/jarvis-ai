@@ -76,6 +76,31 @@ def test_entry_splits_merged_leaf(catalog) -> None:
     assert (entry.major, entry.middle, entry.minor) == ("패션의류/잡화", "남성의류", "셔츠/남방")
 
 
+def test_sub_path_keeps_path_reconstructable(catalog) -> None:
+    """[#541] 판매자가 채우는 둘째 칸 — major 와 이어 붙이면 path_str 이 그대로 나온다."""
+    entry = category_catalog.get("100")
+    assert entry is not None
+    assert entry.sub_path == "남성의류 > 셔츠/남방"
+    assert f"{entry.major} > {entry.sub_path}" == entry.path_str
+
+
+def test_sub_path_survives_three_slot_snapshot(monkeypatch, tmp_path) -> None:
+    """3칸 스냅샷(낡은 파일·수기 픽스처)에서도 중분류가 표기에서 사라지지 않는다.
+
+    `leaf`(= path[-1])로 둘째 칸을 만들면 "남성의류" 가 조용히 증발해 카드가 보여준
+    카테고리와 등록될 카테고리가 달라진다 — 카테고리는 등록 후 변경 불가라 비용이 크다.
+    """
+    _use_snapshot(
+        monkeypatch, tmp_path, [{"id": "1", "path": ["패션의류/잡화", "남성의류", "셔츠"]}]
+    )
+    entry = category_catalog.get("1")
+    assert entry is not None
+    assert entry.leaf == "셔츠"  # leaf 는 마지막 칸 그대로
+    assert entry.sub_path == "남성의류 > 셔츠"  # 둘째 칸은 나머지 전부
+    assert f"{entry.major} > {entry.sub_path}" == entry.path_str
+    category_catalog.reset_catalog_cache()
+
+
 def test_entry_without_merge_separator(monkeypatch, tmp_path) -> None:
     """병합되지 않은 이름(구 스냅샷·수기 픽스처)도 minor 로 다뤄 깨지지 않는다."""
     _use_snapshot(monkeypatch, tmp_path, [{"id": "1", "path": ["식품", "커피"]}])
