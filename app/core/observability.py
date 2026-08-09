@@ -126,6 +126,12 @@ class RequestObservation:
     degraded: bool = False
     degrade_reason: str | None = None
     tool_calls: int = 0
+    search_calls: int = 0
+    search_candidates_max: int | None = None
+    search_total_count_max: int | None = None
+    search_elapsed_ms_max: int | None = None
+    active_streams: int | None = None
+    active_streams_peak: int | None = None
     finished: bool = False
     _finish_task: asyncio.Task[None] | None = field(default=None, init=False, repr=False)
 
@@ -193,6 +199,19 @@ class RequestObservation:
     def record_tool_call(self) -> None:
         """실제 판매자 도구 실행 횟수를 누적한다."""
         self.tool_calls += 1
+
+    def record_search_result(self, candidates: int, total_count: int, elapsed_ms: int) -> None:
+        """검색 호출 수와 후보·전체 건수·종단 지연의 턴 내 최댓값을 누적한다."""
+        self.search_calls += 1
+        self.search_candidates_max = max(self.search_candidates_max or candidates, candidates)
+        self.search_total_count_max = max(self.search_total_count_max or total_count, total_count)
+        self.search_elapsed_ms_max = max(self.search_elapsed_ms_max or elapsed_ms, elapsed_ms)
+
+    def note_active_streams(self, count: int) -> None:
+        """실제 열린 스트림 수를 기록한다. 최초 표본은 도착 부하, peak는 턴 중 최악 부하다."""
+        if self.active_streams is None:
+            self.active_streams = count
+        self.active_streams_peak = max(self.active_streams_peak or count, count)
 
     def _cost_usd(self) -> float:
         """Settings 단가표로 모델 호출 비용을 계산한다(미등록 모델은 0 + 경고)."""
@@ -316,6 +335,8 @@ class RequestObservation:
             "threadFp": identifier_fingerprint(self.thread_id),
             "latencyFirstToken": self.server_first_text_token_ms,
             "latencyTotal": latency_total_ms,
+            "activeStreams": self.active_streams,
+            "activeStreamsPeak": self.active_streams_peak,
             "model": [m.model for m in self.model_calls] or None,
             "promptTokens": sum(m.prompt_tokens for m in self.model_calls),
             "completionTokens": sum(m.completion_tokens for m in self.model_calls),
@@ -324,6 +345,10 @@ class RequestObservation:
             "degradeReason": self.degrade_reason,
             "costUsd": cost_usd,
             "toolCalls": self.tool_calls,
+            "searchCalls": self.search_calls,
+            "searchCandidatesMax": self.search_candidates_max,
+            "searchTotalCountMax": self.search_total_count_max,
+            "searchElapsedMsMax": self.search_elapsed_ms_max,
             "errorType": error_type,
             "streamStatus": stream_status,
             "messageLength": self.message_length,

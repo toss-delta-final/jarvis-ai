@@ -9,7 +9,9 @@
   (c) 타임아웃 — 역할 공통 first-token 상한 초과 시 스트림 전 504, 역할별 전체 상한
       (구매자 stream_total_timeout_buyer_s, 판매자·미지정 stream_total_timeout_s) 초과 시 절단(§2.9 c)
 
-MVP 단일 인스턴스 전제. 다중 인스턴스 확장 시 레지스트리를 Redis 로 이관한다.
+레지스트리가 프로세스 로컬인 동안 워커 다중화는 금지다. 공유 레지스트리만 옮겨도 다른
+프로세스 로컬 상태의 선행조건이 남으므로, 증설 판단과 전환 순서는
+`docs/specs/OPS-SCALEOUT-476.md`를 따른다.
 """
 
 from __future__ import annotations
@@ -18,7 +20,7 @@ import asyncio
 from collections.abc import AsyncIterator, Callable
 from contextlib import nullcontext
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Final, Literal
 
 from fastapi import HTTPException, Request, status
 from fastapi.responses import StreamingResponse
@@ -34,6 +36,10 @@ from app.core.tracing import RequestTrace, bind_request_trace
 from app.schemas.chat import DoneData, ErrorData
 
 logger = get_logger(__name__)
+
+# 레지스트리가 프로세스 로컬인 동안은 워커 다중화가 금지다. 공유 레지스트리로 올린 사람이 이 값을
+# False로 바꾸면 아래 가드 테스트가 자동으로 완화된다. 배경은 docs/specs/OPS-SCALEOUT-476.md.
+REGISTRY_IS_PROCESS_LOCAL: Final[bool] = True
 
 _SSE_HEADERS = {
     "Cache-Control": "no-cache",
@@ -89,6 +95,10 @@ class ActiveStreamRegistry:
     def is_active(self, stream_key: str) -> bool:
         return stream_key in self._active
 
+    def active_count(self) -> int:
+        """현재 활성 스트림 수를 반환한다. scope 예약인 fence는 활성 스트림으로 세지 않는다."""
+        return len(self._active)
+
     def acquire_fence(self, owner_id: str, session_id: str) -> StreamScopeFence | None:
         """해당 buyer session scope에 active stream이 없을 때 non-blocking fence를 획득한다."""
         scope = (owner_id, session_id)
@@ -139,6 +149,19 @@ _registry = ActiveStreamRegistry()
 def get_registry() -> ActiveStreamRegistry:
     """활성 스트림 레지스트리 싱글턴."""
     return _registry
+
+
+def _note_active_streams(
+    observer: RequestObservation | None,
+    registry: ActiveStreamRegistry,
+) -> None:
+    """관측 실패가 스트림 슬롯·응답 수명주기를 바꾸지 않게 활성 수 표본을 격리한다."""
+    if observer is None:
+        return
+    try:
+        observer.note_active_streams(registry.active_count())
+    except Exception:
+        logger.warning("active stream observation failed code=ACTIVE_STREAM_OBSERVATION_FAILED")
 
 
 def registry_key(identity: Identity, thread_id: str) -> str:
@@ -435,6 +458,9 @@ async def open_stream(
     role 미지정은 기존 전체 상한을 유지한다. 명시하지 않은 호출자가 조용히 더 좁은 구매자
     상한으로 잘리지 않도록, 역할을 명시한 호출자만 좁은 예산을 받는다.
 
+    활성 스트림 표본은 실제 열린 수다. acquire 성공 표본은 자신을 포함하고, 409 거절 표본은
+    자신을 제외한다.
+
     [#427, DESIGN-SHARED-BUDGET-384 §3 D2] `inner_factory` 는 이 함수가 실제로 `deadline`
     계산에 쓰는 `start`(`loop.time()`)를 받는다 — 구제 체인 공유 예산(`rescue_deadline`)이
     이 스트림의 실제 데드라인과 같은 원점에서 파생돼야 `rescue_deadline ≤ deadline` 부등식이
@@ -454,6 +480,7 @@ async def open_stream(
         session_id=buyer_session.session_id if buyer_session is not None else None,
     ):
         if observer is not None:
+            _note_active_streams(observer, registry)
             await _safe_finish(
                 observer,
                 stream_key,
@@ -471,6 +498,7 @@ async def open_stream(
         )
 
     if observer is not None:
+        _note_active_streams(observer, registry)
         try:
             # 슬롯 확보 후에만 사용자 메시지 저장(§6.3 a, 유령 턴 방지). 이제 실제 pg-profile
             # I/O 라 DB 오류·클라이언트 disconnect 로 예외를 던질 수 있다 — release 없이
@@ -565,6 +593,8 @@ async def open_stream(
                     detail={"code": "UPSTREAM_TIMEOUT", "message": "상류(LLM) 응답 지연"},
                 )
             completed, _ = await asyncio.wait({first_reply}, timeout=min(remaining, poll))
+            if observer is not None:
+                _note_active_streams(observer, registry)
             if first_reply in completed:
                 try:
                     result = first_reply.result()
@@ -681,6 +711,8 @@ async def open_stream(
                     yield done_frame
                     break
                 completed, _ = await asyncio.wait({next_reply}, timeout=min(remaining, poll))
+                if observer is not None:
+                    _note_active_streams(observer, registry)
                 if next_reply not in completed:
                     # 아직 이벤트 없음(제너레이터 유휴) — (b) 연결 종료 조기 감지.
                     if await request.is_disconnected():
