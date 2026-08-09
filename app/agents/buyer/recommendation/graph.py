@@ -1018,6 +1018,13 @@ async def stream_recommendation(
             else:
                 if trace := current_request_trace():
                     trace.mark_degraded("push_skipped")
+                if cart_store is not None and thread_key is not None:
+                    try:
+                        await cart_store.set_push_failed(thread_key)
+                    except Exception as exc:  # noqa: BLE001 - 문구 보강 실패로 추천 턴을 죽이지 않는다
+                        logger.warning(
+                            "push_failed_marker_write_failed", extra={"reason": str(exc)}
+                        )
                 if push_notice := _strip_unsafe(settings.push_skipped_notice):
                     yield sse("token", TokenData(text=push_notice).model_dump(by_alias=True))
             # [리뷰 F2] 되물음은 **여기**(push 성공/실패 분기 뒤)로 옮겼다 — push 앞에서 내면
@@ -2579,6 +2586,11 @@ async def stream_recommendation(
         # [#133] 문안은 config 주입 — degrade 고지 문구를 한 곳에서 관리한다.
         if trace := current_request_trace():
             trace.mark_degraded("push_skipped")
+        if cart_store is not None and thread_key is not None:
+            try:
+                await cart_store.set_push_failed(thread_key)
+            except Exception as exc:  # noqa: BLE001 - 문구 보강 실패로 추천 턴을 죽이지 않는다
+                logger.warning("push_failed_marker_write_failed", extra={"reason": str(exc)})
         if push_notice := _strip_unsafe(settings.push_skipped_notice):
             yield sse("token", TokenData(text=push_notice).model_dump(by_alias=True))
 

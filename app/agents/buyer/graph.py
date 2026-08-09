@@ -1064,6 +1064,12 @@ async def run_buyer_turn(
     # LAST_RECOMMENDATIONS 에 이름이 있었는지 운영 로그에서 알 수 없었기 때문이다(패킷 §3).
     # 담기·찜 계열 턴에 한해 개수만 남긴다 — 상품명·발화 원문은 판매자 입력·PII 라 싣지 않는다.
     has_last_reco = bool(last_reco)
+    has_push_failed = False
+    if not has_last_reco and decision.intent in ("cart_add", "wishlist_add"):
+        try:
+            has_push_failed = await cart_store.get_push_failed(thread_key)
+        except Exception as exc:  # noqa: BLE001 - 문구 보강 실패로 담기·찜 턴을 죽이지 않는다
+            logger.warning("push_failed_marker_read_failed", extra={"reason": str(exc)})
     if decision.intent in ("cart_add", "wishlist_add", "wishlist_remove"):
         logger.info(
             "last_reco_name_coverage",
@@ -1195,6 +1201,7 @@ async def run_buyer_turn(
                 # 좁히기의 조건어 원천. 담기 흐름 밖의 다른 라우팅·프롬프트는 건드리지 않는다.
                 condition_terms=cart_condition_terms(prior, decision.filters),
                 has_last_reco=has_last_reco,
+                has_push_failed=has_push_failed,
                 observer=observer,
             ):
                 yield frame
@@ -1233,6 +1240,7 @@ async def run_buyer_turn(
                 settings=settings,
                 allowed_product_ids=allowed,
                 has_last_reco=has_last_reco,
+                has_push_failed=has_push_failed,
                 observer=observer,
             ):
                 yield frame

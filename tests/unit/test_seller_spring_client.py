@@ -76,6 +76,52 @@ async def test_get_sales_parses_camel_response() -> None:
     assert point.deviation_pct == 1.2
 
 
+async def test_get_sales_parses_sales_count() -> None:
+    """[#489] I-6 series[].salesCount(판매 수량) 수신 — 구현엔 있었으나 스키마에
+    필드가 없어 파싱되지 않고 버려지던 드리프트 정정(api-spec §4.4 v0.29.3)."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "granularity": "daily",
+                "series": [
+                    {
+                        "date": "2026-06-14",
+                        "sales": 1250000,
+                        "orderCount": 18,
+                        "salesCount": 27,
+                        "isAnomaly": True,
+                        "deviationPct": -42.1,
+                    }
+                ],
+            },
+        )
+
+    client = _client(handler)
+    result = await client.get_sales("brand-1", "2026-06-14", "2026-06-14")
+
+    point = result.series[0]
+    assert point.sales_count == 27  # orderCount(18, 건수)와 단위가 다르다
+    assert point.order_count == 18
+
+
+async def test_get_sales_sales_count_absent_stays_none() -> None:
+    """[#489] salesCount 부재는 0 이 아니라 None — granularity=summary 응답에는
+    수량 필드가 없고 BE 미배포 구간도 같다. 0 이면 '안 팔림'으로 오독된다."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"series": [{"date": "2026-06-14", "sales": 0, "orderCount": 0}]},
+        )
+
+    client = _client(handler)
+    result = await client.get_sales("brand-1", "2026-06-14", "2026-06-14")
+
+    assert result.series[0].sales_count is None
+
+
 async def test_get_sales_accepts_null_deviation_pct() -> None:
     """[회귀 2026-07-30] 실 Spring(SellerSalesService)은 이동평균 구간 미달 포인트에
     deviationPct=null 을 내려보낸다 — float 고정 스키마가 ValidationError 를 내며
@@ -1011,6 +1057,109 @@ async def test_get_review_stats_parses_null_average() -> None:
     assert "stats=true" in captured["url"]
     assert result.total_count == 0
     assert result.average_rating is None
+
+
+async def test_get_events_parses_new_row_fields() -> None:
+    """[#489] I-13 2026-08-06 개정 신필드 수신 — removeFromCart·salesQuantity·체류 4종.
+
+    개정 전 BehaviorProductRow 는 CamelModel(pydantic 기본 extra="ignore") 상속이라
+    이 필드들이 예외도 없이 통째로 소실됐다. 베이스를 SellerAggregateModel 로 교체한
+    근본 수정의 회귀 가드다.
+    """
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "success": True,
+                "data": {
+                    "groupBy": "product",
+                    "rows": [
+                        {
+                            "productId": 101,
+                            "productName": "에어 러너 2",
+                            "counts": {
+                                "productView": 1820,
+                                "addToCart": 240,
+                                "removeFromCart": 35,
+                                "checkoutStart": 96,
+                                "purchaseComplete": 61,
+                            },
+                            "salesQuantity": 74,
+                            "medianDwellSeconds": 42.0,
+                            "avgDwellSeconds": 71.3,
+                            "dwellSampleCount": 1180,
+                            "dwellSource": "next_event",
+                            "viewToCartRate": 0.132,
+                            "uniqueVisitors": 1503,
+                        }
+                    ],
+                    "total": 17,
+                },
+            },
+        )
+
+    client = _client(handler)
+    row = (await client.get_events("brand-1", "2026-07-01", "2026-07-14")).rows[0]
+
+    assert row.counts["removeFromCart"] == 35  # 4종 → 5종 편입
+    assert row.sales_quantity == 74  # 수량 — purchaseComplete(61 건)와 단위가 다르다
+    assert row.median_dwell_seconds == 42.0
+    assert row.avg_dwell_seconds == 71.3
+    assert row.dwell_sample_count == 1180
+    assert row.dwell_source == "next_event"
+
+
+async def test_get_events_new_row_fields_absent_stay_none() -> None:
+    """[#489] 신필드 부재는 0 이 아니라 None — BE 미배포 구간·필터 미포함 시 계약값이
+    null 이다(0="안 팔림"/"체류 0초", null="미조회"/"표본 없음"). 기본값 0 을 두면
+    churn_rate 에서 잡았던 silent-mismatch(#197)를 그대로 재도입한다."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "success": True,
+                "data": {"groupBy": "product", "rows": [{"productId": 101}], "total": 1},
+            },
+        )
+
+    client = _client(handler)
+    row = (await client.get_events("brand-1", "2026-07-01", "2026-07-14")).rows[0]
+
+    assert row.sales_quantity is None
+    assert row.median_dwell_seconds is None
+    assert row.avg_dwell_seconds is None
+    assert row.dwell_sample_count is None
+    assert row.dwell_source is None
+
+
+async def test_get_events_row_preserves_unknown_extra_field() -> None:
+    """[#489 근본 수정] BehaviorProductRow 가 미지 필드를 model_extra 에 보존한다.
+
+    형제 판매자 모델은 전부 SellerAggregateModel(extra="allow")인데 이 모델만
+    CamelModel 이라 BE 신설 필드가 예외도 안 나고 model_extra 에도 안 남고 사라졌다.
+    필드 5종 추가보다 이 베이스 교체가 근본 수정이며, 다음 BE 추가 때 같은 일이
+    반복되지 않는지를 지키는 가드다.
+    """
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "success": True,
+                "data": {
+                    "groupBy": "product",
+                    "rows": [{"productId": 101, "someFutureBeField": 7}],
+                    "total": 1,
+                },
+            },
+        )
+
+    client = _client(handler)
+    row = (await client.get_events("brand-1", "2026-07-01", "2026-07-14")).rows[0]
+
+    assert row.model_extra == {"someFutureBeField": 7}
 
 
 async def test_get_review_stats_sends_rating_and_product_filters() -> None:

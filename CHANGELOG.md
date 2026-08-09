@@ -9,25 +9,6 @@
 
 ## [Unreleased]
 
-### Added
-- **#346 — 비교(기준) 기간 어휘 양 레인 지원** (`직전 동일 기간`·`지난달 대비`·`전월 동기간`·
-  `작년 대비`·`전년 동기간`). `period.resolve_comparison(expr, base)` 가 본 기간을 받아 환산하고
-  (`직전 동일 기간` 은 보충값이 없어 확인 불필요 — `tools._previous_period` 와 같은 정의,
-  달력 시프트 2종은 정렬 방식을 코드가 고르므로 확인 대상), 확인 판정은 본 기간과의 **합집합**이다.
-  배선은 `AnalysisPlan.comparison_expr`(planner 는 표현만) → `ResolvedPlan.compare_from/to` →
-  입력 메시지 `[비교 기간]` 한 줄이며 **도구 시그니처·Spring 계약은 불변**이다 — 워커가 두 기간으로
-  같은 도구를 각각 호출한다. general 레인은 한 발화에서 비교 표현을 먼저 떼어내 본 기간과 함께
-  해석한다. 확인 대기 저장(`period_confirm`)에도 비교 기간을 실어 승인 재개가 대조군을 잃지 않게 했다.
-  (DESIGN-SELLER-PERIOD §2.5, 와이어 계약 무변경)
-
-### Security
-- **#487 — I-16 이탈 코호트가 원시 `memberId` 를 판매자 LLM 표면에 싣던 재식별 경로 차단**
-  (api-spec §4.4, v0.29.1). `get_churn_cohort` 요약이 이탈 회원을 `[41] 마지막 활동 …` 형태로
-  적재해, 판매자 주문 화면(S-2: `orderId` + 수령인 실명)과 대조하면 회원이 특정됐다 — memberId 는
-  가명이 아니라 재식별 키라는 것이 #481 I-14 개정의 근거였는데, 같은 논리가 I-16 에만 적용되지
-  않고 있었다. 노션 개정이 I-8·I-14·I-16 **동시 배포**를 전제했으므로 그 사이 기간 내내 노출이
-  I-16 경로로만 열려 있던 셈이다.
-
 ### Fixed
 - **#494 — I-31 집계 모드가 `rating` 필터를 버려 저평점 상품을 틀리게 지목하던 문제** (api-spec
   §4.20, 계약 무변경 — 코드가 확정 명세를 못 따라간 단방향 드리프트). `SpringClient.get_review_stats`
@@ -38,6 +19,18 @@
   명시한다(`리뷰 집계(별점 1,2 한정): …`, 0건도 `별점 1,2 리뷰가 없습니다`). `rating` 미지정 시
   출력은 종전과 바이트 동일하다. 재발 방지로 응답 픽스처가 아닌 **요청 쿼리스트링 스냅샷** 테스트를
   추가했다(`docs/lessons.md` 2026-08-08 항목).
+- **#468 — 이름 없는 상품의 카테고리 폴백이 상품명처럼 추천 문맥에 실리던 문제와, 추천 목록
+  전달 실패 뒤 사용자가 추천을 받지 않은 것처럼 되묻던 문구를 바로잡았다** — 적재 시 원본 이름
+  유무만 생성물 메타에 남겨 확실한 카테고리 폴백은 이름 지목 후보에서 제외하고, 목록 전달 실패
+  사실은 스레드 상태로 보관해 다음 담기·찜 미해소 턴에서 다시 추천을 요청하도록 안내한다.
+- **#489 — I-13 신필드(`salesQuantity`·체류시간 4종·`removeFromCart`)·I-6 `salesCount` 수신 정합**
+  (api-spec §4.4, v0.29.3). 개정 전에는 **AI 가 판매 수량에 도달할 경로가 하나도 없었다** — I-6
+  `salesCount` 는 BE 구현에 원래 있었으나 스키마에 필드가 없어 파싱되지 않고 버려졌고, 공백을
+  메우려 신설된 I-13 `salesQuantity` 는 미반영, 대체 경로 S-1 `products[]` 는 같은 날 제거됐다.
+  **근본 원인 제거**: `BehaviorProductRow` 만 `CamelModel`(pydantic 기본 `extra="ignore"`)을 상속해
+  형제 판매자 모델(`SellerAggregateModel`, `extra="allow"`)과 달리 **BE 가 추가한 필드가 예외도
+  없이 `model_extra` 에도 안 남고 통째로 소실**되고 있었다 — 베이스를 `SellerAggregateModel` 로
+  교체해 앞으로 BE 가 뭘 추가하든 같은 일이 반복되지 않게 했다.
 - **#488 — I-13 `purchaseComplete` 폐기 규정이 판매자 워커에 주입하던 오정보 제거** (api-spec
   §4.4, v0.29.2). 2026-07-31 개정(jarvis-backend#62 근본 수정 배포 / #196)으로 `purchaseComplete`
   는 **주문 기준 집계**(`order_item × product × brand`, PAID·`paid_at`, `COUNT(DISTINCT order_id)`
@@ -71,7 +64,44 @@
   가드(`_guard_period_args`)를 걸어 LLM 이 날짜를 지어내도 상한·역전이 다시 새지 않게 했다.
   와이어 계약 무변경.
 
+### Added
+- **#346 — 비교(기준) 기간 어휘 양 레인 지원** (`직전 동일 기간`·`지난달 대비`·`전월 동기간`·
+  `작년 대비`·`전년 동기간`). `period.resolve_comparison(expr, base)` 가 본 기간을 받아 환산하고
+  (`직전 동일 기간` 은 보충값이 없어 확인 불필요 — `tools._previous_period` 와 같은 정의,
+  달력 시프트 2종은 정렬 방식을 코드가 고르므로 확인 대상), 확인 판정은 본 기간과의 **합집합**이다.
+  배선은 `AnalysisPlan.comparison_expr`(planner 는 표현만) → `ResolvedPlan.compare_from/to` →
+  입력 메시지 `[비교 기간]` 한 줄이며 **도구 시그니처·Spring 계약은 불변**이다 — 워커가 두 기간으로
+  같은 도구를 각각 호출한다. general 레인은 한 발화에서 비교 표현을 먼저 떼어내 본 기간과 함께
+  해석한다. 확인 대기 저장(`period_confirm`)에도 비교 기간을 실어 승인 재개가 대조군을 잃지 않게 했다.
+  (DESIGN-SELLER-PERIOD §2.5, 와이어 계약 무변경)
+- **#489 — I-13 `BehaviorProductRow` 신필드 5종** (api-spec §4.4, v0.29.3): `salesQuantity`(PAID
+  `SUM(oi.quantity)`·아이템 `PENDING`/`CANCELLED`/`RETURNED` 제외 — I-6 `salesCount` 와 동일 산식)와
+  체류시간 4종(`medianDwellSeconds`·`avgDwellSeconds`·`dwellSampleCount`·`dwellSource`). 전부
+  **nullable 이며 기본값 `0` 을 두지 않는다** — 명세가 `null` 을 계약값으로 규정한다(`0`="안 팔림",
+  `null`="미조회"). `0` 기본값은 `churn_rate` 에서 잡았던 silent-mismatch(#197)를 그대로 재도입한다.
+- **#489 — I-6 `SalesSeriesPoint.salesCount`** (api-spec §4.4, v0.29.3). `granularity=summary` 응답에는
+  수량 필드가 없어 nullable. `get_sales_timeseries` 요약이 포인트별 `/N개`·기간 합계를 함께 표기하되,
+  `null` 포인트를 `0` 으로 섞지 않고 집계 대상 포인트 수를 밝힌다.
+
+### Security
+- **#487 — I-16 이탈 코호트가 원시 `memberId` 를 판매자 LLM 표면에 싣던 재식별 경로 차단**
+  (api-spec §4.4, v0.29.1). `get_churn_cohort` 요약이 이탈 회원을 `[41] 마지막 활동 …` 형태로
+  적재해, 판매자 주문 화면(S-2: `orderId` + 수령인 실명)과 대조하면 회원이 특정됐다 — memberId 는
+  가명이 아니라 재식별 키라는 것이 #481 I-14 개정의 근거였는데, 같은 논리가 I-16 에만 적용되지
+  않고 있었다. 노션 개정이 I-8·I-14·I-16 **동시 배포**를 전제했으므로 그 사이 기간 내내 노출이
+  I-16 경로로만 열려 있던 셈이다.
+
 ### Changed
+- **#489 — behavior 요약 5종화 + 신지표 표기** (api-spec §4.4, v0.29.3). I-13 `counts` 어휘에
+  `removeFromCart` 가 편입되어 표시 행·꼬리 합계 키·꼬리 출력 3곳이 각각 4종을 하드코딩하던 것을
+  모듈 상수 `_BEHAVIOR_COUNT_KEYS`/`_BEHAVIOR_COUNT_LABELS` 로 단일 출처화했다. 상품 행에
+  판매 수량과 체류시간(중앙·평균·표본 수)을 함께 싣고, `dwellSource` 한계(next_event 기준이라 세션
+  마지막 조회가 표본에서 빠짐)는 행마다 반복하지 않고 요약 말미에 1회 각주로 붙인다.
+  `dwellSampleCount` 가 없거나 0 이면 중앙값·평균이 실려 와도 **수치를 감추고 사유만 남긴다**
+  (표본 없이 해석 금지 — conversion 워커 유의성 판정 원칙과 동일). 군집(k-means) 피처와 Tukey 비율
+  지표는 **의도적으로 종전 4종·3종 유지** — 어휘 확장과 분석 피처 변경은 별개 결정이라 스코프 밖.
+  `_BEHAVIOR_AUTHORITY_NOTE` 에는 "판매 **수량**의 권위는 같은 행의 `salesQuantity`" 한 줄을 더해,
+  `purchaseComplete` 경고가 신설 수량 지표까지 싸잡아 불신하게 만들지 않도록 했다.
 - **#487 — I-16 노션 2026-08-06 개정 정합(#481 잔여분)** (api-spec §4.4, v0.29.1).
   `ChurnMember` 에서 `member_id`·`last_login_at` 을 제거하고 `customer_label`(HMAC 6자 사례번호,
   I-14 와 같은 규약·같은 값)을 신설했다. `get_churn_cohort` 요약은 라벨만 노출하며 **라벨 결측
@@ -152,6 +182,44 @@
   (`docs/specs/BE-NEGOTIATION-GRAPH-357.md` v2.3.0, 마지막 수정 라운드)
 
 ### Added
+- **#474 — 색상 동의어 확장의 결정론 A/B 골든셋 회귀를 추가했다** — 고유어 발화와 정본 표기 쌍을 별도 MFT로 고정하고 I-1 mock의 color 배열 계약을 실제로 계측한다.
+- **#438 — 부하 테스트용 결정론 스텁 LLM provider `LLM_PROVIDER=scripted`** —
+  `evals/benchmark` 러너가 매 요청 실 LLM(decompose+rerank)을 호출해 격자가 커질수록 비용이
+  커져 실질적으로 못 돌리던 문제를 해소한다. 신규 `app/core/llm_scripted.py::LoadTestLLM`
+  (`ScriptedLLM` 상속)이 rerank 후보 productId를 CANDIDATES에서 그대로 파싱해 되돌려주는 등
+  각 호출 지점 파서가 실제로 받아들이는 최소 유효 응답을 프롬프트에서 유도한다 — 고정
+  productId(101/102)를 실 카탈로그에 그대로 쓰면 항상 degrade로 떨어져 "정상 경로 p95"
+  대신 "degrade 경로 p95"를 재는 왜곡을 막는다. 미상 프롬프트는 조용한 폴백 대신 `LLMError`로
+  소리 나게 실패한다. `app_environment`가 `local`/`test`가 아니면 기동 자체를 거부하고
+  (config.py, 운영 var 오설정 방어) 기동 로그에 경고 배너를 남긴다(app/main.py). 산출물은
+  스스로를 증언한다 — 트레이스에 모델 id `scripted-stub-fast`/`scripted-stub-smart`를 남겨
+  (토큰 수는 추정 없이 `None`) 서버 로그 조인 보고서 최상단에 자동 경고가 붙는다
+  (`evals/benchmark/report.py`). 판매자 레인은 무료 모드 범위 밖이라 `init_seller_model`이
+  명시적으로 거부한다. `ScriptedLLM`/`DEFAULT_*`는 `tests/integration/_stubs.py`에서
+  `app/core/llm_scripted.py`로 이동했고(런타임이 `tests/`를 import할 수 없어, Dockerfile이
+  `app/`만 이미지에 넣는다) 기존 파일은 재수출만 한다. 사용법·측정 가능/불가능 범위는
+  `evals/benchmark/README.md` 참조. 그 스텁 모드로 **첫 무료 baseline**을 산출했다
+  (`evals/benchmark/baselines/20260809T014442747650Z-local-stub-spring`, Spring 기동·pg 실물·
+  LLM만 스텁, `buyer_recommend` × 동시성 1/5/10/20 × 30건, error·timeout 0) — 처리량이 동시성
+  10 부근에서 포화하고(3.84 → 3.99 req/s) 그 뒤로는 지연만 늘어난다. LLM 지연이 빠졌으므로 이
+  포화점은 벤더가 아니라 우리 코드·풀·pg 쪽 한계를 가리킨다. 짝이 되는 실 LLM 좁은 격자는
+  같은 조건에서 LLM 만 실 벤더(openai)로 바꿔 동시성 1/5 × 30건만 좁게 떴다
+  (`20260809T021733612671Z-local-realllm-spring`). **두 baseline 의 차이가 벤더 지연
+  기여분**이다 — p50 기준 c=1 4553ms(83%) · c=5 5114ms(79%), p95 기준 6876ms(88%) ·
+  7083ms(78%), 처리량은 4.6~6.4배 떨어진다. 즉 실 LLM 으로만 재면 우리 코드의 포화점이
+  벤더 분산에 묻혀 보이지 않는다 — 이슈가 무료 모드를 원한 이유가 실측으로 확인됐다.
+  종단 예산도 함께 봤다: 관측 max 는 8.0~9.6s 로 `stream_total_timeout_buyer_s=30` 대비
+  3배 이상 여유가 있다. `costUsd` 는 단가표가 비어 `unknown` 이라 0 으로 추정하지 않고
+  토큰 수(prompt 431,301 · completion 31,144)만 남겼다(비용 관측은 #437 소관).
+- **#482 — 개인화 활성화 지표(Δranking rate)를 Tier L 산출물에 편입** — 종전 Tier L 은 이득
+  지표(`pairedVsGuest` 의 nDCG delta)만 실어, "프로필이 아무것도 바꾸지 않아 효과가 0" 과
+  "바꾸기는 하는데 좋은 방향이 아님" 이 구분되지 않았다. 두 상태의 처방이 정반대(소비 방식 수정
+  vs 프로필 내용 수정)라 판정이 갈리는데 근거가 없었다. `evals/personalization/activation.py`
+  (순수 함수)가 `(caseId, repeat)` 로 짝지어 동일·순서만·집합변경을 세고, `comparison.json` 의
+  `rankingChange` 와 `comparison.md` 표로 나간다. 기존 `baselines/live-v1` 산출물에 소급 적용한
+  결과 `guest` 대비 `clean_rerank_only` 는 **58.1%(18/31)** 로, 프로필은 절반 이상의 턴에서 노출을
+  실제로 바꾸고 있었다 — 즉 현행 개인화의 문제는 "손잡이가 죽었다"가 아니라 "방향"이다. 기준선
+  arm 을 `LIVE_BASELINE_ARM` 상수로 뽑아 이득·활성화 두 지표가 같은 기준을 보게 강제한다.
 - **#345(#269 P1) — 판매자 분석 레인이 `이번 달`·`올해`·`상반기`·`3분기`·`최근 3개월` 을 알아듣고, 해석한 기간을 실행 전에 확인받는다** — #269 는 P0(침묵 폴백 제거)·P1(어휘 확장+확인 흐름)·P2 로 나뉘어 있었는데 P0 만 구현한 PR #284 가 이슈를 닫아 P1 이 유실돼 있었다. 그 상태에서 "이번 달 매출 분석해줘"는 버그가 아니라 **설계상** 되묻기로 떨어졌다. 실측하니 차단 지점이 셋이었다 — ① `PLANNER_PROMPT [기간]` 절이 미지원 어휘를 clarification 으로 끊고, ② `AnalysisPlan.period_expr` 의 **Field description 에도 같은 정규 어휘 4종이 박혀 있어**(구조화 출력이라 LLM 이 이것도 읽는다) 프롬프트만 고치면 둘이 반대를 지시하며, ③ `calc.normalize_period` 가 `최근 3개월` 을 명시 거절했다. 셋을 함께 고쳤다.
   - **신규 `app/agents/seller/period.py`** — 구 `calc.normalize_period` 를 이관·확장하고 `PeriodResolution`(값 + `needs_confirmation` + `clipped`)을 반환한다. 확인 없이 통과 5종(`지난달`·`최근 N일`·`최근`·`어제`·`YYYY-MM-DD~YYYY-MM-DD`, **회귀 가드로 고정**) / 확인 후 통과(`이번 달`·`올해`·`상반기`·`하반기`·`N분기`·`최근 N주`·`최근 N개월`·연도 없는 날짜 `M월 D일~M월 D일`) / 여전히 되묻기(`작년 여름`·`최근 반년`·`최근 한 달`·혼합 표현). 경계 규칙 5종: R1 오늘 제외(당일 집계 미완결), R2 미래 절단(**확인 어휘만** — 명시 범위는 판매자가 직접 지정한 값이라 말없이 자르지 않는다), R3 완전 미래 거절(8월의 `4분기`, 단 `하반기` 는 7월이 지났으므로 절단 대상), R4 상한, R5 연도 추론(**연도 없는 날짜만** — `N분기`·`올해` 는 어휘 자체가 "올해의"를 뜻하므로 작년으로 미루지 않는다). `최근 N개월` 은 30일 근사가 아니라 달력 기준이다.
   - **문구 소유권을 구조로 단일화했다** — 되묻기 문구 생성 지점이 planner LLM 의 `clarification` 과 `calc` 예외 메시지 **두 곳**이라, P0 가 보장했다고 믿은 "예외 메시지 = 사용자 문구"가 실은 "planner 가 통과시켰을 때만" 성립하는 조건부였다(dev 실측 문구가 코드 원문과 달랐던 이유). planner 는 이제 **기간 표현을 그대로 옮겨적기만** 하고 **기간을 이유로 clarification 을 쓰지 않는다** — 프롬프트와 스키마 description 양쪽에 금지 문장을 넣고 테스트로 고정했다. 어느 쪽이 문구를 썼는지 측정해 맞추는 대신 생성 지점을 하나로 만들었으므로 프롬프트·모델이 바뀌어도 갈리지 않는다.
@@ -632,6 +700,12 @@
 - **#347 — Claude PR Review 에 `skip-claude-review` 라벨 게이트 추가** — 워크플로 job `if:` 에 라벨 조건을 더해, 리뷰가 불필요한 PR(대량 병합 정합·실험 브랜치)을 PR 단위로 끌 수 있게 했다. 기본 동작(라벨 없음 = 리뷰 실행)은 불변이며, 라벨 부착/제거는 다음 push 부터 적용된다. 계약(api-spec) 무변경.
 
 ### Fixed
+- **#474 브랜치 후속 — 유닛 테스트가 로컬 Spring BE의 TCP 응답에 따라 달라지던 환경 의존을 차단** —
+  `INTERNAL_API_TOKEN`을 공통 테스트 환경에서 비우고 `tests/unit/`에서만 실제 TCP 연결을
+  `ConnectionRefusedError`로 거부해 CI의 서비스 미기동 degrade 경로를 고정했다.
+- **#474 브랜치 후속 — 현행 골든셋 버전을 주장하는 baseline의 낡은 datasetHash를 회귀로 감지** —
+  중첩 JSON을 포함해 manifest와의 hash 일치를 검사하며, 의도적으로 옛 버전을 가리키는 baseline은
+  검사 대상에서 제외한다.
 - **#413 — personalization 결정성 테스트가 워킹트리 편집 중 실행되면 깨지던 문제** — 산출물
   정규화가 `run_manifest.json` 의 `run` 키만 걷어내고 `commitSha`·`dirty`(둘 다 실행 시점 라이브
   git 상태)는 그대로 둬, 두 실행 사이에 리포를 편집·커밋하면 무관한 실패가 났다. 정본

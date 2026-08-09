@@ -1,0 +1,54 @@
+{
+  "bootstrap": {
+    "confidence": 0.95,
+    "resamples": 1000,
+    "seed": 20260803
+  },
+  "client_region": "local-wsl2",
+  "client_runtime": {
+    "httpx": "0.28.1",
+    "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+    "python": "3.12.3 (main, Jun 19 2026, 12:46:00) [GCC 13.3.0]"
+  },
+  "command": "/home/uuser/orca/workspaces/jarvis-ai/chore-438-loadtest-stub-provider/.venv/bin/python3 -m evals.benchmark.runner --base-url http://127.0.0.1:8199 --target-label local-stub-spring --scenarios buyer_recommend --concurrency 1,5,10,20 --measured-requests 30 --server-log /tmp/claude-1000/-home-uuser-orca-workspaces-jarvis-ai-chore-438-loadtest-stub-provider/f76fafdc-fbbb-4d5a-be88-c49142fc78d8/scratchpad/bench/server-stub.log --out-dir evals/benchmark/baselines --client-region local-wsl2 --instance-type local-dev-wsl2 --dependency-note 'LLM=스텁(LLM_PROVIDER=scripted) — 벤더 지연 미포함. 서버 로그 model_ids 가 scripted-stub-* 로 증언' --dependency-note 'Spring 기동(로컬 8080) — I-1 GET /internal/products/search 200 (294건 실측)' --dependency-note 'I-21 POST /internal/recommendations 는 400 응답 — degradeReason=push_skipped 상시 발생(BE 측 조건, 2026-08-02 baseline 과 동일)' --dependency-note 'pg-catalog/pg-profile 로컬 컨테이너(5433/5434), product_document 6310건 전부 임베딩 보유, categories 1003' --dependency-note '타깃의 RATE_LIMIT_PER_MIN/HOUR 를 100000 으로 상향(기본값이면 측정이 429 로 오염됨). 앱 코드 무변경, 타깃 환경변수만' --dependency-note 'buyer_fallback 은 제외 — 스텁은 라우팅을 하지 않고 항상 intent=recommend 를 내므로 그 시나리오는 구조적으로 outcome mismatch 다(evals/benchmark/README.md 무료 모드 절)' --dependency-note '동일 호스트에서 다른 워크트리 레인이 pg 컨테이너를 공유한다 — 이웃 부하가 측정에 섞일 수 있다'",
+  "dependency_conditions": [
+    "LLM=스텁(LLM_PROVIDER=scripted) — 벤더 지연 미포함. 서버 로그 model_ids 가 scripted-stub-* 로 증언",
+    "Spring 기동(로컬 8080) — I-1 GET /internal/products/search 200 (294건 실측)",
+    "I-21 POST /internal/recommendations 는 400 응답 — degradeReason=push_skipped 상시 발생(BE 측 조건, 2026-08-02 baseline 과 동일)",
+    "pg-catalog/pg-profile 로컬 컨테이너(5433/5434), product_document 6310건 전부 임베딩 보유, categories 1003",
+    "타깃의 RATE_LIMIT_PER_MIN/HOUR 를 100000 으로 상향(기본값이면 측정이 429 로 오염됨). 앱 코드 무변경, 타깃 환경변수만",
+    "buyer_fallback 은 제외 — 스텁은 라우팅을 하지 않고 항상 intent=recommend 를 내므로 그 시나리오는 구조적으로 outcome mismatch 다(evals/benchmark/README.md 무료 모드 절)",
+    "동일 호스트에서 다른 워크트리 레인이 pg 컨테이너를 공유한다 — 이웃 부하가 측정에 섞일 수 있다"
+  ],
+  "dependency_ids": {
+    "fastapi": "0.139.0",
+    "httpx": "0.28.1",
+    "pydantic": "2.13.4"
+  },
+  "ended_at_utc": "2026-08-09T01:45:54.008814+00:00",
+  "git_sha": {
+    "dirty": false,
+    "sha": "0dd53296495df8bb197746d73673d6f0f71190b3"
+  },
+  "image": {
+    "unknown_reason": "not_provided",
+    "value": null
+  },
+  "instance_type": "local-dev-wsl2",
+  "lockfile_sha": "bc79d52c10d7cefba24d91d30408e0777ed75ae64d738e047d74bb325437ec9c",
+  "model_ids": [
+    "scripted-stub-fast",
+    "scripted-stub-smart"
+  ],
+  "price_table": {
+    "input_per_1k": {},
+    "output_per_1k": {}
+  },
+  "sample_size_rationale": null,
+  "started_at_utc": "2026-08-09T01:44:42.747650+00:00",
+  "target": {
+    "auth_mode_observed": "dev_guest",
+    "base_url": "http://127.0.0.1:8199",
+    "target_label": "local-stub-spring"
+  }
+}
