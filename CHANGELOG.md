@@ -88,6 +88,24 @@
   2026-08-09 라이브 응답에서 4키 부재 및 항목당 약 1,780B→1,052B로 확인됐다(`size` 상한 폐지).
   `narrow`는 꼬리 예약 예산이 부족한 구제 단의
   타임아웃을 좁혀도 시도하며 건너뛰지 않고, 다시 끄려면 `SPRING_MAX_RETRIES=0`을 설정한다.
+- **#483 — Tier L 의 주 비교를 `회원 vs 게스트` 에서 `회원 vs 프로필 없는 회원` 으로 바꿨다**
+  (평가 하네스 한정, 프로덕션 코드·api-spec 무개정). 기준선 `guest` 는 비교 arm 과 프로필만
+  다른 게 아니라 **identity 까지 달라**(persona_id 가 없어 I-19 구매이력 조회·재구매 dedup 이
+  통째로 빠진다) 헤드라인이 "프로필 효과 + identity 효과"의 합이었다 — `live-v1` 산출물을
+  라벨로 가르면 guest 라벨 +0.0135 / member 라벨 −0.1258 이고 하락은 `repurchase` 3건이
+  만든 것이라, 그 3건을 빼면 전체 평균이 −0.0340 → −0.0106 으로 0 에 수렴한다. Tier D 가 쓰던
+  `member_no_profile` arm(identity=member, 프로필 없음)을 Tier L 에 추가해 주 비교를
+  `clean_rerank_only vs member_no_profile`(`pairedVsMemberNoProfile`)로 옮기고, `pairedVsGuest`
+  는 cold-start 보조 비교로 남겼다(identity 가 섞이므로 프로필 효과로 해석하지 않는다 —
+  dev-v2 README 와 같은 규약). `rankingChange`·`axisLeakage` 도 같은 주 기준선을 따라가며,
+  `axisLeakage["guest"]` 는 자기 비교(항상 0)에서 **지터 바닥**으로 바뀌어 유출이 신호인지
+  잡음인지 가르는 기준이 된다. `--arms` 검증은 위치 규칙(`arms[0]=="guest"`)에서 두 기준선
+  포함 여부로 바뀌었고, `comparison.json` 에 `secondaryBaselineArm`·`primaryComparison`·
+  `axisLeakageUnmeasured` 가 추가됐다. 마지막 것은 기준선 짝이 없어 **유출을 재지 못한** 행을
+  따로 싣는다 — `[]`(유출 없음)와 `None`(측정 못 함)이 같은 목록에서 똑같이 빠지면 예산 소진이
+  안전 신호로 둔갑한다. 예산 상한은 그대로 두고 실행 시 `MODEL_EVAL_MAX_CALLS_PER_RUN=4000` override 를
+  쓴다(4-arm × dev109 × repeats3 = 3,924호출, 비용 상한 $20 은 무관). **실측은 병합 후 별도
+  live 실행이 필요하다.**
 - **#504 — 판매자 분석 차트 재설계: 좌표 생성 주체를 LLM → 코드로 전환** (api-spec §3.2,
   v0.30.0 · `docs/specs/DESIGN-SELLER-CHART-V2.md`). 구 구조는 `graph_agent`(도구 없음,
   결정 D-4)가 워커 요약에서 숫자를 베껴 좌표를 만들고 G1 이 근거 없는 수치를 드랍해
