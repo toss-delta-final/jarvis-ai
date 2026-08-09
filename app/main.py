@@ -16,6 +16,10 @@ FE 가 AI 서버를 다른 오리진에서 직접 호출하므로 CORS 가 앞�
 (app/pipelines/category_seed.py check_category_dictionary)를 검사한다. 기본값(log)·off 는
 DB 연결 실패로 기동을 막지 않는다. category_dictionary_startup_check="fail" 로 강한 검증을
 opt-in 하면 사전 상태를 확인 못하는 모든 경우(도달 불가 포함)에 기동을 거부한다(라운드 7 F8).
+
+[추가 2026-08-08, 이슈 #437] lifespan 에서 모델 단가표 상태(app/core/model_pricing.py
+log_model_price_table_status)를 1회 로그한다 — I/O 가 없어 항상 실행되고, category
+dictionary 점검이 실패해도 이 신호는 남도록 그 앞에 둔다.
 """
 
 from __future__ import annotations
@@ -48,6 +52,7 @@ from app.core.conversation import close_store as close_conversation_store
 from app.core.config import Settings, get_settings
 from app.core.errors import install_error_handling
 from app.core.logging import configure_logging, get_logger
+from app.core.model_pricing import log_model_price_table_status
 from app.core.pg_store import close_store as close_pg_store
 from app.core.pg_resilience import close_advisory_pool
 from app.core.session_context import close_session_lifecycle, initialize_session_lifecycle
@@ -231,6 +236,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Lifecycle migration 뒤 scheduler를 시작하고 owned resources를 역순 종료한다."""
     scheduler_started = False
     try:
+        log_model_price_table_status(get_settings())
         _warn_process_local_registry_workers()
         await _check_category_dictionary_startup()
         await initialize_session_lifecycle()
