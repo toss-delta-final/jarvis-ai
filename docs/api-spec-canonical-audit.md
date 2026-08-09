@@ -153,4 +153,4 @@
 
 이 수치는 2026-08-09 원본 덤프 스냅샷에 한정한 관측이며, 검수 대기 743행이 승인되었을 때의 누적 이득을 단정하지 않는다.
 
-AI 사후필터도 정본 ②와 정합이다. `app/services/spring_client.py::search_products`는 `filters.color`를 I-1 요청으로만 전송하고, `app/services/search_service.py::apply_ai_side_filters`는 `rating_min`·`attr_conditions`만 처리한다; 후자의 `_matches_attr_conditions`는 축이 없으면 `continue`로 후보를 보존한다. `tests/unit/test_recommendation.py::test_color_turn_preserves_product_without_color_axis_after_ai_side_filters`가 색상 조건 턴에서 색상 축 없는 상품이 살아남음을 고정한다.
+AI 사후필터도 정본 ②와 정합이다. `app/services/spring_client.py::search_products`는 `filters.color`를 I-1 요청으로만 전송하고, `app/services/search_service.py::apply_ai_side_filters`는 `rating_min`·`attr_conditions`만 처리한다; 후자의 `_matches_attr_conditions`는 축이 없으면 `continue`로 후보를 보존한다. `tests/unit/test_recommendation.py::test_color_attr_conditions_preserve_axis_absent_and_exclude_mismatch`가 `attr_conditions={"색상": "그레이"}` 경로에서 색상 축 없는 상품은 보존하고, `빨강` 상품은 제외함을 고정한다.
