@@ -13,7 +13,12 @@ import pytest
 
 from app.core.config import get_settings
 from app.schemas.spring import ChurnMember, ProductCreate, ProductUpdate
-from app.services.spring_client import SpringClient, SpringUnavailableError
+from app.services.spring_client import (
+    ProductAlreadyDeleted,
+    ProductDeletedNotEditable,
+    SpringClient,
+    SpringUnavailableError,
+)
 
 BASE_URL = "http://spring.internal.test"
 TOKEN = "svc-token-123"
@@ -473,20 +478,57 @@ async def test_update_product_uses_patch_and_product_path() -> None:
     assert captured["body"] == {"price": 9000}
 
 
-async def test_delete_product_uses_delete_and_returns_hidden() -> None:
-    """DELETE, 응답 status=HIDDEN."""
+async def test_delete_product_uses_delete_and_returns_deleted() -> None:
+    """DELETE, 응답 status=DELETED — 숨김(HIDDEN)이 아니다(§4.5, 정본 Notion I-12)."""
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured["method"] = request.method
-        return httpx.Response(200, json={"productId": 101, "status": "HIDDEN"})
+        return httpx.Response(200, json={"productId": 101, "status": "DELETED"})
 
     client = _client(handler)
     result = await client.delete_product("brand-1", 101)
 
     assert captured["method"] == "DELETE"
-    assert result.status == "HIDDEN"
+    assert result.status == "DELETED"
     assert result.product_id == 101
+
+
+# ── [#511] I-11/I-12 409 전용 예외 (§4.5 — 정본 Notion I-12 2026-08-05 개정) ──────
+
+
+async def test_delete_product_maps_already_deleted() -> None:
+    """409 ALREADY_DELETED → 전용 예외. SpringUnavailableError 로 뭉개면 HITL 이
+    "재시도해 주세요"로 안내하는데, 삭제는 되돌릴 수 없어 재시도가 무의미하다."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(409, json={"success": False, "error": {"code": "ALREADY_DELETED"}})
+
+    client = _client(handler)
+    with pytest.raises(ProductAlreadyDeleted):
+        await client.delete_product("brand-1", 101)
+
+
+async def test_update_product_maps_product_deleted() -> None:
+    """409 PRODUCT_DELETED → 전용 예외 — 삭제된 상품을 챗봇이 되살릴 수 없다."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(409, json={"success": False, "error": {"code": "PRODUCT_DELETED"}})
+
+    client = _client(handler)
+    with pytest.raises(ProductDeletedNotEditable):
+        await client.update_product("brand-1", 101, ProductUpdate(price=9000))
+
+
+async def test_product_write_unknown_code_falls_back_to_unavailable() -> None:
+    """매핑 밖 코드(404·401·500)는 종전대로 SpringUnavailableError — 추가 전용 변경이다."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"success": False, "error": {"code": "PRODUCT_NOT_FOUND"}})
+
+    client = _client(handler)
+    with pytest.raises(SpringUnavailableError):
+        await client.delete_product("brand-1", 101)
 
 
 async def test_timeout_maps_to_spring_unavailable() -> None:
@@ -1021,12 +1063,12 @@ async def test_get_reviews_url_params_and_parsing() -> None:
 
     client = _client(handler)
     result = await client.get_reviews(
-        12, from_="2026-07-01", to="2026-07-31", rating="1,2", sort="rating"
+        12, from_="2026-07-01", to="2026-07-31", rating="1,2", sort="ratingAsc"
     )
 
     assert "/internal/seller/12/reviews" in captured["url"]
     assert "rating=1%2C2" in captured["url"] or "rating=1,2" in captured["url"]
-    assert "sort=rating" in captured["url"]
+    assert "sort=ratingAsc" in captured["url"]
     assert result.total == 47
     assert result.rows[0].rating == 2
     assert result.rows[0].product_name == "여행용 파우치"
@@ -1160,3 +1202,75 @@ async def test_get_events_row_preserves_unknown_extra_field() -> None:
     row = (await client.get_events("brand-1", "2026-07-01", "2026-07-14")).rows[0]
 
     assert row.model_extra == {"someFutureBeField": 7}
+
+
+async def test_get_review_stats_sends_rating_and_product_filters() -> None:
+    """[#494] rating·productId·기간이 집계 요청 쿼리스트링에 전부 실린다(I-31).
+
+    응답 픽스처를 고정하는 계약 테스트로는 이 회귀가 안 잡힌다 — shape 가 아니라
+    **요청 파라미터** 누락이라 HTTP 200 이 그대로 돌아온다. 그래서 요청 URL 을
+    직접 스냅샷한다.
+    """
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        return httpx.Response(
+            200,
+            json={
+                "success": True,
+                "data": {
+                    "totalCount": 18,
+                    "averageRating": 1.4,
+                    "distribution": {"5": 0, "4": 0, "3": 0, "2": 11, "1": 7},
+                    "byProduct": [
+                        {
+                            "productId": 3,
+                            "productName": "여행용 파우치",
+                            "count": 12,
+                            "averageRating": 1.3,
+                        }
+                    ],
+                },
+            },
+        )
+
+    client = _client(handler)
+    result = await client.get_review_stats(
+        12, from_="2026-07-01", to="2026-07-31", product_id=3, rating="1,2"
+    )
+
+    url = captured["url"]
+    assert "stats=true" in url
+    assert "rating=1%2C2" in url or "rating=1,2" in url
+    assert "productId=3" in url
+    assert "from=2026-07-01" in url and "to=2026-07-31" in url
+    # 집계 모드에는 rows 가 없다 — 목록 전용 파라미터는 실리지 않아야 한다.
+    assert "sort=" not in url and "limit=" not in url and "offset=" not in url
+    assert result.total_count == 18
+    assert result.by_product[0].product_id == 3
+
+
+async def test_get_review_stats_omits_rating_when_absent() -> None:
+    """[#494 회귀] rating 미지정이면 쿼리스트링에 rating 이 실리지 않는다."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        return httpx.Response(
+            200,
+            json={
+                "success": True,
+                "data": {
+                    "totalCount": 47,
+                    "averageRating": 3.8,
+                    "distribution": {"5": 12, "4": 15, "3": 8, "2": 7, "1": 5},
+                    "byProduct": [],
+                },
+            },
+        )
+
+    client = _client(handler)
+    await client.get_review_stats(12)
+
+    assert "rating" not in captured["url"]

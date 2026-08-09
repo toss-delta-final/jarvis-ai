@@ -29,7 +29,7 @@ from app.core.conversation import reset_store
 from app.core.pg_resilience import close_advisory_pool, reset_advisory_pool
 from app.core.ratelimit import reset_limiter
 from app.core.session_context import close_session_lifecycle
-from app.core.stream import get_registry
+from app.core.stream import set_registry
 from app.pipelines.artifact_store import reset_catalog_store
 from app.pipelines.artifacts_batch import reset_batch_failure_state
 from app.services import spring_client as _spring_client
@@ -52,9 +52,9 @@ def _reset_infra_state():
     reset_profile_store()
     reset_catalog_store()
     reset_batch_failure_state()
-    get_registry()._active.clear()
-    get_registry()._fences.clear()
-    get_registry()._scope_idle.clear()
+    # 싱글턴 자체를 버린다 — 백엔드 선택이 설정에서 파생되므로(#476) dict 만 비우면
+    # 이전 테스트가 고른 백엔드와 lease 토큰이 다음 테스트로 샌다.
+    set_registry(None)
     yield
     reset_limiter()
     reset_store()
@@ -65,9 +65,9 @@ def _reset_infra_state():
     reset_profile_store()
     reset_catalog_store()
     reset_batch_failure_state()
-    get_registry()._active.clear()
-    get_registry()._fences.clear()
-    get_registry()._scope_idle.clear()
+    # 싱글턴 자체를 버린다 — 백엔드 선택이 설정에서 파생되므로(#476) dict 만 비우면
+    # 이전 테스트가 고른 백엔드와 lease 토큰이 다음 테스트로 샌다.
+    set_registry(None)
 
 
 @pytest.fixture(autouse=True)

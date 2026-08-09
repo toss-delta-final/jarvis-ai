@@ -169,7 +169,7 @@ class FakeSpringClient:
     async def delete_product(self, brand_id, product_id):
         self.recorded_brand_id = brand_id
         self._maybe_fail("delete_product")
-        return ProductDeleteResult(product_id=product_id, status="HIDDEN")
+        return ProductDeleteResult(product_id=product_id, status="DELETED")
 
     # ── [#297] I-29/I-30/I-31 주문·리뷰 ──
 
@@ -211,9 +211,11 @@ class FakeSpringClient:
         self._maybe_fail("get_reviews")
         return getattr(self, "reviews_result", SellerReviewList())
 
-    async def get_review_stats(self, brand_id, *, from_=None, to=None, product_id=None):
+    async def get_review_stats(
+        self, brand_id, *, from_=None, to=None, product_id=None, rating=None
+    ):
         self.recorded_brand_id = brand_id
-        self.recorded_review_stats_args = (from_, to, product_id)
+        self.recorded_review_stats_args = (from_, to, product_id, rating)
         self._maybe_fail("get_review_stats")
         return getattr(self, "review_stats_result", SellerReviewStats())
 
@@ -1652,7 +1654,7 @@ async def test_churn_tool_summarizes_signals_and_members() -> None:
 
 async def test_churn_tool_never_exposes_raw_member_id_from_legacy_response() -> None:
     """[#487] 구응답(memberId 포함·customerLabel 부재)을 먹여도 요약에 원시 회원 키가
-    등장하지 않는다 — 라벨 결측은 "[?]"로만 떨어진다.
+    등장하지 않는다 — 라벨 결측은 "[라벨없음]"으로만 떨어진다(#495 표기).
 
     ChurnMember 는 SellerAggregateModel(extra="allow") 상속이라 BE 미배포 구간의
     구응답이 와도 ValidationError 없이 model_extra 로 흡수된다. 이 테스트가 지키는
@@ -1683,7 +1685,9 @@ async def test_churn_tool_never_exposes_raw_member_id_from_legacy_response() -> 
     )
 
     assert "987654" not in result  # 원시 회원 키가 LLM 표면에 실리지 않는다
-    assert "[?]" in result  # 라벨 미수신은 '?' 로만 떨어진다
+    assert "[라벨없음]" in result  # [#495] 라벨 미수신은 전용 어휘로만 떨어진다
+    # [#495] 같은 줄의 다른 결측('?')과 섞이면 개명 미반영 버그(#487 증상)와 구분되지 않는다.
+    assert "[?]" not in result
     assert "이탈 회원 1명" in result  # 흡수 자체는 성공 — 항목이 사라지는 게 아니다
 
 
@@ -1767,6 +1771,36 @@ async def test_churn_tool_caps_member_lines_by_settings() -> None:
 
     assert f"이탈 회원 {cap + 3}명" in result
     assert "외 3명" in result
+
+
+async def test_churn_tool_server_cap_note_follows_settings(monkeypatch) -> None:
+    """[#495] "서버 상한 N" 고지는 하드코딩이 아니라 Settings 주입값을 따른다.
+
+    N 은 I-16 명세에 없는 BE 구현 실측값(CHURN_LIST_CAP)이라, 문자열에 박아두면 BE 가
+    값을 바꾼 순간 판매자에게 거짓 고지가 나간다. 기본값과 다른 값으로 바꿔 문구가
+    실제로 따라오는지(=배선이 살아 있는지) 검증한다 — 기본값끼리 비교하면 하드코딩이
+    남아 있어도 통과하므로 의미가 없다.
+    """
+    from app.agents.seller import tools as tools_module
+    from app.core.config import get_settings
+
+    overridden = get_settings().model_copy(update={"seller_churn_server_list_cap": 7})
+    monkeypatch.setattr(tools_module, "get_settings", lambda: overridden)
+
+    fake = FakeSpringClient()
+    fake.churn_result = ChurnResult(
+        churn_rate=0.5,
+        cohort_size=20,
+        pre_churn_signals=PreChurnSignals(),
+        members=[ChurnMember(customer_label="A3F29C")],
+    )
+
+    result = await _call_runtime_tool(
+        get_churn_cohort, {"from_date": "2026-06-01", "to_date": "2026-07-31"}, fake
+    )
+
+    assert "서버 상한 7 절단본일 수 있음" in result
+    assert "서버 상한 50" not in result
 
 
 async def test_churn_tool_degrades_on_spring_failure() -> None:
@@ -2108,15 +2142,36 @@ async def test_get_reviews_list_formats_rows() -> None:
     )
 
     result = await _call_runtime_tool(
-        get_reviews, {"rating": "1,2", "sort": "rating"}, fake, brand_id=12
+        get_reviews, {"rating": "1,2", "sort": "ratingAsc"}, fake, brand_id=12
     )
 
     assert fake.recorded_brand_id == 12
-    assert fake.recorded_reviews_args == (None, None, None, "1,2", "rating", None, None)
+    assert fake.recorded_reviews_args == (None, None, None, "1,2", "ratingAsc", None, None)
     assert "★2" in result and "여행용 파우치" in result
     assert "지퍼가 일주일 만에 고장났어요" in result
     assert "리뷰 47건" in result
     assert "최근 7일 기본 적용" in result  # 기간 생략 시 기본 고지
+
+
+async def test_get_reviews_rejects_retired_sort_vocabulary() -> None:
+    """[#496] 폐기된 구 어휘 sort="rating" 은 Spring 왕복 없이 로컬에서 거른다."""
+    fake = FakeSpringClient()
+
+    result = await _call_runtime_tool(get_reviews, {"sort": "rating"}, fake, brand_id=12)
+
+    assert result.startswith("Error:")
+    assert "ratingAsc" in result  # 유효 어휘를 실어 재시도를 유도한다
+    assert not hasattr(fake, "recorded_reviews_args")  # Spring 호출 자체가 없다
+
+
+async def test_get_reviews_stats_mode_ignores_sort() -> None:
+    """stats 모드는 sort 를 서버에 싣지 않으므로 화이트리스트 검증 대상이 아니다."""
+    fake = FakeSpringClient()
+
+    result = await _call_runtime_tool(get_reviews, {"stats": True, "sort": "rating"}, fake)
+
+    assert not result.startswith("Error:")
+    assert fake.recorded_review_stats_args == (None, None, None, None)
 
 
 async def test_get_reviews_stats_mode_null_average() -> None:
@@ -2125,9 +2180,11 @@ async def test_get_reviews_stats_mode_null_average() -> None:
 
     result = await _call_runtime_tool(get_reviews, {"stats": True}, fake)
 
-    assert fake.recorded_review_stats_args == (None, None, None)
+    assert fake.recorded_review_stats_args == (None, None, None, None)
     assert "리뷰가 없습니다" in result
     assert "0점" not in result
+    # [#494 회귀] rating 미지정 출력은 종전과 바이트 동일 — 스코프 문구가 끼지 않는다.
+    assert result == "조회 기간에 리뷰가 없습니다. (기준: 최근 7일 기본 적용)"
 
 
 async def test_get_reviews_stats_mode_formats_distribution() -> None:
@@ -2151,6 +2208,73 @@ async def test_get_reviews_stats_mode_formats_distribution() -> None:
     assert "1점 5건" in result
     assert "여행용 파우치" in result and "평균 3.1점" in result
     assert "2026-07-01~2026-07-31" in result
+    # [#494 회귀] rating 미지정이면 집계 헤더가 종전 그대로다(스코프 표기 없음).
+    assert result.startswith("리뷰 집계: 총 47건")
+    assert "한정" not in result
+
+
+async def test_get_reviews_stats_mode_forwards_rating_filter() -> None:
+    """[#494] stats=True + rating 이면 별점 필터가 집계 호출에 전달되고 스코프가 명시된다.
+
+    전달이 빠지면 전 별점 합산 byProduct 가 돌아오는데 에러가 없어, 워커가 그것을
+    '1–2점이 몰린 상품'으로 서술한다 — 명세(I-31)의 대표 사용례가 조용히 틀린다.
+    """
+    fake = FakeSpringClient()
+    fake.review_stats_result = SellerReviewStats(
+        total_count=18,
+        average_rating=1.4,
+        distribution={"5": 0, "4": 0, "3": 0, "2": 11, "1": 7},
+        by_product=[
+            SellerReviewProductStat(
+                product_id=3, product_name="여행용 파우치", count=12, average_rating=1.3
+            )
+        ],
+    )
+
+    result = await _call_runtime_tool(
+        get_reviews, {"stats": True, "rating": "1,2"}, fake, brand_id=12
+    )
+
+    assert fake.recorded_brand_id == 12
+    assert fake.recorded_review_stats_args == (None, None, None, "1,2")
+    assert "리뷰 집계(별점 1,2 한정)" in result
+    assert "총 18건" in result and "평균 1.4점" in result
+    assert "여행용 파우치" in result
+
+
+async def test_get_reviews_stats_mode_forwards_product_and_rating() -> None:
+    """[#494] product_id 와 rating 을 함께 주면 둘 다 집계 호출에 실린다."""
+    fake = FakeSpringClient()
+    fake.review_stats_result = SellerReviewStats(
+        total_count=5,
+        average_rating=1.2,
+        distribution={"5": 0, "4": 0, "3": 0, "2": 1, "1": 4},
+        by_product=[],
+    )
+
+    result = await _call_runtime_tool(
+        get_reviews,
+        {
+            "stats": True,
+            "rating": "1,2",
+            "product_id": 3,
+            "from_date": "2026-07-01",
+            "to_date": "2026-07-31",
+        },
+        fake,
+    )
+
+    assert fake.recorded_review_stats_args == ("2026-07-01", "2026-07-31", 3, "1,2")
+    assert "리뷰 집계(별점 1,2 한정)" in result
+
+
+async def test_get_reviews_stats_mode_empty_with_rating_states_scope() -> None:
+    """[#494] 별점을 걸고 0건인 것은 '리뷰가 없다'와 다르다 — 스코프를 밝힌다."""
+    fake = FakeSpringClient()
+
+    result = await _call_runtime_tool(get_reviews, {"stats": True, "rating": "1,2"}, fake)
+
+    assert "별점 1,2 리뷰가 없습니다" in result
 
 
 async def test_get_reviews_degrades_on_spring_failure() -> None:

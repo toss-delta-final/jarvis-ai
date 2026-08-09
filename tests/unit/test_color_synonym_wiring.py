@@ -8,8 +8,9 @@ import time
 import pytest
 
 from app.core.config import get_settings
-from app.schemas.spring import ProductSearchFilters
+from app.schemas.spring import ProductSearchFilters, SpringProduct
 from app.services import spring_client as sc
+from app.services.search_service import apply_ai_side_filters
 
 
 class _Response:
@@ -203,10 +204,42 @@ async def test_expansion_loads_off_loop_and_sends_repeated_values(monkeypatch) -
 
     from app.pipelines import color_synonyms
 
+    empty_guard_flags = []
+
+    def loaded_map(dsn, ttl_s, warn_if_empty):
+        empty_guard_flags.append(warn_if_empty)
+        return {"남색": ["네이비", "남색"]}
+
     monkeypatch.setattr(
         color_synonyms,
         "get_synonym_map",
-        lambda dsn, ttl_s: {"남색": ["네이비", "남색"]},
+        loaded_map,
     )
     await sc.search_products(ProductSearchFilters(color="남색"))
     assert seen == [{"color": ["네이비", "남색"]}]
+    assert empty_guard_flags == [True]
+
+
+def test_ai_side_filters_leave_all_color_cases_to_spring() -> None:
+    """정본 I-1 3갈래 판정의 ②는 BE 소관이다.
+
+    색상 축이 없으면 통과하고, 축이 있어도 부분일치 판정은 BE가 한다. AI 사후필터가 색상을
+    하드필터하면 색상 미상 상품과 불일치 상품이 사라져 ② 규칙과 부분일치 주체가 깨진다.
+    """
+    products = [
+        SpringProduct(product_id=1, name="색상 축 없음", attributes={"소재": "면"}),
+        SpringProduct(product_id=2, name="색상 일치", attributes={"색상": "그레이"}),
+        SpringProduct(product_id=3, name="색상 불일치", attributes={"색상": "블랙"}),
+    ]
+
+    assert apply_ai_side_filters(products, ProductSearchFilters(color="그레이")) == products
+
+
+def test_color_payload_axes_and_values_are_unchanged_by_expansion() -> None:
+    """색상 배열 계약에서도 값 정규화·부분일치는 BE가 맡고 AI는 원문 값을 보존한다."""
+    filters = ProductSearchFilters(color=" 그레이 ")
+    expanded = ["다크그레이", " 그레이 "]
+
+    assert sc.search_filter_axes(filters) == {"color"}
+    assert sc.search_filter_axes(filters, color_values=expanded) == {"color"}
+    assert sc._search_query_params(filters, color_values=expanded) == {"color": expanded}

@@ -83,6 +83,8 @@ logger = logging.getLogger(__name__)
 _INACTIVE_STATUSES = frozenset(
     {"CANCELED", "CANCELLED", "RETURNED"}
 )  # 보유 아님(철자 양쪽 — spec §4.7 혼용) → dedup 제외 대상 아님
+_SEARCH_RETRY = object()
+_SEARCH_DONE = object()
 
 
 def _now() -> datetime:
@@ -1209,13 +1211,56 @@ async def stream_recommendation(
         if _main_narrow_budget is not None
         else nullcontext()
     )
-    with (
-        spring_client.suppress_search_retry() if suppress_deferred_search_retry else nullcontext(),
-        _main_narrow_cm,
-    ):
-        search_bundle, purchases = await asyncio.gather(
-            _run_candidate_source(), _fetch_purchases_once()
-        )
+
+    async def _collect_main_search():
+        """본검색과 구매 이력의 기존 병렬 수집을 한 곳에 고정한다 (#406 D1)."""
+        return await asyncio.gather(_run_candidate_source(), _fetch_purchases_once())
+
+    retry_progress_possible = (
+        settings.progress_events_enabled
+        and settings.spring_max_retries > 0
+        and not suppress_deferred_search_retry
+    )
+    # [#406 D1] 기본값은 재시도를 켜므로 이 경로가 기본이다. 재시도를 끈 배포와 미룬 턴 억제에서는
+    # 기존 인라인 경로를 유지해 취소·ContextVar·trace 의미를 불필요하게 바꾸지 않는다.
+    if not retry_progress_possible:
+        with (
+            spring_client.suppress_search_retry()
+            if suppress_deferred_search_retry
+            else nullcontext(),
+            _main_narrow_cm,
+        ):
+            search_bundle, purchases = await _collect_main_search()
+    else:
+        queue: asyncio.Queue[object] = asyncio.Queue()
+        # [#406 D3] create_task가 생성 시점 ContextVar를 복사하므로 with는 즉시 닫는다. yield를
+        # 안에 두면 observer·budget·suppression이 다음 턴으로 새며, 관측 콜백은 항목 sentinel을
+        # 넣어 queue.put_nowait의 인자 계약도 보존한다.
+        with (
+            spring_client.suppress_search_retry()
+            if suppress_deferred_search_retry
+            else nullcontext(),
+            _main_narrow_cm,
+            spring_client.observe_search_retry(lambda: queue.put_nowait(_SEARCH_RETRY)),
+        ):
+            search_task = asyncio.create_task(_collect_main_search())
+        search_task.add_done_callback(lambda _task: queue.put_nowait(_SEARCH_DONE))
+        retrying_progress_emitted = False
+        try:
+            while True:
+                item = await queue.get()
+                if item is _SEARCH_DONE:
+                    break
+                if not retrying_progress_emitted:
+                    retrying_progress_emitted = True
+                    yield progress_frame("retrying", settings.progress_retrying_message)
+            # [#406 D3] 예외·반환 위치는 기존 gather await와 같게 정상 회수에서만 유지한다.
+            search_bundle, purchases = await search_task
+        finally:
+            # [#406/#84] 값이 필요 없는 정리는 동기 cancel만 한다. 여기서 await하면 외부 취소를
+            # 삼켜 끊긴 스트림이 계속 진행할 수 있다.
+            if not search_task.done():
+                search_task.cancel()
     if search_bundle is None:  # 검색 실패 → SEARCH_FAILED(종료)
         if trace := current_request_trace():
             trace.mark_degraded("search_failed")

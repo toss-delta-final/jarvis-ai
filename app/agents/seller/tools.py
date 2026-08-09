@@ -38,6 +38,8 @@ from app.services.spring_client import (
     OrderAlreadyShipped,
     OrderInvalidTransition,
     OrderItemNotFound,
+    ProductAlreadyDeleted,
+    ProductDeletedNotEditable,
     SpringUnavailableError,
     get_spring_client,
 )
@@ -1256,11 +1258,13 @@ async def get_churn_cohort(
     if result.members:
         # [#197 리뷰] I-16 전용 상한 — I-14 kv 상한(seller_summary_max_events)과 분리.
         shown = result.members[: settings.seller_churn_member_max]
-        # [#487] 라벨 결측(BE 미배포 구간)은 '?' 로 떨어뜨린다 — memberId 폴백을 두면
-        # 이번에 막으려는 원시 회원 키 노출이 조용히 되살아난다(I-8 "404 시 구경로
-        # 폴백 금지"와 같은 원칙).
+        # [#487] 라벨 결측(BE 미배포 구간)에 memberId 폴백을 두지 않는다 — 이번에 막으려는
+        # 원시 회원 키 노출이 조용히 되살아난다(I-8 "404 시 구경로 폴백 금지"와 같은 원칙).
+        # [#495] 그 결측을 '?' 가 아니라 '라벨없음' 으로 적는다 — 같은 줄의 마지막 활동·세션도
+        # 결측을 '?' 로 쓰기 때문에 "[?]" 가 라벨 미수신인지 개명 미반영(#487 증상)인지
+        # 문자열로 구분되지 않았다. 폴백 금지 원칙은 그대로고 표기만 갈라 세운다.
         member_lines = "; ".join(
-            f"[{m.customer_label or '?'}] "
+            f"[{m.customer_label or '라벨없음'}] "
             f"마지막 활동 {m.last_activity_at or '?'}"
             f"·최근30일 세션 {m.sessions_30d if m.sessions_30d is not None else '?'}"
             f"·이탈 전 이벤트 {m.pre_churn_event or '-'}"
@@ -1268,10 +1272,13 @@ async def get_churn_cohort(
         )
         omitted = len(result.members) - len(shown)
         omitted_note = f" 외 {omitted}명" if omitted > 0 else ""
-        # members 는 서버 CHURN_LIST_CAP=50 절단본일 수 있다 — 표본=전수 오해석 방지
+        # members 는 서버 CHURN_LIST_CAP 절단본일 수 있다 — 표본=전수 오해석 방지
         # 고지(I-14 total_note 와 같은 취지, 전수는 코호트×이탈률로 유추 가능).
+        # [#495] 상한값은 Settings 주입이다 — 판매자에게 보이는 문구에 숫자를 박아두면
+        # I-16 명세에 없는 BE 구현 실측값이라 BE 가 바꾼 순간 거짓 고지가 된다.
         members_note = (
-            f" 이탈 회원 {len(result.members)}명(서버 상한 50 절단본일 수 있음): "
+            f" 이탈 회원 {len(result.members)}명"
+            f"(서버 상한 {settings.seller_churn_server_list_cap} 절단본일 수 있음): "
             f"{member_lines}{omitted_note}."
         )
     else:
@@ -1397,7 +1404,8 @@ async def list_my_products(
     사용한다(§4.5 — 구 I-7 상세 읽기 대체).
 
     Args:
-        status: ON_SALE/HIDDEN 중 하나로 좁힐 때(선택).
+        status: ON_SALE/HIDDEN 중 하나로 좁힐 때(선택). DELETED 는 BE 가 목록에서
+            제외하므로 지정해도 빈 결과다(§4.5).
         q: 상품명 검색어(선택).
         limit: 반환 상한(선택, 미지정 시 설정 기본값).
         offset: 페이지 오프셋(선택).
@@ -1506,6 +1514,12 @@ async def get_orders(
     return f"주문 {result.total}건{tab_note}: " + "; ".join(lines) + omitted_note + period_note
 
 
+# I-31 sort 화이트리스트(api-spec §4.20) — `rating` 은 2026-08-06 협의로 `ratingAsc` 로
+# 개명되며 폐기됐다(P-3 의 `rating` 은 높은 순이라 같은 이름·반대 방향을 갈랐다). 그 외
+# 값은 BE 400 VALIDATION_ERROR. 도구가 호출 전 선검증한다(#496, _ACCOUNT_EVENTS_GROUP_BY 패턴).
+_REVIEW_SORT = ("latest", "ratingAsc")
+
+
 @tool
 @_traced_tool("tool.get_reviews")
 @_guard_period_args
@@ -1531,7 +1545,10 @@ async def get_reviews(
         to_date: 조회 종료일 YYYY-MM-DD(선택).
         product_id: 특정 상품으로 한정(선택, 자사 상품만).
         rating: 별점 필터, 1~5 콤마 나열(선택, 예: "1,2" — 낮은 별점만).
-        sort: latest(기본)/rating — rating 은 낮은 별점부터 고정(선택).
+            stats=True 집계에도 동일하게 적용된다 — 총건수·평균·분포·상품별이
+            해당 별점만으로 계산된다(I-31 확정, #494).
+        sort: latest(기본)/ratingAsc — ratingAsc 는 낮은 별점부터(문제 파악용, 선택).
+            ratingDesc 는 존재하지 않는다 — 높은 별점은 rating="4,5" 필터로 얻는다.
         stats: True 면 집계 모드(총건수/평균/분포/상품별) — 목록 대신 통계만.
         limit: 반환 상한(선택, 서버 기본 20·최대 100).
         offset: 페이지 오프셋(선택).
@@ -1544,14 +1561,24 @@ async def get_reviews(
         else "(기준: 최근 7일 기본 적용)"
     )
     if stats:
+        # [#494] rating 은 집계에도 적용되는 필터다(I-31) — 안 넘기면 전 별점 합산
+        # byProduct 가 돌아오는데 에러도 경고도 없어, 워커가 그것을 '저평점이 몰린
+        # 상품'으로 서술한다. 조용히 틀리는 경로라 전달 + 스코프 명시를 함께 건다.
         try:
             agg = await get_spring_client().get_review_stats(
-                brand_id, from_=from_date, to=to_date, product_id=product_id
+                brand_id, from_=from_date, to=to_date, product_id=product_id, rating=rating
             )
         except SpringUnavailableError as exc:
             return f"Error: 리뷰 집계 조회에 실패했습니다({exc})."
+        # 집계가 어느 별점 범위로 계산됐는지 워커에게 명시한다 — get_order_events 의
+        # ignored_status_note 와 같은 결(거긴 '무시됨', 여긴 '적용됨' 고지).
+        # rating 미지정 시 빈 문자열이라 기존 출력과 바이트 동일하다(회귀 방지).
+        rating_scope = f"(별점 {rating} 한정)" if rating else ""
         if agg.total_count == 0:
-            return f"조회 기간에 리뷰가 없습니다. {period_note}"
+            # 별점을 걸고 0건인 것은 '리뷰가 없다'와 다르다 — 스코프를 빼면 워커가
+            # 리뷰 자체의 부재로 오독한다.
+            empty_scope = f"별점 {rating} " if rating else ""
+            return f"조회 기간에 {empty_scope}리뷰가 없습니다. {period_note}"
         # averageRating null 은 "평점 0점"이 아니라 "산정 불가"다(I-16 규칙).
         avg_note = (
             f"평균 {agg.average_rating}점" if agg.average_rating is not None else "평균 산정 불가"
@@ -1566,8 +1593,17 @@ async def get_reviews(
         )
         by_product_note = f" 상품별: {by_product}." if by_product else ""
         return (
-            f"리뷰 집계: 총 {agg.total_count}건, {avg_note}. 분포: {dist_note}."
+            f"리뷰 집계{rating_scope}: 총 {agg.total_count}건, {avg_note}. 분포: {dist_note}."
             f"{by_product_note} {period_note}"
+        )
+    # [#496] sort 화이트리스트 선검증 — BE 도 400 VALIDATION_ERROR 로 거부하지만(api-spec
+    # §4.20), 폐기된 구 어휘 `rating` 은 LLM 이 여전히 낼 수 있고 왕복 1회(3s 타임아웃
+    # 예산)를 쓰고 나서야 실패한다. stats 모드는 sort 를 서버에 싣지 않아 검증 대상이 아니다.
+    if sort is not None and sort not in _REVIEW_SORT:
+        return (
+            f"Error: sort '{sort}' 는 지원되지 않습니다 — "
+            f"{'/'.join(_REVIEW_SORT)} 중 하나를 사용하세요"
+            '(높은 별점은 rating="4,5" 필터로 얻습니다).'
         )
     try:
         result = await get_spring_client().get_reviews(
@@ -1702,7 +1738,8 @@ async def update_product(
         description: 변경할 상세 설명(선택).
         category: 변경할 카테고리(선택).
         image_url: 변경할 대표 이미지 URL(선택).
-        status: ON_SALE/HIDDEN 중 하나로 변경(선택).
+        status: ON_SALE/HIDDEN 중 하나로 변경(선택). DELETED 는 지정할 수 없다
+            — 삭제는 I-12 전용 전이라 BE 가 거부한다(§4.5).
         stock_quantity: 변경할 재고 수량(절대값, 선택).
     """
     brand_id = runtime.context.brand_id
@@ -1718,6 +1755,9 @@ async def update_product(
             stock_quantity=stock_quantity,
         )
         result = await get_spring_client().update_product(brand_id, product_id, patch)
+    except ProductDeletedNotEditable:
+        # 재시도가 무의미한 "안 되는 일" — 장애 문구로 뭉개면 에이전트가 재시도를 권한다.
+        return f"Error: 이미 삭제된 상품이라 수정할 수 없습니다(productId={product_id})."
     except SpringUnavailableError as exc:
         return f"Error: 상품 수정에 실패했습니다({exc})."
     return f"수정됨: productId={result.product_id}"
@@ -1726,7 +1766,10 @@ async def update_product(
 @tool
 @_traced_tool("tool.delete_product")
 async def delete_product(runtime: ToolRuntime[SellerContext], product_id: int) -> str:
-    """상품을 삭제(숨김)한다(I-12, api-spec §4.5). 물리 삭제 없음 — HITL 승인 후 호출.
+    """상품을 삭제한다(I-12, api-spec §4.5). status=DELETED 전환 — HITL 승인 후 호출.
+
+    물리 삭제는 없지만 숨김(HIDDEN)과 다른 상태다 — 숨김은 판매자 목록에 남아 되돌릴 수
+    있고, 삭제는 목록에서도 빠지며 되돌릴 수 없다. 잠시 내릴 목적이면 I-11 로 HIDDEN 을 쓴다.
 
     Args:
         product_id: 대상 상품 식별자.
@@ -1734,9 +1777,12 @@ async def delete_product(runtime: ToolRuntime[SellerContext], product_id: int) -
     brand_id = runtime.context.brand_id
     try:
         result = await get_spring_client().delete_product(brand_id, product_id)
+    except ProductAlreadyDeleted:
+        # 멱등 200 이 아니다 — "이미 된 일"과 "방금 한 일"을 구분해야 거짓 성공을 막는다.
+        return f"Error: 이미 삭제된 상품입니다(productId={product_id})."
     except SpringUnavailableError as exc:
         return f"Error: 상품 삭제에 실패했습니다({exc})."
-    return f"삭제(숨김)됨: productId={result.product_id} (status={result.status})"
+    return f"삭제됨: productId={result.product_id} (status={result.status})"
 
 
 @tool

@@ -2,20 +2,16 @@
 
 from __future__ import annotations
 
-from app.agents.seller.schemas import (
-    AnalysisFinding,
-    ChartPoint,
-    ChartSeries,
-    ChartSet,
-    ChartSpec,
-)
+from app.agents.seller.schemas import AnalysisFinding
 from app.agents.seller.verifier import (
     DETERMINISTIC_CHECKS,
     FINDING_CHECKS,
-    run_chart_checks,
     run_deterministic_checks,
     run_finding_checks,
 )
+
+# [#504] 구 G1 차트 검증 테스트는 삭제됐다 — 좌표 생성 주체가 LLM → 코드로 바뀌며
+# run_chart_checks 자체가 제거됐다(대체 검증: tests/unit/test_seller_charts.py).
 
 
 def _finding(**overrides) -> AnalysisFinding:
@@ -215,9 +211,7 @@ def test_f2_sign_flipped_recommendation_fails() -> None:
     _normalize_numbers(무부호)는 "12000" 으로 정규화해 부호 반전 환각이 탐지되지
     않았다. F2 도 G1 과 같은 부호 보존 정규화를 쓰도록 고쳤다.
     """
-    tool_outputs = [
-        "06-12 매출 180,000원 (직전 7일 평균 310,000원, 42.1% 급락, 12,000원 증가)"
-    ]
+    tool_outputs = ["06-12 매출 180,000원 (직전 7일 평균 310,000원, 42.1% 급락, 12,000원 증가)"]
     finding = _finding(recommendation="전월 대비 -12,000원 감소 추세이니 점검 권장")
     reasons = run_finding_checks(finding, tool_outputs, expected_type="sales_anomaly")
     assert any("근거 없는 수치" in r and "-12000" in r for r in reasons)
@@ -225,9 +219,7 @@ def test_f2_sign_flipped_recommendation_fails() -> None:
 
 def test_f2_negative_number_grounded_when_sign_matches() -> None:
     """도구 출력·finding 양쪽에 동일 부호의 음수가 있으면 정상 통과한다(회귀 방지)."""
-    tool_outputs = [
-        "06-12 매출 180,000원 (직전 7일 평균 310,000원), 전월 대비 -12,000원 감소"
-    ]
+    tool_outputs = ["06-12 매출 180,000원 (직전 7일 평균 310,000원), 전월 대비 -12,000원 감소"]
     finding = _finding(summary="전월 대비 -12,000원 감소했다.")
     assert run_finding_checks(finding, tool_outputs, expected_type="sales_anomaly") == []
 
@@ -252,81 +244,3 @@ def test_f3_type_mismatch_fails() -> None:
     reasons = run_finding_checks(finding, [], expected_type="sales_anomaly")
     assert any("analysis_type 불일치" in r for r in reasons)
     assert any("sales_anomaly" in r and "conversion" in r for r in reasons)
-
-
-# ── G1 차트 검증 (이슈 #242, DESIGN-ANALYSIS-V31-242 §4.4) ─────────────────────
-
-
-def _chart(**overrides: object) -> ChartSpec:
-    base: dict = {
-        "title": "일별 매출",
-        "chart_type": "line",
-        "unit": "KRW",
-        "series": [ChartSeries(label="매출", points=[ChartPoint(x="06-12", y=180000)])],
-    }
-    base.update(overrides)
-    return ChartSpec(**base)
-
-
-def test_g1_pass_when_grounded_in_findings() -> None:
-    """차트 수치가 finding 의 summary/evidence 에 있으면 통과(D2/F2 와 동일 정규화)."""
-    passed, dropped = run_chart_checks(ChartSet(charts=[_chart()]), [_finding()])
-    assert dropped == []
-    assert len(passed.charts) == 1
-
-
-def test_g1_drops_chart_with_no_points() -> None:
-    """series 가 비었거나 points 가 0개면 드랍."""
-    chart = _chart(series=[])
-    passed, dropped = run_chart_checks(ChartSet(charts=[chart]), [_finding()])
-    assert passed.charts == []
-    assert any("좌표가 없다" in r for r in dropped)
-
-
-def test_g1_drops_chart_with_ungrounded_number() -> None:
-    """finding 에 없는 수치(환각)를 인용한 차트는 드랍한다."""
-    chart = _chart(
-        series=[ChartSeries(label="매출", points=[ChartPoint(x="06-12", y=999999)])]
-    )
-    passed, dropped = run_chart_checks(ChartSet(charts=[chart]), [_finding()])
-    assert passed.charts == []
-    assert any("근거 없는 수치" in r for r in dropped)
-
-
-def test_g1_drops_chart_with_sign_flipped_number() -> None:
-    """[PR 리뷰 반영] finding 이 양수로 근거한 수치를 차트가 부호만 뒤집어 그리면
-    (+180,000 → -180,000) 이제 드랍한다 — 부호 무시 비교로는 통과하던 버그(사용자 리포트).
-    """
-    finding = _finding()  # evidence: "06-12 매출 180,000원 (직전 7일 평균 310,000원)"
-    chart = _chart(
-        series=[ChartSeries(label="매출", points=[ChartPoint(x="06-12", y=-180000)])]
-    )
-    passed, dropped = run_chart_checks(ChartSet(charts=[chart]), [finding])
-    assert passed.charts == []
-    assert any("근거 없는 수치" in r and "-180000" in r for r in dropped)
-
-
-def test_g1_pass_when_grounded_only_in_recommendation() -> None:
-    """차트 수치가 finding.recommendation 에만 있어도 통과한다(D2 대칭, PR 리뷰 지적 반영).
-
-    D2(check_numbers_grounded)는 recommendation 발 수치의 보고서 인용을 이미 허용
-    한다 — G1 이 recommendation 을 allowed 에서 빼면, D2 가 통과시킨 정당한 수치를
-    G1 이 "근거 없음"으로 오탐해 드랍하는 두 검증 층 불일치가 생긴다.
-    """
-    finding = _finding(recommendation="가격을 12,900원으로 조정 권장")
-    chart = _chart(series=[ChartSeries(label="가격", points=[ChartPoint(x="권장가", y=12900)])])
-    passed, dropped = run_chart_checks(ChartSet(charts=[chart]), [finding])
-    assert dropped == []
-    assert len(passed.charts) == 1
-
-
-def test_g1_partial_drop_keeps_grounded_charts() -> None:
-    """여러 차트 중 미달분만 드랍하고 통과분은 순서 보존한 채 유지한다."""
-    grounded = _chart(title="정상 차트")
-    ungrounded = _chart(
-        title="환각 차트",
-        series=[ChartSeries(label="매출", points=[ChartPoint(x="06-12", y=777777)])],
-    )
-    passed, dropped = run_chart_checks(ChartSet(charts=[grounded, ungrounded]), [_finding()])
-    assert [c.title for c in passed.charts] == ["정상 차트"]
-    assert len(dropped) == 1

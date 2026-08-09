@@ -263,12 +263,14 @@ def test_product_agent_binds_read_only() -> None:
 
 
 def test_product_prompt_principles() -> None:
-    """확정 원칙 — before 조회 강제·모호 시 되묻기·추천 적용 발화 격리·숨김 명시."""
+    """확정 원칙 — before 조회 강제·모호 시 되묻기·추천 적용 발화 격리·삭제/숨김 구분."""
     assert "list_my_products" in PRODUCT_PROMPT  # before 는 조회값에서만
     assert "추측·기억으로 채우지 않는다" in PRODUCT_PROMPT
     assert "clarification" in PRODUCT_PROMPT  # 모호 시 되묻기(임의 선택 금지)
     assert "N번 적용해줘" in PRODUCT_PROMPT  # §6.3 — 이력 조회 경로로 격리
-    assert "ON_SALE→HIDDEN" in PRODUCT_PROMPT  # delete = soft delete 가시화
+    assert "after 는 DELETED" in PRODUCT_PROMPT  # delete = DELETED 전이(api-spec §4.5)
+    # 삭제를 숨김이라 부르면 판매자가 되돌릴 수 있는 조작으로 오인한 채 승인한다.
+    assert '삭제를 "숨김"이라고 표현하지 않는다' in PRODUCT_PROMPT
     assert "쓰기 도구는 없다" in PRODUCT_PROMPT
 
 
@@ -398,11 +400,12 @@ def test_pipeline_builders_compile() -> None:
 
 
 def test_graph_prompt_principles() -> None:
-    """graph(이슈 #242 5단계) — 숫자 재사용 강제·차트 유형 판정 기준·계열 1개·빈 목록 허용."""
-    assert "계산·추정" in GRAPH_PROMPT or "새 수치를 만들지 않는다" in GRAPH_PROMPT
-    assert "line" in GRAPH_PROMPT
-    assert "bar" in GRAPH_PROMPT
-    assert "1개만" in GRAPH_PROMPT
+    """graph([#504] 축 선언 계약) — 좌표 생성 금지·14조합 명시·other 강등·빈 목록 허용."""
+    assert "좌표·수치는 만들지 않는다" in GRAPH_PROMPT  # 좌표는 코드 소관
+    assert "14개" in GRAPH_PROMPT  # 지원 축 조합 명시(레지스트리와 짝)
+    assert "date" in GRAPH_PROMPT and "product" in GRAPH_PROMPT
+    assert "rating" in GRAPH_PROMPT and "behavior_type" in GRAPH_PROMPT
+    assert '"other"' in GRAPH_PROMPT  # 지원 밖 요청은 임의 대체 없이 other 선언
     assert "charts=[]" in GRAPH_PROMPT  # 억지 차트 금지
 
 

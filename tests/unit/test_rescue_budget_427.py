@@ -199,14 +199,14 @@ async def test_narrow_mode_narrows_the_main_search_budget(monkeypatch: pytest.Mo
 async def test_observe_mode_never_calls_narrow_search_budget(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """[D4 observe] 기본 모드는 같은 예산 압박에서도 **집행하지 않는다** — 판정만 계산해
+    """[D4 observe] observe를 명시 주입하면 같은 예산 압박에서도 **집행하지 않는다** — 판정만 계산해
     로그에 반사실로 남긴다.
 
     검증 실효성: `_apply_stage_budget` 가 모드를 무시하고 항상 집행하도록 바꾸면 `calls` 가
     비지 않아 이 테스트가 깨진다.
     """
     settings = get_settings()
-    assert settings.rescue_budget_mode == "observe"  # 기본값 전제
+    monkeypatch.setattr(settings, "rescue_budget_mode", "observe")
     monkeypatch.setattr(settings, "rescue_tail_reserve_s", 29.0)  # 위 테스트와 같은 압박
 
     calls = _record_narrow_calls(monkeypatch)
@@ -506,14 +506,14 @@ async def test_narrow_mode_stage_cap_accounts_for_retry_attempts_before_narrowin
     )
 
 
-async def test_default_spring_max_retries_stage_cap_unchanged(
+async def test_zero_spring_max_retries_stage_cap_unchanged(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """[PR #452 리뷰 R2 — 기본값 불변] `spring_max_retries=0`(오늘 배포 기본값)이면
+    """[PR #452 리뷰 R2 — 0회 재시도 분기 불변] `spring_max_retries=0`을 명시하면
     `attempts=1` 이라 상한은 R2 수정 전후로 `spring_search_timeout_s` 그대로다. 위 테스트와
     똑같은 압박(window=13.5s, granted≈4.5s)을 주고 `spring_max_retries` 만 0 으로 두면 여전히
     `"full"`(안 좁힘)이어야 한다 — 옛 코드도 이 지점에서 이미 `"full"` 이었으므로 이 어설션은
-    "R2 수정이 오늘 기본 배포 동작을 바꾸지 않는다"를 직접 잰다.
+    "R2 수정이 0회 재시도 분기 동작을 바꾸지 않는다"를 직접 잰다.
 
     검증 실효성: attempts 산출이 `suppress_deferred_search_retry` 를 무시하고 항상
     `spring_max_retries + 1` 을 쓰는 회귀가 나면(그 자체는 이 값에 영향 없지만) 대신 상한
@@ -521,7 +521,7 @@ async def test_default_spring_max_retries_stage_cap_unchanged(
     `calls` 가 채워져 이 테스트가 깨진다.
     """
     settings = get_settings()
-    assert settings.spring_max_retries == 0  # 기본값 전제
+    monkeypatch.setattr(settings, "spring_max_retries", 0)
     monkeypatch.setattr(settings, "rescue_budget_mode", "narrow")
     monkeypatch.setattr(settings, "rescue_tail_reserve_s", 16.5)  # 위 테스트와 같은 압박
 
@@ -541,7 +541,7 @@ async def test_default_spring_max_retries_stage_cap_unchanged(
     assert "products.ready" in _types(events)
     assert not calls, (
         "attempts=1(spring_max_retries=0)인데 narrow_search_budget 가 집행됐다 — "
-        "상한이 attempts 배수를 잘못 곱하는 회귀다(기본 배포 동작이 바뀌면 안 된다)"
+        "상한이 attempts 배수를 잘못 곱하는 회귀다(0회 재시도 분기가 바뀌면 안 된다)"
     )
 
 
@@ -656,7 +656,7 @@ async def test_narrow_mode_min_timeout_clamp_never_exceeds_stage_cap(
     """
     settings = get_settings()
     monkeypatch.setattr(settings, "rescue_budget_mode", "narrow")
-    # spring_search_timeout_s(3.0, attempts=1 — 이 턴은 may_auto_relax=False)보다 큰 하한.
+    # 이 턴은 미룬 조건이 없어 재시도하므로 attempts=2다.
     monkeypatch.setattr(settings, "rescue_stage_min_timeout_s", 5.0)
 
     calls = _record_narrow_calls(monkeypatch)
@@ -674,7 +674,7 @@ async def test_narrow_mode_min_timeout_clamp_never_exceeds_stage_cap(
 
     assert "products.ready" in _types(events)
     assert calls, "본검색 단이 narrow_search_budget 를 집행하지 않았다"
-    stage_cap = settings.spring_search_timeout_s * 1  # attempts=1(억제되는 단)
+    stage_cap = settings.spring_search_timeout_s * 2  # attempts=2(억제되지 않는 단)
     assert calls[0] <= stage_cap, (
         f"got {calls[0]} > stage_cap({stage_cap}) — 좁히기가 안 좁힌 것보다 많이 줬다"
         "(R5 역전 재현: 하한 clamp 뒤 상한을 다시 씌우지 않았다)"
@@ -770,10 +770,10 @@ def test_startup_guard_progress_flag_and_rescue_mode_are_independent_gates() -> 
     kwargs = {"_env_file": None, "spring_max_retries": 1, "spring_search_timeout_s": 4.0}
 
     with pytest.raises(ValidationError, match="RESCUE_BUDGET_MODE=observe"):
-        Settings(**kwargs)
+        Settings(**kwargs, rescue_budget_mode="observe")
 
     with pytest.raises(ValidationError, match="RESCUE_BUDGET_MODE=observe"):
-        Settings(**kwargs, progress_events_enabled=False)
+        Settings(**kwargs, rescue_budget_mode="observe", progress_events_enabled=False)
 
     assert Settings(**kwargs, rescue_budget_mode="narrow")
 

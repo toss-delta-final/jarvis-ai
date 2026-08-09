@@ -38,7 +38,7 @@ import logging
 import math
 import threading
 from types import TracebackType
-from typing import Literal, TypeVar
+from typing import Callable, Literal, TypeVar
 
 import httpx
 from pydantic import BaseModel, ValidationError
@@ -130,6 +130,10 @@ _search_retry_suppressed: ContextVar[bool] = ContextVar("search_retry_suppressed
 _search_budget_override: ContextVar[float | None] = ContextVar(
     "search_budget_override", default=None
 )
+# [#406] 호출 시그니처를 넓히지 않고 I-1 실제 재시도 진입만 관측하는 일회성 seam이다.
+_search_retry_observer: ContextVar[Callable[[], None] | None] = ContextVar(
+    "search_retry_observer", default=None
+)
 
 
 class SearchBudgetExceeded(TimeoutError):
@@ -209,6 +213,28 @@ def narrow_search_budget(budget_s: float) -> Iterator[None]:
         _search_budget_override.reset(token)
 
 
+@contextmanager
+def observe_search_retry(callback: Callable[[], None]) -> Iterator[None]:
+    """현재 호출 컨텍스트의 I-1 실제 재시도 진입을 `callback`으로 관측한다 (#406)."""
+    token = _search_retry_observer.set(callback)
+    try:
+        yield
+    finally:
+        _search_retry_observer.reset(token)
+
+
+def notify_search_retry() -> None:
+    """현재 컨텍스트의 재시도 관측자에게 실제 재시도 진입을 알린다 (#406)."""
+    callback = _search_retry_observer.get()
+    if callback is None:
+        return
+    try:
+        callback()
+    except Exception:
+        # 관측 실패가 I-1 검색 자체를 중단시키면 진행 신호가 가용성을 해치는 역전이 된다.
+        _log.warning("spring_search_retry_observer_failed", exc_info=True)
+
+
 def _color_synonym_limiter(dsn: str, max_concurrency: int) -> threading.BoundedSemaphore:
     key = (dsn, max_concurrency)
     limiter = _color_synonym_limiters.get(key)
@@ -257,6 +283,7 @@ async def _load_color_synonym_map(settings) -> dict[str, list[str]] | None:
             return color_synonyms.get_synonym_map(
                 settings.catalog_db_url,
                 ttl_s=settings.color_synonym_cache_ttl_s,
+                warn_if_empty=settings.color_synonym_expansion_enabled,
             )
         finally:
             # wait_for가 먼저 끝나도 실제 worker 종료 전에는 풀 크기 슬롯을 반환하지 않는다.
@@ -483,10 +510,29 @@ class WishlistError(Exception):
     """
 
 
+# ── I-11/I-12 상품 쓰기 예외 (api-spec §4.5 — 정본 Notion I-11·I-12, 2026-08-05 개정) ──
+#
+# 삭제는 `status=DELETED` 전이이며 `HIDDEN`(숨김·판매정지)과 **다른 상태**다(BE 02 D41).
+# 아래 409 두 종은 "재시도하면 되는 장애"가 아니라 **"안 되는 일"** 이라 SpringUnavailableError
+# 로 뭉개면 HITL 이 재confirm 을 권해 판매자가 무한 재시도에 갇힌다 — I-30 과 같은 규약으로
+# error.code 기반 전용 예외로 분리한다. SpringUnavailableError 하위가 아니다(catch-all 회피).
+
+
+class ProductAlreadyDeleted(Exception):
+    """I-12 409 ALREADY_DELETED — 이미 삭제된 상품(멱등 200 금지). `error.code` 가 정확히
+    이 값일 때만 낸다. `HIDDEN`→`DELETED` 는 정상 전이라 여기 해당하지 않는다."""
+
+
+class ProductDeletedNotEditable(Exception):
+    """I-11 409 PRODUCT_DELETED — 삭제된 상품은 수정·복구 대상이 아니다(삭제는 I-12 전용
+    전이). 404 가 아닌 이유: 상품은 실제로 존재하고 주문 내역·매출 통계에도 남아 있어
+    에이전트가 "없는 상품"이라 답하면 사실과 다르다."""
+
+
 # ── I-30 발송 처리 예외 (이슈 #297, §4.19 — 🔶 초안, BE 협의 전) ──────────────────
 #
 # HITL 쓰기(발송)는 "이미 된 일"과 "방금 한 일"과 "안 되는 일"을 구분해야 거짓 성공
-# 보고를 막는다(I-12 ALREADY_HIDDEN 논리) — SpringUnavailableError 로 뭉개면 셋 다
+# 보고를 막는다(I-12 ALREADY_DELETED 논리) — SpringUnavailableError 로 뭉개면 셋 다
 # "재시도 가능한 장애"가 되므로 error.code 기반 전용 예외로 분리한다. 이 예외들은
 # SpringUnavailableError 하위가 아니다 — 도구/HITL 의 catch-all 에 삼켜지지 않는다.
 
@@ -834,6 +880,7 @@ async def search_products(filters: ProductSearchFilters) -> ProductSearchResult:
                         "statusClass": _failure_status_class(exc),
                     },
                 )
+                notify_search_retry()
         # 응답 파싱·검증도 같은 경계 안 — 200 이지만 스키마 불일치인 malformed 응답도
         # SEARCH_FAILED degrade(§7)로 흐르게 한다(ValidationError 가 그대로 새어 500 되지 않게).
         # 역직렬화와 같은 이유로 스레드에 넘긴다 — N× model_validate 가 파싱 비용의 본체다.
@@ -1652,7 +1699,12 @@ class SpringClient:
         limit: int | None = None,
         offset: int | None = None,
     ) -> SellerProductList:
-        """I-9 자사 상품 목록 조회 (§4.5). status: ON_SALE/HIDDEN. draft/product 도구의 before 소스."""
+        """I-9 자사 상품 목록 조회 (§4.5). status: ON_SALE/HIDDEN. draft/product 도구의 before 소스.
+
+        **`DELETED` 는 여기 나오지 않는다** — 판매자에게 보이지 않는 것이 삭제의 정의라
+        BE 가 status 미지정(전량)에서도 빼고, `status=DELETED` 를 명시해도 400 이 아니라
+        빈 `rows` 다(존재 비노출, §4.5). 삭제한 상품이 목록에 없는 것은 정상이다.
+        """
         params: dict = {}
         if status:
             params["status"] = status
@@ -1689,21 +1741,32 @@ class SpringClient:
     async def update_product(
         self, brand_id: int, product_id: int, patch: ProductUpdate
     ) -> ProductUpdateResult:
-        """I-11 상품 수정 (§4.5). 바꿀 필드만 전송 — 재고도 이 API로 통합(별도 재고 API 없음)."""
+        """I-11 상품 수정 (§4.5). 바꿀 필드만 전송 — 재고도 이 API로 통합(별도 재고 API 없음).
+
+        삭제된 상품 수정은 409 `PRODUCT_DELETED` 전용 예외 — 재시도 대상이 아니다(§4.5).
+        `status` 로 `DELETED` 를 보내는 것도 BE 가 거부한다(삭제는 I-12 전용 전이).
+        """
         data = await self._request(
             "PATCH",
             f"/internal/seller/{brand_id}/products/{product_id}",
             operation="update_product",
             json_body=patch.model_dump(by_alias=True, exclude_none=True),
+            error_code_map={"PRODUCT_DELETED": ProductDeletedNotEditable},
         )
         return self._validate(ProductUpdateResult, data)
 
     async def delete_product(self, brand_id: int, product_id: int) -> ProductDeleteResult:
-        """I-12 상품 삭제(soft) (§4.5). 물리 삭제 없음 — status=HIDDEN 전환."""
+        """I-12 상품 삭제(soft) (§4.5). 물리 삭제 없음 — **status=DELETED** 전환.
+
+        `HIDDEN`(숨김·판매정지)과 다른 상태다 — 숨김은 판매자 목록에 남지만 삭제는
+        목록에서도 빠지고 되돌릴 수 없다. `HIDDEN`→`DELETED` 는 정상 전이이며, 이미
+        `DELETED` 면 409 `ALREADY_DELETED` 전용 예외(멱등 200 아님).
+        """
         data = await self._request(
             "DELETE",
             f"/internal/seller/{brand_id}/products/{product_id}",
             operation="delete_product",
+            error_code_map={"ALREADY_DELETED": ProductAlreadyDeleted},
         )
         return self._validate(ProductDeleteResult, data)
 
@@ -1787,8 +1850,9 @@ class SpringClient:
         """I-31 자사 상품 리뷰 목록 조회 — VISIBLE 만 (§4.20).
 
         기간 생략 시 서버가 최근 7일 기본 적용(확정 2026-08-04 — 누락은
-        INVALID_PERIOD 아님). rating 은 "1,2" 콤마 CSV, sort 는 latest|rating(낮은 순
-        고정). 리뷰 원문은 AI DB에 저장하지 않는다 — 질의 시점 조회(I-19 원칙).
+        INVALID_PERIOD 아님). rating 은 "1,2" 콤마 CSV, sort 는 latest(기본)|ratingAsc
+        (낮은 별점부터 — 2026-08-06 개명, 구 `rating` 은 폐기돼 400 VALIDATION_ERROR 다.
+        ratingDesc 는 없다). 리뷰 원문은 AI DB에 저장하지 않는다 — 질의 시점 조회(I-19 원칙).
         """
         params: dict = {}
         if from_:
@@ -1820,11 +1884,17 @@ class SpringClient:
         from_: str | None = None,
         to: str | None = None,
         product_id: int | None = None,
+        rating: str | None = None,
     ) -> SellerReviewStats:
         """I-31 리뷰 집계 조회 — stats=true 모드 (§4.20).
 
         totalCount/averageRating/distribution(P-3 형태)/byProduct. 0건이면
         averageRating 은 null(I-16 churnRate 규칙과 동일 — 평점 0점 오독 금지).
+
+        [#494] from/to·rating·productId 는 **집계에도 전부 적용**된다(I-31 확정) —
+        rating 을 안 실으면 전 별점 합산 순위가 200 으로 조용히 돌아와, 명세가 대표
+        사용례로 든 "1–2점이 어느 상품에 몰렸어?"가 '그냥 리뷰가 가장 많은 상품'을
+        지목한다. sort/limit/offset 만 미전송이 맞다(집계 모드에는 rows 가 없다).
         """
         params: dict = {"stats": "true"}
         if from_:
@@ -1833,6 +1903,8 @@ class SpringClient:
             params["to"] = to
         if product_id is not None:
             params["productId"] = product_id
+        if rating:
+            params["rating"] = rating
         data = await self._request(
             "GET",
             f"/internal/seller/{brand_id}/reviews",

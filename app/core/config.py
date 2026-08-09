@@ -559,8 +559,12 @@ class Settings(BaseSettings):
     seller_summary_max_events: int = 5  # I-14 이벤트 kv 나열 상한(건)
     # [#197 PR 리뷰] I-16 이탈 회원 나열 상한 — I-14 용 max_events(위)와 분리 신설.
     # 같은 값 공유 시 I-14 요약 상세도 조정이 이탈 회원 노출 건수까지 바꾸는 결합이
-    # 생긴다(#196 의 max_products 분리와 같은 취지). 서버 절단 상한은 별도로 50.
+    # 생긴다(#196 의 max_products 분리와 같은 취지). 서버 절단 상한은 아래 별도 키다.
     seller_churn_member_max: int = 5  # I-16 members 상세 나열 상한(명)
+    # [#495] I-16 members 서버 절단 상한(BE CHURN_LIST_CAP 실측, #197) — 판매자에게
+    # 보이는 고지 문구에 실린다. I-16 명세에 없는 구현 실측값이라 BE 가 바꾸면 고지가
+    # 거짓이 된다 — 문자열 하드코딩 대신 여기서 주입하고 BE 에 명세화를 요청한다(#495).
+    seller_churn_server_list_cap: int = 50  # I-16 members 서버 절단 상한(명)
     # [#196] I-13 상품별 rows 상세 상한 — I-14 용(위)과 분리. 구 공용 상한 5는
     # 시드 브랜드 상품 7종보다 작아 하위 2종이 상시 잘렸다. 상한 초과분은
     # _summarize_behavior 가 꼬리 합계로 남긴다(정보 소실 없음).
@@ -603,6 +607,24 @@ class Settings(BaseSettings):
     seller_report_score_threshold: int = 21  # 보고서 검증 통과 점수(21/30)
     seller_report_max_retries: int = 3  # 검증 루프 상한
     seller_draft_ttl_minutes: int = 10  # HITL 미승인 draft 만료
+    # ── 이미지 기반 상품 등록 초안 (#506, api-spec §3.2 v0.31.0) ─────────────────
+    # imageUrls 요청 필드 상한 — MVP 는 1장(2장째 첨부는 FE 가 교체로 처리).
+    seller_image_max_count: int = 1
+    # image_url 길이 2차 방어(FE 서버 라우트가 1차) — DB VARCHAR(500) 계약과 동일값.
+    # presigned URL(서명 쿼리스트링)은 보통 1,000자를 넘어 여기서 걸린다.
+    seller_image_url_max_len: int = 500
+    # vision 분석(이미지 첨부 턴 1회) 상한 — 워커 예산(seller_worker_timeout_s)과
+    # 분리한다: 분석은 product 워커 진입 전 입구에서 별도 수행된다.
+    seller_vision_timeout_s: float = 20.0
+    # 카테고리 스냅샷(#506) — BE 조회 없이 AI 가 로컬 JSON 으로 보유한다.
+    # 파일 교체 = 배포(정합 리스크는 스냅샷 meta.version 으로 추적).
+    seller_category_snapshot_path: str = "app/data/seller_categories.json"
+    seller_category_candidates_k: int = 5  # 초안 에이전트에 주입할 카테고리 후보 수
+    # confirm 시 Spring I-10 `category`(자유 문자열)에 쓸 값 — BE 와 맞출 유일한 지점.
+    # leaf(말단 명칭) | path("A > B > C") | id(스냅샷 id 그대로).
+    seller_category_write_mode: Literal["leaf", "path", "id"] = "leaf"
+    # 초안 대기 게이트(수정/승인안내/취소/딴주제 분류) LLM 상한 — 실패 시 일반 흐름 폴백.
+    seller_pending_gate_timeout_s: float = 8.0
     # 4-2 HITL 실행(hitl.py): confirm 시점 I-9 재조회(stale 검증)의 페이지 순회 상한 —
     # I-9 에 productId 필터가 없어 목록을 넘겨가며 찾는다(페이지 크기 = seller_list_default_limit).
     seller_draft_lookup_max_pages: int = 10
@@ -1615,6 +1637,20 @@ class Settings(BaseSettings):
     stream_total_timeout_buyer_s: float = Field(default=30.0, gt=0.0)
     # disconnect 감지 폴링 간격 (취소 = 연결 종료, §2.9 b).
     stream_disconnect_poll_s: float = 0.5
+    # ── 공유 스트림 레지스트리 (#476, docs/specs/DESIGN-SHARED-STREAM-REGISTRY-476.md) ──
+    # "memory"(기본) = 프로세스 로컬. 현재 배포는 워커 1개라 공유 백엔드는 이득 없이 DB 왕복과
+    # 새 실패 모드만 더한다 — 출하 기본 동작은 이 기능 도입 이전과 동일하다. "shared" 는
+    # pg-profile 테이블로 §2.9(a) 슬롯·scope fence·scope idle 을 워커 간에 공유해 워커 다중화의
+    # 선행조건 하나를 충족시킨다(나머지 조건은 OPS-SCALEOUT-476.md §2 인벤토리 참조).
+    stream_registry_backend: Literal["memory", "shared"] = "memory"
+    # 공유 백엔드 행의 lease 수명. 워커가 죽어도 이 시간 뒤엔 슬롯이 반드시 풀린다(#48 재발 방지).
+    stream_registry_lease_ttl_s: float = Field(default=60.0, gt=0.0)
+    # lease 연장 최소 간격 — 이미 도는 stream_disconnect_poll_s tick 에 얹는다(프레임마다 DB 금지).
+    stream_registry_lease_renew_interval_s: float = Field(default=5.0, gt=0.0)
+    # 공유 백엔드 wait_for_scope_idle 폴링 주기 (asyncio.Event 는 프로세스를 못 넘는다).
+    stream_registry_scope_poll_s: float = Field(default=0.5, gt=0.0)
+    # 같은 대기의 전체 상한 — 무한 대기 금지.
+    stream_registry_scope_idle_wait_max_s: float = Field(default=120.0, gt=0.0)
     # AI→Spring 콜백 타임아웃 (§2.9 c, BE I-2 기준 통일). 실제 호출부에서 사용.
     spring_timeout_s: float = 3.0
     # [#427] I-1 검색 전용 타임아웃 — `spring_timeout_s`(전 구간 공용)와 분리한다. 기본값은
@@ -1635,27 +1671,28 @@ class Settings(BaseSettings):
     # **상한이 1인 이유(PR #235 리뷰)**: backoff 가 구현에 없다. 2·3 을 허용하면 "1 을 넘기려면
     # backoff 가 필요하다"고 적어 둔 위험을 설정 한 줄로 열어 주는 셈이라, **현재 구현이 감당하는
     # 값만** 받는다. 더 올리려면 backoff 를 먼저 만들고 이 상한을 함께 푼다.
-    # [#394 한시적 조치] 기본값을 1→0 으로 내린다. 운영 실측(2026-08-06): I-1 이 SEARCH_FAILED 로
-    # 떨어진 두 건 모두 Spring 은 200 을 줬다 — 실패가 아니라 3s 예산을 넘긴 지연이었다. 그 상태에서
-    # 재시도는 성공했을 쿼리를 backoff 없이 즉시 한 번 더 돌려 Spring 부하만 2배로 만들고, 사용자는
-    # 6초 뒤 실패를 받는다. **원복 조건**: BE 검색 쿼리 개선(리뷰 집계 비정규화, BE #395)이 배포되면
-    # 재검토한다. 구매자 progress 이벤트(#289)로 first-token 관문이 풀릴 때도 함께 재검토한다.
-    # `=1` 로 되돌리면 이 필드가 원래 규정하던 재시도 동작(위 주석)으로 완전히 복귀한다.
-    spring_max_retries: int = Field(default=0, ge=0, le=1)
+    # [#394 원복] 2026-08-06 운영 실측에서 I-1 이 SEARCH_FAILED 로 떨어진 두 건은 Spring 이 모두
+    # 200 을 준 3s 예산 초과 지연이었다. backoff 없는 재시도는 Spring 부하만 2배로 만들고 사용자는
+    # 6초 뒤 실패를 받아 기본값을 1→0 으로 내렸었다. 이제 **사람의 명시 지시**로 위 주석이 규정한
+    # 재시도 동작을 완전히 복귀한다. #394 의 원복 조건은 충족됐다: BE PR #133 커버링 인덱스와
+    # `attributes` 4키 축소가 모두 배포됐고, 후자는 2026-08-09 라이브 응답 실측에서 4키 부재 및
+    # 항목당 약 1,780B→1,052B로 확인됐다(크기·필드 구성만 근거; 로컬 소요시간은 인용하지 않음).
+    # `size` 상한은 폐지됐다. 최악 구제 체인이 꼬리 예약 창을 넘지 않게 DESIGN-SHARED-BUDGET-384 §4에 따라
+    # `rescue_budget_mode=narrow`도 함께 올린다. 다시 끄려면 `SPRING_MAX_RETRIES=0`을 설정한다.
+    spring_max_retries: int = Field(default=1, ge=0, le=1)
     # [#277] conditions 를 검색 뒤로 미룬 턴은 첫 이벤트 앞에 I-1 이 최대 2회 직렬이라,
     # 재시도까지 얹으면 first-token 상한을 넘어 이벤트 0건·504가 될 수 있다. 한 번의 일시
     # 지연을 살리는 대가가 턴 전체의 침묵이므로 기본값은 그 턴만 재시도를 끈다.
-    # 원복 전제(구매자 progress 계약 등재 + 플래그 on)는 #396 으로 충족됐다. 그래도 원복은
-    # 하지 않는다 — #394(커밋 2168e9b)가 이미 다른 이유(Spring 부하 실측)로 `spring_max_retries`
-    # 기본값을 1→0 으로 내렸고, 이 필드의 원복 여부는 그 조치와 함께 판단해야 하는 별도
-    # 결정이다. #396 이슈 본문도 이를 비범위로 못박았다.
+    # #394 는 원복됐지만 이 값은 False를 유지한다. 이제 이 스킵은 무동작이 아니라 미룬 턴의 실제
+    # 재시도를 끄는 유효한 가드이며 first-token 여유를 지킨다. #306의 원복은 별도 판단이다.
     search_retry_on_deferred_conditions: bool = False
     # [#427, DESIGN-SHARED-BUDGET-384 §3 D7] 구제 체인(F-1/#343/자동완화 probe) 예산 집행
-    # 강도 — observe: 판정만 계산·로그(반사실), 실제 집행 없음(기본, 오늘 동작 불변).
+    # 강도 — observe: 판정만 계산·로그(반사실), 실제 집행 없음.
     # narrow: 잔여 예산이 모자란 단의 타임아웃을 좁혀 시도한다(건너뛰지 않는다). narrow_skip:
     # narrow 로도 부족한(최소 하한 미만) 단은 건너뛴다. §4 Lv0~Lv2 등급의 런타임 스위치이며,
-    # #394(spring_max_retries) 원복은 이 값을 narrow 이상으로 함께 올려야 한다(§4 결론).
-    rescue_budget_mode: Literal["observe", "narrow", "narrow_skip"] = "observe"
+    # #394(spring_max_retries) 원복과 함께 narrow로 올렸다(§4 결론). narrow는 잔여 예산이 모자란
+    # 단의 타임아웃을 좁혀도 시도하며 건너뛰지 않고, narrow_skip은 채택하지 않았다.
+    rescue_budget_mode: Literal["observe", "narrow", "narrow_skip"] = "narrow"
     # 구제 체인 한 단에 줄 수 있는 최소 타임아웃 — 미만이면 시도해도 성공 가망이 없다고 보고
     # narrow_skip 모드에서 그 단을 건너뛴다(본검색 제외, 본검색은 항상 시도한다). 실측(#385)
     # 전 잠정값 — DESIGN-SHARED-BUDGET-384 §3 D7 "예: 0.5"를 그대로 채택한다.
@@ -1772,10 +1809,15 @@ class Settings(BaseSettings):
     personalization_eval_clean_noisy_drop_margin: float = 0.03
     # 현행 0.15를 중심으로 0~4배 범위를 대칭적이지 않은 실용 구간으로 탐색한다.
     personalization_eval_weight_sweep: tuple[float, ...] = (0.0, 0.075, 0.15, 0.30, 0.60)
+    # [#484] 케이스 파생 선호를 마크다운으로 렌더할 때의 (강, 중) 임계. 정규화 가중치는
+    # "정답 안에서 몇 번 나왔나"라 1회짜리 꼬리 브랜드가 최상위와 같은 줄에 나열되면 LLM이
+    # 둘을 동급으로 읽는다. 수치는 노출하지 않고 강도만 자연어로 구분한다(§5.1 결정 16).
+    personalization_eval_profile_strength_bands: tuple[float, float] = (0.7, 0.5)
 
     # ── 구매자 progress 이벤트 (이슈 #396, 계약 등재 완료 — 기본 on) ──
     # 정본(Notion CH-2)·api-spec §3.1 v0.21.0 등재와 FE 구현 완료(2026-08-06)로 전제가
-    # 충족돼 기본 on 으로 해제했다(#289 후속). 되돌리려면 PROGRESS_EVENTS_ENABLED=false.
+    # 충족돼 기본 on 으로 해제했다(#289 후속). 되돌리려면 PROGRESS_EVENTS_ENABLED=false와
+    # SPRING_MAX_RETRIES=0을 함께 설정한다. 그렇지 않으면 미룬 I-1 직렬 재시도가 first-token 상한을 넘어 거절된다.
     progress_events_enabled: bool = True
     # 빈 문자열이면 프레임 `data`에 `message` 키 자체를 싣지 않는다(app/agents/buyer/_frames.py).
     progress_analyzing_message: str = "요청을 확인하고 있어요"
@@ -1783,6 +1825,7 @@ class Settings(BaseSettings):
     progress_mapping_message: str = "카테고리를 찾고 있어요"
     progress_expanding_message: str = "어떤 상품이 필요한지 넓혀 보고 있어요"
     progress_searching_message: str = "상품을 검색하고 있어요"
+    progress_retrying_message: str = "검색이 지연돼 다시 시도하고 있어요"
     progress_relaxing_message: str = "조건을 조금 넓혀 다시 찾고 있어요"
     progress_reranking_message: str = "가장 잘 맞는 걸 고르고 있어요"
     progress_publishing_message: str = "추천 목록을 준비하고 있어요"
@@ -1981,6 +2024,9 @@ class Settings(BaseSettings):
             raise ValueError(
                 "개인화 평가 weight sweep은 [0,1]의 오름차순 고유 값이며 0.15를 포함해야 합니다"
             )
+        high, mid = self.personalization_eval_profile_strength_bands
+        if not (math.isfinite(high) and math.isfinite(mid)) or not 0 < mid < high <= 1:
+            raise ValueError("개인화 평가 강도 임계는 0 < 중 < 강 <= 1 이어야 합니다")
         return self
 
     @model_validator(mode="after")
@@ -2177,6 +2223,40 @@ class Settings(BaseSettings):
                 "COLOR_SYNONYM_HARVEST_MAX_TERMS_PER_PRODUCT "
                 f"(got {self.color_synonym_harvest_scan_max_values_per_product} <= "
                 f"{self.color_synonym_harvest_max_terms_per_product})"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _require_consistent_stream_registry_leases(self) -> "Settings":
+        """공유 레지스트리 lease 관계를 기동 시점에 고정한다 (#476).
+
+        연장 간격이 TTL 의 절반 이상이면 연장을 한 번만 놓쳐도 살아있는 스트림의 슬롯이
+        만료돼 다른 워커가 같은 방을 잡을 수 있다 — §2.9(a) 가 조용히 뚫린다. 반대로
+        scope idle 대기 상한이 TTL 보다 짧으면, 죽은 워커가 남긴 행이 만료되기도 전에 대기가
+        끝나 "기다렸다" 는 보장이 무의미해진다. 값은 `memory` 백엔드에서도 검증한다 —
+        운영이 백엔드를 켜는 순간 발견하는 것보다 기동 시점에 막는 편이 싸다.
+        """
+        if self.stream_registry_lease_renew_interval_s >= self.stream_registry_lease_ttl_s / 2:
+            raise ValueError(
+                "STREAM_REGISTRY_LEASE_RENEW_INTERVAL_S must be under half of "
+                "STREAM_REGISTRY_LEASE_TTL_S "
+                f"(got {self.stream_registry_lease_renew_interval_s} >= "
+                f"{self.stream_registry_lease_ttl_s / 2})"
+            )
+        if self.stream_registry_scope_idle_wait_max_s <= self.stream_registry_lease_ttl_s:
+            raise ValueError(
+                "STREAM_REGISTRY_SCOPE_IDLE_WAIT_MAX_S must exceed "
+                "STREAM_REGISTRY_LEASE_TTL_S "
+                f"(got {self.stream_registry_scope_idle_wait_max_s} <= "
+                f"{self.stream_registry_lease_ttl_s}): "
+                "a dead worker's row must be able to expire before the wait gives up"
+            )
+        if self.stream_registry_scope_poll_s >= self.stream_registry_scope_idle_wait_max_s:
+            raise ValueError(
+                "STREAM_REGISTRY_SCOPE_POLL_S must be under "
+                "STREAM_REGISTRY_SCOPE_IDLE_WAIT_MAX_S "
+                f"(got {self.stream_registry_scope_poll_s} >= "
+                f"{self.stream_registry_scope_idle_wait_max_s})"
             )
         return self
 

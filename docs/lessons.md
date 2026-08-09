@@ -65,6 +65,149 @@
   "환경 탓"으로 넘기기 전에 원인을 한 번은 분류한다 — 여기서는 그 분류가 실제 버그를 찾아냈다.
 - 관련: `tests/unit/conftest.py::_guarded_socketpair` · `tests/unit/test_unit_tcp_guard.py` ·
   `.github/workflows/ci.yml:10`(ubuntu-latest) · #474 회귀, #358 작업 중 발견
+## [2026-08-10] 동시 레인의 완료 조건은 이슈가 아니라 최신 dev에서 다시 실측한다
+- 증상: 이슈 완료 조건에 "미구현"으로 표시된 항목을 그대로 믿고 승인 0건 가드를 구현했는데,
+  같은 조건을 다른 레인(PR #502)이 이미 dev 에 넣어 둔 상태였다. back-merge 때 같은 판정이 두
+  곳에 생겨 한쪽을 걷어내야 했다.
+- 원인: 착수 시점에 `origin/dev` 를 fetch 하지 않고 베이스 커밋(`f1f621e`) 기준으로만 실측했다.
+  그 사이 dev 는 34커밋 앞서 있었고, 문제의 코드는 "docs 전용"이라고 적힌 PR(#502, 커밋
+  `13c84e3`)이 함께 실어 커밋 제목·본문으로는 검색되지 않았다.
+- 규칙: 동시 레인이 여럿이면 착수 전 `git fetch origin` 후 **`origin/dev` 기준으로** 완료 조건을
+  실측한다. 이슈 본문의 체크박스와 완료 조건 표는 작성 시점 스냅샷이라 근거가 아니다. 커밋 제목이
+  docs 라도 코드가 실려 있을 수 있으니 `git log -S<심볼> origin/dev -- <경로>` 로 심볼 단위 확인을
+  한다.
+- 관련: `app/pipelines/color_synonyms.py::_warn_empty_map_once` · PR #502 · #505
+
+---
+
+## [2026-08-09] 전체 `ruff format` 은 현재 변경 범위를 벗어난 포맷 churn을 만든다 (#406)
+- 증상: #406 검증에서 인자 없는 `uv run ruff format`을 실행해 이슈와 무관한 26개 파일이 순수
+  포맷 변경으로 워킹트리에 함께 남았다.
+- 원인: 저장소에는 CI가 강제하지 않는 기존 포맷 드리프트가 있고, 전체 format은 그 드리프트까지
+  현재 작업의 변경으로 흡수한다.
+- 규칙: format은 이번에 수정한 파일 목록만 인자로 넘기고, 전체 검증은 `uv run ruff check`로 한다.
+- 관련: #406 · `.github/workflows/ci.yml` · `docs/lessons.md`
+
+---
+
+## [2026-08-09] `asyncio.run` 을 타는 유닛 테스트는 Windows 에서만 TCP 차단에 걸린다
+- 증상: `tests/unit/test_personalization_scope.py::test_live_wrapper_routes_profile_for_all_scopes`
+  가 로컬(Windows)에서만 `ConnectionRefusedError: unit tests must not open live TCP connections`
+  로 실패한다. httpx 는 `MockTransport` 라 실제 요청이 없는데도 그렇다. 같은 코드가 CI 는 통과한다.
+- 원인: `LiveBuyerAdapter.__call__` 이 `asyncio.run` 을 쓰는데, Windows 기본 루프인
+  `ProactorEventLoop` 는 self-pipe 를 **TCP 루프백 socketpair** 로 만든다. `tests/unit/conftest.py`
+  의 `_TcpRefusingSocket` 이 AF_INET `connect` 를 전부 거부하므로 루프 생성 자체가 죽는다
+  (뒤따르는 `AttributeError: 'ProactorEventLoop' object has no attribute '_ssock'` 이 그 흔적).
+  POSIX 는 AF_UNIX socketpair 라 같은 가드에 걸리지 않는다 — 그래서 OS 별로 갈린다.
+- 규칙: 유닛 테스트에서 **주입·배선 경로만** 검증할 거면 `asyncio.run` 을 타는 실행기를 통째로
+  부르지 말고 경계 함수(여기서는 `profile_for_scope`)의 입력을 가로채고 내부 어댑터는 대역으로
+  바꾼다. 로컬 실패를 보고 "환경 탓"으로 넘기기 전에 **변경 전 baseline 에서도 같은 실패가
+  나는지** 먼저 확인한다(`git stash push -u -m <고유태그>` → 확인 → `git stash apply <sha>` → drop).
+- 관련: `tests/unit/conftest.py:23-36`, `evals/model_eval/adapter.py::LiveBuyerAdapter.__call__`,
+  `tests/unit/test_personalization_scope.py::_resolved_markdowns` (#484)
+
+---
+
+## [2026-08-09] 계약 어휘 동기화의 완료 조건은 "신규 값 등장"이 아니라 "구 값 0건"이다
+- 증상: BE 가 `ProductStatus.DELETED` 를 신설했는데, #472 사본 동기화가 api-spec §4.5 **표**를
+  정본에 맞춘 뒤 §4.5 를 "확정·구현 완료"로 표시했다. 실제로는 §3.2 산문이 `status=HIDDEN` 으로
+  남았고 `app/` 에는 `DELETED` 가 0회여서, AI 는 나흘간 삭제를 숨김으로 다뤘다.
+- 원인: 완료 판정을 "새 값이 표에 있는가"로 했다. 새 값이 들어와도 **구 값이 남아 있으면 코드는
+  구 값대로 동작한다** — 둘은 배타가 아니다.
+- 규칙: 어휘를 바꾸는 동기화는 **폐기된 구 값의 repo 전역 잔여가 0건**임을 확인해야 끝난다
+  (과거 변경 이력 행은 제외). 훑을 대상 목록은 같은 날의 「계약 문자열 폐기는 동의어·enum 값·
+  다른 표기까지 함께 훑는다」 항목을 따른다.
+- 관련: `docs/api-spec.md` v0.29.4 → v0.32.1 · #511 · BE `docs/backend/02-data-model.md` D41
+
+---
+
+## [2026-08-09] 선례를 근거로 규약을 세울 땐 그 선례가 실제로 그런지 코드로 확인한다
+- 증상: `spring_client.py` 주석이 **"I-12 ALREADY_HIDDEN 논리"** 를 근거로 I-30 에 전용 예외
+  3종을 두면서, 정작 그 논리의 출처인 I-11·I-12 에는 `error_code_map` 이 없었다.
+- 원인: 신규 기능(#297)에서 규약을 정립하며 기존 호출부의 소급 적용을 남기지 않았다. 주석이
+  선례를 인용하는 순간 "선례도 그렇게 돼 있다"는 착시가 생겨 아무도 되짚지 않았다.
+- 규칙: 기존 API 를 근거로 새 규약을 세우면 **그 기존 API 가 규약을 따르는지 코드로 확인**하고,
+  아니면 같은 PR 에서 맞추거나 이슈를 남긴다. 주석의 인용은 근거가 아니다.
+- 관련: `app/services/spring_client.py` I-11·I-12·I-30 · #511 · #297
+
+---
+
+## [2026-08-09] 변이가 살아남으면 "테스트가 약한 것"이 아니라 **더 위 계층에서 멈춘 것**일 수 있다
+- 증상: #476 공유 스트림 레지스트리에서 `release_stream` 의 SQL `AND stream_token=%s` 를 지우는
+  변이를 넣었는데, 그 조건을 검증한다고 이름 붙인 통합 테스트
+  (`test_pg_release_only_deletes_the_row_this_worker_owns`)가 **그대로 통과**했다.
+- 원인: 테스트가 `SharedStreamRegistry.release()` 를 통해 들어갔는데, 레지스트리가 자기 로컬
+  토큰 맵에 키가 없으면 **DB 를 치기 전에 조기 반환**한다. 즉 테스트는 상위 계층 가드를 재고
+  있었고 SQL 조건에는 애초에 도달한 적이 없다. 이름과 주석은 SQL 을 검증한다고 말하고 있었다.
+- 규칙: 다층 방어(호출부 가드 + 저장소 조건)를 넣었으면 **각 층을 그 층의 진입점에서** 시험한다.
+  저장소 조건은 저장소 API 를 직접 불러(`store.release_stream(..., stream_token=<틀린 토큰>)`)
+  확인하고, 변이 시험은 층마다 따로 돌린다. 변이가 살아남으면 "단언을 세게" 하기 전에
+  **호출 경로가 그 코드에 닿는지부터** 확인할 것.
+- 관련: `tests/integration/test_pg_shared_stream_registry.py` ·
+  `app/core/stream_registry.py::SharedStreamRegistry.release` · #476
+
+---
+
+## [2026-08-09] Windows 로컬 `uv run pytest` 554건 실패는 TCP 차단 가드 × ProactorEventLoop 충돌이다
+- 증상: 문서만 고친 브랜치에서 `uv run pytest` 가 **554 failed / 4729 passed**. 실패 트레이스는
+  전부 `tests/unit/conftest.py:28 ConnectionRefusedError: unit tests must not open live TCP connections`
+  이고, 무관한 `tests/unit/test_health.py` 도 똑같이 5건 실패한다. **CI(Linux)는 통과한다.**
+- 원인: #501(`bbbf715`)이 넣은 유닛 테스트 TCP 차단 가드가 `AF_INET` connect 를 전부 막는데,
+  **Windows 의 asyncio 는 `ProactorEventLoop` self-pipe 를 loopback TCP socketpair 로 만든다.**
+  이벤트 루프를 만드는 테스트가 전부 가드에 걸린다. Linux 는 self-pipe 가 TCP 가 아니라 안 걸린다.
+- 규칙: **로컬 pytest 대량 실패를 보면 먼저 무관한 테스트 하나(`test_health.py`)를 돌려 본다** —
+  같이 죽으면 내 변경이 아니라 환경이다. 문서 전용 변경이라면 `test_contract_docs.py` 만 돌려
+  계약 문서 검증을 확인하고, 전체 판정은 CI 에 맡긴다. 기존 메모의 "로컬 전용 실패 2건"은
+  #501 이후 이 규모로 커졌으니 그 숫자를 믿지 않는다.
+- 관련: `tests/unit/conftest.py:23-31` · `bbbf715`(#501) · #499
+
+## [2026-08-09] 사본 동기화는 착수 시점에 정본을 다시 읽는다 — 이슈 본문은 작성일에 멈춰 있다
+- 증상: #499 본문은 2026-08-08 BE 확약 기준 **4건**의 체크리스트였는데, 착수 시점에 노션 정본을
+  열어 보니 **다음 날(08-09) 10벌이 확정되면서 §3.8 응답 구조까지 개편**돼 있었다. 이슈만 따랐으면
+  `nodes[]` 폐지·edge 필드 13→5·`purged` 개편을 통째로 놓친 채 "완료" 보고를 했을 것이다.
+- 원인: 사본 동기화 이슈는 **정본의 스냅샷**으로 작성된다. 정본은 그 뒤에도 움직이는데 이슈 본문은
+  안 움직인다. 게다가 확정된 정본 페이지들이 *자기* 변경 이력으로 그 이슈 번호를 지목하고 있어,
+  정본 쪽은 이미 "이 이슈가 다 반영할 것"으로 간주하고 있었다.
+- 규칙: **동기화 작업은 착수 직전에 정본을 전수로 다시 읽고, 이슈 본문과의 차이를 먼저 보고한다.**
+  범위가 넓어지면 사용자에게 확인받되, 이슈 본문을 "범위의 상한"으로 취급하지 않는다.
+- 관련: `docs/api-spec.md` v0.32.0 · 노션 「♻️ 취향 관리 API 10개 — 고쳐야 할 것 정리」 · #499
+
+## [2026-08-09] 계약 문자열 폐기는 동의어·enum 값·다른 표기까지 함께 훑는다
+- 증상: undo 폐기 정정에서 `restorable`·`includeSuppressed` 를 다 지웠는데 **감사 로그 enum 의
+  `edgeRestore`** 가 api-spec §6.3·SPEC §5.4 양쪽에 그대로 남아 있었다. 준비한 grep 목록
+  (`restorable`·`undo`·`되돌리기`…)으로는 **한 건도 안 잡혔다.**
+- 원인: 폐기 대상을 "필드명"으로만 생각했다. 같은 개념이 **enum 값(camelCase 합성어)·한국어 서술·
+  코드 docstring**으로 흩어져 있으면 문자열이 서로 다르다.
+- 규칙: 개념을 폐기할 때 grep 목록에 **필드명 + enum 값 + 한국어 표현 2~3종 + 코드 주석**을 모두
+  넣는다. 특히 `<동사>Restore` 처럼 **접두어가 붙어 원래 단어가 부분 문자열이 되는** 형태를 의심한다.
+- 관련: `docs/api-spec.md` §6.3 (c) · `SPEC-PROFILE-GRAPH-149` §5.4 · #499
+
+## [2026-08-09] 상대 구현을 "실질 효과 없음"으로 판정해 요청에서 빼지 않는다
+- 증상: 협의 문서(`BE-NEGOTIATION-GRAPH-357`)는 C-27 캐시 무효화 필요 지점을 **"중지·초기화 2곳"**
+  으로 축소하고 개별 삭제를 *"다음 consolidation 전까지 랭킹 미반영이라 실질 효과가 없다"* 며
+  뺐다. BE 는 **수정·삭제·초기화·중지 4곳 전부**에 구현했다. 같은 문서 §6.1 은 "3종"이라 적어
+  **내부에서도 숫자가 갈려 있었다.**
+- 원인: 우리 판정 근거(랭킹 반영 시점)는 맞았지만, 상대는 **사용자 약속**("지웠다고 했는데 홈에
+  남아 있다")을 기준으로 봤다. 축소 판정은 상대의 구현 자유도·판단 기준을 예측하는 일이다.
+- 규칙: 요청 범위를 줄일 때는 **줄인 근거를 상대에게 보이되 항목은 남긴다**("불필요해 보이지만
+  판단은 그쪽"). 그리고 같은 문서 안에서 같은 수를 두 번 적었으면 **반드시 대조**한다.
+- 관련: `docs/api-spec.md` §5 C-27 · `jarvis-backend#132` · #499
+
+## [2026-08-09] 범위 대조는 선언된 건수보다 열거된 식별자를 우선한다
+- 증상: #472 정본 인덱스는 범위를 44건이라 표기했지만, 실제 열거는 internal 36건·chat 6건·S-4·P-4/P-5·E-1로 46건이었다.
+- 원인: 요약 집계와 개별 범위 목록이 독립적으로 수정돼 산술 검증이 빠졌다.
+- 규칙: 전수 대조표는 식별자 열거를 기준으로 만들고, 선언 건수와 다르면 누락시키지 말고 불일치와 산식을 감사 결과에 기록한다.
+- 관련: `docs/api-spec-canonical-audit.md` #472 범위 기준
+
+---
+
+## [2026-08-09] 로컬 pytest 무더기 실패는 워크트리 환경을 먼저 분리해 재현한다
+- 증상: #472에서 로컬 `uv run pytest`가 38건 실패했다.
+- 원인: 워크트리의 `.env`가 테스트 환경에 개입했지만, CI는 `.env` 없이 실행한다.
+- 규칙: 무더기 실패 시 자기 변경이나 dev 환경을 의심하기 전에 `.env`를 내용을 열지 않고 잠시 치운 뒤 재현하고 반드시 되돌린다.
+- 관련: #472 검증 기록
+
+---
 
 ## [2026-08-09] 유닛 테스트는 로컬 BE가 살아 있어도 TCP를 열면 안 된다
 - 증상: 로컬 Spring BE가 8080에서 실행 중이고 `.env`의 내부 토큰이 채워지면 재구매·완화 유닛
@@ -84,6 +227,22 @@
 - 관련: `evals/goldenset/refresh_manifest.py::HASH_EXCLUDED_PATHS` ·
   `tests/unit/test_goldenset_audit.py` · #474
 
+## [2026-08-08] 로컬 BE 가 떠 있으면 유닛 테스트가 라이브 BE 를 친다 — `dev` 나 내 변경을 의심하기 전에 `.env` 를 무력화해 재현하라
+- 증상: 문서 2개만 고친 상태에서 `uv run pytest` 가 **38건 실패**했다(재구매 지목·완화 경로).
+  같은 커밋이 6시간 전엔 4829 passed 였고 **CI 도 초록**이었다. 실패는 결정적이었고(ordering
+  무관, `-p no:randomly` 동일) 문서를 stash 해도 그대로였다.
+- 원인: 누군가 3시간 전 로컬에 **Spring BE(:8080)·mariadb·redis 를 띄웠고**, 이 worktree `.env`
+  에 유효한 `INTERNAL_API_TOKEN` 이 있어 **유닛 테스트가 라이브 BE 를 호출**했다. 그래서 주입한
+  가짜 검색 대신 실 카탈로그 상품 id 가 push 페이로드에 실렸다. `tests/conftest.py` 는
+  `OPENAI/ANTHROPIC/GOOGLE_API_KEY` 만 비우고 **`INTERNAL_API_TOKEN` 은 비우지 않는다** —
+  CI 는 BE 가 없어서 이 갭이 드러나지 않았다.
+- 규칙: 로컬 pytest 가 CI 와 다르게 깨지면 **코드보다 환경을 먼저 의심한다**. 순서는
+  (1) `Settings()` vs `Settings(_env_file=None)` 의 **차이 나는 필드 이름만** 뽑아 본다
+  (값 출력 금지 — 시크릿이 섞인다), (2) 후보를 하나씩 빈 값으로 덮어 이분한다
+  (`INTERNAL_API_TOKEN= uv run pytest ...`), (3) `docker ps` 로 로컬 BE·DB 기동 여부를 본다.
+  `.env` 를 읽거나 옮기지 말 것 — 덮어쓰기(override)만으로 판정된다.
+- 관련: `tests/conftest.py`(키 3종만 무력화), `app/core/config.py::Settings.model_config`
+  (`env_file=".env"`, CWD 상대), #395 작업 중 발견
 ## [2026-08-08] `ruff format` 을 인자 없이 돌려 무관한 파일 30개가 diff 에 딸려 왔다
 - 증상: #438 작업 중 `CLAUDE.md` "자동 정리: `uv run ruff check --fix && uv run ruff format`" 을
   문자 그대로 인자 없이(= 저장소 전체 대상) 돌렸더니, 이번 이슈와 무관한 파일 30개가 순수 포맷
@@ -106,6 +265,30 @@
   전체로 돌려도 안전하다 — 이번 사고는 `format` 쪽이다.)
 - 관련: #438 · `CLAUDE.md` "커밋 워크플로" 2단계 · `.pre-commit-config.yaml`(ruff-format 은
   스테이징 파일 한정) · `.github/workflows` 의 CI 는 `ruff check` 만 실행
+
+## [2026-08-08] 응답 픽스처 계약 테스트는 "요청 파라미터 누락"을 못 잡는다 (#494)
+- 증상: `get_reviews(stats=True, rating="1,2")` 가 rating 을 쿼리스트링에 **안 실어** 전 별점
+  합산 `byProduct` 를 받아왔다. HTTP 200, 예외 없음, 숫자도 자연스러움 — 워커는 그것을
+  "1–2점이 몰린 상품"으로 서술했다. 명세(I-31)가 대표 사용례로 든 질문이 조용히 틀렸다.
+  `passed=True` 로 끝나므로 **로그·구조화 트레이스에도 안 남는다.**
+- 원인: `SpringClient.get_review_stats` 시그니처에 `rating` 이 아예 없었다. 도구 층은 인자를
+  받아서(`tools.py` 시그니처·docstring 에 존재) 클라이언트에 넘기지 않고 **버렸다** — 무시
+  사실을 출력에 적지도 않았다. 기존 테스트는 응답 JSON 픽스처를 고정해 파싱만 검증해서,
+  요청이 무엇을 보냈는지는 아무도 보지 않았다.
+- 규칙:
+  - **필터 인자를 받는 클라이언트 메서드에는 요청 쿼리스트링 스냅샷 테스트를 별도로 둔다.**
+    응답 shape 검증(픽스처 계약 테스트)과 요청 파라미터 검증은 서로 다른 실패를 잡는다 —
+    후자가 없으면 인자 누락이 200 뒤에 숨는다. 실린 것뿐 아니라 **안 실려야 할 것**
+    (집계 모드의 sort/limit/offset)도 같이 못 박는다.
+  - 도구가 인자를 받아 하위로 안 넘길 때 선택지는 둘뿐 — **넘기거나, 무시를 코드로 강제하고
+    그 사실을 출력 문자열에 적거나.** 조용히 버리는 세 번째는 없다
+    (선례: `get_order_events` 의 `ignored_status_note`).
+  - 집계 결과를 문장으로 내보낼 때는 **어떤 필터가 적용된 집계인지 스코프를 함께 적는다.**
+    "리뷰 집계: 총 18건"과 "리뷰 집계(별점 1,2 한정): 총 18건"은 워커에게 전혀 다른 사실이다.
+  - 0건 응답도 같은 함정 — "리뷰가 없습니다"와 "별점 1,2 리뷰가 없습니다"를 구분한다.
+- 관련: `app/services/spring_client.py` `get_review_stats`, `app/agents/seller/tools.py`
+  `get_reviews`, `docs/api-spec.md` §4.20(I-31), 이슈 #494
+
 ## [2026-08-08] TTL 만료를 엄격 부등호로 재면 판정이 시계 분해능에 걸린다 (리눅스만 통과)
 - 증상: `period_confirm.load_pending` 의 TTL 테스트(`test_pending_expires_after_ttl`, ttl=0)가
   **리눅스 CI 에서는 늘 통과하는데 Windows 로컬에서 실패**했다 — 만료됐어야 할 대기가
