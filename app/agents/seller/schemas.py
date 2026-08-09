@@ -331,6 +331,26 @@ class DraftProposal(BaseModel):
     )
 
 
+# ── [#506] 등록 초안 대기 게이트 (입구 ①.8 — draft_session 대기 중 발화 3분류) ──
+
+
+class PendingDraftAction(BaseModel):
+    """초안 대기 중 발화 분류 — 게이트 LLM 구조화 출력 (FE 계약 §5.7).
+
+    approve 는 실행이 아니다 — 텍스트 승인은 받지 않는다는 안내(버튼 유도)로만
+    이어진다(발화 ≠ 동의 [HARD]). cancel 만 코드 단축경로(정형 발화)와 병행한다 —
+    위험이 비대칭이기 때문(승인 오독은 되돌릴 수 없고, 취소 오독은 재초안이면 된다).
+    """
+
+    action: Literal["modify", "approve", "cancel", "offtopic"] = Field(
+        description=(
+            "modify: 초안 내용 수정 요청 / approve: 등록·승인 의도 / "
+            "cancel: 취소·폐기 의도 / offtopic: 초안과 무관한 다른 주제"
+        )
+    )
+    reason: str = Field(default="", description="판정 근거 한 줄(로그용)")
+
+
 MAX_RECOMMENDATIONS = 5  # 추천 개수 상한 — 스키마 계약(와이어 아님)이라 Settings 가 아닌 상수
 
 
