@@ -13,6 +13,35 @@
 
 ---
 
+## [2026-08-10] 구조화 로그의 message 형식을 바꾸면 선택자도 전수 이관한다
+- 증상: #385가 구조화 이벤트의 message를 JSON으로 바꾼 뒤, 예산 테스트 4건이 옛
+  `record.message == "recommend_pipeline"` 선택자를 써 `StopIteration` 또는 `None`으로 실패했다.
+- 원인: 첫 수정에서 일부 caplog 선택자만 JSON 파싱으로 바꾸고, 저장소 전체의 message/msg/getMessage
+  기반 이벤트 선택을 전수 검색하지 않았다.
+- 규칙: 구조화 로그의 message 표현을 바꿀 때는 안정적인 LogRecord extra 선택자(여기서는 `event`)를
+  함께 제공하고, 이벤트명으로 message/msg/getMessage를 고르는 모든 호출부를 grep으로 0건 확인한다.
+- 관련: `app/core/logging.py::log_structured` · `tests/unit/test_rescue_budget_427.py` · #385
+
+---
+
+## [2026-08-10] `extra=` 검증은 렌더된 sink 문자열까지 확인한다
+- 증상: 구제 체인 이벤트가 `extra`에 계측 필드를 넣었고 caplog의 `record.rescue_elapsed_ms` 단언도
+  통과했지만, 표준 formatter가 `%(message)s`만 출력해 운영 stdout에서는 필드가 전부 사라졌다.
+- 원인: LogRecord 속성 보존과 formatter 렌더는 별도 단계인데, 테스트가 전자만 확인했다.
+- 규칙: stdout/file sink로 소비되는 구조화 로그는 실제 formatter로 레코드를 렌더한 뒤 파서·집계기까지
+  왕복하는 회귀 테스트를 둔다. `extra=` 속성 단언은 호환성 검증으로만 남긴다.
+- 관련: `app/core/logging.py::log_structured` · `tests/unit/test_aggregate_rescue_chain.py` · #385
+
+---
+
+## [2026-08-09] 분포 분리 테스트는 변이 뒤 순위가 실제로 바뀌는 표본을 써야 한다
+- 증상: #385의 `may_auto_relax=False` 분리 테스트가 False 표본 하나(1ms)와 True 표본 둘
+  (100/200ms)을 썼더니, False를 True 분포에 잘못 섞는 변이가 통과했다.
+- 원인: 최근접 순위 p50은 `[100, 200]`과 `[1, 100, 200]`에서 모두 100이라, "작은 False 값을
+  넣었다"는 사실만으로 분리 결함을 검출하지 못했다.
+- 규칙: 분위수·분모 분리 회귀 테스트는 의도한 잘못된 결합을 실제로 적용한 변이에서 적어도 하나의
+  단언값이 달라지는 손계산 표본을 사용하고, 변이 실행으로 그 실패를 확인한다.
+- 관련: `tests/unit/test_aggregate_rescue_chain.py` · #385
 ## [2026-08-10] 동시 레인의 완료 조건은 이슈가 아니라 최신 dev에서 다시 실측한다
 - 증상: 이슈 완료 조건에 "미구현"으로 표시된 항목을 그대로 믿고 승인 0건 가드를 구현했는데,
   같은 조건을 다른 레인(PR #502)이 이미 dev 에 넣어 둔 상태였다. back-merge 때 같은 판정이 두
