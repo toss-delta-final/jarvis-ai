@@ -41,17 +41,26 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
-from langchain_core.messages import AIMessageChunk, HumanMessage
+from langchain_core.messages import AIMessageChunk, HumanMessage, SystemMessage
 from pydantic.alias_generators import to_camel
 
+from app.agents.seller import category_catalog, draft_session
 from app.agents.seller import period_confirm as seller_period_confirm
 from app.agents.seller import thread as seller_thread
 from app.agents.seller.checkpoint import get_checkpointer
 from app.agents.seller.context import SellerContext
 from app.agents.seller.history import apply_recommendation
-from app.agents.seller.hitl import DraftRecord, confirm_draft, start_draft, validate_draft
+from app.agents.seller.hitl import (
+    DraftRecord,
+    confirm_draft,
+    invalidate_draft,
+    start_draft,
+    validate_draft,
+)
 from app.agents.seller.middleware import StreamingOutputGuard, check_scope, mask_output
-from app.agents.seller.models import SellerRole, seller_trace_model_metadata
+from app.agents.seller.models import SellerRole, init_seller_model, seller_trace_model_metadata
+from app.agents.seller.preview import build_create_preview, diff_notes
+from app.agents.seller.vision import ProductImageAnalysis, analyze_product_images
 from app.agents.seller.orchestrator import (
     PipelineResult,
     route_question,
@@ -65,7 +74,8 @@ from app.agents.seller.pipeline import (
     parse_apply_message,
     split_report_summary,
 )
-from app.agents.seller.schemas import DraftProposal
+from app.agents.seller.prompts import PENDING_DRAFT_GATE_PROMPT
+from app.agents.seller.schemas import DraftProposal, PendingDraftAction
 from app.agents.seller.workers import build_general_agent, build_product_agent
 from app.api.deps import require_seller
 from app.core.auth import Identity
@@ -622,11 +632,76 @@ async def _analysis_stream(
         await asyncio.gather(pipeline_task, return_exceptions=True)
 
 
+def _deserialize_analysis(data: dict | None) -> ProductImageAnalysis | None:
+    """draft_session 에 보관된 vision 분석 직렬화형 복원 — 손상은 None degrade."""
+    if not data:
+        return None
+    try:
+        return ProductImageAnalysis.model_validate(data)
+    except Exception:
+        return None
+
+
+def _category_candidates(
+    analysis: ProductImageAnalysis | None, message: str
+) -> list[category_catalog.CategoryEntry]:
+    """[#506] 카테고리 후보 — vision 힌트 우선 + 발화 매칭 보강, k 상한(중복 제거).
+
+    발화 검색을 함께 도는 이유: 수정 턴("남방 말고 셔츠야")은 새 카테고리 어휘가
+    발화에만 있다. LLM 이 임의 카테고리를 만들 경로는 없다 — 후보 밖 값은
+    validate_draft 가 되묻기로 전환한다(이중 방어).
+    """
+    k = get_settings().seller_category_candidates_k
+    merged: dict[str, category_catalog.CategoryEntry] = {}
+    if analysis is not None and analysis.category_hint.strip():
+        for entry in category_catalog.search(analysis.category_hint, k):
+            merged.setdefault(entry.id, entry)
+    for entry in category_catalog.search(message, k):
+        merged.setdefault(entry.id, entry)
+    return list(merged.values())[:k]
+
+
+def _product_agent_input(
+    request: SellerChatRequest,
+    *,
+    analysis: ProductImageAnalysis | None,
+    candidates: list[category_catalog.CategoryEntry],
+    pending: draft_session.PendingCreate | None,
+    image_urls: list[str],
+) -> str:
+    """[#506] product 에이전트 입력 조립 — 발화 + 이미지 분석·카테고리 후보·기존 초안 주입.
+
+    이미지 원본이 아니라 **분석 결과(텍스트)** 를 주입한다 — 분석은 첨부 턴 1회이고
+    (vision.py), 에이전트는 텍스트 루프를 유지해 매 턴 이미지 토큰이 들지 않는다.
+    """
+    blocks: list[str] = []
+    if image_urls:
+        blocks.append("[이미지 URL]\n" + "\n".join(image_urls))
+    if analysis is not None:
+        blocks.append(
+            "[이미지 분석]\n"
+            f"- 상품명 제안: {analysis.name}\n"
+            f"- 한 줄 요약: {analysis.summary}\n"
+            f"- 상세 설명: {analysis.description}\n"
+            f"- 상품군: {analysis.category_hint}"
+        )
+    if candidates:
+        blocks.append(
+            "[카테고리 후보] (id | 경로)\n" + category_catalog.candidates_block(candidates)
+        )
+    if pending is not None and pending.changes:
+        existing = "\n".join(f"- {field}: {after}" for field, after in pending.changes.items())
+        blocks.append("[기존 초안] (수정 턴 — 요청된 항목만 바꾼다)\n" + existing)
+    blocks.append("[판매자 요청]\n" + request.message)
+    return "\n\n".join(blocks)
+
+
 async def _product_stream(
     request: SellerChatRequest,
     context: SellerContext,
     *,
     request_id: str | None = None,
+    pending: draft_session.PendingCreate | None = None,
 ) -> AsyncIterator[str]:
     """product 레인 (4-2 — draft 생성 + checkpoint 저장, 실행은 confirm 스트림).
 
@@ -637,18 +712,53 @@ async def _product_stream(
     check_scope 는 입구 ②에서 이미 수행됨(구조화 레인 코드 경로 — 배정표 준수).
     패널: draft 성립 시 우측에 diff 카드(replace), 되묻기·검증 불성립은 대화(keep).
     최종 문안(되묻기·초안 요약)은 대화 스레드에 기록(best-effort) — 후속 발화 맥락.
+
+    [#506] 이미지 기반 등록: imageUrls 첨부 턴은 vision 1회 분석 → 분석·카테고리 후보
+    주입. pending(수정 턴)은 기존 초안 값을 주입하고 **재분석하지 않는다** — 새 사진을
+    첨부한 턴만 예외(재분석 + 대표사진 교체). create draft 성립 시 preview 를 함께
+    싣고(draft 이벤트), draft_session 에 대기를 저장하며 이전 draftId 는 무효화한다.
     """
     request_id = _resolve_request_id(request_id)
     _set_trace_lane("product")
     yield _meta("product")
     settings = get_settings()
+
+    # ── [#506] vision 분석 (이미지 첨부 턴 1회) / 수정 턴 캐시 복원 ──────────────
+    new_images = list(request.image_urls or [])
+    analysis: ProductImageAnalysis | None = None
+    image_urls: list[str] = new_images
+    try:
+        if new_images:
+            with trace_span("seller.graph.vision", "chain"):
+                analysis = await analyze_product_images(new_images, seller_message=request.message)
+        elif pending is not None:
+            analysis = _deserialize_analysis(pending.analysis)
+            image_urls = list(pending.image_urls)
+    except LLMNotConfigured:
+        yield _llm_unavailable(
+            lane="product",
+            thread_id=request.thread_id,
+            request_id=request_id,
+            context=context,
+        )
+        return
+
+    candidates = _category_candidates(analysis, request.message)
+    agent_input = _product_agent_input(
+        request,
+        analysis=analysis,
+        candidates=candidates,
+        pending=pending,
+        image_urls=image_urls,
+    )
+
     try:
         with trace_span("seller.graph.product", "chain"):
             agent = build_product_agent()
             with trace_span("llm.seller.product", "llm", _llm_metadata("product")):
                 result = await asyncio.wait_for(
                     agent.ainvoke(
-                        {"messages": [HumanMessage(content=request.message)]},
+                        {"messages": [HumanMessage(content=agent_input)]},
                         context=context,
                     ),
                     timeout=settings.seller_worker_timeout_s,
@@ -729,22 +839,66 @@ async def _product_stream(
         )
         return
 
+    # ── [#506] create 초안: 이전 draft 무효화 + 세션 저장 + preview 구성 ─────────
+    preview: dict | None = None
+    if record.op == "create":
+        notes: list[str] = []
+        if pending is not None:
+            # 수정 턴 — 이전 draftId 무효화(FE 계약 §5.6: 옛 카드 confirm 사고 차단).
+            await invalidate_draft(pending.draft_id)
+            notes = diff_notes(pending.changes, record)
+        seller_inputs = _seller_input_summary(record)
+        preview = build_create_preview(
+            record,
+            analysis=analysis,
+            seller_inputs=seller_inputs,
+            modified_notes=notes or None,
+        )
+        await draft_session.save_pending(
+            context,
+            request.thread_id,
+            draft_session.PendingCreate(
+                draft_id=record.draft_id,
+                image_urls=tuple(image_urls),
+                analysis=analysis.model_dump() if analysis is not None else None,
+                changes={c.field: c.after for c in record.changes},
+            ),
+        )
+
     await seller_thread.record_turn(
         context, request.thread_id, request.message, _draft_recorded_text(record)
     )
-    yield _draft_event(record)
+    yield _draft_event(record, preview=preview)
     yield _done("replace")  # diff 카드 = 우측 패널 교체
+
+
+def _seller_input_summary(record: DraftRecord) -> str | None:
+    """preview sections `source` 의 "판매자 입력" 항목 — 발화에서만 오는 값(가격·재고)."""
+    values = {c.field: c.after for c in record.changes}
+    parts: list[str] = []
+    price = values.get("price")
+    if price and price.replace(",", "").isdigit():
+        parts.append(f"{int(price.replace(',', '')):,}원")
+    stock = values.get("stock_quantity")
+    if stock and stock.replace(",", "").isdigit():
+        parts.append(f"{int(stock.replace(',', '')):,}개")
+    return " / ".join(parts) if parts else None
 
 
 def _draft_recorded_text(record: DraftRecord) -> str:
     """draft 성립 턴의 스레드 기록 문안 — diff 전문이 아니라 후속 발화 이해용 요약."""
-    base = "주문 발송 초안" if record.op == "ship" else "상품 변경 초안"
+    if record.op == "ship":
+        base = "주문 발송 초안"
+    elif record.op == "create":
+        base = "상품 등록 초안"  # [#506] FE 계약 문서와 같은 어휘 — 수정 초안과 구분.
+    else:
+        base = "상품 변경 초안"
     if record.summary:
         return f"{base}을 생성했습니다: {record.summary}"
     return f"{base}을 생성했습니다 (op={record.op})."
 
 
-def _draft_event(record: DraftRecord) -> str:
+def _draft_event(record: DraftRecord, *, preview: dict | None = None) -> str:
     """DraftRecord → SSE draft 이벤트 (product 레인·추천 적용 레인 공용, api-spec §3.2).
 
     [C-1 수정 2026-07-22] 와이어의 `changes[].field` 는 **camelCase**(규약 §2.2, api-spec).
@@ -755,7 +909,20 @@ def _draft_event(record: DraftRecord) -> str:
 
     [#297] op="ship"(주문 발송, I-30)은 orderItemId 를 함께 싣는다(§3.2 추가 전용) —
     상품 op 3종의 와이어는 불변이다(orderItemId 키는 ship 에만 존재).
+
+    [#506] op="create" 는 preview{} 를 함께 싣는다(§3.2 추가 전용, v0.30.0) — FE 등록
+    미리보기 카드는 preview 만 보고 그린다(changes 는 실행 정본). image_url 값은
+    mask_output 을 태우지 않는다 — 시크릿 패턴 정규식(sk-…)이 S3 경로 세그먼트를
+    오탐 마스킹할 수 있고, 값 자체는 validate_draft 가 http(s)·길이를 이미 보장한다.
     """
+
+    def _wire_value(field: str, raw: str) -> str:
+        if field == "description":
+            return mask_output(_strip_unsafe_multiline(raw))
+        if field == "image_url":
+            return _strip_unsafe(raw)  # [#506] URL 마스킹 오탐 방지 — 검증은 hitl 소관
+        return mask_output(_strip_unsafe(raw))
+
     return _sse(
         "draft",
         {
@@ -767,20 +934,14 @@ def _draft_event(record: DraftRecord) -> str:
             "changes": [
                 {
                     "field": to_camel(c.field),
-                    "before": (
-                        mask_output(_strip_unsafe_multiline(c.before))
-                        if c.field == "description"
-                        else mask_output(_strip_unsafe(c.before))
-                    ),
-                    "after": (
-                        mask_output(_strip_unsafe_multiline(c.after))
-                        if c.field == "description"
-                        else mask_output(_strip_unsafe(c.after))
-                    ),
+                    "before": _wire_value(c.field, c.before),
+                    "after": _wire_value(c.field, c.after),
                 }
                 for c in record.changes
             ],
             "summary": mask_output(_strip_unsafe(record.summary)),
+            # create 전용 키 — 추가 전용(기존 op 와이어 불변). 표시 사본은 코드 산물.
+            **({"preview": preview} if preview is not None else {}),
         },
     )
 
@@ -948,6 +1109,69 @@ async def _apply_stream(
     yield _done("replace")  # diff 카드 = 우측 패널 교체
 
 
+# ── [#506] 등록 초안 대기 게이트 헬퍼 (입구 ①.8) ─────────────────────────────────
+
+# 취소 코드 단축경로 — 정형 발화만(오독 위험 최소 집합). 그 외 취소 의도는 게이트 LLM 이
+# 판정한다. 승인에는 단축경로가 없다 — 위험 비대칭(FE 계약 §5.7, 발화 ≠ 동의 [HARD]).
+_CANCEL_MESSAGES = frozenset(
+    {"취소", "취소해줘", "취소할래", "취소요", "등록취소", "초안취소", "등록 취소", "초안 취소"}
+)
+
+
+def _is_cancel_message(message: str) -> bool:
+    return " ".join(message.strip().rstrip(".!~").split()) in _CANCEL_MESSAGES
+
+
+async def _classify_pending_utterance(message: str) -> str | None:
+    """초안 대기 중 발화 4분류(modify/approve/cancel/offtopic) — 실패는 None(폴백).
+
+    구조화 출력 단발 호출 — 오분류해도 비파괴적이다: approve/offtopic 은 안내만 하고
+    초안을 유지하며, modify 오분류는 새 초안(이전 무효화)으로 이어질 뿐이다.
+    """
+    settings = get_settings()
+    try:
+        model = init_seller_model("draft_gate").with_structured_output(PendingDraftAction)
+        with trace_span("llm.seller.draft_gate", "llm", _llm_metadata("draft_gate")):
+            result = await asyncio.wait_for(
+                model.ainvoke(
+                    [
+                        SystemMessage(content=PENDING_DRAFT_GATE_PROMPT),
+                        HumanMessage(content=message),
+                    ]
+                ),
+                timeout=settings.seller_pending_gate_timeout_s,
+            )
+    except LLMNotConfigured:
+        raise
+    except Exception:
+        logger.warning("pending draft gate 판정 실패 — 일반 흐름 폴백", exc_info=True)
+        return None
+    return result.action if isinstance(result, PendingDraftAction) else None
+
+
+async def _cancel_pending_stream(
+    request: SellerChatRequest,
+    context: SellerContext,
+    pending: draft_session.PendingCreate,
+    *,
+    request_id: str | None = None,
+) -> AsyncIterator[str]:
+    """채팅 '취소' 경로 — 초안 무효화 + 세션 폐기 + 카드 닫기(FE 계약 §5.7 취소 행).
+
+    패널은 replace 다 — FE 가 카드를 닫고 초안 모드를 해제한다(keep 이면 죽은 카드가
+    남는다). LLM 0회.
+    """
+    del request_id  # 오류 경로 없음 — 시그니처 일관성 유지용
+    _set_trace_lane("product")
+    yield _meta("product")
+    await invalidate_draft(pending.draft_id)
+    await draft_session.clear_pending(context, request.thread_id)
+    text = "등록 초안을 취소했습니다. 새로 등록하시려면 사진을 다시 첨부해 주세요."
+    await seller_thread.record_turn(context, request.thread_id, request.message, text)
+    yield _token(text)
+    yield _done("replace")
+
+
 async def _confirm_stream(
     request: SellerChatRequest,
     context: SellerContext,
@@ -1000,6 +1224,12 @@ async def _confirm_stream(
         )
         return
     await seller_thread.record_turn(context, request.thread_id, "(초안 승인)", outcome.text)
+    # [#506] 등록(create) 승인 완료 — 대기 세션이 이 draftId 를 가리키면 해제한다
+    # (수정·발송 confirm 이 남의 등록 대기를 지우지 않게 draftId 대조).
+    if outcome.status == "executed":
+        pending_create = await draft_session.load_pending(context, request.thread_id)
+        if pending_create is not None and pending_create.draft_id == request.draft_id:
+            await draft_session.clear_pending(context, request.thread_id)
     yield _token(outcome.text)
     # 실제 쓰기(executed)만 대시보드·목록 재조회 유발 — 나머지는 변경 없음.
     yield _done("refresh" if outcome.status == "executed" else "keep")
@@ -1076,6 +1306,67 @@ async def _seller_stream(
                 yield line
             return
         await seller_period_confirm.clear_pending(context, request.thread_id)
+
+    # ①.8 등록 초안 대기 게이트 (#506, FE 계약 §5.7) — ②(scope)보다 앞이어야 한다:
+    # "취소"·"상품명 짧게" 같은 초안 문맥 발화가 scope 필터에 걸릴 수 있다.
+    # 대기가 있을 때만 돌린다 — 대기 없는 발화를 게이트가 오인할 여지를 구조적으로 없앤다.
+    pending_create = await draft_session.load_pending(context, request.thread_id)
+    if pending_create is not None:
+        # 새 사진 첨부는 판정 없이 수정 턴(대표사진 교체 + 재분석)이다 — FE 계약 §3.4.
+        if request.image_urls:
+            async for line in _product_stream(
+                request, context, request_id=request_id, pending=pending_create
+            ):
+                yield line
+            return
+        if _is_cancel_message(request.message):
+            # 취소는 코드 단축경로 — 위험이 비대칭이라(§5.7) LLM 판정을 기다리지 않는다.
+            async for line in _cancel_pending_stream(
+                request, context, pending_create, request_id=request_id
+            ):
+                yield line
+            return
+        action = await _classify_pending_utterance(request.message)
+        if action == "cancel":
+            async for line in _cancel_pending_stream(
+                request, context, pending_create, request_id=request_id
+            ):
+                yield line
+            return
+        if action == "modify":
+            async for line in _product_stream(
+                request, context, request_id=request_id, pending=pending_create
+            ):
+                yield line
+            return
+        if action == "approve":
+            # 텍스트 승인은 받지 않는다(발화 ≠ 동의 [HARD]) — 버튼 안내만, 초안 유지.
+            _set_trace_lane("product")
+            yield _meta("product")
+            yield _token(
+                "등록은 안전을 위해 카드의 [등록] 버튼으로만 진행됩니다. "
+                "오른쪽 초안 카드에서 [등록]을 눌러주세요. 수정할 내용이 있으면 말씀해 주세요."
+            )
+            yield _done("keep")
+            return
+        if action == "offtopic":
+            # 딴 주제 차단 — 초안 유지 + 탈출구 문안(새로고침으로 카드를 잃은 경우 대비).
+            _set_trace_lane("product")
+            yield _meta("product")
+            yield _token(
+                "진행 중인 등록 초안이 있습니다. 먼저 오른쪽 카드에서 등록하거나 "
+                "취소해주세요. 화면에 카드가 보이지 않으면 채팅에 '취소'라고 입력해주세요."
+            )
+            yield _done("keep")
+            return
+        # 판정 실패(None) — 초안은 유지한 채 일반 흐름으로 낙하한다(비파괴 폴백).
+
+    # [#506] 이미지 첨부 턴은 supervisor 를 거치지 않고 product 레인 직행 — 사진을 실은
+    # 발화의 목적지는 등록 초안뿐이고, 라우팅 LLM 은 이미지를 볼 수 없어 판정 근거도 없다.
+    if request.image_urls:
+        async for line in _product_stream(request, context, request_id=request_id):
+            yield line
+        return
 
     # ② scope 선차단 (LLM 0회) — 전 레인 공통 코드 경로. 도메인 밖 = 대화(패널 유지).
     # 거절 턴은 스레드에 기록하지 않는다 — 도메인 밖 장문이 맥락을 오염시키지 않게.

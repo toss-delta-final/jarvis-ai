@@ -9,6 +9,20 @@
 
 ## [Unreleased]
 
+### Added
+- **#506 — 이미지 기반 상품 등록 초안** (api-spec §3.2, v0.30.0 — 추가 전용, 기존 op 와이어
+  불변). 판매자가 채팅에 상품 사진을 첨부하면(`imageUrls`, 새로 첨부한 턴에만) vision 이 1회
+  분석해 등록 초안(`draft{op:"create"}`)을 만들고, FE 등록 미리보기 카드용 **`preview{}`**(11키
+  고정·null 계약·서버 포맷 완료·`sections` source/warning/note)를 함께 싣는다. 카테고리는 BE
+  조회 없이 **로컬 스냅샷**(`app/data/seller_categories.json`, 파일 교체=배포)이 후보 검색·
+  `categoryPath` 변환·검증의 단일 원천이고, LLM 은 주입된 후보 id 중에서만 고른다(계약값은
+  코드). 초안 대기 중 발화는 입구 게이트가 분류한다 — 수정→새 draftId 발급+**이전 draft
+  무효화**(옛 카드 confirm 차단), 승인 텍스트→버튼 안내(발화≠동의 유지), "취소"→폐기(LLM 0회
+  단축경로), 딴 주제→차단 안내(초안 유지). create 의 `image_url` 금지를 해제하고 confirm 실행이
+  I-10 에 `image_url`·카테고리 쓰기 값(`seller_category_write_mode`, 기본 leaf — **BE 정렬 1건
+  잔여**)을 전달한다. 신규 모듈 `vision/category_catalog/preview/draft_session`, 수신 검증
+  (canonical URL ≤500자·presigned 거부)은 요청 스키마+hitl 이중 방어.
+
 ### Fixed
 - **#494 — I-31 집계 모드가 `rating` 필터를 버려 저평점 상품을 틀리게 지목하던 문제** (api-spec
   §4.20, 계약 무변경 — 코드가 확정 명세를 못 따라간 단방향 드리프트). `SpringClient.get_review_stats`
