@@ -114,7 +114,7 @@ color_synonym_seed.build`, I-17 수확 → LLM 배정 → 검증)이 만든 검�
 정본은 **두 파일**로 나뉜다 — 하나는 손으로 유지하고, 하나는 그로부터 파생된다.
 
 - **`color_synonyms_review.json`**(사람이 유지) — 1·2차 검수 결과. `approved`(승인, `{term,
-  canonical, note}`)와 `rejected`(반려, `{term, note}`) 두 배열만 담는다. 지금은 93행이
+  canonical, note}`)와 `rejected`(반려, `{term, note}`) 두 배열만 담는다. 지금은 90행이
   승인됐고 40행은 반려됐다(`db/catalog/seed/color_synonyms.json` 의 789행 중). 수식어 결합,
   복합색, 데님 밝기 축, 판단이 갈린 재질·상품명 조각은 `pending_review`로 남긴다.
 - **`color_synonyms.json`**(생성물, 789행) — `scripts/derive_color_synonym_seed.py` 가
@@ -208,11 +208,11 @@ seed_from_file(
 
 ## 행 수·지문
 
-- 총 **789행**, 그중 승인(`approved`) **93행**(앵커 22 + 동의어 71), 반려(`rejected`) **40행**,
-  나머지 656행은 `pending_review`(2026-08-10 2차 검수 기준).
+- 총 **789행**, 그중 승인(`approved`) **90행**(앵커 19 + 동의어 71), 반려(`rejected`) **40행**,
+  나머지 659행은 `pending_review`(2026-08-10 2차 검수 기준).
 - codepoint sha256 지문(term·canonical·status·provenance·doc_count 전 필드,
   `scripts/derive_color_synonym_seed.py::row_fingerprint`):
-  `5f81f4ee1a50982da93cfd6f52a274512ab95eba602d01dcaf6d65ccf94be5c1`
+  `37d4aeffe1b62e1163b89f17af6535256ac9a972070e8a853834a5df2607ab4e`
 - 사전이 갱신되면(재수확 또는 검수 확대) **`tests/unit/test_color_synonym_seed_data.py`** 의
   `EXPECTED_ROW_COUNT`/`EXPECTED_CODEPOINT_SHA256`(및 관련 승인 수 상수)를 함께 갱신한다.
   한쪽만 고치면 다른 쪽 테스트가 새 정본을 옛 지문과 비교해 실패한다.

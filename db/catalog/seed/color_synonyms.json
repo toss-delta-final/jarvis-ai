@@ -1745,8 +1745,8 @@
   {
     "term": "로즈골드",
     "canonical": "로즈골드",
-    "status": "approved",
-    "provenance": "human",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
     "doc_count": 28
   },
   {
@@ -3257,8 +3257,8 @@
   {
     "term": "아이보리",
     "canonical": "아이보리",
-    "status": "approved",
-    "provenance": "human",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
     "doc_count": 223
   },
   {
@@ -4314,8 +4314,8 @@
   {
     "term": "카키",
     "canonical": "카키",
-    "status": "approved",
-    "provenance": "human",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
     "doc_count": 196
   },
   {

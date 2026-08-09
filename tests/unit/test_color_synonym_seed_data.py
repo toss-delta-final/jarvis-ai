@@ -23,8 +23,8 @@ SQL_PATH = REPO_ROOT / "db" / "catalog" / "init" / "05_color_synonyms_seed.sql"
 # 단언이 된다. 이 값은 이 이슈에서 실제로 계산·재현한 codepoint sha256 이다
 # (test_category_seed_data.py 관례, §4.7).
 EXPECTED_ROW_COUNT = 789
-EXPECTED_APPROVED_COUNT = 93
-EXPECTED_CODEPOINT_SHA256 = "5f81f4ee1a50982da93cfd6f52a274512ab95eba602d01dcaf6d65ccf94be5c1"
+EXPECTED_APPROVED_COUNT = 90
+EXPECTED_CODEPOINT_SHA256 = "37d4aeffe1b62e1163b89f17af6535256ac9a972070e8a853834a5df2607ab4e"
 
 _VALID_STATUSES = frozenset({"pending_review", "approved", "rejected"})
 _VALID_PROVENANCES = frozenset({"seed_llm_assignment", "batch_embedding_unverified", "human"})
@@ -136,12 +136,9 @@ def test_anchors_are_self_canonical() -> None:
         "오렌지",
         "스카이블루",
         "베이지",
-        "아이보리",
-        "카키",
         "차콜",
         "크림",
         "와인",
-        "로즈골드",
     }
     assert anchor_terms == expected_anchors
 
