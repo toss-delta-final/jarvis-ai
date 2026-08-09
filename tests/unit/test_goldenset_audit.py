@@ -16,6 +16,7 @@ from evals.goldenset.refresh_manifest import HASH_EXCLUDED_PATHS
 from evals.goldenset.schema import GoldenCase
 
 ROOT = Path("evals/goldenset")
+EVALS_ROOT = Path("evals")
 
 
 def test_manifest_file_hashes_match_committed_files() -> None:
@@ -35,6 +36,38 @@ def test_manifest_covers_every_non_runtime_goldenset_file() -> None:
         if path.is_file() and path.name != "manifest.json" and "__pycache__" not in path.parts
     }
     assert actual - HASH_EXCLUDED_PATHS == {entry["path"] for entry in manifest["files"]}
+
+
+def _nested_dataset_references(value: object):
+    if isinstance(value, dict):
+        if {"datasetVersion", "datasetHash"} <= value.keys():
+            yield value["datasetVersion"], value["datasetHash"]
+        for nested in value.values():
+            yield from _nested_dataset_references(nested)
+    elif isinstance(value, list):
+        for nested in value:
+            yield from _nested_dataset_references(nested)
+
+
+def test_current_goldenset_baselines_reference_current_manifest_hash() -> None:
+    """현행 datasetVersion baseline은 manifest와 같은 datasetHash를 가리켜야 한다."""
+    manifest = json.loads((ROOT / "manifest.json").read_text())
+    current_version = manifest["datasetVersion"]
+    current_hash = manifest["datasetHash"]
+    checked: list[tuple[Path, str]] = []
+
+    for path in EVALS_ROOT.glob("**/baselines/**/*.json"):
+        for version, recorded_hash in _nested_dataset_references(json.loads(path.read_text())):
+            if version == current_version:
+                checked.append((path, recorded_hash))
+
+    assert checked, f"no baseline claims current datasetVersion {current_version}"
+    assert not [
+        f"{path}: datasetVersion={current_version} datasetHash={recorded_hash} "
+        f"(manifest={current_hash})"
+        for path, recorded_hash in checked
+        if recorded_hash != current_hash
+    ]
 
 
 def test_committed_dataset_has_required_counts_and_slice_coverage() -> None:

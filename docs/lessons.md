@@ -13,6 +13,15 @@
 
 ---
 
+## [2026-08-09] 유닛 테스트는 로컬 BE가 살아 있어도 TCP를 열면 안 된다
+- 증상: 로컬 Spring BE가 8080에서 실행 중이고 `.env`의 내부 토큰이 채워지면 재구매·완화 유닛
+  테스트가 실제 응답을 받아 CI와 다른 단언 결과를 냈다.
+- 원인: PG 연결은 `tests/unit/conftest.py`에서 구조적으로 격리했지만, httpx/anyio가 만드는 TCP
+  연결에는 같은 차단 경계가 없었고 `INTERNAL_API_TOKEN`도 공통 환경 초기화에서 빠져 있었다.
+- 규칙: 유닛 테스트는 `tests/unit/` 범위에서만 실제 TCP를 `ConnectionRefusedError`로 거부하고,
+  로컬 서비스·토큰 유무와 무관하게 CI의 연결 실패 degrade 경로를 검증한다.
+- 관련: `tests/conftest.py` · `tests/unit/conftest.py` · `tests/unit/test_network_isolation.py` · #474
+
 ## [2026-08-09] datasetHash 규칙을 바꾸면 연결된 baseline을 즉시 재생성한다
 - 증상: `audit/holdout_runs.jsonl`을 해시 대상에서 제외한 뒤 datasetHash는 바뀌었지만,
   `dev-v2.3`와 `trivial_empty` baseline은 이전 hash를 계속 가리켰다.
