@@ -547,8 +547,10 @@ def annotate_axis_metrics(
     에서 arm 의 repeat 1·2 가 기준선의 *다른 샘플* 과 비교돼 LLM 지터가 프로필 유출로 계상된다.
     같은 함정을 `activation._by_pair_key` 가 이미 명시해 뒀다 — 두 지표가 같은 규약을 쓴다.
 
-    기준선에 짝이 없는 행(예산 소진으로 기준선이 잘린 경우)은 `[]` 가 아니라 `None` 이다.
-    `[]` 는 "유출 없음"으로 읽혀 **측정 중단이 안전 신호로 둔갑**한다.
+    측정되지 않은 행 — 기준선에 짝이 없거나 이 행 자신이 예산 소진 스텁인 경우 — 은 `[]` 가
+    아니라 `None` 이다. `[]` 는 "유출 없음"으로 읽혀 **측정 중단이 안전 신호로 둔갑**한다.
+    미측정 행은 `comparison.json` 의 `axisLeakageUnmeasured` 로 드러난다. 의도 모순도 같은
+    행에서 `None` 이 되므로 그 목록이 두 지표의 공백을 함께 가리킨다.
 
     **기준선에서 예산 소진 행을 걸러내는 이유**(PR #536 리뷰): `run_repeats` 는 예산이 소진된
     자리에 행을 없애는 게 아니라 `extractedFilters={}` 인 스텁을 남긴다(`repeats.py:108-120`).
@@ -564,15 +566,24 @@ def annotate_axis_metrics(
     }
     for result in results_by_arm.values():
         for row in result["caseResults"]:
+            # 기준선뿐 아니라 **이 행 자신**도 측정됐는지 본다. 스텁의 `extractedFilters` 는 `{}`
+            # 라 `arm_axes - baseline_axes` 가 늘 비고, 그러면 `[]`(유출 없음)로 기록된다. 게다가
+            # `[]` 는 `axisLeakage` 에서 falsy 로 빠지고 `None` 이 아니라 `axisLeakageUnmeasured`
+            # 에도 안 잡혀 **두 목록 어디에도 남지 않는다**. `DEFAULT_LIVE_ARMS` 가 기준선을 앞에
+            # 두므로 예산 소진 시 기준선은 완주하고 뒤 arm 만 잘리는 이 조합이 오히려 기본형이다.
+            measured = isinstance(row.get("metrics"), dict)
             extracted = row.get("extractedFilters") or {}
             key = (str(row["caseId"]), int(row.get("repeat", 0)))
             row["filterAxisLeakage"] = (
                 filter_axis_leakage(baseline_filters[key], extracted)
-                if key in baseline_filters
+                if measured and key in baseline_filters
                 else None
             )
-            row["intentContradictionAxes"] = explicit_intent_contradictions(
-                expected_filters_by_case[row["caseId"]], extracted
+            # 빈 `extracted` 는 "모순 없음"으로 계산되므로 같은 둔갑이 일어난다.
+            row["intentContradictionAxes"] = (
+                explicit_intent_contradictions(expected_filters_by_case[row["caseId"]], extracted)
+                if measured
+                else None
             )
 
 

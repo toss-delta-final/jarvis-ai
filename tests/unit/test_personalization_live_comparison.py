@@ -181,6 +181,41 @@ def test_axis_leakage_ignores_budget_exceeded_baseline_stubs() -> None:
     assert _leaked_axes(results_by_arm["guest"]) == [None]
 
 
+def test_axis_metrics_treat_the_arms_own_budget_stub_as_unmeasured() -> None:
+    """[PR #536 리뷰] 기준선이 아니라 **arm 자신**이 스텁일 때도 "안 재봤다"여야 한다.
+
+    스텁의 `extractedFilters` 는 `{}` 라 `arm_axes - baseline_axes` 가 항상 비고, 그러면 결과가
+    `[]`(유출 없음)로 기록된다. 게다가 `[]` 는 `axisLeakage` 에서 falsy 로 빠지고 `None` 이
+    아니라 `axisLeakageUnmeasured` 에도 안 잡혀 **두 목록 어디에도 남지 않는다.**
+
+    이 조합이 기준선 쪽 소진보다 흔하다 — `DEFAULT_LIVE_ARMS` 가 기준선을 앞에 두므로 예산이
+    소진되면 기준선은 이미 완주해 있고 뒤 arm 만 잘린다. 의도한 안전 배치가 이 경로를 기본형으로
+    만든 셈이다. 빈 `extracted` 가 "모순 없음"으로 계산되는 `intentContradictionAxes` 도 같다.
+    """
+    results_by_arm = {
+        "guest": _results([_row("c1", 0, {"category": "이어폰"})]),
+        "member_no_profile": _results([_row("c1", 0, {"category": "이어폰"})]),
+        "clean_rerank_only": _results([_budget_exceeded_row("c1", 0)]),
+    }
+    personalization_cli.annotate_axis_metrics(
+        results_by_arm,
+        baseline_arm="member_no_profile",
+        expected_filters_by_case={"c1": {"category": "노트북"}},
+    )
+    stub = results_by_arm["clean_rerank_only"]["caseResults"][0]
+    assert stub["filterAxisLeakage"] is None  # `[]`(유출 없음)로 기록되면 안 된다
+    assert stub["intentContradictionAxes"] is None  # `[]`(모순 없음)로도 안 된다
+
+    comparison = _build(
+        arm_names=["guest", "member_no_profile", "clean_rerank_only"],
+        results_by_arm=results_by_arm,
+    )
+    # 조용히 사라지지 않고 미측정 목록에 남는다.
+    assert comparison["axisLeakageUnmeasured"]["clean_rerank_only"] == [
+        {"caseId": "c1", "repeat": 0}
+    ]
+
+
 def test_unmeasured_axis_leakage_is_reported_separately_from_no_leakage() -> None:
     """[PR #536 리뷰] `None`(측정 못 함)이 `[]`(유출 없음)과 같이 목록에서 사라지면 안 된다.
 
