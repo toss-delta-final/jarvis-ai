@@ -78,6 +78,24 @@
   - **코드 변경 0건** — 그래프 튜너블·라우트가 `app/` 에 아직 없다(구현은 #150).
 
 ### Fixed
+- **#511 — 상품 "삭제"를 여전히 숨김(`HIDDEN`)으로 다루던 문제** (api-spec §3.2·§4.5·§4.8, v0.29.7).
+  BE 가 2026-08-05 에 `ProductStatus.DELETED` 를 신설해(02 D41 · 정본 Notion I-12) 숨김과 삭제를
+  갈랐는데, 사본은 v0.29.4(#472)가 §4.5 표만 맞추고 §3.2 HITL 서술을 놓쳤으며 **코드는 전혀
+  손대지 않아 `DELETED` 가 `app/` 에 0회 등장**했다. 세 갈래로 새고 있었다. ① I-12 409
+  `ALREADY_DELETED`·I-11 409 `PRODUCT_DELETED` 가 `SpringUnavailableError` 로 뭉개져 **"안 되는
+  일"이 "일시 장애, 재시도해 주세요"로** 안내됐다 — HITL 은 재confirm 이 가능해 판매자가 무한
+  재시도에 갇힌다(같은 논리로 I-30 에는 이미 전용 예외가 있었다). ② HITL 삭제 초안이 `status:
+  ON_SALE→HIDDEN` 으로 고정돼 diff 카드·결과 문구가 삭제를 **"숨김"이라 안내** — 되돌릴 수 있는
+  조작으로 오인한 채 승인하게 된다. ③ 그 고정값 때문에 **이미 숨겨둔 상품의 삭제가 stale 로
+  차단**됐다(`before="ON_SALE"` vs 실제 `HIDDEN`) — BE 가 D41 로 열어준 "숨겼다가 나중에 지운다"
+  흐름이 AI 쪽에서 다시 막히던, 구 `ALREADY_HIDDEN` 과 같은 증상. 전용 예외 2종(`ProductAlreadyDeleted`·
+  `ProductDeletedNotEditable`, `SpringUnavailableError` 하위 아님)을 두고 `error_code_map` 으로
+  연결했으며, delete 초안은 `<조회값>→DELETED` 로 바꾸고 `status` 허용값을 op 별로 갈라
+  (`DELETED` 는 delete 전용) I-10·I-11 본문 유출을 막았다. 삭제 op 는 `status` 를 stale 비교하지
+  않는다 — `ON_SALE`·`HIDDEN` 어느 쪽에서든 정상 전이다. **I-17(§4.8)은 무변경** — Spring 이
+  `!= ON_SALE` 을 전부 `"HIDDEN"` 으로 싣는 것을 BE 구현(`ProductChangesResponse.Item.hidden()`)으로
+  확인했고, status 를 3값으로 넓히면 fail-closed 규약과 충돌해 정상 페이지가 전량 실패한다는
+  사유를 스키마·명세에 남겼다. 와이어 계약 불변 — 바뀌는 것은 AI 소비측 처리다.
 - **#496 — I-31 `sort` 어휘 개명(`rating` → `ratingAsc`) 미반영으로 대표 질문이 400 으로 깨지던 문제**
   (api-spec §4.20, v0.29.6). 2026-08-06 BE 협의가 구 안을 폐기했는데 사본이 갱신되지 않았고
   (v0.29.4/#472 전수 대조가 §4.20 을 "확정·구현 완료"로 표시하면서도 이 행은 놓쳤다), 그 문구가
@@ -151,7 +169,7 @@
   와이어 계약 무변경.
 
 ### Added
-- **#406 — 구매자 `progress`에 `retrying` stage를 추가** (api-spec §3.1, v0.32.3). I-1 검색이 재시도 가능한 실패 뒤 실제 다음 시도에 들어갈 때만 즉시 내보내며, 기본 `spring_max_retries=0`(#394 한시 조치)에서는 기존 인라인 검색 경로를 그대로 유지한다.
+- **#406 — 구매자 `progress`에 `retrying` stage를 추가** (api-spec §3.1, v0.32.4). I-1 검색이 재시도 가능한 실패 뒤 실제 다음 시도에 들어갈 때만 즉시 내보내며, 기본 `spring_max_retries=0`(#394 한시 조치)에서는 기존 인라인 검색 경로를 그대로 유지한다.
 - **#476 — 스트림 레지스트리를 워커 간 공유로 올릴 수 있게 했다** (`STREAM_REGISTRY_BACKEND=shared`,
   기본값은 종전 `memory` — **출하 동작 무변경**, 계약 무변경). §2.9(a) 활성 슬롯·scope fence·
   scope idle 대기를 **셋 다** pg-profile 테이블 2종(`active_streams`·`stream_scope_fences`)으로
