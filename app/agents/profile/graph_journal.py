@@ -25,17 +25,25 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass, field
+from typing import Literal, get_args
 
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
 from app.core.config import get_settings
+from app.core.observability import identifier_fingerprint
 from app.core.pg_resilience import hardened_pg_conninfo, run_with_query_timeout
 
 logger = logging.getLogger(__name__)
 
 # DDL 직렬화 키 — 세 테이블을 한 트랜잭션에서 만들므로 잠금도 하나다.
 SCHEMA_LOCK_KEY = "schema:profile_graph:lifecycle"
+
+# 감사 액션 어휘 (SPEC §5.4). **`edgeRestore` 는 없다** — #499 가 I-35(복구)를 폐기하고 개별
+# 삭제를 즉시 물리 삭제로 바꿨다. DB CHECK 와 이 튜플이 같은 어휘를 강제해야 dev 폴백에서
+# 통과한 값이 운영에서 거부되는 일이 안 생긴다.
+GraphAuditAction = Literal["edgeUpdate", "edgeSuppress", "graphReset", "personalizationToggle"]
+AUDIT_ACTIONS: tuple[str, ...] = get_args(GraphAuditAction)
 
 
 class LedgerRequestMismatch(Exception):
@@ -571,3 +579,127 @@ def _fallback_table(name: str) -> dict:
     if _fallback is None:
         _fallback = _blank_fallback()
     return _fallback[name]
+
+
+# ── 변경 감사 (REQ-PGRAPH-080~082) ────────────────────────────────────────────
+#
+# 남기는 것은 *무엇을* 지웠는지가 아니라 *언제·누가(지문)* 지웠는지다. 전체 초기화가 모든
+# 개인화 데이터를 지워도 이 테이블만은 남으므로(REQ-PGRAPH-062), 여기에 원문이 있으면
+# "삭제했다"는 약속 자체가 거짓이 된다.
+#
+# **호출 시점이 계약이다** — 감사 행은 문서 쓰기가 성공한 **뒤에만** 만든다. 상태를 바꾸지
+# 않은 요청(404·409·no-op·재전송)은 남기지 않는다(REQ-PGRAPH-080).
+
+
+@dataclass(frozen=True)
+class AuditRecord:
+    """`GraphAuditRecord`(SPEC §5.4)의 저장 형태. **[HARD] 와이어에 노출하지 않는다.**"""
+
+    request_id: str
+    actor_fp: str
+    action: str
+    graph_version_before: str
+    graph_version_after: str
+    edge_id_before: str | None = None
+    edge_id_after: str | None = None
+    predicate: str | None = None
+    object_fp: str | None = None
+
+
+def _fingerprint(value: str | None) -> str | None:
+    """peppered HMAC — 값이 없으면 지문도 없다.
+
+    빈 값을 지문화하면 "대상 없음"(전체 초기화·중지 토글)과 "라벨이 빈 문자열인 대상"이 같은
+    값이 되어 감사에서 둘을 구분할 수 없다.
+    """
+    if not value:
+        return None
+    return identifier_fingerprint(value)
+
+
+async def record_audit(
+    *,
+    user_id: int,
+    request_id: str,
+    action: str,
+    graph_version_before: str,
+    graph_version_after: str,
+    edge_id_before: str | None = None,
+    edge_id_after: str | None = None,
+    predicate: str | None = None,
+    object_label: str | None = None,
+) -> None:
+    """변경 감사 1행을 남긴다 — 주체·대상은 지문으로만.
+
+    `object_label` 은 **여기서 즉시 지문화되고 원문은 어디에도 저장되지 않는다.** 호출부가
+    라벨을 넘기는 이유는 지문을 만들기 위해서지 기록하기 위해서가 아니다.
+    """
+    if action not in AUDIT_ACTIONS:
+        raise ValueError(f"unknown graph audit action: {action}")
+
+    record = AuditRecord(
+        request_id=request_id,
+        # raw userId 금지(REQ-PGRAPH-081) — 로그·관측 경로와 같은 지문 함수를 쓴다.
+        actor_fp=identifier_fingerprint(str(user_id)) or "",
+        action=action,
+        graph_version_before=graph_version_before,
+        graph_version_after=graph_version_after,
+        edge_id_before=edge_id_before,
+        edge_id_after=edge_id_after,
+        predicate=predicate,
+        object_fp=_fingerprint(object_label),
+    )
+
+    pool = await _get_pool()
+    if pool is None:
+        _fallback_table("audit").setdefault(record.actor_fp, []).append(record)
+        return
+
+    async def _run() -> None:
+        async with pool.connection() as conn:
+            await conn.execute(
+                """
+                INSERT INTO profile_graph_audit
+                    (request_id, actor_fp, action, edge_id_before, edge_id_after,
+                     predicate, object_fp, graph_version_before, graph_version_after)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    record.request_id,
+                    record.actor_fp,
+                    record.action,
+                    record.edge_id_before,
+                    record.edge_id_after,
+                    record.predicate,
+                    record.object_fp,
+                    record.graph_version_before,
+                    record.graph_version_after,
+                ),
+            )
+
+    await run_with_query_timeout(_run())
+
+
+async def list_audit(*, user_id: int) -> list[AuditRecord]:
+    """한 사용자의 감사 행을 오래된 순으로 — 조회 대상은 **지문**이다.
+
+    `actor_fp` 로 찾으므로 pepper 가 회전하면 과거 행을 못 찾는다. 감사는 사후 대조용이고
+    재전송 판정처럼 정확성이 걸린 경로가 아니라 그 트레이드오프를 받는다(원장이 raw userId 를
+    쓰는 이유가 그 반대편이다 — `derived_key` 주석 참조).
+    """
+    actor_fp = identifier_fingerprint(str(user_id)) or ""
+    pool = await _get_pool()
+    if pool is None:
+        return list(_fallback_table("audit").get(actor_fp, []))
+
+    async def _run() -> list[AuditRecord]:
+        async with pool.connection() as conn:
+            cur = await conn.execute(
+                "SELECT request_id, actor_fp, action, graph_version_before, graph_version_after, "
+                "       edge_id_before, edge_id_after, predicate, object_fp "
+                "FROM profile_graph_audit WHERE actor_fp = %s ORDER BY id",
+                (actor_fp,),
+            )
+            return [AuditRecord(*row) for row in await cur.fetchall()]
+
+    return await run_with_query_timeout(_run())

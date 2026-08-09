@@ -16,6 +16,7 @@ import uuid
 import pytest
 
 from app.agents.profile import graph_journal
+from app.core.observability import identifier_fingerprint
 
 pytestmark = pytest.mark.integration
 
@@ -168,3 +169,60 @@ async def test_same_key_different_body_is_not_replayed_on_real_pg(pool, key: str
     assert await graph_journal.lookup(key, request_fp="fp-avoids") is not None
     with pytest.raises(graph_journal.LedgerRequestMismatch):
         await graph_journal.lookup(key, request_fp="fp-likes")
+
+
+# ── 변경 감사 — 원문이 DB 에 닿지 않는다는 것을 실제 컬럼으로 확인한다 ──
+
+
+@pytest.fixture
+def audit_user() -> int:
+    """테스트마다 새 사용자 — 감사 테이블은 영구 보존이라 재실행분이 쌓인다."""
+    return 900_000_000 + uuid.uuid4().int % 1_000_000
+
+
+async def test_no_audit_column_holds_the_raw_user_id_or_label(pool, audit_user: int) -> None:
+    """**저장된 행의 모든 컬럼을 훑어** 원문이 없음을 단언한다 (REQ-PGRAPH-081 [HARD]).
+
+    유닛은 파이썬 객체를 검사하지만, 실제 위험은 "DB 에 무엇이 적혔나"다. 직렬화 과정에서
+    필드가 하나 새거나 새 컬럼이 추가되면 여기서만 잡힌다. 감사는 전체 초기화로도 보존되므로
+    (REQ-PGRAPH-062) 여기 남은 원문은 "지웠다"는 약속을 영구히 거짓으로 만든다.
+    """
+    label = f"소니-{uuid.uuid4().hex[:6]}"
+    await graph_journal.record_audit(
+        user_id=audit_user,
+        request_id="req-integration",
+        action="edgeSuppress",
+        graph_version_before="g42",
+        graph_version_after="g43",
+        edge_id_before="e_old",
+        predicate="prefers",
+        object_label=label,
+    )
+
+    actor_fp = identifier_fingerprint(str(audit_user))
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "SELECT * FROM profile_graph_audit WHERE actor_fp = %s", (actor_fp,)
+        )
+        rows = await cur.fetchall()
+
+    assert len(rows) == 1
+    rendered = " ".join(str(value) for value in rows[0])
+    assert label not in rendered
+    assert str(audit_user) not in rendered
+
+
+async def test_audit_rows_accumulate_in_order(pool, audit_user: int) -> None:
+    """같은 사용자의 변경 이력이 순서대로 쌓인다 — 사후 대조가 성립하려면 순서가 있어야 한다."""
+    for version in ("g43", "g44"):
+        await graph_journal.record_audit(
+            user_id=audit_user,
+            request_id=f"req-{version}",
+            action="edgeUpdate",
+            graph_version_before="g42",
+            graph_version_after=version,
+        )
+
+    rows = await graph_journal.list_audit(user_id=audit_user)
+
+    assert [row.graph_version_after for row in rows] == ["g43", "g44"]
