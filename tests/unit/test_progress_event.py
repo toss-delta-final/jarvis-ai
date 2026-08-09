@@ -912,7 +912,7 @@ def test_progress_events_enabled_succeeds_startup_in_jwks_mode() -> None:
 
 
 def test_progress_events_disabled_succeeds_startup_in_jwks_mode() -> None:
-    """가드는 정상 운영 설정(플래그 off)까지 막지 않는다."""
+    """progress 롤백은 재시도 0회와 짝지으면 jwks 모드에서 정상 기동한다."""
     from app.core.config import Settings
 
     Settings(
@@ -921,8 +921,27 @@ def test_progress_events_disabled_succeeds_startup_in_jwks_mode() -> None:
         pii_hash_pepper="p",
         internal_api_token="tok",
         google_api_key="k",
+        spring_max_retries=0,
         progress_events_enabled=False,
     )  # ok
+
+
+def test_progress_events_disabled_rejects_startup_with_retries_enabled() -> None:
+    """progress off + 재시도 1회는 미룬 I-1 직렬 12s로 first-token 가드가 거절한다."""
+    import pytest
+    from pydantic import ValidationError
+    from app.core.config import Settings
+
+    with pytest.raises(ValidationError, match="STREAM_FIRST_TOKEN_TIMEOUT_S"):
+        Settings(
+            auth_mode="jwks",
+            jwks_url="http://x",
+            pii_hash_pepper="p",
+            internal_api_token="tok",
+            google_api_key="k",
+            spring_max_retries=1,
+            progress_events_enabled=False,
+        )
 
 
 def test_progress_events_enabled_succeeds_startup_in_staging_even_with_dev_auth() -> None:

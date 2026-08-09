@@ -1221,8 +1221,8 @@ async def stream_recommendation(
         and settings.spring_max_retries > 0
         and not suppress_deferred_search_retry
     )
-    # [#406 D1] 기본값(#394)에서는 이 신호가 물리적으로 발화하지 않는다. 모든 추천 턴을 task로
-    # 옮기면 취소·ContextVar·trace 의미가 불필요하게 바뀌므로, 가능한 턴만 큐로 드레인한다.
+    # [#406 D1] 기본값은 재시도를 켜므로 이 경로가 기본이다. 재시도를 끈 배포와 미룬 턴 억제에서는
+    # 기존 인라인 경로를 유지해 취소·ContextVar·trace 의미를 불필요하게 바꾸지 않는다.
     if not retry_progress_possible:
         with (
             spring_client.suppress_search_retry()

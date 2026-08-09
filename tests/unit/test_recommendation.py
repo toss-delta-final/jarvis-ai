@@ -2446,13 +2446,26 @@ async def test_search_retry_can_be_disabled(monkeypatch: pytest.MonkeyPatch) -> 
     assert len(calls) == 1
 
 
-async def test_search_retry_default_config_calls_once(monkeypatch: pytest.MonkeyPatch) -> None:
-    """[#394] 명시 주입 없이 **기본 설정 그대로** 검색은 1회만 호출된다 — 재시도 한시적 비활성."""
+async def test_search_retry_default_config_retries_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """[#394 원복] 기본 설정은 실패 검색을 한 번 재시도해 2회 호출한다."""
     import httpx
 
     import app.services.spring_client as sc
     from app.schemas.spring import ProductSearchFilters
 
+    calls = _counting_client(monkeypatch, httpx.TimeoutException("slow"))
+    with pytest.raises(SpringUnavailableError):
+        await sc.search_products(ProductSearchFilters())
+    assert len(calls) == 2
+
+
+async def test_search_retry_zero_retries_config_calls_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`spring_max_retries=0` 롤백 경로는 검색을 1회만 호출한다."""
+    import httpx
+    import app.services.spring_client as sc
+    from app.schemas.spring import ProductSearchFilters
+
+    monkeypatch.setattr(get_settings(), "spring_max_retries", 0)
     calls = _counting_client(monkeypatch, httpx.TimeoutException("slow"))
     with pytest.raises(SpringUnavailableError):
         await sc.search_products(ProductSearchFilters())
