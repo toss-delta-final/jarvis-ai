@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from app.agents.buyer import graph as buyer_graph
 from app.core.config import Settings
 from app.schemas.spring import ProductSearchFilters
+from evals.personalization import live_adapter as live_adapter_module
 from evals.personalization.live_adapter import (
     PersonalizationLiveBuyerAdapter,
     estimate_live_matrix,
@@ -133,6 +134,72 @@ def test_live_wrapper_routes_profile_for_all_scopes(monkeypatch) -> None:
         ("decompose", "profile"),
         ("rerank", "profile"),
     ]
+
+
+class _StubLiveAdapter:
+    """실 LLM·검색 왕복 없이 wrapper 의 프로필 해석만 통과시키는 내부 어댑터 대역."""
+
+    def __init__(self) -> None:
+        self.last_output: dict[str, object] = {}
+        self.model_config: dict[str, object] = {}
+
+    def __call__(self, case, fixtures) -> dict[str, object]:
+        return {}
+
+
+def _resolved_markdowns(monkeypatch, cases, **adapter_kwargs) -> list[str | None]:
+    """`profile_for_scope` 입력을 가로채 arm 이 케이스마다 어떤 프로필을 골랐는지만 본다.
+
+    실 `LiveBuyerAdapter` 를 태우지 않는다 — 그쪽은 `asyncio.run` 을 쓰는데 Windows 의
+    ProactorEventLoop 는 self-pipe 를 **TCP 루프백**으로 만들어 conftest 의 TCP 차단에
+    걸린다(Linux 는 AF_UNIX 라 통과). 주입 경로만 보는 테스트가 OS 에 따라 갈릴 이유가 없다.
+    """
+    seen: list[str | None] = []
+    original = live_adapter_module.profile_for_scope
+
+    def capture(profile_markdown, scope):
+        seen.append(profile_markdown)
+        return original(profile_markdown, scope)
+
+    monkeypatch.setattr(live_adapter_module, "profile_for_scope", capture)
+    adapter = PersonalizationLiveBuyerAdapter(
+        SimpleNamespace(calls=[]),
+        identity_kind="member",
+        settings=Settings(
+            _env_file=None,
+            auth_mode="dev",
+            internal_api_token="model-eval-internal-token",
+            profile_injection_scope="both",
+        ),
+        **adapter_kwargs,
+    )
+    adapter.adapter = _StubLiveAdapter()
+    for case in cases:
+        adapter(case, object())
+    return seen
+
+
+def test_live_wrapper_resolves_markdown_per_case(monkeypatch) -> None:
+    """[#484] 케이스마다 resolver 를 다시 부른다 — 고정값이면 전 케이스가 같은 프로필이 된다."""
+    from evals.goldenset.loader import load_cases
+
+    cases = sorted(load_cases("dev"), key=lambda case: case.case_id)[:3]
+    seen = _resolved_markdowns(
+        monkeypatch,
+        cases,
+        profile_markdown="생성자-고정",
+        markdown_resolver=lambda case, _fixtures: f"프로필-{case.case_id}",
+    )
+    assert seen == [f"프로필-{case.case_id}" for case in cases]
+
+
+def test_live_wrapper_without_resolver_keeps_constructor_markdown(monkeypatch) -> None:
+    """resolver 미지정 경로의 동작은 그대로다(기존 arm 회귀 가드)."""
+    from evals.goldenset.loader import load_cases
+
+    cases = sorted(load_cases("dev"), key=lambda case: case.case_id)[:2]
+    seen = _resolved_markdowns(monkeypatch, cases, profile_markdown="생성자-고정")
+    assert seen == ["생성자-고정", "생성자-고정"]
 
 
 def test_filter_axis_leakage_reuses_app_axes_and_includes_attr_conditions() -> None:
