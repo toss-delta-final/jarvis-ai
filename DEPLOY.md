@@ -44,6 +44,8 @@ docker run -p 8000:8000 --env-file deploy.env jarvis-ai:dev
 
 **선택 (기본값 있음):** 상태저장 타임아웃/풀(`STATE_STORE_*`), 배치 주기(`CATALOG_BATCH_INTERVAL_S`=300), 검색·추천 튜너블(`TOP_K`·`EXPOSE_*`·`LLM_CALL_LIMIT` 등), 프로필 튜너블(`PROFILE_*`).
 
+`MODEL_PRICE_IN_PER_1K` / `MODEL_PRICE_OUT_PER_1K` (이슈 #437, `chat_request` 로그 `costUsd`) — 형식은 `{"모델ID": USD/1,000tokens}` JSON 오브젝트 문자열, 두 키 모두 **표 전체를 치환**한다(기본표와 병합하지 않는다). 미설정 시 `app/core/model_pricing.py` 의 코드 기본표(`gpt-5-nano`/`gpt-5.6-luna`, 출처·기준일은 `evals/model_eval/pricing_manifest.json` 과 동일)로 동작한다. **이 두 키는 아직 `deploy.yml` env 고정 목록에 배선되지 않아, 지금은 GitHub Variables 에 채워도 배포 env 로 주입되지 않는다** — 배선은 별도 운영 작업이다. 그동안 운영 `costUsd` 는 코드 기본표 기준으로 집계된다(기동 로그 `MODEL_PRICE_DEFAULTS_IN_USE`/`MODEL_PRICE_MISSING_AT_STARTUP` 로 상태 확인 가능).
+
 ## 3. ⚠️ 시크릿 — repo에 실제 값은 없다
 
 repo에는 **키 목록(`.env.example`)만** 있고 실제 시크릿은 없다(커밋 금지). 배포 환경용으로 준비:

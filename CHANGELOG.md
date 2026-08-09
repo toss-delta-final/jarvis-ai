@@ -414,6 +414,23 @@
 - **#347 — Claude PR Review 에 `skip-claude-review` 라벨 게이트 추가** — 워크플로 job `if:` 에 라벨 조건을 더해, 리뷰가 불필요한 PR(대량 병합 정합·실험 브랜치)을 PR 단위로 끌 수 있게 했다. 기본 동작(라벨 없음 = 리뷰 실행)은 불변이며, 라벨 부착/제거는 다음 push 부터 적용된다. 계약(api-spec) 무변경.
 
 ### Fixed
+- **#437 — 운영 `costUsd` 가 항상 0 이던 문제(모델 단가표가 배포 env 에 주입되지 않음)** —
+  `model_price_in_per_1k`/`model_price_out_per_1k` 기본값이 빈 dict 이고 `deploy.yml` env
+  고정 목록에 `MODEL_PRICE_*` 가 없어, 운영은 항상 빈 단가표로 돌아 모든 턴 `costUsd=0`이
+  났다. 인프라(`deploy.yml`)는 이 이슈 범위 밖이라 코드 쪽에서 할 수 있는 것만 한다: (1)
+  `app/core/model_pricing.py` 신설 — `evals/model_eval/pricing_manifest.json`(EVAL-OBS-PLAN-001
+  §3.4 "비용축과 동일 소스 사용")과 글자 그대로 일치하는 `gpt-5-nano`/`gpt-5.6-luna` 기본
+  단가표를 코드에 싣고(런타임 컨테이너에 `evals/` 가 없어 직접 import 불가, 값 복제 + 테스트로
+  드리프트 고정) `Settings` 필드 기본값으로 배선(`default_factory` 복사본 — 인스턴스 간 공유
+  가변 기본값 방지). 환경변수 주입은 표 전체를 치환한다(병합 아님), 빈 문자열(`deploy.yml` 이
+  미설정 vars 를 빈 문자열로 쓰는 관례)도 예외 없이 기본표로 해석한다. (2) 기동 시 1회
+  `log_model_price_table_status` — 활성 모델(`resolve_model_id` 의 fast/smart) 단가 누락 시
+  `MODEL_PRICE_MISSING_AT_STARTUP`, env 미주입(기본표 사용 중) 시 `MODEL_PRICE_DEFAULTS_IN_USE`,
+  완전 주입 시 `MODEL_PRICE_TABLE_READY` 를 남긴다 — 어떤 경우에도 기동을 거부하지 않는다
+  (경고 수준까지만). Anthropic 모델 단가는 repo 에 출처 있는 값이 없어 싣지 않았다 —
+  `LLM_PROVIDER=anthropic` 기동은 `MODEL_PRICE_MISSING_AT_STARTUP` 경고로 드러난다. (3)
+  `.env.example`·`DEPLOY.md` 에 두 env 키와 **아직 `deploy.yml` 에 배선되지 않았다**는 사실을
+  문서화(배선은 별도 운영 작업).
 - **#428 — 전개(#217) 후 재매핑에서 동음이의어 노이즈 leg 이 살아남아 "과일 추천해줘"가 인기
   상품으로 답하던 문제** — decompose 가 `categoryQueries: []`(D1)를 내는 회차에서 전개 아이템
   ("바나나"·"사과"·"배"·"오렌지")을 재매핑하면, "배" 같은 동음이의어가 거리컷(0.26)에 전량

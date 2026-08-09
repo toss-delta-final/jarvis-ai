@@ -12,13 +12,18 @@ SearchBackend로 구현해 골든셋 비교. [2026-08-03 #32] 방식2를 확정�
 
 from __future__ import annotations
 
+import json
 import math
 import os
 from functools import lru_cache
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import Field, SecretStr, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+# 모델 단가표 기본값의 단일 출처(#437) — model_pricing 은 최상단에서 config 를 import 하지
+# 않으므로 여기서 최상단 import 해도 순환이 생기지 않는다.
+from app.core.model_pricing import DEFAULT_MODEL_PRICE_IN_PER_1K, DEFAULT_MODEL_PRICE_OUT_PER_1K
 
 # I-21 계약 하드 상한(api-spec §4.2) — 노출 개수 설정이 계약을 넘지 못하게 묶는 기준.
 # 계약 값의 단일 출처는 스키마다(app/schemas/spring.py) — 여기서 숫자를 다시 적지 않는다.
@@ -195,11 +200,39 @@ class Settings(BaseSettings):
     # 바꾸면 목록에서 빼는 것으로 원복된다. 매칭은 접두사 — 날짜 스냅샷 ID도 함께 걸린다.
     openai_tool_reasoning_incompatible_models: list[str] = ["gpt-5.6-luna"]
     openai_tool_reasoning_effort_override: str = "none"
-    # 요청 단위 비용 관측 단가(USD / 1,000 tokens). 운영 값은 환경변수 JSON으로 주입한다.
-    # 빈 기본값은 임의 가격을 코드에 박지 않기 위한 fail-visible 설정이며, 미등록 모델은
-    # observability가 비용 0 + 경고로 처리한다.
-    model_price_in_per_1k: dict[str, float] = Field(default_factory=dict)
-    model_price_out_per_1k: dict[str, float] = Field(default_factory=dict)
+    # 요청 단위 비용 관측 단가(USD / 1,000 tokens). 운영 env 주입 경로(deploy.yml)가 아직
+    # 배선되지 않아 빈 기본값이면 운영 costUsd 가 항상 0 이었다(#437). 그래서 기본값을
+    # `app/core/model_pricing.py`(단일 출처, evals/model_eval/pricing_manifest.json 과 동일)의
+    # 코드 내장 단가로 바꾼다 — env 주입은 **표 전체를 치환**한다(병합이 아니다). 미등록 모델은
+    # 여전히 observability 가 비용 0 + `MODEL_PRICE_MISSING` 경고로 처리한다.
+    # `default_factory` 로 매 인스턴스 새 dict 복사본을 만든다 — 공유 가변 기본값이면 한
+    # `Settings()` 인스턴스에서의 변형이 다음 인스턴스를 오염시킨다.
+    model_price_in_per_1k: Annotated[dict[str, float], NoDecode] = Field(
+        default_factory=lambda: dict(DEFAULT_MODEL_PRICE_IN_PER_1K)
+    )
+    model_price_out_per_1k: Annotated[dict[str, float], NoDecode] = Field(
+        default_factory=lambda: dict(DEFAULT_MODEL_PRICE_OUT_PER_1K)
+    )
+
+    @field_validator("model_price_in_per_1k", "model_price_out_per_1k", mode="before")
+    @classmethod
+    def _empty_model_price_table_uses_default(cls, value: object, info) -> object:
+        # deploy.yml 은 미설정 vars 를 빈 문자열로 env 파일에 쓴다. 우리가 운영자에게 이 두
+        # 키를 deploy.yml 에 추가하라고 안내하므로, 빈 문자열이 JSON 파싱 실패로 기동을 죽이는
+        # 경로를 우리가 만들어 두는 셈이 된다(2026-08-05 APP_ENVIRONMENT 빈 값 부팅 실패와
+        # 같은 함정). 빈 문자열(공백만인 경우 포함)은 필드 기본값으로 해석한다.
+        # ⚠️ 이 필드는 `default_factory` 를 쓰므로 `cls.model_fields[name].default` 는
+        # `PydanticUndefined` 다 — `default_factory()` 를 호출해 기본값을 얻는다.
+        # ⚠️ dict 는 pydantic-settings 가 "복합 타입"으로 분류해 필드 검증기가 값을 보기도
+        # 전에 env 문자열을 JSON 디코드한다 — 빈 문자열은 그 디코드 단계에서 이미
+        # `SettingsError` 로 죽어 이 validator 에 도달조차 못한다(실측 확인). `NoDecode` 로
+        # 자동 디코드를 끄고 여기서 직접 `json.loads` 해야 빈 문자열을 가로챌 수 있다.
+        if isinstance(value, str):
+            if value.strip() == "":
+                default_factory = cls.model_fields[info.field_name].default_factory
+                return default_factory()
+            return json.loads(value)
+        return value
 
     # ── Google 임베딩 API (MVP, §4.8 배치 + 임베딩 검색) ──
     # [2026-07-20 결정 6 개정, v0.15.14] 셀프호스트 torch → Google gemini-embedding-001 API.
