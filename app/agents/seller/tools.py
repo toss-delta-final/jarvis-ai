@@ -1531,6 +1531,8 @@ async def get_reviews(
         to_date: 조회 종료일 YYYY-MM-DD(선택).
         product_id: 특정 상품으로 한정(선택, 자사 상품만).
         rating: 별점 필터, 1~5 콤마 나열(선택, 예: "1,2" — 낮은 별점만).
+            stats=True 집계에도 동일하게 적용된다 — 총건수·평균·분포·상품별이
+            해당 별점만으로 계산된다(I-31 확정, #494).
         sort: latest(기본)/rating — rating 은 낮은 별점부터 고정(선택).
         stats: True 면 집계 모드(총건수/평균/분포/상품별) — 목록 대신 통계만.
         limit: 반환 상한(선택, 서버 기본 20·최대 100).
@@ -1544,14 +1546,24 @@ async def get_reviews(
         else "(기준: 최근 7일 기본 적용)"
     )
     if stats:
+        # [#494] rating 은 집계에도 적용되는 필터다(I-31) — 안 넘기면 전 별점 합산
+        # byProduct 가 돌아오는데 에러도 경고도 없어, 워커가 그것을 '저평점이 몰린
+        # 상품'으로 서술한다. 조용히 틀리는 경로라 전달 + 스코프 명시를 함께 건다.
         try:
             agg = await get_spring_client().get_review_stats(
-                brand_id, from_=from_date, to=to_date, product_id=product_id
+                brand_id, from_=from_date, to=to_date, product_id=product_id, rating=rating
             )
         except SpringUnavailableError as exc:
             return f"Error: 리뷰 집계 조회에 실패했습니다({exc})."
+        # 집계가 어느 별점 범위로 계산됐는지 워커에게 명시한다 — get_order_events 의
+        # ignored_status_note 와 같은 결(거긴 '무시됨', 여긴 '적용됨' 고지).
+        # rating 미지정 시 빈 문자열이라 기존 출력과 바이트 동일하다(회귀 방지).
+        rating_scope = f"(별점 {rating} 한정)" if rating else ""
         if agg.total_count == 0:
-            return f"조회 기간에 리뷰가 없습니다. {period_note}"
+            # 별점을 걸고 0건인 것은 '리뷰가 없다'와 다르다 — 스코프를 빼면 워커가
+            # 리뷰 자체의 부재로 오독한다.
+            empty_scope = f"별점 {rating} " if rating else ""
+            return f"조회 기간에 {empty_scope}리뷰가 없습니다. {period_note}"
         # averageRating null 은 "평점 0점"이 아니라 "산정 불가"다(I-16 규칙).
         avg_note = (
             f"평균 {agg.average_rating}점" if agg.average_rating is not None else "평균 산정 불가"
@@ -1566,7 +1578,7 @@ async def get_reviews(
         )
         by_product_note = f" 상품별: {by_product}." if by_product else ""
         return (
-            f"리뷰 집계: 총 {agg.total_count}건, {avg_note}. 분포: {dist_note}."
+            f"리뷰 집계{rating_scope}: 총 {agg.total_count}건, {avg_note}. 분포: {dist_note}."
             f"{by_product_note} {period_note}"
         )
     try:
