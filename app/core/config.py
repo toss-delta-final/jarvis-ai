@@ -622,11 +622,26 @@ class Settings(BaseSettings):
     seller_vision_timeout_s: float = 20.0
     # 카테고리 스냅샷(#506) — BE 조회 없이 AI 가 로컬 JSON 으로 보유한다.
     # 파일 교체 = 배포(정합 리스크는 스냅샷 meta.version 으로 추적).
+    # 파일은 손으로 고치지 않는다 — scripts/build_seller_category_snapshot.py 가 정본
+    # DB(category 테이블)에서 생성한다. id 가 실 DB 와 어긋나면 등록이 통째로 죽는다.
     seller_category_snapshot_path: str = "app/data/seller_categories.json"
-    seller_category_candidates_k: int = 5  # 초안 에이전트에 주입할 카테고리 후보 수
-    # confirm 시 Spring I-10 `category`(자유 문자열)에 쓸 값 — BE 와 맞출 유일한 지점.
-    # leaf(말단 명칭) | path("A > B > C") | id(스냅샷 id 그대로).
-    seller_category_write_mode: Literal["leaf", "path", "id"] = "leaf"
+    # 초안 에이전트에 주입할 카테고리 후보 수 — 실 스냅샷이 1,000건대라 5개로는
+    # 동의어(셔츠/남방·티셔츠)가 잘려 에이전트가 카테고리를 포기하는 일이 잦다.
+    seller_category_candidates_k: int = 8
+    # 폴백(LLM 택1) 때 후보를 몇 배로 넓힐지 — 같은 폭으로 다시 물으면 의미가 없다.
+    seller_category_fallback_k_factor: int = 3
+    # 카테고리 LLM 택1 상한 — 에이전트가 카테고리를 못 고른 턴에만 1회 추가된다.
+    seller_category_resolve_timeout_s: float = 12.0
+    # NOTE: 구 `seller_category_write_mode`(leaf|path|id)는 폐기했다(2026-08-09).
+    # BE `SellerProductCreateRequest.categoryId` 는 **Long 필수**라 이름·경로 문자열을
+    # 받는 필드가 없다 — 고를 여지가 애초에 없었고, 기본값 leaf 가 등록 실패의 원인이었다.
+    # ── 옵션별 재고 와이어 모드 (#524, blocked:spring) ──────────────────────────
+    # I-10/I-11 재고를 어느 형식으로 보낼지. BE 마이그레이션 순서(1단계 expand SQL →
+    # PR B 배포 → 2단계 contract SQL)에 AI 배포가 물리지 않도록 코드가 두 형식을 다 안다.
+    #   quantity: 구 계약 stockQuantity(정수) — 현재 배포된 BE 가 받는 유일한 형식.
+    #   stocks:   신 계약 stocks[{optionId,quantity}] — BE PR B 배포 확인 후 이 값으로 전환.
+    # quantity 모드에서 옵션별 재고 발화는 반영하지 않고 안내한다(BE 가 저장할 곳이 없다).
+    seller_stock_wire_mode: Literal["quantity", "stocks"] = "quantity"
     # 초안 대기 게이트(수정/승인안내/취소/딴주제 분류) LLM 상한 — 실패 시 일반 흐름 폴백.
     seller_pending_gate_timeout_s: float = 8.0
     # 4-2 HITL 실행(hitl.py): confirm 시점 I-9 재조회(stale 검증)의 페이지 순회 상한 —

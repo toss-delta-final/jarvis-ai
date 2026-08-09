@@ -89,6 +89,8 @@ SellerRole = Literal[
     # [#506] 이미지 기반 등록 초안 — vision(사진 1회 분석)·draft_gate(초안 대기 발화 분류).
     "vision",
     "draft_gate",
+    # [#506 후속] category — 에이전트가 카테고리를 못 고른 턴의 폴백 택1(단발 호출).
+    "category",
 ]
 
 # SPEC §8 표의 코드화 — 판매자 전 역할 smart(2026-07-29, 품질 우선 전환).
@@ -111,6 +113,8 @@ ROLE_TIER: dict[SellerRole, ModelTier] = {
     # draft_gate 부터 fast 강등을 검토한다(모듈 docstring 정책과 동일한 완화 순서).
     "vision": "smart",
     "draft_gate": "smart",
+    # [#506 후속] 오배정이 등록 후 되돌릴 수 없는 필드(카테고리)를 결정하므로 smart 유지.
+    "category": "smart",
 }
 
 

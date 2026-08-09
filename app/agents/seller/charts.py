@@ -387,6 +387,9 @@ async def _build_product_chart(
     else:  # price | stock — I-9 현재 시점 스냅샷(기간 무관, chartPeriod 미적용)
         products = await cache.get("products", lambda: client.list_products(brand_id))
         for row in products.rows:
+            # [#524] y축 stock 은 옵션별 재고 전환 후에도 row.stock_quantity 를 그대로 쓴다.
+            # 그 값의 의미가 "상품 재고" → **"옵션 재고의 합계(파생)"** 로 바뀌지만, 상품별
+            # 막대가 보여야 할 것도 그 합계라 동작은 같다 — 옵션 단위로 가르지 않는다.
             value = row.price if plan.y_axis == "price" else row.stock_quantity
             rows.append((row.product_id, row.name, float(value)))
         if not rows:
