@@ -131,6 +131,8 @@ class ObservationSink(Protocol):
 
     def record_tool_call(self) -> None: ...
 
+    def record_search_result(self, candidates: int, total_count: int, elapsed_ms: int) -> None: ...
+
 
 _UNSAFE_KEY_PARTS = (
     "authorization",
@@ -591,6 +593,12 @@ class RequestTrace:
         if self._observation is not None:
             self._observation.record_tool_call()
 
+    def record_search_result(self, candidates: int, total_count: int, elapsed_ms: int) -> None:
+        """검색 결과 집계를 요청 관측으로 전달한다. trace가 관측 sink 없이도 검색을 막지 않는다."""
+        if self._is_closing() or self._observation is None:
+            return
+        self._observation.record_search_result(candidates, total_count, elapsed_ms)
+
     async def finish(
         self,
         *,
@@ -747,6 +755,10 @@ class NoopRequestTrace(RequestTrace):
         self._tool_calls += 1
         if self._observation is not None:
             self._observation.record_tool_call()
+
+    def record_search_result(self, candidates: int, total_count: int, elapsed_ms: int) -> None:
+        if self._observation is not None:
+            self._observation.record_search_result(candidates, total_count, elapsed_ms)
 
     async def finish(
         self,

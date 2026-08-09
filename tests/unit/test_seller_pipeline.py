@@ -145,6 +145,44 @@ def test_resolve_plan_question_default_keeps_backward_compat() -> None:
     assert resolved.wants_chart is False
 
 
+def test_resolve_plan_chart_period_expr_resolved_separately() -> None:
+    """[#504] 차트 전용 기간 표현은 본 기간과 별도로 환산돼 chart_from/to 에 담긴다."""
+    plan = _plan(period_expr="지난달", chart_period_expr="최근 7일")
+    resolved = pipeline.resolve_plan(plan, today=dt.date(2026, 7, 18), recent_default_days=7)
+    assert (resolved.date_from, resolved.date_to) == (dt.date(2026, 6, 1), dt.date(2026, 6, 30))
+    assert (resolved.chart_from, resolved.chart_to) == (dt.date(2026, 7, 11), dt.date(2026, 7, 17))
+    assert resolved.chart_period_error == ""
+    assert resolved.wants_chart is True  # 차트 기간을 말했다 = 차트를 원한다
+
+
+def test_resolve_plan_chart_period_error_does_not_kill_pipeline() -> None:
+    """[#504] 차트 기간만 해석 불가("작년 여름")면 ValueError 로 죽이지 않고
+    chart_period_error 에 담는다 — 보고서는 살리고 차트만 chartUnavailable 로 강등."""
+    plan = _plan(period_expr="지난달", chart_period_expr="작년 여름")
+    resolved = pipeline.resolve_plan(plan, today=dt.date(2026, 7, 18), recent_default_days=7)
+    assert resolved.date_from == dt.date(2026, 6, 1)  # 본 기간은 정상 환산
+    assert resolved.chart_from is None and resolved.chart_to is None
+    assert resolved.chart_period_error != ""
+
+
+def test_resolve_plan_chart_period_absent_leaves_fields_empty() -> None:
+    """[#504] 차트 기간 별도 언급이 없으면 chart_* 는 비어 있다 — 차트는 본 기간을 따른다."""
+    resolved = pipeline.resolve_plan(_plan(), today=dt.date(2026, 7, 18), recent_default_days=7)
+    assert resolved.chart_period_expr == ""
+    assert resolved.chart_from is None and resolved.chart_to is None
+    assert resolved.chart_period_error == ""
+
+
+def test_resolve_plan_chart_only_allows_empty_analyses() -> None:
+    """[#504] chart_only 턴은 워커를 쓰지 않으므로 analyses 가 비어도 계획이 성립하고,
+    wants_chart 가 강제로 True 다."""
+    plan = _plan(analyses=[], chart_only=True, period_expr="최근 7일")
+    resolved = pipeline.resolve_plan(plan, today=dt.date(2026, 7, 18), recent_default_days=7)
+    assert resolved.analyses == ()
+    assert resolved.chart_only is True
+    assert resolved.wants_chart is True
+
+
 def test_format_worker_input_contains_period_and_question() -> None:
     """워커 입력 포맷 — from/to(ISO)와 질문이 규약 형태로 들어간다(기간 주입 규약)."""
     resolved = pipeline.ResolvedPlan(
@@ -270,6 +308,19 @@ def test_compose_response_chart_requested_but_missing_appends_notice() -> None:
         "본문", RecommendationSet(), ChartSet(charts=[]), chart_requested=True
     )
     assert "[차트 안내]" in empty_charts_text
+
+
+def test_compose_response_chart_unavailable_messages_verbatim() -> None:
+    """[#504] 사유(ChartUnavailable)가 있으면 그 완성 문장을 그대로 싣는다 — 원인을
+    아는데 일반 문구로 뭉개면 오보다. 부분 성공(charts 있음)에도 사유는 붙는다."""
+    from app.agents.seller.charts import ChartUnavailable
+
+    reason = ChartUnavailable(reason="no_data", message="해당 기간에 표시할 데이터가 없습니다.")
+    text = pipeline.compose_response(
+        "본문", RecommendationSet(), _chart_set(), chart_requested=True, chart_unavailable=[reason]
+    )
+    assert "[차트 안내]" in text
+    assert "해당 기간에 표시할 데이터가 없습니다." in text
 
 
 def test_compose_response_chart_not_requested_no_notice() -> None:
