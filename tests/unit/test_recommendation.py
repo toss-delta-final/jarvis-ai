@@ -1805,6 +1805,40 @@ async def test_search_catalog_returns_all_after_postfilter() -> None:
     assert res.total_count == 5
 
 
+async def test_attr_conditions_hard_filter_excludes_disproven() -> None:
+    """[PR②] 명시 속성조건에 반하는 상품(축 있고 값 불일치)은 하드 제외한다."""
+    from app.schemas.spring import ProductSearchFilters, SpringProduct
+    from app.services.search_service import search_catalog
+    from tests._fakes import FakeBackend
+
+    products = [
+        SpringProduct(product_id=1, name="a", price=1, attributes={"소재": "린넨"}),
+        SpringProduct(product_id=2, name="b", price=1, attributes={"소재": "면"}),  # 반증
+    ]
+    res = await search_catalog(
+        ProductSearchFilters(attr_conditions={"소재": "린넨"}),
+        backend=FakeBackend(products=products),
+    )
+    assert [p.product_id for p in res.products] == [1]
+
+
+async def test_attr_conditions_preserve_axis_absent() -> None:
+    """[PR② — #100 P0 정합] 조건 축이 없는 상품은 '반증 아님'이라 보존한다(rerank 가 판단)."""
+    from app.schemas.spring import ProductSearchFilters, SpringProduct
+    from app.services.search_service import search_catalog
+    from tests._fakes import FakeBackend
+
+    products = [
+        SpringProduct(product_id=1, name="a", price=1, attributes={"소재": "린넨"}),
+        SpringProduct(product_id=2, name="b", price=1, attributes={"색상": "빨강"}),  # 소재 축 없음
+    ]
+    res = await search_catalog(
+        ProductSearchFilters(attr_conditions={"소재": "린넨"}),
+        backend=FakeBackend(products=products),
+    )
+    assert {p.product_id for p in res.products} == {1, 2}  # 축 부재 2 보존
+
+
 async def test_color_attr_conditions_preserve_axis_absent_and_exclude_mismatch() -> None:
     """[#461 §4.6 ②] 색상 축 부재는 보존하고, 명시 색상 불일치는 사후필터에서 제외한다."""
     from app.schemas.spring import ProductSearchFilters, SpringProduct
