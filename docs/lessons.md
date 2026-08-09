@@ -29,6 +29,29 @@
   언급하는지 본다. 겹치면 **머지 순서를 먼저 정한다** — 선후가 뒤집히면 한쪽이 다른 쪽 전제를
   깨고, 계획의 "동작이 바뀌는가" 판정 자체가 반대가 된다.
 - 관련: #306, PR #532(#406), `git log --all --grep`, `gh pr list --state open`
+
+---
+
+## [2026-08-09] 실패를 기본값(0·빈 리스트)으로 환원하지 않는다 — 기본값은 정상값과 구별되지 않는다
+- 증상: 판매자 매출 도구가 오류 없이 HTTP 200 으로 **틀린 답**을 내는 경로가 3개 있었다.
+  (1) `granularity=summary` 는 응답 shape 이 달라 `SalesResult(extra="allow")` 가 `series=[]`
+  로 삼켜 **언제나 "총매출 0원"**, (2) 파싱은 되지만 정규형이 아닌 ISO(`"20260801"`)가
+  문자열 비교 필터(`p.date >= from_date`)의 경계값이 돼 전 포인트 탈락 → 또 0원,
+  (3) 표본 3개 미만이라 검정 불능인데 빈 리스트가 "이상 감지 없음"으로 번역돼 확정적
+  all-clear 가 나갔다.
+- 원인: 세 경로 모두 실패를 **그 도메인의 기본값**(0원·빈 목록)으로 환원했다. 기본값은
+  정상값과 형태가 같아 로그에도, 판매자 눈에도 이상으로 보이지 않는다. 특히 "형식 오류는
+  Spring 검증 경로에 맡긴다"(`except ValueError: pass`)는 사실상 **상대 파서의 관대함에
+  안전을 건 것**이었다.
+- 규칙: 판정 불능·미지원·형식 위반은 기본값이 아니라 **타입이나 문자열로 드러낸다** —
+  판정 함수는 "결과"와 "판정 가능 여부"를 함께 반환하고(`decided`), 도구는 지원하지 않는
+  입력을 `Error:` 로 즉시 거절한다. 문자열이 비교 연산의 경계값이 될 자리라면 파싱 성공이
+  아니라 **정규형 일치**(`parsed.isoformat() == 원문`)까지 확인한다.
+- 관련: `app/agents/seller/tools.py` · `app/agents/seller/analysis/timeseries.py` ·
+  `app/agents/seller/analysis/types.py` · `docs/specs/STATUS-seller-analysis-2026-08-09.md` §3 · #512
+
+---
+
 ## [2026-08-09] pydantic 의 `str = ""` 기본값은 **키 결측**만 흡수한다 — nullable 컬럼에는 `| None` 이 필요하다
 - 증상: I-31 리뷰 조회에서 `rows[]` 중 **한 행만** `content: null` 이어도 그 페이지 전체가
   `ValidationError` → `SpringUnavailableError` → 도구 degrade 로 죽었다. 판매자에게는
