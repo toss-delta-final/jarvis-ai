@@ -27,6 +27,7 @@ from langchain_core.tools import BaseTool, tool
 from app.agents.seller import calc, period
 from app.agents.seller.analysis import outliers, proportions, segmentation, timeseries
 from app.agents.seller.context import SellerContext
+from app.agents.seller.stock_options import stock_lines_text
 from app.core.config import get_settings
 from app.core.tracing import trace_span
 from app.schemas.spring import (
@@ -1453,9 +1454,12 @@ async def list_my_products(
         return f"Error: 상품 목록을 불러오지 못했습니다({exc})."
     if not result.rows:
         return "상품이 없습니다."
+    # [#524] 옵션별 재고(stocks 채워짐)는 옵션명·수량을 펼친다 — product 에이전트가
+    # 재고 변경 change 의 option_name 을 여기서 그대로 옮겨 적는다(stock_options 참조).
+    # 구 BE(단일 stockQuantity) 응답은 stocks 가 비어 있어 기존 표기 그대로다.
     lines = [
-        f"[{row.product_id}] {row.name} 가격 {row.price:,}원 재고 {row.stock_quantity}건 "
-        f"상태 {row.status}"
+        f"[{row.product_id}] {row.name} 가격 {row.price:,}원 "
+        f"{stock_lines_text(row.stock_quantity, row.stocks)} 상태 {row.status}"
         for row in result.rows
     ]
     # 상한만큼 꽉 찼으면 더 있을 수 있음을 고지 — LLM 이 offset 으로 이어서 조회 가능.

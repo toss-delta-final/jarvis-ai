@@ -370,8 +370,11 @@ class AddToCartResult(CamelModel):
 
 # 구매 가능 상태 — I-18(§4.9) · I-28(§4.16) 공용. 겹치면 HIDDEN 우선(서버가 정해서 내린다).
 # 둘 다 상품 단위 판정이되 성격이 다르다: HIDDEN 은 status != ON_SALE 이라 옵션과 무관하게
-# 상품 전체가 판매 종료이고, SOLD_OUT 은 재고가 product.stock_quantity 하나로 옵션 전체에
-# 공유되므로(product_option 에 재고 컬럼 없음) "옵션 중 하나라도 살 수 있으면 AVAILABLE" 이다.
+# 상품 전체가 판매 종료이고, SOLD_OUT 은 "옵션 중 하나라도 살 수 있으면 AVAILABLE" 이다.
+# ⚠️ [#524/#508] 구 주석의 근거였던 "재고가 product.stock_quantity 하나로 옵션 전체에 공유
+# (product_option 에 재고 컬럼 없음)" 은 **BE 옵션별 재고 전환(02 D33 — product_stock 신설)
+# 이후 사실이 아니다.** 판정 규칙(하나라도 살 수 있으면 AVAILABLE)은 그대로지만 근거가
+# "공유 재고" 에서 "옵션별 재고의 OR" 로 바뀐다. 구매자 레인 동작 정합은 #508 소관.
 PurchaseState = Literal["AVAILABLE", "SOLD_OUT", "HIDDEN"]
 
 # 상태 → 안내용 한국어 라벨. **전사(全射) 매핑을 의도한다**(ORDER_ITEM_STATUS_TEXT 와 같은 형태).
@@ -964,11 +967,28 @@ class AccountEventsResult(SellerAggregateModel):
 # ── I-9 자사 상품 목록 (§4.5) ──
 
 
+class SellerStockRow(CamelModel):
+    """I-9 rows[].stocks[] 항목 (#524) — 에이전트가 I-11 에 넣을 optionId 의 원천.
+
+    판매자용이라 품절(quantity 0) 옵션도 그대로 내려온다. option_id null 은 옵션 없는
+    상품의 유일한 재고 행이다. 구(stockQuantity 단일) BE 는 이 배열을 보내지 않으므로
+    수신은 관대하게 — 빈 목록이 기본값이다.
+    """
+
+    option_id: int | None = None
+    option_name: str | None = None
+    quantity: int = 0
+
+
 class SellerProductRow(CamelModel):
     """I-9 rows[] 항목. originalPrice 는 구매자 SpringProduct.listPrice 와 필드명이 달라
     별도 모델로 유지한다(§2.4).
 
     `status` 는 `ON_SALE`|`HIDDEN` 만 온다 — `DELETED` 는 BE 가 목록에서 제외한다(§4.5).
+
+    [#524] stocks 는 옵션별 재고 — BE PR B 배포 후에만 채워진다(그 전엔 빈 목록).
+    stockQuantity 는 그 시점부터 "옵션 재고 합계(파생)" 로 의미가 바뀌지만 필드는 유지된다.
+    빈 목록은 "옵션이 없다"가 아니라 **"BE 가 아직 구버전"** 이다(hitl._stocks_mode_ready).
     """
 
     product_id: int
@@ -976,6 +996,7 @@ class SellerProductRow(CamelModel):
     price: int
     original_price: int | None = None
     stock_quantity: int = 0
+    stocks: list[SellerStockRow] = Field(default_factory=list)
     status: str = "ON_SALE"  # ON_SALE | HIDDEN
     displayed_sales_count: int | None = None
     category: str | None = None
@@ -992,25 +1013,65 @@ class SellerProductList(CamelModel):
 # ── I-10/I-11/I-12 상품 쓰기 (§4.5, product_agent 전용, HITL 승인 후 호출) ──
 
 
+class StockEntry(CamelModel):
+    """I-10/I-11 요청 `stocks[]` 한 줄 (#524) — 옵션 없는 상품은 optionId null 한 줄.
+
+    quantity 음수는 BE 422 INVALID_STOCK — 여기서 ge=0 으로 선차단한다. optionId 가
+    그 상품의 옵션이 아니어도 INVALID_STOCK 인데, 그 검증은 hitl 이 I-9 stocks 로
+    선해소하므로(resolve_stock_option) 정상 경로에서는 발생하지 않는다.
+
+    직렬화 주의: 클라이언트가 exclude_none 으로 본문을 만들므로 optionId null 은
+    **키 자체가 빠져** 나간다 — Jackson 은 키 누락을 null 로 바인딩하니(record) 계약상
+    "optionId: null 한 줄"과 동등하다. BE 가 키 존재를 강제하게 되면 여기를 고친다.
+    """
+
+    option_id: int | None = None
+    quantity: int = Field(ge=0)
+
+
 class ProductCreate(CamelModel):
-    """I-10 POST 요청 본문 — name/price/stockQuantity 필수(price ≤ originalPrice)."""
+    """I-10 POST 요청 본문 — name/price/stockQuantity/categoryId 필수(price ≤ originalPrice).
+
+    [2026-08-09 정정] `category`(자유 문자열) → `categoryId`(Long). BE
+    `SellerProductCreateRequest` 는 `categoryId: Long` 만 받고 소분류(leaf)인지까지
+    검증한다(`Category.isRoot()` → PRODUCT_CATEGORY_INVALID). 구 구현이 보내던
+    `category` 키는 BE 가 조용히 버렸고, 남은 categoryId 누락으로 등록이 항상
+    실패했다 — 판매자에게는 "등록 중 오류"로만 보였다.
+
+    필수지만 타입은 `int | None` 이다: 누락은 여기서 500 을 만들지 말고 상위
+    (hitl.validate_draft)가 되묻기로 전환해야 한다. 전송은 exclude_none 이므로
+    None 이면 키 자체가 빠지고 BE 가 422 MISSING_FIELD 로 응답한다.
+    """
 
     name: str
     price: int
     original_price: int | None = None
-    stock_quantity: int = Field(0, ge=0)
-    category: str | None = None
+    # [#524 듀얼모드] 재고는 wire_mode 에 따라 정확히 한 필드만 채운다(다른 쪽 None →
+    # exclude_none 으로 본문에서 빠진다). quantity 모드=stock_quantity(현행 BE),
+    # stocks 모드=stocks(PR B 이후). 등록 시점엔 옵션이 없어 stocks 는 optionId null 한 줄.
+    stock_quantity: int | None = Field(default=None, ge=0)
+    stocks: list[StockEntry] | None = None
+    category_id: int | None = None
     description: str | None = None
     image_url: str | None = None
 
 
 class ProductUpdate(CamelModel):
-    """I-11 PATCH 요청 본문 — 바꿀 필드만(전 필드 Optional). 재고도 이 API로 통합."""
+    """I-11 PATCH 요청 본문 — 바꿀 필드만(전 필드 Optional). 재고도 이 API로 통합.
+
+    ⚠️ `category` 는 BE `SellerProductUpdateRequest` 에 **없는 필드**다(2026-08-09 실측)
+    — Jackson 이 모르는 키로 버리므로 카테고리 수정 요청은 조용히 무시된다. I-10 등록
+    시에만 정할 수 있는 값이라는 뜻이고, preview 의 "카테고리는 등록 후 변경할 수
+    없습니다" 경고와도 일치한다. BE 가 필드를 열기 전까지 여기 남는 값은 전송돼도
+    효과가 없다 — 수정 흐름에서 카테고리를 다루려면 별도 이슈로 BE 를 먼저 연다."""
 
     name: str | None = None
     price: int | None = None
     original_price: int | None = None
+    # [#524 듀얼모드] ProductCreate 와 동일 — 정확히 한 재고 필드만 채운다.
+    # stocks 는 부분 수정이다: 배열에 실린 옵션만 갱신되고 나머지는 그대로다(05 §I-11).
     stock_quantity: int | None = Field(default=None, ge=0)
+    stocks: list[StockEntry] | None = None
     category: str | None = None
     description: str | None = None
     image_url: str | None = None

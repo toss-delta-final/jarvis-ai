@@ -15,6 +15,7 @@ from app.core.config import get_settings
 from app.schemas.spring import ChurnMember, ProductCreate, ProductUpdate
 from app.services.spring_client import (
     ProductAlreadyDeleted,
+    InvalidStock,
     ProductDeletedNotEditable,
     SpringClient,
     SpringUnavailableError,
@@ -1322,3 +1323,37 @@ async def test_get_review_stats_omits_rating_when_absent() -> None:
     await client.get_review_stats(12)
 
     assert "rating" not in captured["url"]
+
+
+# ── [#524] I-10/I-11 422 INVALID_STOCK (§4.5 — BE 04 §9 2026-08-09 의미 확장) ─────
+
+
+async def test_update_product_maps_invalid_stock() -> None:
+    """422 INVALID_STOCK → 전용 예외. SpringUnavailableError 로 뭉개면 HITL 이
+    "재시도해 주세요"로 안내하는데, 옵션이 바뀐 상황이라 같은 초안은 늘 실패한다."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(422, json={"success": False, "error": {"code": "INVALID_STOCK"}})
+
+    client = _client(handler)
+    with pytest.raises(InvalidStock):
+        await client.update_product("brand-1", 101, ProductUpdate(price=9000))
+
+
+async def test_create_product_maps_invalid_stock() -> None:
+    """등록도 같은 코드를 쓴다 — I-10/I-11 대칭(BE 는 새 code 를 만들지 않았다)."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(422, json={"success": False, "error": {"code": "INVALID_STOCK"}})
+
+    client = _client(handler)
+    with pytest.raises(InvalidStock):
+        await client.create_product(
+            "brand-1", ProductCreate(name="파우치", price=10000, stock_quantity=5)
+        )
+
+
+async def test_invalid_stock_is_not_spring_unavailable() -> None:
+    """catch-all 에 삼켜지지 않는다 — 도구·HITL 의 `except SpringUnavailableError` 는
+    "재시도 가능한 장애" 경로라, 여기 낙성되면 거짓 재시도 안내가 나간다."""
+    assert not issubclass(InvalidStock, SpringUnavailableError)

@@ -355,3 +355,102 @@ def test_applied_draft_flows_into_confirm(monkeypatch: pytest.MonkeyPatch) -> No
 
     assert outcome.status == "executed"
     assert spring.patches[0][2].price == 13500  # 추천 after 그대로 — 재해석 없음
+
+
+# ── [#524] 옵션별 재고 상품의 재고 추천 — 초안 생성 전 차단 ─────────────────────
+
+
+_OPTIONED_ROW = SellerProductRow(
+    productId=101,
+    name="감귤청",
+    price=15000,
+    stockQuantity=5,
+    stocks=[
+        {"optionId": 10, "optionName": "블랙/M", "quantity": 5},
+        {"optionId": 11, "optionName": "블랙/L", "quantity": 0},
+    ],
+)
+
+
+def _stock_mode(monkeypatch: pytest.MonkeyPatch, mode: str) -> None:
+    """history 가 보는 wire_mode 만 바꾼다 — 나머지 설정은 실값 그대로."""
+    real = history.get_settings()
+    monkeypatch.setattr(
+        history, "get_settings", lambda: real.model_copy(update={"seller_stock_wire_mode": mode})
+    )
+
+
+def _stock_rec():
+    return _rec(changes=[ProposedChange(field="stock_quantity", after="30")])
+
+
+def test_apply_blocks_stock_recommendation_on_optioned_product(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """옵션이 둘 이상이면 초안을 만들지 않고 되묻는다 — 승인 뒤 되묻기를 없앤다.
+
+    ProposedChange 에 option_name 이 없어 초안을 만들면 (a) before 가 옵션 합계로
+    표시되고 (b) 실행 시점에야 옵션을 못 좁혀 되묻는다. HITL 은 승인 전에 거른다.
+    """
+    _stock_mode(monkeypatch, "stocks")
+    set_spring_client(_StubSpring(rows=[_OPTIONED_ROW]))
+
+    async def run():
+        await _save(recs=_rec_set(_stock_rec()))
+        return await history.apply_recommendation(1, _CTX)
+
+    record, problem = asyncio.run(run())
+    assert record is None
+    assert "옵션별로 재고가 관리됩니다" in problem
+    assert "블랙/M" in problem and "블랙/L" in problem  # 고를 수 있게 나열한다
+
+
+def test_apply_allows_stock_recommendation_on_single_option(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """옵션이 하나뿐이면 모호함이 없다 — 종전대로 초안을 만든다."""
+    _stock_mode(monkeypatch, "stocks")
+    single = _OPTIONED_ROW.model_copy(
+        update={"stocks": [{"optionId": 10, "optionName": "블랙/M", "quantity": 5}]}
+    )
+    set_spring_client(_StubSpring(rows=[single]))
+
+    async def run():
+        await _save(recs=_rec_set(_stock_rec()))
+        return await history.apply_recommendation(1, _CTX)
+
+    record, problem = asyncio.run(run())
+    assert problem is None and record is not None
+    assert record.changes[0].field == "stock_quantity"
+
+
+def test_apply_stock_recommendation_unchanged_in_quantity_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[회귀 고정] quantity 모드에서는 옵션 판정 자체를 하지 않는다 — 기존 동작 그대로."""
+    _stock_mode(monkeypatch, "quantity")
+    set_spring_client(_StubSpring(rows=[_OPTIONED_ROW]))
+
+    async def run():
+        await _save(recs=_rec_set(_stock_rec()))
+        return await history.apply_recommendation(1, _CTX)
+
+    record, problem = asyncio.run(run())
+    assert problem is None and record is not None
+    assert record.changes[0].after == "30"
+
+
+def test_apply_non_stock_recommendation_ignores_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """가격 추천은 옵션과 무관 — 옵션이 여럿이어도 막지 않는다."""
+    _stock_mode(monkeypatch, "stocks")
+    set_spring_client(_StubSpring(rows=[_OPTIONED_ROW]))
+
+    async def run():
+        await _save(recs=_rec_set(_rec()))  # price 추천
+        return await history.apply_recommendation(1, _CTX)
+
+    record, problem = asyncio.run(run())
+    assert problem is None and record is not None
+    assert record.changes[0].field == "price"

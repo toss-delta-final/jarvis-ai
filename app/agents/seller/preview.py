@@ -9,6 +9,14 @@
 - 포맷은 서버가 완료한다("32,000원"·"50개") — FE 재가공 금지 계약이므로 역파싱이
   필요 없도록 숫자는 changes 원값에서만 뽑는다.
 - `sections[].kind` 는 source/warning/note — FE 는 모르는 kind 를 무시한다(확장 규칙).
+
+[#524] 옵션별 재고는 이 모듈의 대상이 아니다 — `preview{}` 는 `op=="create"` 전용 키이고
+등록 시점엔 옵션이 아직 없어(I-10 은 optionId null 한 줄) 옵션별 diff 가 성립하지 않는다.
+
+다만 잠재 결함을 하나 적어 둔다: `build_create_preview` 의 `values` 와 `diff_notes` 의
+비교는 둘 다 **field 키 기준**이라 같은 필드의 change 가 둘 이상이면 조용히 뭉갠다. 지금은
+create 에 재고 change 가 1건뿐이라 드러나지 않지만, **"옵션 있는 상품 등록"이 열리는 순간
+여기가 먼저 깨진다** — 그때는 이 dedupe 를 (field, option_name) 기준으로 먼저 고칠 것.
 """
 
 from __future__ import annotations

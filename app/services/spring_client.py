@@ -462,8 +462,13 @@ class CartError(Exception):
 class CartStockInsufficient(Exception):
     """I-2 담기 재고 부족(400 CART_STOCK_INSUFFICIENT) → action reason STOCK_INSUFFICIENT.
 
-    합산 수량 > 재고(재고는 상품 단위, 옵션별 재고 없음, 2026-07-22 신설). available_stock 은
+    합산 수량 > 재고(2026-07-22 신설). available_stock 은
     BE error.detail.availableStock(남은 재고) — LLM "재고가 N개뿐이에요" 안내용. 없으면 None.
+
+    ⚠️ [#524/#508] 구 주석의 "재고는 상품 단위, 옵션별 재고 없음" 은 **BE 옵션별 재고
+    전환(02 D33 — product.stock_quantity → product_stock) 이후 사실이 아니다.**
+    그 시점부터 availableStock 은 담으려는 **옵션의 재고**를 뜻한다. 구매자 레인의 안내
+    문구·판정 정합은 #508 소관이라 여기서는 서술만 바로잡고 동작은 건드리지 않는다.
     """
 
     def __init__(self, available_stock: int | None) -> None:
@@ -527,6 +532,19 @@ class ProductDeletedNotEditable(Exception):
     """I-11 409 PRODUCT_DELETED — 삭제된 상품은 수정·복구 대상이 아니다(삭제는 I-12 전용
     전이). 404 가 아닌 이유: 상품은 실제로 존재하고 주문 내역·매출 통계에도 남아 있어
     에이전트가 "없는 상품"이라 답하면 사실과 다르다."""
+
+
+class InvalidStock(Exception):
+    """I-10/I-11 422 INVALID_STOCK (#524) — `stocks[].quantity` 음수 **또는** 그 상품의
+    옵션이 아닌 `optionId`. 옵션별 재고 도입으로 BE 가 기존 재고 오류 코드에 두 번째
+    조건을 접었다(BE 04 §9, 2026-08-09 — 새 code 를 만들지 않았다).
+
+    AI 는 두 조건을 모두 **선차단**한다 — 음수는 `hitl._parse_int` 의 `isdigit()`,
+    타 상품 옵션은 `stock_options.resolve_stock_option` 의 유일 매칭이다. 그래서 정상
+    경로에서는 이 예외가 나지 않는다. 여기 도달하는 건 confirm 시점 I-9 재조회와 PATCH
+    사이에 옵션이 삭제·변경된 **레이스**뿐이고, 그래서 안내가 "재조회 후 새 초안" 이다.
+    SpringUnavailableError 하위가 아니다 — 재시도해도 같은 결과라 catch-all 로 뭉개면
+    판매자가 무한 재confirm 에 갇힌다(I-12 ALREADY_DELETED 와 같은 규약)."""
 
 
 # ── I-30 발송 처리 예외 (이슈 #297, §4.19 — 🔶 초안, BE 협의 전) ──────────────────
@@ -1729,12 +1747,16 @@ class SpringClient:
 
         미설정 옵션 필드(originalPrice/category/description/imageUrl 등)는 exclude_none 으로
         본문에서 제외한다(opus 리뷰 m4) — null 전송 대신 필드 자체를 생략한다.
+
+        [#524] 422 `INVALID_STOCK` 은 전용 예외다 — 등록 시점엔 옵션이 없어 `optionId` 는
+        항상 null 이므로 여기 오는 건 수량 문제뿐이지만, 코드 구분을 I-11 과 대칭으로 둔다.
         """
         data = await self._request(
             "POST",
             f"/internal/seller/{brand_id}/products",
             operation="create_product",
             json_body=payload.model_dump(by_alias=True, exclude_none=True),
+            error_code_map={"INVALID_STOCK": InvalidStock},
         )
         return self._validate(ProductCreateResult, data)
 
@@ -1745,13 +1767,19 @@ class SpringClient:
 
         삭제된 상품 수정은 409 `PRODUCT_DELETED` 전용 예외 — 재시도 대상이 아니다(§4.5).
         `status` 로 `DELETED` 를 보내는 것도 BE 가 거부한다(삭제는 I-12 전용 전이).
+
+        [#524] 422 `INVALID_STOCK` 도 전용 예외다 — hitl 이 선차단하므로 정상 경로에서는
+        나지 않고, 초안과 실행 사이 옵션 변경 레이스만 여기로 온다(InvalidStock docstring).
         """
         data = await self._request(
             "PATCH",
             f"/internal/seller/{brand_id}/products/{product_id}",
             operation="update_product",
             json_body=patch.model_dump(by_alias=True, exclude_none=True),
-            error_code_map={"PRODUCT_DELETED": ProductDeletedNotEditable},
+            error_code_map={
+                "PRODUCT_DELETED": ProductDeletedNotEditable,
+                "INVALID_STOCK": InvalidStock,
+            },
         )
         return self._validate(ProductUpdateResult, data)
 
