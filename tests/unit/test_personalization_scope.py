@@ -15,6 +15,7 @@ from evals.personalization.live_adapter import (
     profile_for_scope,
 )
 from evals.personalization.overreach import clean_noisy_drop_verdict, count_verdict
+from evals.personalization.profile_markdown import render_profile_markdown
 from evals.scoring.adapter import weights_from_settings
 
 
@@ -176,4 +177,18 @@ def test_every_personalization_setting_changes_a_consumer() -> None:
             )
         ).profile_match
         == 0.9
+    )
+    # [#484] 강도 임계도 실제 소비자(마크다운 렌더러)의 출력을 바꾼다.
+    preferences = {"brands": {"이니스프리": 1.0, "설화수": 2 / 3}, "categories": {}}
+    assert "설화수 (중)" in render_profile_markdown(
+        preferences,
+        max_chars=strict.profile_summary_max_chars,
+        strength_bands=strict.personalization_eval_profile_strength_bands,
+    )
+    assert "설화수 (강)" in render_profile_markdown(
+        preferences,
+        max_chars=strict.profile_summary_max_chars,
+        strength_bands=Settings(
+            _env_file=None, personalization_eval_profile_strength_bands=(0.5, 0.3)
+        ).personalization_eval_profile_strength_bands,
     )
