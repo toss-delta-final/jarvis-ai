@@ -217,6 +217,14 @@ class ProfileSummary:
     markdown: str
     generated_at: str  # ISO-8601
     embedding: list[float] | None = None
+    # 단조 증가 쓰기 seq — 요약 compare-and-set 의 비교 대상이다(#323 잔여, #358).
+    # 잠금은 "동시에 쓰는 것"만 막는데, `consolidate` 는 그래프 락을 놓고 LLM 왕복(수 초)을 한
+    # 뒤에 쓰므로 그 창의 사용자 편집을 **시간상 겹치지 않은 채** 덮는다. 그건 CAS 로만 닫힌다.
+    # 구 요약은 키가 없어 0 으로 흡수된다.
+    seq: int = 0
+    # 개인화 중지가 내리는 사용 표식(REQ-PGRAPH-100). 본문은 그대로 두고 이 값만 내린다 —
+    # 중지는 삭제가 아니라서, 지우면 다시 켰을 때 되살릴 것이 없다. 구 요약은 True 로 흡수.
+    usable: bool = True
 
 
 @dataclass
@@ -256,9 +264,19 @@ class ProfileStore:
             generated_at=item.value["generated_at"],
             # 구 요약(embedding 신설 전)·임베딩 실패분은 키가 없다 — None 으로 흡수한다.
             embedding=list(embedding) if isinstance(embedding, list) and embedding else None,
+            # 신설 필드도 같은 규약으로 흡수한다 — 없다고 기존 사용자의 프로필이 사라지면 안 된다.
+            seq=int(item.value.get("seq", 0)),
+            usable=bool(item.value.get("usable", True)),
         )
 
-    async def set_summary(self, user_id: str, markdown: str, generated_at: str) -> None:
+    async def set_summary(
+        self,
+        user_id: str,
+        markdown: str,
+        generated_at: str,
+        *,
+        expected_seq: int | None = None,
+    ) -> bool:
         """요약을 저장한다. **[#148] 홈 추천용 취향 벡터를 함께 만들어 둔다.**
 
         여기는 sleep-time consolidation 경로라(요청 경로 아님) 임베딩 API 왕복을 감당할 수 있다.
@@ -275,6 +293,16 @@ class ProfileStore:
         먼저 읽은 쪽의 aput 이 나중에 실행돼 상대 쓰기를 소리 없이 덮어쓸 수 있다. `_embed_summary`
         (외부 Google API 왕복)는 저장된 상태를 읽지 않으므로 락 범위 밖에 둔다 — 락 안에 넣으면
         API 왕복(초 단위) 동안 다른 요약 쓰기가 불필요하게 막힌다.
+
+        **[#358] `expected_seq` 를 주면 compare-and-set 이다.** 잠금은 "동시에 쓰는 것"만 막는데,
+        `consolidate` 는 그래프 락을 놓고 LLM 왕복(수 초)을 한 뒤에 쓰므로 그 창의 사용자 편집을
+        **시간상 겹치지 않은 채** 덮는다(SPEC §7.4 "남은 부분"). 읽은 시점의 `seq` 를 지참하면
+        그 사이 바뀐 경우 쓰지 않고 `False` 를 돌려준다. `None` 이면 종전대로 무조건 쓴다.
+
+        `expected_seq=0` 과 `None` 은 **다른 뜻**이다 — 0 은 "요약이 없는 것을 봤다"이고 None 은
+        "검사하지 않는다"다. 0 을 falsy 로 흘려보내면 첫 요약 경합에서만 CAS 가 조용히 꺼진다.
+
+        돌려주는 값은 "실제로 썼는가"다.
         """
         embedding = await _embed_summary(markdown)
         async with mutation_lock(
@@ -282,17 +310,34 @@ class ProfileStore:
             f"profile:summary:{user_id}",
             _summary_lock(user_id),
         ):
-            if embedding is None:
+            existing: ProfileSummary | None = None
+            if embedding is None or expected_seq is not None:
                 # 폴백 조회 자체도 실패할 수 있다(pg-profile 일시 장애·타임아웃) — 여기서 안 잡으면
                 # 아래 요약 저장까지 통째로 죽어 "임베딩 실패가 요약 저장을 막지 않는다"는 보장이
                 # 깨진다(PR #213 리뷰). 벡터를 못 살리는 건 degrade, 요약 저장은 필수다.
                 try:
                     existing = await self.get_summary(user_id)
-                    embedding = existing.embedding if existing else None
                 except Exception:
                     logger.warning("profile_summary_embedding_carryover_failed")
-                    embedding = None
-            value: dict = {"markdown": markdown, "generated_at": generated_at}
+                    existing = None
+                if embedding is None:
+                    embedding = existing.embedding if existing else None
+
+            current_seq = existing.seq if existing else 0
+            if expected_seq is not None and expected_seq != current_seq:
+                # 내가 읽은 뒤로 바뀌었다 — 낡은 스냅샷으로 만든 요약이 사용자 편집을 덮지 않게
+                # 여기서 멈춘다. 호출부가 다시 읽고 판단한다.
+                logger.warning("profile_summary_cas_conflict")
+                return False
+
+            value: dict = {
+                "markdown": markdown,
+                "generated_at": generated_at,
+                "seq": current_seq + 1,
+                # 사용 표식은 승계한다 — 요약을 새로 썼다고 개인화 중지가 풀리면 안 된다
+                # (REQ-PGRAPH-063 과 같은 취지).
+                "usable": existing.usable if existing else True,
+            }
             if embedding is not None:
                 value["embedding"] = embedding
             await run_with_query_timeout(
@@ -302,6 +347,35 @@ class ProfileStore:
                     value,
                     index=False,  # 요약 전문은 semantic 인덱스 대상이 아니다(REQ-PROF-071 — facts 전용)
                 )
+            )
+            return True
+
+    async def mark_summary_usable(self, user_id: str, usable: bool) -> None:
+        """요약의 사용 표식만 내리거나 올린다 — 본문·벡터는 건드리지 않는다 (REQ-PGRAPH-100).
+
+        개인화 중지가 부르는 경로다. 중지는 **삭제가 아니라서** 본문을 지우면 사용자가 다시
+        켰을 때 되살릴 것이 없다. 요약이 없으면 조용히 넘어간다 — 중지 토글이 프로필 유무에
+        따라 실패하면 안 된다.
+
+        `seq` 는 올리지 않는다. 이 쓰기는 배치와 경합하는 내용 변경이 아니라 표식 전환이고,
+        올리면 진행 중인 배치의 정당한 CAS 를 이유 없이 실패시킨다.
+        """
+        async with mutation_lock(
+            self._store,
+            f"profile:summary:{user_id}",
+            _summary_lock(user_id),
+        ):
+            item = await run_with_query_timeout(
+                self._store.aget((_PROFILE_NS_ROOT, user_id), _SUMMARY_KEY)
+            )
+            if not item:
+                return
+            value = dict(item.value)
+            if bool(value.get("usable", True)) == usable:
+                return
+            value["usable"] = usable
+            await run_with_query_timeout(
+                self._store.aput((_PROFILE_NS_ROOT, user_id), _SUMMARY_KEY, value, index=False)
             )
 
     # ── 장기 fact (승격 결과·consolidation 입력) — fact 1개 = store item 1개(semantic 인덱스) ──

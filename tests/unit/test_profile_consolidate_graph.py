@@ -382,9 +382,9 @@ async def test_summary_is_written_outside_the_graph_lock(monkeypatch) -> None:
     held: list[bool] = []
     original = store_mod.ProfileStore.set_summary
 
-    async def _spy(self, user_id, markdown, generated_at):
+    async def _spy(self, user_id, markdown, generated_at, **kwargs):
         held.append(store_mod._graph_lock(user_id).locked())  # noqa: SLF001
-        return await original(self, user_id, markdown, generated_at)
+        return await original(self, user_id, markdown, generated_at, **kwargs)
 
     monkeypatch.setattr(store_mod.ProfileStore, "set_summary", _spy)
 

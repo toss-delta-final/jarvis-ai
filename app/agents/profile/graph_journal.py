@@ -927,6 +927,74 @@ async def set_personalization_flag(
     return True
 
 
+async def set_personalization(
+    *, user_id: int, enabled: bool, request_id: str, now: str, if_match: str | None = None
+) -> GraphMutationResult:
+    """개인화 중지·재개 (§7.2 3행, REQ-PGRAPH-050~052).
+
+    **락을 두 개 쥐지 않는다.** 플래그는 단일 행 upsert 라 그 자체로 원자적이고, 요약 표식만
+    기존 요약 락 아래에서 내린다(`store.mark_summary_usable`). 그래프 락과 요약 락을 동시에
+    잡으면 advisory 풀에서 커넥션을 둘 점유해 구매자 hot-path 가 3초 타임아웃으로 죽는다
+    (`store.py` 실측 주석) — SPEC §7.2 의 "같은 잠금 아래" 문구는 이 제약에 맞춰 읽는다.
+
+    `If-Match` 는 선택이다(api-spec §3.9.5). 주면 존중하고, 없으면 원장을 쓰지 않는다 —
+    본문이 상태값 하나뿐이라 no-op 판정이 재전송 보호를 대신한다.
+
+    같은 값이면 no-op 이다: 감사 행도 원장도 남기지 않고 버전도 그대로다(REQ-PGRAPH-080).
+    """
+    from app.agents.profile.store import get_profile_store
+
+    store = await get_profile_store()
+    settings = get_settings()
+
+    document = await store.get_graph(str(user_id))
+    current = graph_version(document.revision) if document else "g0"
+    if if_match is not None and normalize_if_match(if_match) != current:
+        raise GraphVersionConflict(current)
+
+    key = derived_key("personalizationToggle", user_id, "", if_match) if if_match else None
+    token = None
+    try:
+        if key is not None:
+            replayed = await _replay_if_completed(key, document)
+            if replayed is not None:
+                return replayed
+            token = await claim(
+                key, user_id=user_id, scope_id=None, lease_s=settings.session_end_claim_ttl_s
+            )
+            if token is None:
+                raise GraphVersionConflict(current)
+
+        changed = await set_personalization_flag(
+            user_id=user_id, enabled=enabled, now=now, graph_version_token=current
+        )
+        if not changed:
+            if key is not None and token is not None:
+                await release(key, token)
+            return GraphMutationResult(graph_version=current, replayed=True)
+
+        # 표식 하향은 **플래그 뒤**다. 플래그가 정본이고 표식은 소비 경로의 이중 방어라
+        # (REQ-PGRAPH-100), 순서를 뒤집으면 표식만 내려간 채 중지가 안 걸린 창이 생긴다.
+        await store.mark_summary_usable(str(user_id), enabled)
+
+        await record_audit(
+            user_id=user_id,
+            request_id=request_id,
+            action="personalizationToggle",
+            graph_version_before=current,
+            graph_version_after=current,  # 그래프 문서는 안 바뀐다 — 중지는 데이터 변경이 아니다
+        )
+        if key is not None and token is not None:
+            await complete(key, token, {"graphVersion": current, "personalization": enabled})
+        return GraphMutationResult(graph_version=current, replayed=False)
+    except GraphMutationError:
+        raise
+    except Exception as exc:
+        if is_state_store_unavailable(exc):
+            raise GraphStoreUnavailable(str(exc)) from exc
+        raise
+
+
 async def reset_graph(
     *, user_id: int, if_match: str, request_id: str, now: str, lease_s: float | None = None
 ) -> GraphMutationResult:

@@ -203,6 +203,11 @@ async def consolidate(user_id: str, *, llm, settings) -> ConsolidationResult:
         document = build_graph_document(facts, existing=existing, settings=settings, now=now)
         await store.set_graph(user_id, document)
         summary_input = _summary_input(document, facts)
+        # **LLM 왕복 전에** 요약 seq 를 읽어 둔다 (#323 잔여, #358). 아래 `set_summary` 는 락을
+        # 놓고 수 초 뒤에 실행되므로, 그 창에서 사용자가 요약을 고치면 이 낡은 스냅샷이 그
+        # 편집을 덮는다 — 두 쓰기가 시간상 겹치지 않아 잠금으로는 안 닫히는 갭이다.
+        observed = await store.get_summary(user_id)
+        expected_seq = observed.seq if observed else 0
 
     if not summary_input:
         # **기존 요약을 지우지 않는다.** 빈 문자열로 덮으면 마이페이지·rerank 는 취향을 잃는데
@@ -224,7 +229,10 @@ async def consolidate(user_id: str, *, llm, settings) -> ConsolidationResult:
     markdown = (raw or "").strip()[: settings.profile_summary_max_chars]
     if not markdown:
         return ConsolidationResult.FAILED
-    await store.set_summary(user_id, markdown, now)
+    if not await store.set_summary(user_id, markdown, now, expected_seq=expected_seq):
+        # 그 사이 사용자가 요약을 고쳤다 — 낡은 스냅샷으로 덮지 않고 물러난다. 다음 배치가
+        # 새 상태를 읽고 다시 만든다. 그래프는 이미 갱신됐으므로 실패가 아니라 no-op 이다.
+        return ConsolidationResult.NO_WORK
     return ConsolidationResult.UPDATED
 
 
