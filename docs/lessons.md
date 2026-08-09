@@ -13,6 +13,27 @@
 
 ---
 
+## [2026-08-09] OS별 구현이 다른 저수준 API를 전역 패치로 막으면 CI가 초록인 채 로컬만 죽는다
+- 증상: 유닛 스위트가 Windows 로컬에서 **556건 실패 / 4716 통과**. 실패가 `test_home_recommendation`
+  (66)·`test_seller_api`(64)·`test_auth_e2e`(59)처럼 **async 비중이 높은 파일 순서**로 몰렸고, 오류는
+  전부 `ConnectionRefusedError: unit tests must not open live TCP connections` + teardown 경고
+  `'ProactorEventLoop' object has no attribute '_ssock'`. 같은 커밋에서 CI(ubuntu-latest)는 전부 success.
+- 원인: 바로 아래 항목의 TCP 격리 가드가 `socket.socket`을 전역 패치해 AF_INET/AF_INET6 `connect`를
+  거부하는데, **Windows에는 AF_UNIX socketpair가 없어** CPython이 `socket.socketpair()`를
+  127.0.0.1 리스닝 소켓 + `connect()`로 흉내낸다. asyncio는 이벤트 루프 생성 시 self-pipe를
+  socketpair로 만들므로 **루프 생성 자체가 실패**했다(`_ssock` 미설정이 그 흔적). 리눅스·macOS는
+  커널 AF_UNIX라 `connect()`를 타지 않아 이 경로가 아예 없다.
+- 규칙: **테스트 격리를 위해 저수준 API를 전역 패치할 때는 그 API의 OS별 구현 차이를 먼저 확인한다.**
+  `socketpair`·`pipe`·`fork`처럼 POSIX 원형이 Windows에서 에뮬레이션되는 것들이 대상이다. 그리고
+  차단 가드는 **"막는 것"과 "통과해야 하는 것"을 같은 파일에서 둘 다 테스트로 고정**한다 — 막는
+  쪽만 재면 이런 과차단을 못 잡고, 통과 쪽만 재면 가드에 뚫린 구멍을 못 잡는다. 예외 범위를
+  스레드 전역이 아니라 **스레드 로컬**로 두는 것도 같은 이유다(예외 구간에 다른 스레드의 실 TCP가
+  묻어 통과하면 안 된다).
+- 규칙(추가): **CI가 단일 OS면 그 OS에서만 성립하는 회귀는 영영 안 잡힌다.** 로컬 전용 실패를
+  "환경 탓"으로 넘기기 전에 원인을 한 번은 분류한다 — 여기서는 그 분류가 실제 버그를 찾아냈다.
+- 관련: `tests/unit/conftest.py::_guarded_socketpair` · `tests/unit/test_unit_tcp_guard.py` ·
+  `.github/workflows/ci.yml:10`(ubuntu-latest) · #474 회귀, #358 작업 중 발견
+
 ## [2026-08-09] 유닛 테스트는 로컬 BE가 살아 있어도 TCP를 열면 안 된다
 - 증상: 로컬 Spring BE가 8080에서 실행 중이고 `.env`의 내부 토큰이 채워지면 재구매·완화 유닛
   테스트가 실제 응답을 받아 CI와 다른 단언 결과를 냈다.
