@@ -21,6 +21,22 @@
 - 규칙: format은 이번에 수정한 파일 목록만 인자로 넘기고, 전체 검증은 `uv run ruff check`로 한다.
 - 관련: #406 · `.github/workflows/ci.yml` · `docs/lessons.md`
 
+## [2026-08-09] 범위 대조는 선언된 건수보다 열거된 식별자를 우선한다
+- 증상: #472 정본 인덱스는 범위를 44건이라 표기했지만, 실제 열거는 internal 36건·chat 6건·S-4·P-4/P-5·E-1로 46건이었다.
+- 원인: 요약 집계와 개별 범위 목록이 독립적으로 수정돼 산술 검증이 빠졌다.
+- 규칙: 전수 대조표는 식별자 열거를 기준으로 만들고, 선언 건수와 다르면 누락시키지 말고 불일치와 산식을 감사 결과에 기록한다.
+- 관련: `docs/api-spec-canonical-audit.md` #472 범위 기준
+
+---
+
+## [2026-08-09] 로컬 pytest 무더기 실패는 워크트리 환경을 먼저 분리해 재현한다
+- 증상: #472에서 로컬 `uv run pytest`가 38건 실패했다.
+- 원인: 워크트리의 `.env`가 테스트 환경에 개입했지만, CI는 `.env` 없이 실행한다.
+- 규칙: 무더기 실패 시 자기 변경이나 dev 환경을 의심하기 전에 `.env`를 내용을 열지 않고 잠시 치운 뒤 재현하고 반드시 되돌린다.
+- 관련: #472 검증 기록
+
+---
+
 ## [2026-08-09] 유닛 테스트는 로컬 BE가 살아 있어도 TCP를 열면 안 된다
 - 증상: 로컬 Spring BE가 8080에서 실행 중이고 `.env`의 내부 토큰이 채워지면 재구매·완화 유닛
   테스트가 실제 응답을 받아 CI와 다른 단언 결과를 냈다.
@@ -39,6 +55,22 @@
 - 관련: `evals/goldenset/refresh_manifest.py::HASH_EXCLUDED_PATHS` ·
   `tests/unit/test_goldenset_audit.py` · #474
 
+## [2026-08-08] 로컬 BE 가 떠 있으면 유닛 테스트가 라이브 BE 를 친다 — `dev` 나 내 변경을 의심하기 전에 `.env` 를 무력화해 재현하라
+- 증상: 문서 2개만 고친 상태에서 `uv run pytest` 가 **38건 실패**했다(재구매 지목·완화 경로).
+  같은 커밋이 6시간 전엔 4829 passed 였고 **CI 도 초록**이었다. 실패는 결정적이었고(ordering
+  무관, `-p no:randomly` 동일) 문서를 stash 해도 그대로였다.
+- 원인: 누군가 3시간 전 로컬에 **Spring BE(:8080)·mariadb·redis 를 띄웠고**, 이 worktree `.env`
+  에 유효한 `INTERNAL_API_TOKEN` 이 있어 **유닛 테스트가 라이브 BE 를 호출**했다. 그래서 주입한
+  가짜 검색 대신 실 카탈로그 상품 id 가 push 페이로드에 실렸다. `tests/conftest.py` 는
+  `OPENAI/ANTHROPIC/GOOGLE_API_KEY` 만 비우고 **`INTERNAL_API_TOKEN` 은 비우지 않는다** —
+  CI 는 BE 가 없어서 이 갭이 드러나지 않았다.
+- 규칙: 로컬 pytest 가 CI 와 다르게 깨지면 **코드보다 환경을 먼저 의심한다**. 순서는
+  (1) `Settings()` vs `Settings(_env_file=None)` 의 **차이 나는 필드 이름만** 뽑아 본다
+  (값 출력 금지 — 시크릿이 섞인다), (2) 후보를 하나씩 빈 값으로 덮어 이분한다
+  (`INTERNAL_API_TOKEN= uv run pytest ...`), (3) `docker ps` 로 로컬 BE·DB 기동 여부를 본다.
+  `.env` 를 읽거나 옮기지 말 것 — 덮어쓰기(override)만으로 판정된다.
+- 관련: `tests/conftest.py`(키 3종만 무력화), `app/core/config.py::Settings.model_config`
+  (`env_file=".env"`, CWD 상대), #395 작업 중 발견
 ## [2026-08-08] `ruff format` 을 인자 없이 돌려 무관한 파일 30개가 diff 에 딸려 왔다
 - 증상: #438 작업 중 `CLAUDE.md` "자동 정리: `uv run ruff check --fix && uv run ruff format`" 을
   문자 그대로 인자 없이(= 저장소 전체 대상) 돌렸더니, 이번 이슈와 무관한 파일 30개가 순수 포맷
