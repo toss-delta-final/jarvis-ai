@@ -87,9 +87,7 @@ async def test_reset_clears_graph_facts_summary_and_buffer() -> None:
     """개인화 데이터가 실제로 사라진다 — "초기화했다"가 사실이어야 한다."""
     await _seed()
 
-    await graph_journal.reset_graph(
-        user_id=int(USER), if_match="g42", request_id="req-1", now=NOW
-    )
+    await graph_journal.reset_graph(user_id=int(USER), if_match="g42", request_id="req-1", now=NOW)
 
     store = await get_profile_store()
     document = await store.get_graph(USER)
@@ -105,16 +103,14 @@ async def test_reset_leaves_no_label_anywhere_in_the_document() -> None:
     await _seed()
     await graph_journal.apply_edge_mutation(
         user_id=int(USER),
-        action="edgeSuppress",
+        action="edgeDelete",
         edge_id=SONY,
         if_match="g42",
         request_id="req-0",
         now=NOW,
     )
 
-    await graph_journal.reset_graph(
-        user_id=int(USER), if_match="g43", request_id="req-1", now=NOW
-    )
+    await graph_journal.reset_graph(user_id=int(USER), if_match="g43", request_id="req-1", now=NOW)
 
     document = await (await get_profile_store()).get_graph(USER)
     assert document is not None
@@ -126,9 +122,7 @@ async def test_reset_records_when_it_happened() -> None:
     """`purged_at` 이 남아야 "언제 초기화됐나"를 문서만 보고도 안다."""
     await _seed()
 
-    await graph_journal.reset_graph(
-        user_id=int(USER), if_match="g42", request_id="req-1", now=NOW
-    )
+    await graph_journal.reset_graph(user_id=int(USER), if_match="g42", request_id="req-1", now=NOW)
 
     document = await (await get_profile_store()).get_graph(USER)
     assert document is not None and document.purged_at == NOW
@@ -142,19 +136,17 @@ async def test_reset_preserves_the_audit_log() -> None:
     await _seed()
     await graph_journal.apply_edge_mutation(
         user_id=int(USER),
-        action="edgeSuppress",
+        action="edgeDelete",
         edge_id=SONY,
         if_match="g42",
         request_id="req-0",
         now=NOW,
     )
 
-    await graph_journal.reset_graph(
-        user_id=int(USER), if_match="g43", request_id="req-1", now=NOW
-    )
+    await graph_journal.reset_graph(user_id=int(USER), if_match="g43", request_id="req-1", now=NOW)
 
     rows = await graph_journal.list_audit(user_id=int(USER))
-    assert [row.action for row in rows] == ["edgeSuppress", "graphReset"]
+    assert [row.action for row in rows] == ["edgeDelete", "graphReset"]
 
 
 async def test_reset_does_not_change_the_personalization_flag() -> None:
@@ -166,9 +158,7 @@ async def test_reset_does_not_change_the_personalization_flag() -> None:
     await _seed()
     await graph_journal.set_personalization_flag(user_id=int(USER), enabled=False, now=NOW)
 
-    await graph_journal.reset_graph(
-        user_id=int(USER), if_match="g42", request_id="req-1", now=NOW
-    )
+    await graph_journal.reset_graph(user_id=int(USER), if_match="g42", request_id="req-1", now=NOW)
 
     assert await graph_journal.get_personalization_flag(user_id=int(USER)) is False
 
@@ -200,7 +190,7 @@ async def test_revision_never_falls_below_the_audit_floor() -> None:
     await _seed(revision=42)
     await graph_journal.apply_edge_mutation(
         user_id=int(USER),
-        action="edgeSuppress",
+        action="edgeDelete",
         edge_id=SONY,
         if_match="g42",
         request_id="req-0",
@@ -237,6 +227,42 @@ async def test_reset_honours_if_match() -> None:
 
     document = await (await get_profile_store()).get_graph(USER)
     assert document is not None and len(document.edges) == 1  # 아무것도 안 지워졌다
+
+
+async def test_reset_invalidates_the_users_ledger_entries() -> None:
+    """초기화는 그 사용자의 원장을 무효화한다 (REQ-PGRAPH-028 잔여, AC-PGRAPH-15).
+
+    원장 TTL(시간 단위)이 초기화 시점보다 길 수 있다. 무효화하지 않으면 **purge 로 사라진 edge 를
+    향한 재전송이 원장 히트로 "성공"을 재생한다** — 되돌릴 대상이 없는데 호출자에게는 성공으로
+    보인다. 개별 삭제 재전송(`200 replayed`)과는 트리거가 다르므로 한 판정으로 묶지 않는다.
+    """
+    await _seed(revision=42)
+    key = graph_journal.derived_key("edgeDelete", USER, SONY, "g42")
+    await graph_journal.apply_edge_mutation(
+        user_id=int(USER),
+        action="edgeDelete",
+        edge_id=SONY,
+        if_match="g42",
+        request_id="req-0",
+        now=NOW,
+    )
+    assert await graph_journal.lookup(key) is not None  # 삭제 응답이 원장에 있다
+
+    await graph_journal.reset_graph(user_id=int(USER), if_match="g43", request_id="req-1", now=NOW)
+
+    assert await graph_journal.lookup(key) is None
+
+
+async def test_reset_does_not_touch_another_users_ledger() -> None:
+    """무효화는 그 사용자 것만 — 남의 재전송 보호를 걷어내면 안 된다."""
+    other_key = graph_journal.derived_key("edgeDelete", "999", SONY, "g1")
+    token = await graph_journal.claim(other_key, user_id=999, scope_id=SONY, lease_s=60)
+    await graph_journal.complete(other_key, token, {"graphVersion": "g2"})
+    await _seed(revision=42)
+
+    await graph_journal.reset_graph(user_id=int(USER), if_match="g42", request_id="req-1", now=NOW)
+
+    assert await graph_journal.lookup(other_key) is not None
 
 
 async def test_reset_replay_does_not_purge_twice() -> None:

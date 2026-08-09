@@ -63,7 +63,7 @@ async def test_no_column_contains_the_raw_user_id_or_label() -> None:
     await graph_journal.record_audit(
         user_id=USER_ID,
         request_id="req-1",
-        action="edgeSuppress",
+        action="edgeDelete",
         graph_version_before="g42",
         graph_version_after="g43",
         edge_id_before="e_old",
@@ -84,7 +84,7 @@ async def test_same_input_yields_the_same_fingerprint() -> None:
         await graph_journal.record_audit(
             user_id=USER_ID,
             request_id=request_id,
-            action="edgeSuppress",
+            action="edgeDelete",
             graph_version_before="g42",
             graph_version_after="g43",
             object_label=LABEL,

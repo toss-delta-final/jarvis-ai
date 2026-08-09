@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS profile_graph_audit (
     graph_version_after text NOT NULL,
     created_at timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT profile_graph_audit_action_check CHECK (action IN (
-        'edgeUpdate', 'edgeSuppress', 'graphReset', 'personalizationToggle'
+        'edgeUpdate', 'edgeDelete', 'graphReset', 'personalizationToggle'
     ))
 );
 

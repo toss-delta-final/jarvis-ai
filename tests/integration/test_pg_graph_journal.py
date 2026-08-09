@@ -191,7 +191,7 @@ async def test_no_audit_column_holds_the_raw_user_id_or_label(pool, audit_user: 
     await graph_journal.record_audit(
         user_id=audit_user,
         request_id="req-integration",
-        action="edgeSuppress",
+        action="edgeDelete",
         graph_version_before="g42",
         graph_version_after="g43",
         edge_id_before="e_old",

@@ -13,6 +13,29 @@
 
 ---
 
+## [2026-08-10] CHECK 제약의 어휘를 바꾸면 DROP → 행 이행 → ADD 셋이 한 세트다
+- 증상: 감사 `action` 어휘를 `edgeSuppress`→`edgeDelete` 로 개명(#499)하면서 **세 번 연속으로
+  다른 실패**를 밟았고, 매번 **기존 데이터가 있는 볼륨에서만** 터졌다.
+  1. 코드·DDL 문자열만 바꿨다 → `IF NOT EXISTS` 로 감싼 `ADD CONSTRAINT` 가 아무것도 안 해서
+     **이름이 같은 낡은 CHECK 가 그대로 남았고**, 새 값 INSERT 가 거부됐다.
+  2. 제약을 DROP 후 재생성했다 → 옛 값이 든 기존 행 6건 때문에 `ADD CONSTRAINT` **검증이 실패**해
+     `_ensure_schema` 전체가 죽었고, dev 폴백이 그 예외를 삼켜 "풀이 안 열림"으로만 보였다.
+  3. 행을 먼저 UPDATE 했다 → **낡은 CHECK 가 아직 살아 있어** 새 값이 거부됐다
+     (`new row for relation ... violates check constraint`).
+- 원인: `CREATE ... IF NOT EXISTS` / `DO $$ IF NOT EXISTS ... ADD CONSTRAINT $$` 관용구는
+  **"없으면 만든다"이지 "다르면 고친다"가 아니다.** 그리고 제약과 데이터는 서로를 막는다 —
+  제약이 살아 있으면 데이터를 못 고치고, 데이터가 낡았으면 제약을 못 건다.
+- 규칙: **enum 성격의 CHECK 어휘를 바꾸면 한 트랜잭션 안에서 `DROP CONSTRAINT IF EXISTS` →
+  기존 행 UPDATE → `ADD CONSTRAINT` 순서로 쓴다.** 셋 중 하나만 빠져도 빈 볼륨(CI·새 개발자)에서는
+  통과하고 **데이터가 있는 볼륨에서만** 깨진다 — 즉 운영에서 처음 드러난다.
+- 규칙(추가): **DDL 실패가 dev 폴백에 삼켜지면 증상이 "연결 실패"로 위장한다.** `_get_pool` 이
+  `except Exception → InMemory 폴백` 이라 진짜 원인(제약 위반)이 안 보였다. 스키마 오류를 쫓을
+  때는 폴백을 우회해 `_ensure_schema` 를 직접 부르거나, psql 로 같은 DDL 을 실행해 본다.
+  (Windows 에서 psycopg async 를 스크립트로 직접 돌리면 `ProactorEventLoop` 비호환이라
+  `docker exec ... psql` 이 더 빠르다.)
+- 관련: `app/agents/profile/graph_journal.py::_ensure_schema` ·
+  `tests/integration/test_pg_graph_journal.py` · #358 / #499
+
 ## [2026-08-10] "되돌리면 깨지는지"를 실제로 해 보면 테스트가 주장을 안 재고 있는 게 드러난다
 - 증상: #358 조립부에서 `409` 경로의 claim 롤백(`release`)을 **일부러 제거했는데 14건이 전부
   통과**했다. `test_conflict_releases_the_claim_so_a_corrected_retry_can_proceed` 라는 이름을 달고

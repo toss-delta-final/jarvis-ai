@@ -99,7 +99,7 @@ def test_mutations_have_no_llm_or_io_seam() -> None:
         assert "now" in params
 
 
-# ─────────── 삭제(edgeSuppress) ───────────
+# ─────────── 삭제(edgeDelete) ───────────
 
 
 def test_suppression_removes_the_edge_and_its_orphan_node() -> None:

@@ -516,6 +516,36 @@ class ProfileStore:
 
         return counts
 
+    async def delete_facts_backing(self, user_id: str, edge_ids: set[str]) -> int:
+        """주어진 edge 를 근거로 하는 fact 를 **물리 삭제**한다 (#358, REQ-PGRAPH-025 [HARD]).
+
+        사용자가 edge 를 지우면 라벨뿐 아니라 **그 근거 fact 원문까지** 그 자리에서 사라져야
+        한다 — 안 그러면 "지웠다"고 믿는 문장이 저장소에 그대로 남는다.
+
+        **한 fact 가 여러 취향을 담고 그중 하나만 지워졌어도 통째로 지운다.** 그 원문에는 지운
+        취향이 그대로 적혀 있어 살려 두면 다음 배치가 다시 읽는다 — 삭제가 이긴다. `_summary_input`
+        이 이미 같은 규칙(부분 일치도 통째 제외)을 쓰고 있어 두 경로가 일관된다.
+
+        판정은 fact 자신의 트리플로 한다 — edge 의 `evidence_refs` 는 `graph_evidence_refs_max`
+        로 잘린 저장용 목록이라, 그걸 쓰면 상한을 넘겨 언급된 오래된 근거가 지워지지 않고 남는다.
+        """
+        if not edge_ids:
+            return 0
+        removed = 0
+        async with mutation_lock(self._store, f"profile:facts:{user_id}", _fact_lock(user_id)):
+            items = await run_with_query_timeout(
+                self._store.asearch((_FACTS_NS_ROOT, user_id), limit=_PURGE_SCAN_LIMIT)
+            )
+            for item in items:
+                triples = item.value.get("graph_triples") or []
+                if not any(triple.get("edge_id") in edge_ids for triple in triples):
+                    continue
+                await run_with_query_timeout(
+                    self._store.adelete((_FACTS_NS_ROOT, user_id), item.key)
+                )
+                removed += 1
+        return removed
+
     def graph_lock(self, user_id: str) -> AbstractAsyncContextManager[None]:
         """그래프 문서 RMW 직렬화 잠금.
 

@@ -54,7 +54,7 @@ SCHEMA_LOCK_KEY = "schema:profile_graph:lifecycle"
 # 감사 액션 어휘 (SPEC §5.4). **`edgeRestore` 는 없다** — #499 가 I-35(복구)를 폐기하고 개별
 # 삭제를 즉시 물리 삭제로 바꿨다. DB CHECK 와 이 튜플이 같은 어휘를 강제해야 dev 폴백에서
 # 통과한 값이 운영에서 거부되는 일이 안 생긴다.
-GraphAuditAction = Literal["edgeUpdate", "edgeSuppress", "graphReset", "personalizationToggle"]
+GraphAuditAction = Literal["edgeUpdate", "edgeDelete", "graphReset", "personalizationToggle"]
 AUDIT_ACTIONS: tuple[str, ...] = get_args(GraphAuditAction)
 
 
@@ -284,24 +284,33 @@ async def _ensure_schema(pool: AsyncConnectionPool) -> None:
                     )
                     """
                 )
+                # **어휘가 바뀌면 제약과 기존 행이 함께 이행돼야 한다.**
+                #
+                # `IF NOT EXISTS` 로만 두면 이름이 같은 낡은 CHECK 가 기존 볼륨에 남아, 새
+                # 어휘(`edgeSuppress`→`edgeDelete`, #499)의 INSERT 가 **운영에서만** 거부된다.
+                # 그렇다고 제약만 갈면 이번엔 옛 값이 든 행 때문에 `ADD CONSTRAINT` 검증이
+                # 실패해 스키마 초기화 전체가 죽는다 — 둘 다 통합 테스트가 실제로 잡았다.
+                #
+                # 그래서 **제약 해제 → 행 이행 → 제약 재생성** 순서다. 순서가 중요하다: 낡은
+                # CHECK 를 그대로 둔 채 UPDATE 하면 새 값이 그 CHECK 에 걸려 거부된다
+                # (`new row ... violates check constraint` — 실제로 밟았다).
+                #
+                # 이 UPDATE 는 감사 내용을 바꾸는 것이 아니라 같은 사건의 이름을 새 어휘로 옮기는
+                # 것이라 REQ-PGRAPH-062(감사 보존)와 어긋나지 않는다. 값이 이미 새 어휘면 0행이라
+                # 재실행이 안전하다.
                 await conn.execute(
-                    """
-                    DO $$
-                    BEGIN
-                        IF NOT EXISTS (
-                            SELECT 1 FROM pg_constraint
-                            WHERE conname = 'profile_graph_audit_action_check'
-                              AND conrelid = 'profile_graph_audit'::regclass
-                        ) THEN
-                            ALTER TABLE profile_graph_audit
-                                ADD CONSTRAINT profile_graph_audit_action_check
-                                CHECK (action IN (
-                                    'edgeUpdate', 'edgeSuppress',
-                                    'graphReset', 'personalizationToggle'
-                                ));
-                        END IF;
-                    END $$
-                    """
+                    "ALTER TABLE profile_graph_audit "
+                    "DROP CONSTRAINT IF EXISTS profile_graph_audit_action_check"
+                )
+                await conn.execute(
+                    "UPDATE profile_graph_audit SET action = 'edgeDelete' "
+                    "WHERE action = 'edgeSuppress'"
+                )
+                await conn.execute(
+                    "ALTER TABLE profile_graph_audit "
+                    "ADD CONSTRAINT profile_graph_audit_action_check "
+                    "CHECK (action IN "
+                    "('edgeUpdate', 'edgeDelete', 'graphReset', 'personalizationToggle'))"
                 )
                 await conn.execute(
                     "CREATE INDEX IF NOT EXISTS idx_profile_graph_audit_actor "
@@ -768,7 +777,7 @@ async def apply_edge_mutation(
     `GraphVersionConflict`·`GraphEdgeNotFound`·`GraphStoreUnavailable` 을 던진다 — 상태 코드
     매핑은 호출자가 생기는 #360 몫이다(`graph_errors` docstring).
     """
-    if action not in ("edgeUpdate", "edgeSuppress"):
+    if action not in ("edgeUpdate", "edgeDelete"):
         raise ValueError(f"unsupported edge mutation action: {action}")
 
     # 지연 임포트로 순환을 끊는다 — `store` 는 테스트 격리를 위해 이 모듈의 `reset()` 을 부르고
@@ -1038,6 +1047,9 @@ async def reset_graph(
             revision = await next_revision(user_id=user_id, existing=document)
             purged = await store.purge_personal_data(str(user_id))
             turns = await _delete_transcripts(user_id)
+            # 진행 중인 이 초기화의 키는 남긴다 — 지우면 아래 `complete` 가 쓴 표식이 사라져
+            # 초기화 재전송이 다시 실행된다.
+            await invalidate_ledger(user_id=user_id, keep=key)
             await store.set_graph(
                 str(user_id),
                 empty_document(now).model_copy(update={"revision": revision, "purged_at": now}),
@@ -1062,6 +1074,42 @@ async def reset_graph(
             raise
 
 
+async def invalidate_ledger(*, user_id: int, keep: str | None = None) -> int:
+    """이 사용자의 원장 항목을 지운다 — purge 후 "성공" 재생을 막는다 (REQ-PGRAPH-028).
+
+    원장 TTL(`graph_idempotency_ttl_h`, 시간 단위)이 초기화 시점보다 길 수 있다. 무효화하지
+    않으면 purge 로 사라진 edge 를 향한 재전송이 원장 히트로 **되돌릴 대상이 없는 "성공"을
+    재생**한다. 두 보존 기간의 대소를 조정해 맞추려 들면 안 된다 — SPEC §11 이 "운영자가 값을
+    바꾸면 조용히 깨지는 불변식을 만들지 않는다"로 금지한 패턴이다.
+
+    `keep` 은 진행 중인 초기화 자신의 키다. 그것까지 지우면 방금 쓴 완료 표식이 사라져 초기화
+    재전송이 다시 실행된다 — 부작용 1회 보장이 깨진다.
+
+    **개별 삭제 재전송과는 트리거가 다르다.** 그쪽은 원문이 없어도 `200 replayed` 여야 한다
+    (AC-PGRAPH-16). 여기서 지우는 것은 *초기화*라는 별개 사건이 원장을 낡게 만든 경우다.
+    """
+    pool = await _get_pool()
+    if pool is None:
+        entries = _fallback_table("idempotency")
+        doomed = [
+            key for key, entry in entries.items() if entry.user_id == int(user_id) and key != keep
+        ]
+        for key in doomed:
+            del entries[key]
+        return len(doomed)
+
+    async def _run() -> int:
+        async with pool.connection() as conn:
+            cur = await conn.execute(
+                "DELETE FROM profile_graph_idempotency "
+                "WHERE user_id = %s AND derived_key IS DISTINCT FROM %s",
+                (int(user_id), keep),
+            )
+            return cur.rowcount
+
+    return await run_with_query_timeout(_run())
+
+
 async def _delete_transcripts(user_id: int) -> int:
     """전사록 삭제 — 다른 저장소라 실패해도 초기화 전체를 되돌리지 않는다.
 
@@ -1083,7 +1131,7 @@ async def _delete_transcripts(user_id: int) -> int:
 def _request_fingerprint(action: str, predicate: str | None, node: GraphNode | None) -> str | None:
     """요청 본문의 지문 — 같은 파생 키·다른 본문을 가르는 재료.
 
-    `edgeSuppress` 는 본문이 없어(경로에 신원과 대상이 전부 있다) `None` 이다 — 같은 키면 같은
+    `edgeDelete` 는 본문이 없어(경로에 신원과 대상이 전부 있다) `None` 이다 — 같은 키면 같은
     요청이 맞다. `edgeUpdate` 만 `(predicate, nodeId)` 로 지문을 만든다. 라벨이 아니라
     `node_id` 를 쓰는 것은 그것이 이미 정규화된 값이라 표기 변형이 다른 지문을 만들지 않기
     때문이다.
@@ -1138,7 +1186,7 @@ async def _apply_claimed(
         await release(key, token)
         raise GraphVersionConflict(before)
 
-    if action == "edgeSuppress":
+    if action == "edgeDelete":
         updated, outcome = apply_suppression(document, edge_id=edge_id, now=now)
     else:
         if predicate is None or node is None:
@@ -1159,6 +1207,11 @@ async def _apply_claimed(
     await store.set_graph(
         str(user_id), updated.model_copy(update={"revision": document.revision + 1})
     )
+    if action == "edgeDelete":
+        # [HARD] 원문은 **그 요청을 처리하는 시점에** 사라져야 한다(REQ-PGRAPH-025) — 라벨만
+        # 지우고 근거 fact 를 남기면 사용자가 "지웠다"고 믿는 문장이 저장소에 그대로 있다.
+        # 문서 쓰기 뒤에 두는 이유: 문서 쓰기가 실패하면 fact 는 살아 있어야 한다(무손상).
+        await store.delete_facts_backing(str(user_id), {edge_id})
 
     # 문서 쓰기가 성공한 **뒤에만** 기록한다.
     await record_audit(
@@ -1176,7 +1229,7 @@ async def _apply_claimed(
         "graphVersion": after,
         "edgeId": outcome.edge_id_after,
         "merged": outcome.merged,
-        "suppressed": action == "edgeSuppress",
+        "suppressed": action == "edgeDelete",
     }
     await complete(key, token, payload)
     return GraphMutationResult(
@@ -1184,5 +1237,5 @@ async def _apply_claimed(
         replayed=False,
         edge_id=outcome.edge_id_after,
         merged=outcome.merged,
-        suppressed=action == "edgeSuppress",
+        suppressed=action == "edgeDelete",
     )

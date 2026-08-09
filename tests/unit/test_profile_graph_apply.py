@@ -99,7 +99,7 @@ async def test_suppress_applies_and_bumps_the_revision() -> None:
 
     result = await graph_journal.apply_edge_mutation(
         user_id=int(USER),
-        action="edgeSuppress",
+        action="edgeDelete",
         edge_id=SONY,
         if_match="g42",
         request_id="req-1",
@@ -121,7 +121,7 @@ async def test_success_writes_exactly_one_audit_row() -> None:
 
     await graph_journal.apply_edge_mutation(
         user_id=int(USER),
-        action="edgeSuppress",
+        action="edgeDelete",
         edge_id=SONY,
         if_match="g42",
         request_id="req-1",
@@ -130,7 +130,7 @@ async def test_success_writes_exactly_one_audit_row() -> None:
 
     rows = await graph_journal.list_audit(user_id=int(USER))
     assert len(rows) == 1
-    assert rows[0].action == "edgeSuppress"
+    assert rows[0].action == "edgeDelete"
     assert rows[0].graph_version_before == "g42"
     assert rows[0].graph_version_after == "g43"
     assert rows[0].edge_id_before == SONY
@@ -143,7 +143,7 @@ async def test_if_match_accepts_the_quoted_form() -> None:
 
     result = await graph_journal.apply_edge_mutation(
         user_id=int(USER),
-        action="edgeSuppress",
+        action="edgeDelete",
         edge_id=SONY,
         if_match='"g42"',
         request_id="req-1",
@@ -163,7 +163,7 @@ async def test_stale_if_match_conflicts_and_carries_the_latest_version() -> None
     with pytest.raises(GraphVersionConflict) as excinfo:
         await graph_journal.apply_edge_mutation(
             user_id=int(USER),
-            action="edgeSuppress",
+            action="edgeDelete",
             edge_id=SONY,
             if_match="g41",  # 낡았다
             request_id="req-1",
@@ -180,7 +180,7 @@ async def test_conflict_leaves_no_audit_row_and_no_partial_write() -> None:
     with pytest.raises(GraphVersionConflict):
         await graph_journal.apply_edge_mutation(
             user_id=int(USER),
-            action="edgeSuppress",
+            action="edgeDelete",
             edge_id=SONY,
             if_match="g41",
             request_id="req-1",
@@ -202,12 +202,12 @@ async def test_conflict_leaves_no_ledger_row_behind() -> None:
     남은 행의 실제 해악은 아래 no-op 테스트가 보여준다(같은 키를 쓰는 후속 요청이 막힌다).
     """
     await _seed(revision=42)
-    key = graph_journal.derived_key("edgeSuppress", USER, SONY, "g41")
+    key = graph_journal.derived_key("edgeDelete", USER, SONY, "g41")
 
     with pytest.raises(GraphVersionConflict):
         await graph_journal.apply_edge_mutation(
             user_id=int(USER),
-            action="edgeSuppress",
+            action="edgeDelete",
             edge_id=SONY,
             if_match="g41",
             request_id="req-1",
@@ -231,7 +231,7 @@ async def test_absent_edge_raises_before_touching_the_ledger_or_audit() -> None:
     with pytest.raises(GraphEdgeNotFound):
         await graph_journal.apply_edge_mutation(
             user_id=int(USER),
-            action="edgeSuppress",
+            action="edgeDelete",
             edge_id="e_nonexistent",
             if_match="g42",
             request_id="req-1",
@@ -239,7 +239,7 @@ async def test_absent_edge_raises_before_touching_the_ledger_or_audit() -> None:
         )
 
     assert await graph_journal.list_audit(user_id=int(USER)) == []
-    key = graph_journal.derived_key("edgeSuppress", USER, "e_nonexistent", "g42")
+    key = graph_journal.derived_key("edgeDelete", USER, "e_nonexistent", "g42")
     assert await graph_journal.lookup(key) is None
 
 
@@ -251,7 +251,7 @@ async def test_replay_returns_the_first_response_without_reapplying() -> None:
     await _seed(revision=42)
     first = await graph_journal.apply_edge_mutation(
         user_id=int(USER),
-        action="edgeSuppress",
+        action="edgeDelete",
         edge_id=SONY,
         if_match="g42",
         request_id="req-1",
@@ -260,7 +260,7 @@ async def test_replay_returns_the_first_response_without_reapplying() -> None:
 
     second = await graph_journal.apply_edge_mutation(
         user_id=int(USER),
-        action="edgeSuppress",
+        action="edgeDelete",
         edge_id=SONY,
         if_match="g42",
         request_id="req-1-retry",
@@ -369,6 +369,87 @@ async def test_same_key_with_a_different_body_conflicts_instead_of_replaying() -
         )
 
 
+# ─────────── 원문 물리 삭제 (REQ-PGRAPH-025 [HARD], AC-PGRAPH-13) ───────────
+
+
+async def test_delete_physically_removes_the_backing_facts() -> None:
+    """[HARD] 삭제는 **근거 fact 까지** 그 자리에서 지운다 (REQ-PGRAPH-025, AC-PGRAPH-13).
+
+    edge 만 지우고 fact 를 남기면 **사용자가 "지웠다"고 믿는 문장의 원문이 저장소에 그대로
+    남는다.** 응답이 돌아온 시점에 이미 없어야 하고, 유예를 기다리는 스윕은 존재하지 않는다.
+    """
+    store = await get_profile_store()
+    await store.add_fact(
+        USER,
+        "소니 이어폰을 선호한다",
+        graph_triples=[
+            {
+                "node": {
+                    "node_id": "brand:소니",
+                    "type": "brand",
+                    "label": "소니",
+                    "verified": False,
+                    "resolution": None,
+                },
+                "predicate": "likes",
+                "edge_key": "likes|brand:소니",
+                "edge_id": SONY,
+                "salience": 0.9,
+                "source": "conversation",
+            }
+        ],
+    )
+    await _seed(revision=42)
+
+    await graph_journal.apply_edge_mutation(
+        user_id=int(USER),
+        action="edgeDelete",
+        edge_id=SONY,
+        if_match="g42",
+        request_id="req-1",
+        now=NOW,
+    )
+
+    assert await store.get_facts(USER) == []
+
+
+async def test_delete_keeps_facts_that_only_back_other_edges() -> None:
+    """다른 취향만 담은 fact 는 남는다 — 삭제가 무관한 개인화까지 지우면 안 된다."""
+    store = await get_profile_store()
+    await store.add_fact(
+        USER,
+        "애플을 선호한다",
+        graph_triples=[
+            {
+                "node": {
+                    "node_id": "brand:애플",
+                    "type": "brand",
+                    "label": "애플",
+                    "verified": False,
+                    "resolution": None,
+                },
+                "predicate": "likes",
+                "edge_key": "likes|brand:애플",
+                "edge_id": make_edge_id("likes|brand:애플"),
+                "salience": 0.9,
+                "source": "conversation",
+            }
+        ],
+    )
+    await _seed(revision=42)
+
+    await graph_journal.apply_edge_mutation(
+        user_id=int(USER),
+        action="edgeDelete",
+        edge_id=SONY,
+        if_match="g42",
+        request_id="req-1",
+        now=NOW,
+    )
+
+    assert await store.get_facts(USER) == ["애플을 선호한다"]
+
+
 # ─────────── 크래시 재개 (완료 조건 3) ───────────
 
 
@@ -379,13 +460,13 @@ async def test_crashed_claim_is_resumed_after_the_lease_expires() -> None:
     그 변경은 TTL 이 끝날 때까지 영영 안 된다 — 크래시 한 번이 기능을 잠그는 셈이다.
     """
     await _seed(revision=42)
-    key = graph_journal.derived_key("edgeSuppress", USER, SONY, "g42")
+    key = graph_journal.derived_key("edgeDelete", USER, SONY, "g42")
     # 죽은 워커의 잔재: claim 은 했지만 complete 를 못 했고 lease 가 이미 만료됐다.
     assert await graph_journal.claim(key, user_id=int(USER), scope_id=SONY, lease_s=0)
 
     result = await graph_journal.apply_edge_mutation(
         user_id=int(USER),
-        action="edgeSuppress",
+        action="edgeDelete",
         edge_id=SONY,
         if_match="g42",
         request_id="req-resume",
@@ -404,13 +485,13 @@ async def test_crashed_claim_is_resumed_after_the_lease_expires() -> None:
 async def test_a_live_claim_is_not_stolen_from_the_worker_holding_it() -> None:
     """lease 가 살아 있으면 재선점하지 않는다 — 진행 중인 워커의 작업을 빼앗으면 부작용이 2회다."""
     await _seed(revision=42)
-    key = graph_journal.derived_key("edgeSuppress", USER, SONY, "g42")
+    key = graph_journal.derived_key("edgeDelete", USER, SONY, "g42")
     assert await graph_journal.claim(key, user_id=int(USER), scope_id=SONY, lease_s=60)
 
     with pytest.raises(GraphVersionConflict):
         await graph_journal.apply_edge_mutation(
             user_id=int(USER),
-            action="edgeSuppress",
+            action="edgeDelete",
             edge_id=SONY,
             if_match="g42",
             request_id="req-2",
@@ -443,7 +524,7 @@ async def test_store_failure_becomes_unavailable_and_leaves_the_document_intact(
     with pytest.raises(GraphStoreUnavailable):
         await graph_journal.apply_edge_mutation(
             user_id=int(USER),
-            action="edgeSuppress",
+            action="edgeDelete",
             edge_id=SONY,
             if_match="g42",
             request_id="req-1",
@@ -473,7 +554,7 @@ async def test_a_plain_bug_is_not_disguised_as_a_transient_outage(
     with pytest.raises(ValueError, match="programmer error"):
         await graph_journal.apply_edge_mutation(
             user_id=int(USER),
-            action="edgeSuppress",
+            action="edgeDelete",
             edge_id=SONY,
             if_match="g42",
             request_id="req-1",
@@ -508,7 +589,7 @@ async def test_concurrent_writers_with_the_same_if_match_elect_one_winner() -> N
         try:
             return await graph_journal.apply_edge_mutation(
                 user_id=int(USER),
-                action="edgeSuppress",
+                action="edgeDelete",
                 edge_id=make_edge_id(f"likes|brand:{label}"),
                 if_match="g42",
                 request_id=f"req-{label}",
