@@ -44,7 +44,10 @@ from evals.benchmark.stats import bootstrap_percentile_ci  # noqa: E402
 from tests.integration._stubs import ScriptedLLM  # noqa: E402
 
 SETTINGS = get_settings()
-SPRING_TIMEOUT_S = SETTINGS.spring_timeout_s
+# [#306] 주입 지연의 기준은 **검색 전용** 타임아웃이다 — #427 이 I-1 만 `spring_search_timeout_s`
+# 로 분리했으므로 공용 `spring_timeout_s` 를 쓰면 둘이 갈리는 순간 시나리오가 실제 컷 지점과
+# 어긋난다(오늘은 둘 다 3.0 이라 값은 같다).
+SPRING_TIMEOUT_S = SETTINGS.spring_search_timeout_s
 # 타임아웃 직전 성공(3s 상한 아래 2.9s) — 재시도가 즉답한다는 낙관 가정을 배제한 최악 성공.
 SLOW_OK_S = 2.9
 PORT = 8277
@@ -157,7 +160,7 @@ def install() -> ScriptedLLM:
 
     settings = get_settings()
 
-    def _stub_client() -> httpx.AsyncClient:
+    def _stub_client(*, timeout: float | None = None) -> httpx.AsyncClient:
         return httpx.AsyncClient(
             base_url=settings.spring_base_url,
             timeout=settings.spring_timeout_s,
@@ -393,6 +396,12 @@ def main() -> None:
         "metric": "client_first_event_ms (FE→AI 경계, 요청 송신 ~ 첫 data: 프레임)",
         "config": {
             "spring_timeout_s": settings.spring_timeout_s,
+            # [#306] 아래 세 키가 없으면 아티팩트가 자기 조건을 설명하지 못한다 — #427 이후
+            # 미룬 턴 본검색의 실제 총시간 예산은 `spring_search_timeout_s × attempts` 가 아니라
+            # `rescue_budget_mode` 가 좁힌 값(`(30 - rescue_tail_reserve_s - 경과)/남은 단 수`)이다.
+            "spring_search_timeout_s": settings.spring_search_timeout_s,
+            "rescue_budget_mode": settings.rescue_budget_mode,
+            "rescue_tail_reserve_s": settings.rescue_tail_reserve_s,
             "spring_max_retries": settings.spring_max_retries,
             "stream_first_token_timeout_s": settings.stream_first_token_timeout_s,
             "stream_total_timeout_buyer_s": settings.stream_total_timeout_buyer_s,

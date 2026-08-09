@@ -6,14 +6,15 @@ import pytest
 from pydantic import ValidationError
 
 from app.agents.seller.schemas import (
-    ANALYSIS_SCORE_AXES,
-    CHART_MAX,
-    CHART_POINTS_MAX,
-    SCORE_AXES,
     ActionRecommendation,
+    ANALYSIS_SCORE_AXES,
     AnalysisFinding,
     AnalysisPlan,
     AnalysisScore,
+    CHART_MAX,
+    CHART_POINTS_MAX,
+    ChartAxisPlan,
+    ChartPlanSet,
     ChartPoint,
     ChartSeries,
     ChartSet,
@@ -24,6 +25,7 @@ from app.agents.seller.schemas import (
     RecommendationSet,
     ReportScore,
     RouteDecision,
+    SCORE_AXES,
 )
 
 
@@ -238,6 +240,48 @@ def test_chart_set_allows_empty() -> None:
     assert ChartSet().charts == []
 
 
+def test_chart_spec_aggregate_default_and_rating_unit() -> None:
+    """[#504] aggregate 기본 sum(하위 호환) + RATING 단위·avg/none 집계 허용."""
+    assert _chart().aggregate == "sum"
+    rating = _chart(unit="RATING", aggregate="avg")
+    assert rating.unit == "RATING" and rating.aggregate == "avg"
+    snapshot = _chart(aggregate="none")
+    assert snapshot.aggregate == "none"
+    with pytest.raises(ValidationError):
+        _chart(aggregate="median")
+
+
+def test_chart_axis_plan_vocab() -> None:
+    """[#504] 축 선언 어휘 — 지원 어휘는 통과, Literal 밖 값은 거부(LLM 신조어 차단)."""
+    plan = ChartAxisPlan(x_axis="date", y_axis="sales")
+    assert plan.title == ""
+    other = ChartAxisPlan(x_axis="other", y_axis="other", title="퍼널 단계별 이탈률")
+    assert other.title == "퍼널 단계별 이탈률"
+    with pytest.raises(ValidationError):
+        ChartAxisPlan(x_axis="funnel", y_axis="sales")
+    with pytest.raises(ValidationError):
+        ChartAxisPlan(x_axis="date", y_axis="revenue")
+
+
+def test_chart_plan_set_capped_and_allows_empty() -> None:
+    """[#504] 축 선언도 CHART_MAX(3) 상한 + 빈 목록 허용(억지 차트 금지 승계)."""
+    assert ChartPlanSet().charts == []
+    with pytest.raises(ValidationError):
+        ChartPlanSet(
+            charts=[ChartAxisPlan(x_axis="date", y_axis="sales") for _ in range(CHART_MAX + 1)]
+        )
+
+
+def test_analysis_plan_chart_fields_504() -> None:
+    """[#504] chart_period_expr·chart_only 기본값과 명시 설정."""
+    plan = AnalysisPlan(analyses=["sales_anomaly"], reason="r")
+    assert plan.chart_period_expr == "" and plan.chart_only is False
+    chart_only = AnalysisPlan(
+        analyses=[], reason="r", chart_only=True, chart_period_expr="최근 7일"
+    )
+    assert chart_only.chart_only is True and chart_only.chart_period_expr == "최근 7일"
+
+
 def test_recommendation_set_preserves_order() -> None:
     """목록 순서가 곧 'N번'(§6.3) — recommendations[N-1] 조회 계약을 보존한다."""
     first = ActionRecommendation(
@@ -301,14 +345,18 @@ def test_draft_proposal_update_shape() -> None:
 
 
 def test_draft_proposal_delete_as_status_change() -> None:
-    """delete draft — soft delete 를 status ON_SALE→HIDDEN 1건으로 가시화한다."""
+    """delete draft — soft delete 를 status <조회값>→DELETED 1건으로 가시화한다.
+
+    `HIDDEN`(숨김·판매정지)이 아니다 — 숨김은 판매자 목록에 남아 되돌릴 수 있고 삭제는
+    목록에서도 빠지며 되돌릴 수 없다(api-spec §4.5).
+    """
     draft = DraftProposal(
         op="delete",
         product_id=102,
-        changes=[DraftChange(field="status", before="ON_SALE", after="HIDDEN")],
-        summary="상품 숨김 처리(물리 삭제 아님)",
+        changes=[DraftChange(field="status", before="ON_SALE", after="DELETED")],
+        summary="상품 삭제(물리 삭제는 아니나 복구 불가)",
     )
-    assert draft.changes[0].after == "HIDDEN"
+    assert draft.changes[0].after == "DELETED"
 
 
 def test_draft_proposal_clarification_pattern() -> None:

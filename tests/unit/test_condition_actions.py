@@ -1,8 +1,9 @@
-"""구매자 conditionActions 계약·멀티턴 필터 제거 회귀 (#278)."""
+"""구매자 conditionActions 계약·멀티턴 필터 제거 회귀 (#278, #442)."""
 
 from __future__ import annotations
 
 import json
+import logging
 from types import SimpleNamespace
 from typing import get_args
 
@@ -355,3 +356,129 @@ async def test_existing_three_field_request_keeps_prior_and_event_sequence() -> 
     ]
     progress_stages = [e["data"]["stage"] for e in events if e["type"] == "progress"]
     assert progress_stages == ["analyzing", "searching", "reranking", "publishing"]
+
+
+def _graph_records(caplog: pytest.LogCaptureFixture, event: str) -> list[logging.LogRecord]:
+    return [
+        record
+        for record in caplog.records
+        if record.name == "app.agents.buyer.graph" and record.getMessage() == event
+    ]
+
+
+async def test_condition_actions_applied_turn_logs_requested_and_cleared_fields(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """적용 턴 — 요청 축 = 비워진 축, no-op=False, requestId 상관키가 실려 있음 (#442)."""
+    identity = _member()
+    await _collect(
+        _run_buyer_turn(
+            BuyerChatRequest.model_validate(_buyer_payload()),
+            identity,
+            llm=FakeLLM(),
+            search=_RecordingSearch(),
+            push_fn=_push_ok,
+        )
+    )
+    remove_request = BuyerChatRequest.model_validate(
+        {
+            "sessionId": "s1",
+            "threadId": "t1",
+            "conditionActions": [{"op": "remove", "field": "category"}],
+        }
+    )
+    with caplog.at_level(logging.INFO, logger="app.agents.buyer.graph"):
+        await _collect(
+            _run_buyer_turn(
+                remove_request,
+                identity,
+                llm=_refine_llm(),
+                search=_RecordingSearch(),
+                push_fn=_push_ok,
+            )
+        )
+
+    records = _graph_records(caplog, "condition_actions_applied")
+    assert len(records) == 1
+    extra = records[0].__dict__
+    assert extra["requested_fields"] == ["category"]
+    assert extra["cleared_fields"] == ["category"]
+    assert extra["no_op"] is False
+    assert extra["request_id"] == "condition-actions-test"
+    # 값(가격 등)은 로그에 실리지 않는다 — 축 이름만 (#119 PII 규약).
+    assert "50000" not in json.dumps(extra, ensure_ascii=False, default=str)
+
+
+async def test_condition_actions_no_op_turn_logs_empty_cleared_fields(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """no-op 턴 — prior 에 없던 축 제거 → no-op=True, 비워진 축 빈 목록 (#442)."""
+    identity = _member()
+    await _collect(
+        _run_buyer_turn(
+            BuyerChatRequest.model_validate(_buyer_payload()),
+            identity,
+            llm=FakeLLM(),
+            search=_RecordingSearch(),
+            push_fn=_push_ok,
+        )
+    )
+    # 첫 턴(FakeLLM 기본 decompose)은 brand 를 채우지 않는다 — 이미 비어 있는 축을 지운다.
+    remove_request = BuyerChatRequest.model_validate(
+        {
+            "sessionId": "s1",
+            "threadId": "t1",
+            "conditionActions": [{"op": "remove", "field": "brand"}],
+        }
+    )
+    with caplog.at_level(logging.INFO, logger="app.agents.buyer.graph"):
+        await _collect(
+            _run_buyer_turn(
+                remove_request,
+                identity,
+                llm=_refine_llm(),
+                search=_RecordingSearch(),
+                push_fn=_push_ok,
+            )
+        )
+
+    records = _graph_records(caplog, "condition_actions_applied")
+    assert len(records) == 1
+    extra = records[0].__dict__
+    assert extra["requested_fields"] == ["brand"]
+    assert extra["cleared_fields"] == []
+    assert extra["no_op"] is True
+
+
+async def test_condition_actions_without_prior_logs_distinguishable_line(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """prior 없는 턴(첫 턴에 conditionActions) → 구분되는 로그 한 줄, 동작은 무시 그대로 (#442)."""
+    identity = _member()
+    first_turn_actions = BuyerChatRequest.model_validate(
+        {
+            "sessionId": "s1",
+            "threadId": "t-fresh",
+            "conditionActions": [{"op": "remove", "field": "category"}],
+        }
+    )
+    general_llm = FakeLLM(
+        decompose={"intent": "general", "reply": "도와드릴게요", "case": 2, "filters": {}}
+    )
+    with caplog.at_level(logging.INFO, logger="app.agents.buyer.graph"):
+        await _collect(
+            _run_buyer_turn(
+                first_turn_actions,
+                identity,
+                llm=general_llm,
+                search=_RecordingSearch(),
+                push_fn=_push_ok,
+            )
+        )
+
+    assert _graph_records(caplog, "condition_actions_applied") == []
+    skipped = _graph_records(caplog, "condition_actions_skipped_no_prior")
+    assert len(skipped) == 1
+    extra = skipped[0].__dict__
+    assert extra["requested_fields"] == ["category"]
+    assert extra["request_id"] == "condition-actions-test"

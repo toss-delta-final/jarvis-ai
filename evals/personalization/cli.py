@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import statistics
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -13,14 +14,15 @@ from app.core.config import Settings, get_settings
 from evals.goldenset.loader import load_cases
 from evals.goldenset.schema import GoldenCase, Identity
 from evals.metrics.report import normalize_artifacts, write_artifacts
-from evals.metrics.run_manifest import build_run_manifest
-from evals.metrics.runner import evaluate, load_evaluation_fixtures
+from evals.metrics.run_manifest import build_run_manifest, strip_volatile_manifest_keys
+from evals.metrics.runner import EvaluationFixtures, evaluate, load_evaluation_fixtures
 from evals.metrics.settings import EvaluationSettings
 from evals.model_eval.budget import BudgetLimits, BudgetTracker
 from evals.model_eval.cli import build_live_adapter
 from evals.model_eval.pricing import PriceBook
 from evals.model_eval.repeats import run_repeats
 from evals.model_eval.report import write_artifacts as write_live_artifacts
+from evals.personalization.activation import ranking_change
 from evals.personalization.adapter import ProfileScoringBuyerAdapter
 from evals.personalization.config import CONFIG_PATH, load_eval_config
 from evals.personalization.fixtures import (
@@ -39,6 +41,10 @@ from evals.personalization.overreach import (
     explicit_intent_contradictions,
     new_forbidden_or_recent_inclusions,
 )
+from evals.personalization.profile_markdown import (
+    MARKDOWN_RENDER_VERSION,
+    render_profile_markdown,
+)
 from evals.personalization.stats import paired_metric_deltas
 from evals.scoring.adapter import _recent_ids
 
@@ -50,7 +56,25 @@ PERSONALIZATION_MODULE_PATHS = {
     for path in sorted(ROOT.glob("*.py"))
     if path.name not in {"__init__.py", "__main__.py"}
 }
-LIVE_ARMS = ("guest", "clean_rerank_only", "clean_both")
+# `clean_fixed` 는 #484 이전의 케이스 무관 고정 프로필을 그대로 돌리는 회귀 대조군이다.
+# 허용 목록에만 두고 기본 실행에는 넣지 않는다 — 기본 arm 수가 늘면 예산(호출 상한)이 함께
+# 움직이는데, 그 조정은 #483 하나에 몰아둔다. 효과를 잴 때만 --arms 로 명시해 돌린다.
+LIVE_ARMS = ("guest", "clean_rerank_only", "clean_both", "clean_fixed")
+DEFAULT_LIVE_ARMS = ("guest", "clean_rerank_only", "clean_both")
+# 선호가 비지 않은 케이스에만 붙는 슬라이스. dev 109건 중 35건(32%)은 후보에 grade>=2 정답이
+# 없어 프로필이 비는데, 그 케이스까지 섞은 평균은 오라클 천장을 0쪽으로 희석한다.
+PROFILE_SIGNAL_SLICE = "profile_signal"
+_LIVE_ARM_DESCRIPTIONS = {
+    "guest": "guest: (decompose=None, rerank=None)",
+    "clean_rerank_only": "clean_rerank_only: (decompose=None, rerank=케이스별 clean)",
+    "clean_both": "clean_both: (decompose=케이스별 clean, rerank=케이스별 clean)",
+    "clean_fixed": "clean_fixed: (decompose=None, rerank=고정 픽스처) — #484 이전 방식 대조군",
+}
+# Tier L paired 비교의 기준선 arm. 상수로 뽑아 두는 이유는 이득(`pairedVsGuest`)과 활성화
+# (`rankingChange`)이 **같은 기준선**을 보게 강제하기 위해서다 — 두 지표가 다른 arm 을 기준으로
+# 잡히면 같은 표에서 읽을 수 없다. `guest` 는 프로필뿐 아니라 identity 도 달라 프로필 효과가
+# 재구매 dedup 효과와 섞이는데(실측: live-v1 헤드라인의 절반 이상), 그 교체는 #483 소관이다.
+LIVE_BASELINE_ARM = "guest"
 PAIR_DEFINITIONS = {
     "clean_vs_member_no_profile": ("clean", "member_no_profile"),
     "noisy_vs_clean": ("noisy", "clean"),
@@ -351,7 +375,8 @@ def run_tier_d(output_dir: Path, *, seed: int) -> dict[str, Any]:
 
 
 def normalize_paired_artifacts(output_dir: Path) -> dict[str, bytes]:
-    """Tier D arm/weight artifact에서 실행 인스턴스 run 메타만 제거한다."""
+    """Tier D arm/weight artifact에서 실행 인스턴스·워킹트리 상태 축(run·commitSha·dirty)을
+    제거한다."""
     normalized: dict[str, bytes] = {}
     for arm_dir in sorted(path for path in output_dir.iterdir() if path.is_dir()):
         for weight_dir in sorted(path for path in arm_dir.iterdir() if path.is_dir()):
@@ -360,16 +385,34 @@ def normalize_paired_artifacts(output_dir: Path) -> dict[str, bytes]:
     for name in ("comparison.json", "comparison.md", "overreach.json"):
         normalized[name] = (output_dir / name).read_bytes()
     manifest = json.loads((output_dir / "run_manifest.json").read_text(encoding="utf-8"))
-    manifest.pop("run", None)
-    normalized["run_manifest.json"] = (_json_text(manifest) + "\n").encode()
+    normalized["run_manifest.json"] = (
+        _json_text(strip_volatile_manifest_keys(manifest)) + "\n"
+    ).encode()
     return normalized
+
+
+def _rows_with_metrics(results: dict[str, Any]) -> list[dict[str, Any]]:
+    """지표 계산에 쓸 수 있는 행만 — 이득·활성화가 **같은 행 집합**을 보게 하는 단일 술어.
+
+    `run_repeats` 는 예산이 실행 도중 소진되면 `metrics=None`·`rankedProductIds=[]` 인
+    `failureReason="budgetExceeded"` 행을 남긴다. 이 행은 측정 결과가 아니라 **측정이 중단된
+    자리**다.
+
+    술어를 한 곳에 두는 이유(PR #485 리뷰): 이득 지표는 이 필터를 거치는데 활성화 지표가
+    raw `caseResults` 를 읽으면, 예산이 소진된 그 행이 baseline 의 정상 행과 짝지어져
+    `setChanged` 로 잡힌다 — **예산 소진이 프로필 효과로 둔갑한다.** 두 곳에 같은 조건을
+    복붙하면 한쪽만 고쳐질 때 같은 어긋남이 조용히 되살아나므로 함수로 고정한다.
+
+    adapter 예외로 생긴 `hardFailure` 행은 **거르지 않는다** — 그쪽은 `evaluate` 가 정상적으로
+    metrics 를 산출하므로 두 지표에 똑같이 들어가고, 빈 노출도 실제 산출 결과다.
+    """
+    return [row for row in results["caseResults"] if isinstance(row.get("metrics"), dict)]
 
 
 def _live_metric_report(results: dict[str, Any], *, k_list: tuple[int, ...]) -> dict[str, Any]:
     grouped: dict[str, list[dict[str, Any]]] = {}
-    for row in results["caseResults"]:
-        if isinstance(row.get("metrics"), dict):
-            grouped.setdefault(row["caseId"], []).append(row["metrics"])
+    for row in _rows_with_metrics(results):
+        grouped.setdefault(row["caseId"], []).append(row["metrics"])
     cases = []
     for case_id, rows in sorted(grouped.items()):
         first = rows[0]
@@ -394,14 +437,85 @@ def _live_metric_report(results: dict[str, Any], *, k_list: tuple[int, ...]) -> 
     return {"datasetHash": results["datasetHash"], "kList": list(k_list), "cases": cases}
 
 
-def _live_arm_spec(name: str, clean_markdown: str) -> tuple[str | None, str, str]:
+def _ranking_change_markdown(
+    ranking_change_by_arm: dict[str, dict[str, Any]], *, baseline: str
+) -> str:
+    """[#482] 활성화 지표를 사람이 읽는 표로. 값이 없으면 절을 아예 만들지 않는다."""
+    if not ranking_change_by_arm:
+        return ""
+    lines = [
+        "",
+        f"## 활성화 (Δranking rate, 기준선 `{baseline}`)",
+        "",
+        "| arm | paired | 동일 | 순서만 | 집합변경 | 양쪽 빈 노출 | Δranking rate |",
+        "|---|---:|---:|---:|---:|---:|---:|",
+    ]
+    for arm, value in ranking_change_by_arm.items():
+        rate = value["changeRate"]
+        # 짝이 0이면 비율이 정의되지 않는다 — 0.0% 로 찍으면 "안 바뀌었다"로 오독된다.
+        rate_text = "n/a" if rate is None else f"{rate * 100:.1f}%"
+        lines.append(
+            f"| `{arm}` | {value['pairedCount']} | {value['same']} | {value['orderOnly']} "
+            f"| {value['setChanged']} | {value['bothEmpty']} | {rate_text} |"
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _live_arm_spec(name: str) -> tuple[str | None, str, str]:
+    """Tier L arm 이름 → (마크다운 모드, identity_kind, scope).
+
+    모드는 마크다운 문자열이 아니라 **출처**다: 파생 arm 이름("clean")이면 케이스별로 렌더하고,
+    "fixed"면 픽스처의 고정 문자열을, None이면 프로필을 주지 않는다.
+    """
     if name == "guest":
         return None, "guest", "off"
     if name == "clean_rerank_only":
-        return clean_markdown, "member", "rerank_only"
+        return "clean", "member", "rerank_only"
     if name == "clean_both":
-        return clean_markdown, "member", "both"
+        return "clean", "member", "both"
+    if name == "clean_fixed":
+        # live-v1 헤드라인 arm(clean_rerank_only)과 같은 scope 여야 대조가 성립한다.
+        return "fixed", "member", "rerank_only"
     raise ValueError(f"알 수 없는 live arm: {name}")
+
+
+def _case_markdown_resolver(
+    derivation_name: str, *, max_chars: int, strength_bands: tuple[float, float]
+) -> Callable[[GoldenCase, EvaluationFixtures], str | None]:
+    """Tier D 파생 선호를 케이스별 마크다운으로 바꾸는 콜백(순수·LLM 미호출)."""
+
+    def resolve(case: GoldenCase, fixtures: EvaluationFixtures) -> str | None:
+        preferences = derive_case_preferences(derivation_name, case, fixtures)
+        if preferences is None:
+            return None
+        return render_profile_markdown(
+            preferences, max_chars=max_chars, strength_bands=strength_bands
+        )
+
+    return resolve
+
+
+def _has_profile_signal(
+    derivation_name: str, case: GoldenCase, fixtures: EvaluationFixtures
+) -> bool:
+    preferences = derive_case_preferences(derivation_name, case, fixtures)
+    return bool(preferences and (preferences["brands"] or preferences["categories"]))
+
+
+def _tag_profile_signal_slice(results: dict[str, Any], signal_case_ids: set[str]) -> None:
+    """선호가 있는 케이스 행에 슬라이스를 덧붙인다 — 통계는 `paired_metric_deltas` 가 이미 낸다.
+
+    전체 평균 하나만 보면 무신호 32%가 오라클 천장을 0쪽으로 끌어내린다. 별도 집계 코드를
+    짜는 대신 기존 slice 축을 쓴다: `pairedVsGuest[arm]["slices"]["profile_signal"]` 로 나온다.
+    """
+    for row in results["caseResults"]:
+        metrics = row.get("metrics")
+        if not isinstance(metrics, dict) or row["caseId"] not in signal_case_ids:
+            continue
+        slices = list(metrics.get("slices") or [])
+        if PROFILE_SIGNAL_SLICE not in slices:
+            metrics["slices"] = [*slices, PROFILE_SIGNAL_SLICE]
 
 
 def run_tier_l(
@@ -427,15 +541,38 @@ def run_tier_l(
     clean_markdown = load_profile_arms()["clean"].markdown or ""
     results_by_arm: dict[str, dict[str, Any]] = {}
     reports: dict[str, dict[str, Any]] = {}
-    k_list = tuple(EvaluationSettings().eval_buyer_k_list)
+    # 렌더 파라미터는 runtime_settings(=env 반영)가 아니라 평가 정본에서 읽는다 — 프로필 문자열이
+    # 실행 환경에 따라 달라지면 baseline 간 비교가 무의미해진다(k_list 와 같은 규약).
+    eval_settings = EvaluationSettings()
+    k_list = tuple(eval_settings.eval_buyer_k_list)
     command = f"uv run python -m evals.personalization --live --out {output_dir}"
     output_dir.mkdir(parents=True, exist_ok=False)
+    arm_markdown_mode: dict[str, str | None] = {}
+    # 슬라이스는 **케이스 속성**이라 arm 전체에 동일해야 한다 — arm 마다 다르면
+    # `stats._validate_pair` 가 paired 비교를 거부한다. arm 이름과 무관하게 한 번만 센다.
+    signal_case_ids = {
+        case.case_id for case in cases if _has_profile_signal("clean", case, fixtures)
+    }
+    empty_profile_case_ids = sorted(
+        case.case_id for case in cases if case.case_id not in signal_case_ids
+    )
     for arm_name in arm_names:
-        markdown, identity_kind, scope = _live_arm_spec(arm_name, clean_markdown)
+        markdown_mode, identity_kind, scope = _live_arm_spec(arm_name)
+        arm_markdown_mode[arm_name] = markdown_mode
+        case_derived = markdown_mode not in (None, "fixed")
         settings = base.settings.model_copy(update={"profile_injection_scope": scope})
         adapter = PersonalizationLiveBuyerAdapter(
             base.llm,
-            profile_markdown=markdown,
+            profile_markdown=clean_markdown if markdown_mode == "fixed" else None,
+            markdown_resolver=(
+                _case_markdown_resolver(
+                    markdown_mode,
+                    max_chars=eval_settings.profile_summary_max_chars,
+                    strength_bands=eval_settings.personalization_eval_profile_strength_bands,
+                )
+                if case_derived
+                else None
+            ),
             identity_kind=identity_kind,
             settings=settings,
             model_config=base.model_config,
@@ -462,6 +599,7 @@ def run_tier_l(
                 ),
             }
         )
+        _tag_profile_signal_slice(result, signal_case_ids)
         results_by_arm[arm_name] = result
         reports[arm_name] = _live_metric_report(result, k_list=k_list)
 
@@ -488,6 +626,9 @@ def run_tier_l(
             "budget": budget.snapshot(),
             "coverage": result["coverage"],
             "modelConfig": result["caseResults"][0]["modelConfig"] if result["caseResults"] else {},
+            "profileMarkdownSource": arm_markdown_mode[arm_name] or "none",
+            "profileMarkdownRenderVersion": MARKDOWN_RENDER_VERSION,
+            "emptyProfileCaseIds": empty_profile_case_ids,
         }
         write_live_artifacts(
             output_dir / arm_name,
@@ -500,18 +641,33 @@ def run_tier_l(
     paired = {
         arm_name: paired_metric_deltas(
             reports[arm_name],
-            reports["guest"],
+            reports[LIVE_BASELINE_ARM],
             k_list=k_list,
             resamples=int(bootstrap["resamples"]),
             confidence=float(bootstrap["confidence"]),
             seed=seed,
         )
         for arm_name in arm_names
-        if arm_name != "guest"
+        if arm_name != LIVE_BASELINE_ARM
+    }
+    # [#482] 활성화 지표 — 프로필이 노출을 **실제로 바꿨는가**. 이득 지표(위 `paired`)만으로는
+    # "아무것도 안 바꿔서 0" 과 "바꿨는데 좋지 않아서 0" 이 구분되지 않는데, 두 상태의 처방이
+    # 정반대다(`activation` 모듈 docstring). 기준선은 paired 와 **같은 arm** 을 쓴다 — 두 지표가
+    # 다른 기준을 보면 같은 표에서 읽을 수 없다. 행 집합도 `_rows_with_metrics` 로 맞춘다 —
+    # raw `caseResults` 를 읽으면 예산 소진 행이 프로필 효과로 둔갑한다(그쪽 docstring 참조).
+    ranking_change_by_arm = {
+        arm_name: ranking_change(
+            _rows_with_metrics(results_by_arm[LIVE_BASELINE_ARM]),
+            _rows_with_metrics(results_by_arm[arm_name]),
+        )
+        for arm_name in arm_names
+        if arm_name != LIVE_BASELINE_ARM
     }
     comparison = {
         "primaryMetric": config["primaryMetric"],
+        "baselineArm": LIVE_BASELINE_ARM,
         "pairedVsGuest": paired,
+        "rankingChange": ranking_change_by_arm,
         "budget": budget.snapshot(),
         "coverage": {arm: result["coverage"] for arm, result in results_by_arm.items()},
         "axisLeakage": {
@@ -542,9 +698,10 @@ def run_tier_l(
     _write_json(output_dir / "comparison.json", comparison)
     (output_dir / "comparison.md").write_text(
         "# Tier L #119 scope paired comparison\n\n"
-        "- guest: (decompose=None, rerank=None)\n"
-        "- clean_rerank_only: (decompose=None, rerank=clean)\n"
-        "- clean_both: (decompose=clean, rerank=clean)\n",
+        + "".join(f"- {_LIVE_ARM_DESCRIPTIONS[arm]}\n" for arm in arm_names)
+        + f"\n프로필 신호가 있는 케이스 {len(signal_case_ids)}건은 `{PROFILE_SIGNAL_SLICE}` "
+        f"슬라이스로 따로 집계된다(무신호 {len(empty_profile_case_ids)}건 제외).\n"
+        + _ranking_change_markdown(ranking_change_by_arm, baseline=LIVE_BASELINE_ARM),
         encoding="utf-8",
         newline="\n",
     )
@@ -554,13 +711,17 @@ def run_tier_l(
         "caseIds": [case.case_id for case in cases],
         "repeats": repeats,
         "budget": budget.snapshot(),
+        "profileMarkdownRenderVersion": MARKDOWN_RENDER_VERSION,
+        "profileSignalCaseCount": len(signal_case_ids),
+        "emptyProfileCaseIds": empty_profile_case_ids,
     }
     _write_json(output_dir / "run_manifest.json", top_manifest)
     return comparison
 
 
 def normalize_live_artifacts(output_dir: Path) -> dict[str, bytes]:
-    """Tier L 산출물에서 run/latency/correlation ID만 제거한다."""
+    """Tier L 산출물에서 run/commitSha/dirty(실행 인스턴스·워킹트리 상태 축)와
+    latency/correlation ID를 제거한다."""
     normalized: dict[str, bytes] = {}
     for path in sorted(output_dir.rglob("*")):
         if not path.is_file():
@@ -569,7 +730,7 @@ def normalize_live_artifacts(output_dir: Path) -> dict[str, bytes]:
         if path.name.endswith(".json"):
             payload = json.loads(path.read_text(encoding="utf-8"))
             if path.name == "run_manifest.json":
-                payload.pop("run", None)
+                payload = strip_volatile_manifest_keys(payload)
             if path.name == "results.json":
                 for row in payload.get("caseResults", []):
                     row.pop("latencyMs", None)
@@ -584,7 +745,7 @@ def normalize_live_artifacts(output_dir: Path) -> dict[str, bytes]:
 
 def _parse_arms(value: str | None) -> list[str]:
     arms = (
-        list(LIVE_ARMS)
+        list(DEFAULT_LIVE_ARMS)
         if value is None
         else [item.strip() for item in value.split(",") if item.strip()]
     )

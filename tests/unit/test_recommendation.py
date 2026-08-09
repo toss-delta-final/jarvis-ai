@@ -42,6 +42,11 @@ def _guest() -> Identity:
     return Identity(user_id=None, is_guest=True, seller_id=None, subject=None)
 
 
+def _event(record: object, event: str) -> bool:
+    """JSON message 구조화 이벤트를 caplog에서 찾는다."""
+    return getattr(record, "event", None) == event
+
+
 async def _committed_observer(request, identity, observer=None):  # noqa: ANN001
     owner_id = buyer_owner_id(identity, get_settings())
     context = await session_context._default_repository.touch(
@@ -460,6 +465,52 @@ async def test_push_failure_does_not_persist_last_reco_for_search_path() -> None
     key = await _thread_key(request, _member())
     cart_store = await get_cart_store()
     assert await cart_store.get_last_reco(key) == []
+    assert await cart_store.get_push_failed(key) is True
+
+
+async def test_push_failed_marker_write_failure_does_not_break_search_recommendation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#468 I-21] 실패 사실 기록이 실패해도 목록 전달 실패 턴은 기존 degrade로 끝난다."""
+    from app.agents.buyer.cart.state import CartStateStore
+
+    async def fail_set_push_failed(self, key):  # noqa: ANN001
+        raise RuntimeError("store unavailable")
+
+    monkeypatch.setattr(CartStateStore, "set_push_failed", fail_set_push_failed)
+    events = await _collect(
+        run_buyer_turn(
+            _req(thread_id="push-fail-marker-write"),
+            _member(),
+            llm=FakeLLM(),
+            search=_make_search(DEFAULT_PRODUCTS),
+            push_fn=_failing_push,
+        )
+    )
+
+    assert "products.ready" not in _types(events)
+    assert _types(events)[-1] == "done"
+
+
+async def test_profile_name_falls_back_only_for_legacy_or_malformed_name_presence_flag() -> None:
+    """[#468 I-17] 명시적 False 만 category 폴백을 버리고 구 행·이상값은 #435 동작을 유지한다.
+
+    이 함수가 플래그를 무시하면 False 행이 "생활용품"을 이름으로 되돌려준다. 반대로
+    truthiness 판정으로 바꾸면 0·문자열 같은 손상 값을 가진 기존 행의 이름 공급이 죽는다.
+    """
+    from app.agents.buyer.recommendation.no_condition import name_from_artifact
+    from app.pipelines.artifact_store import CatalogArtifact, EXTRAS_NAME_PRESENT_KEY
+
+    def artifact(extras: dict) -> CatalogArtifact:
+        return CatalogArtifact(
+            product_id=101, search_doc="생활용품\n설명", embedding=[], extras=extras
+        )
+
+    assert name_from_artifact(artifact({EXTRAS_NAME_PRESENT_KEY: False})) == ""
+    assert name_from_artifact(artifact({EXTRAS_NAME_PRESENT_KEY: True})) == "생활용품"
+    assert name_from_artifact(artifact({})) == "생활용품"
+    assert name_from_artifact(artifact({EXTRAS_NAME_PRESENT_KEY: 0})) == "생활용품"
+    assert name_from_artifact(artifact({EXTRAS_NAME_PRESENT_KEY: "false"})) == "생활용품"
 
 
 # ─────────── zero-result / fallback ───────────
@@ -1793,6 +1844,24 @@ async def test_attr_conditions_preserve_axis_absent() -> None:
     assert {p.product_id for p in res.products} == {1, 2}  # 축 부재 2 보존
 
 
+async def test_color_attr_conditions_preserve_axis_absent_and_exclude_mismatch() -> None:
+    """[#461 §4.6 ②] 색상 축 부재는 보존하고, 명시 색상 불일치는 사후필터에서 제외한다."""
+    from app.schemas.spring import ProductSearchFilters, SpringProduct
+    from app.services.search_service import search_catalog
+    from tests._fakes import FakeBackend
+
+    products = [
+        SpringProduct(product_id=1, name="무색상 속성 상품", price=1, attributes={"소재": "린넨"}),
+        SpringProduct(product_id=2, name="그레이 상품", price=1, attributes={"색상": "그레이"}),
+        SpringProduct(product_id=3, name="빨강 상품", price=1, attributes={"색상": "빨강"}),
+    ]
+    res = await search_catalog(
+        ProductSearchFilters(attr_conditions={"색상": "그레이"}),
+        backend=FakeBackend(products=products),
+    )
+    assert {product.product_id for product in res.products} == {1, 2}
+
+
 async def test_attr_conditions_lenient_match() -> None:
     """[PR②] 관대 매칭 — 부분·대소문자 무시. bool/숫자 값(dict[str,object])도 문자열화 비교."""
     from app.schemas.spring import ProductSearchFilters, SpringProduct
@@ -1914,7 +1983,7 @@ async def test_pipeline_logs_stage_candidate_counts(caplog) -> None:
                 _req(), _guest(), llm=llm, search=_make_search(products), push_fn=_RecordingPush()
             )
         )
-    rec = next((r for r in caplog.records if r.msg == "recommend_pipeline"), None)
+    rec = next((r for r in caplog.records if _event(r, "recommend_pipeline")), None)
     assert rec is not None, "단계별 후보 수 구조화 로그가 있어야 한다"
     assert rec.received == 5  # Spring/merge 수신
     assert rec.after_dedup == 5  # guest → 최근구매 dedup 없음
@@ -2031,7 +2100,7 @@ async def test_search_products_parses_i1_items(monkeypatch: pytest.MonkeyPatch) 
             ]
         },
     }
-    monkeypatch.setattr(sc, "_client", lambda: _FakeClient(payload))
+    monkeypatch.setattr(sc, "_client", lambda *, timeout=None: _FakeClient(payload))
     res = await sc.search_products(ProductSearchFilters())
     assert len(res.products) == 1
     assert res.products[0].category == "의류" and res.products[0].brand == "B"
@@ -2055,7 +2124,7 @@ async def test_search_products_parses_i1_array_envelope(monkeypatch: pytest.Monk
             }
         ],
     }
-    monkeypatch.setattr(sc, "_client", lambda: _FakeClient(payload))
+    monkeypatch.setattr(sc, "_client", lambda *, timeout=None: _FakeClient(payload))
     res = await sc.search_products(ProductSearchFilters())
     assert len(res.products) == 1
     assert res.products[0].category == "의류" and res.products[0].brand == "B"
@@ -2069,7 +2138,7 @@ async def test_search_products_malformed_maps_to_search_failed(
     from app.schemas.spring import ProductSearchFilters
 
     payload = {"success": True, "data": {"items": [{"name": "x"}]}}  # productId 없음
-    monkeypatch.setattr(sc, "_client", lambda: _FakeClient(payload))
+    monkeypatch.setattr(sc, "_client", lambda *, timeout=None: _FakeClient(payload))
     with pytest.raises(SpringUnavailableError):
         await sc.search_products(ProductSearchFilters())
 
@@ -2087,7 +2156,7 @@ async def test_search_products_unknown_envelope_fails_closed(
     from app.schemas.spring import ProductSearchFilters
 
     payload = {"success": True, "data": {"products": [{"productId": 1}]}}  # 미인식 형태
-    monkeypatch.setattr(sc, "_client", lambda: _FakeClient(payload))
+    monkeypatch.setattr(sc, "_client", lambda *, timeout=None: _FakeClient(payload))
     with caplog.at_level("WARNING"):
         with pytest.raises(SpringUnavailableError):
             await sc.search_products(ProductSearchFilters())
@@ -2102,7 +2171,7 @@ async def test_search_products_parses_bare_list_body(monkeypatch: pytest.MonkeyP
     payload = [
         {"productId": 7, "name": "모자", "price": 9900, "categoryName": "잡화", "brandName": "B"}
     ]
-    monkeypatch.setattr(sc, "_client", lambda: _FakeClient(payload))
+    monkeypatch.setattr(sc, "_client", lambda *, timeout=None: _FakeClient(payload))
     res = await sc.search_products(ProductSearchFilters())
     assert [p.product_id for p in res.products] == [7]
 
@@ -2114,7 +2183,7 @@ async def test_search_products_missing_data_key_fails_closed(
     import app.services.spring_client as sc
     from app.schemas.spring import ProductSearchFilters
 
-    monkeypatch.setattr(sc, "_client", lambda: _FakeClient({"success": True}))
+    monkeypatch.setattr(sc, "_client", lambda *, timeout=None: _FakeClient({"success": True}))
     with caplog.at_level("WARNING"):
         with pytest.raises(SpringUnavailableError):
             await sc.search_products(ProductSearchFilters())
@@ -2151,7 +2220,7 @@ def _counting_client(monkeypatch: pytest.MonkeyPatch, *responses):
     monkeypatch.setattr(
         sc,
         "_client",
-        lambda: httpx.AsyncClient(
+        lambda *, timeout=None: httpx.AsyncClient(
             base_url="http://spring.test", transport=httpx.MockTransport(_handler)
         ),
     )
@@ -2382,8 +2451,8 @@ async def test_search_retry_can_be_disabled(monkeypatch: pytest.MonkeyPatch) -> 
     assert len(calls) == 1
 
 
-async def test_search_retry_default_config_calls_once(monkeypatch: pytest.MonkeyPatch) -> None:
-    """[#394] 명시 주입 없이 **기본 설정 그대로** 검색은 1회만 호출된다 — 재시도 한시적 비활성."""
+async def test_search_retry_default_config_retries_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """[#394 원복] 기본 설정은 실패 검색을 한 번 재시도해 2회 호출한다."""
     import httpx
 
     import app.services.spring_client as sc
@@ -2392,13 +2461,35 @@ async def test_search_retry_default_config_calls_once(monkeypatch: pytest.Monkey
     calls = _counting_client(monkeypatch, httpx.TimeoutException("slow"))
     with pytest.raises(SpringUnavailableError):
         await sc.search_products(ProductSearchFilters())
+    assert len(calls) == 2
+
+
+async def test_search_retry_zero_retries_config_calls_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`spring_max_retries=0` 롤백 경로는 검색을 1회만 호출한다."""
+    import httpx
+    import app.services.spring_client as sc
+    from app.schemas.spring import ProductSearchFilters
+
+    monkeypatch.setattr(get_settings(), "spring_max_retries", 0)
+    calls = _counting_client(monkeypatch, httpx.TimeoutException("slow"))
+    with pytest.raises(SpringUnavailableError):
+        await sc.search_products(ProductSearchFilters())
     assert len(calls) == 1
 
 
-async def test_recommendation_deferred_conditions_suppresses_search_retry(
+async def test_recommendation_deferred_conditions_keeps_search_retry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """미룬 턴은 첫 이벤트 앞 I-1 직렬 예산을 지키려고 본 검색 재시도를 건너뛴다(#277)."""
+    """[#306] 미룬 턴도 다른 턴과 **같은** I-1 재시도를 쓴다 — #277 의 스킵을 원복했다.
+
+    #277 이 그 스킵을 넣은 이유는 미룬 턴의 첫 SSE 가 검색 뒤라 재시도가 first-token 상한을
+    넘겼기 때문인데, #396 이 `progress` 를 검색 **앞**으로 보내면서 그 전제가 사라졌다.
+    기본 설정(`spring_max_retries=1`, #406 이 #394 를 원복)에서 이 턴은 이제 2회 호출한다 —
+    억제가 남아 있으면 1회에 그쳐 이 어설션이 깨진다(회귀 가드).
+
+    같은 이유로 `retrying` progress 가 이 턴에서도 나간다(api-spec §3.1 v0.32.5) —
+    v0.32.4 까지는 미룬 턴이 재시도 자체를 안 해 그 프레임이 없었다.
+    """
     import httpx
 
     # [#393] `ratingMin` 만 있는 턴은 payload 기준으로 무필터라 새 가드(A)가 인기 상품으로
@@ -2407,7 +2498,7 @@ async def test_recommendation_deferred_conditions_suppresses_search_retry(
     calls = _counting_client(monkeypatch, httpx.Response(503))
     events = await _collect(
         run_buyer_turn(
-            _req(thread_id="deferred-retry-suppressed"),
+            _req(thread_id="deferred-retry-kept"),
             _guest(),
             llm=FakeLLM(
                 decompose={
@@ -2419,12 +2510,17 @@ async def test_recommendation_deferred_conditions_suppresses_search_retry(
         )
     )
 
-    assert len(calls) == 1
+    assert len(calls) == 2
     # progress 다회 emit(#396) — 이 decompose 는 categoryQueries 가 없어 카테고리 신호가
-    # 전혀 없다(mapping honesty 회귀, #396 라운드 1). mapping 은 안 나가고 analyzing·searching
-    # 2개만 conditions 앞에 온다(검색이 하드 실패라 relaxing 루프는 안 돈다 — 0건이 아니라
-    # 예외로 끝난다).
-    assert _types(events) == ["progress", "progress", "conditions", "error"]
+    # 전혀 없다(mapping honesty 회귀, #396 라운드 1). mapping 은 안 나가고 analyzing·searching·
+    # retrying 이 conditions 앞에 온다(검색이 하드 실패라 relaxing 루프는 안 돈다 — 0건이
+    # 아니라 예외로 끝난다).
+    assert _types(events) == ["progress", "progress", "progress", "conditions", "error"]
+    assert [e["data"]["stage"] for e in events if e["type"] == "progress"] == [
+        "analyzing",
+        "searching",
+        "retrying",
+    ]
     assert events[-1]["data"]["code"] == "SEARCH_FAILED"
 
 
@@ -2464,45 +2560,20 @@ async def test_recommendation_nondeferred_conditions_keeps_search_retry(
     # progress 다회 emit(#396) — 이 decompose 는 categoryQueries 가 없어 카테고리 신호가
     # 전혀 없다(mapping honesty 회귀, #396 라운드 1). mapping 은 안 나간다. analyzing 은
     # conditions **앞**(이 턴은 non-deferred라 conditions 가 검색 전에 나간다), searching 은
-    # conditions **뒤**(검색 직전 emit 지점).
-    assert _types(events) == ["progress", "conditions", "progress", "error"]
+    # conditions **뒤**(검색 직전 emit 지점). #406 retrying은 실제 재시도 진입 뒤 추가 전용이다.
+    assert _types(events) == ["progress", "conditions", "progress", "progress", "error"]
+    assert [e["data"]["stage"] for e in events if e["type"] == "progress"] == [
+        "analyzing",
+        "searching",
+        "retrying",
+    ]
     assert events[-1]["data"]["code"] == "SEARCH_FAILED"
 
 
-async def test_recommendation_deferred_conditions_retry_can_be_restored_by_guard(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """가드를 켜면 미룬 턴도 종전처럼 I-1 재시도 1회를 쓴다(#277 롤백 손잡이)."""
-    import httpx
-
-    monkeypatch.setattr(get_settings(), "search_retry_on_deferred_conditions", True)
-    # [#394] 기본값이 0으로 바뀌어 재시도 루프 자체를 켜서 검증하려면 명시 주입이 필요하다.
-    monkeypatch.setattr(get_settings(), "spring_max_retries", 1)
-    # [#393] `ratingMin` 만 있는 턴은 payload 기준으로 무필터라 새 가드(A)가 인기 상품으로
-    # 돌린다 — 이 테스트의 주제는 I-1 재시도지 후보 소스 선택이 아니므로 새 가드를 끈다.
-    monkeypatch.setattr(get_settings(), "search_filter_guard_enabled", False)
-    calls = _counting_client(monkeypatch, httpx.Response(503))
-    events = await _collect(
-        run_buyer_turn(
-            _req(thread_id="deferred-retry-restored"),
-            _guest(),
-            llm=FakeLLM(
-                decompose={
-                    "intent": "recommend",
-                    "filters": {"ratingMin": 4.5},
-                    "case": 2,
-                }
-            ),
-        )
-    )
-
-    assert len(calls) == 2
-    # progress 다회 emit(#396) — 이 decompose 는 categoryQueries 가 없어 카테고리 신호가
-    # 전혀 없다(mapping honesty 회귀, #396 라운드 1). mapping 은 안 나가고 analyzing·searching
-    # 2개만 conditions 앞에 온다(검색이 하드 실패라 relaxing 루프는 안 돈다 — 0건이 아니라
-    # 예외로 끝난다).
-    assert _types(events) == ["progress", "progress", "conditions", "error"]
-    assert events[-1]["data"]["code"] == "SEARCH_FAILED"
+# [#306] `test_recommendation_deferred_conditions_retry_can_be_restored_by_guard` 는 삭제했다 —
+# 그 테스트는 `SEARCH_RETRY_ON_DEFERRED_CONDITIONS=true` 로 억제를 끈 미룬 턴을 쟀는데, 억제
+# 기구 자체가 사라져 그 조건이 곧 기본 동작이 됐다. 같은 명제는 위
+# `test_recommendation_deferred_conditions_keeps_search_retry` 가 그대로 고정한다.
 
 
 async def test_recommendation_relaxation_chip_probe_keeps_search_retry(
@@ -2882,7 +2953,7 @@ async def test_get_recent_purchases_parses_and_collects_ids(
             ]
         },
     }
-    monkeypatch.setattr(_sc_mod, "_client", lambda: _FakeClient(body))
+    monkeypatch.setattr(_sc_mod, "_client", lambda *, timeout=None: _FakeClient(body))
     res = await _REAL_GET_RECENT(123)
     assert res.purchased_product_ids() == {552, 88}
 
@@ -2893,7 +2964,7 @@ async def test_get_recent_purchases_failure_degrades(monkeypatch: pytest.MonkeyP
         "success": True,
         "data": {"orders": [{"orderId": 1, "orderedAt": "x", "items": [{"orderItemId": 1}]}]},
     }
-    monkeypatch.setattr(_sc_mod, "_client", lambda: _FakeClient(body))
+    monkeypatch.setattr(_sc_mod, "_client", lambda *, timeout=None: _FakeClient(body))
     with pytest.raises(SpringUnavailableError):
         await _REAL_GET_RECENT(1)
 
@@ -3231,7 +3302,7 @@ async def test_recommendation_relaxation_probe_applies_persisted_repurchase(
     assert "products.ready" in _types(events)
     exposed = _only_list(push.pushes[0]).product_ids
     assert exposed == [101]
-    pipeline = next(record for record in caplog.records if record.msg == "recommend_pipeline")
+    pipeline = next(record for record in caplog.records if _event(record, "recommend_pipeline"))
     assert pipeline.after_dedup == len(exposed) == 1
 
 
@@ -6117,6 +6188,7 @@ async def test_profile_push_failure_does_not_persist_last_reco(
     key = await _thread_key(request, _member_num())
     cart_store = await get_cart_store()
     assert await cart_store.get_last_reco(key) == []
+    assert await cart_store.get_push_failed(key) is True
 
 
 # ─────────── [#435] 이음매 회귀 — "추천 → 이름으로 지목해 찜/담기" ───────────
@@ -6278,13 +6350,18 @@ async def test_profile_recommendation_name_target_cart_add_regression(
     assert actions and actions[0]["data"]["type"] == "CART_ADDED"
 
 
-def _no_name_category_store(pid: int, category: str = "생활용품"):
+def _no_name_category_store(pid: int, category: str = "생활용품", extras: dict | None = None):
     """이름 없는 상품 1건 — `search_doc` 첫 줄이 `category` 로 밀리는 [#435 리뷰 C1] 재현용."""
     from app.pipelines.artifact_store import CatalogArtifact, CatalogArtifactStore
 
     store = CatalogArtifactStore()
     store.upsert(
-        CatalogArtifact(product_id=pid, search_doc=category, embedding=[1.0, 0.0, 0.0], extras={})
+        CatalogArtifact(
+            product_id=pid,
+            search_doc=category,
+            embedding=[1.0, 0.0, 0.0],
+            extras=extras or {},
+        )
     )
     return store
 
@@ -6351,6 +6428,52 @@ async def test_profile_recommendation_cross_turn_category_fallback_names_deduped
     # 오확정을 막는 핵심 단언 — 같은 이름이 두 productId 에 동시에 남으면 안 된다.
     assert accumulated.get(202, "") == "", accumulated
     assert accumulated.get(101) == "생활용품", accumulated
+
+
+async def test_profile_recommendation_discards_flagged_category_fallback_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#468 I-17] 명시적 이름 없음 상품 하나도 추천은 유지하되 이름은 누적하지 않는다.
+
+    `rank_by_profile`가 `name_from_artifact` 대신 첫 줄 추출기를 직접 쓰면 이 테스트는
+    "생활용품"이 last_reco에 남아 실패한다. 플래그 없는 대조군은 바로 위 #435 cross-turn
+    테스트의 첫 턴(``{101: "생활용품"}``)이 기존 동작으로 이미 고정한다.
+    """
+    from app.agents.buyer.cart.state import CartStateStore
+    from app.agents.buyer.recommendation.graph import stream_recommendation
+    from app.agents.buyer.recommendation.state import RouteDecision
+    from app.pipelines.artifact_store import EXTRAS_NAME_PRESENT_KEY
+    from app.schemas.spring import ProductSearchFilters
+
+    cart_store = CartStateStore()
+    thread_key = "t-468-flagged-category-fallback"
+    monkeypatch.setattr(
+        "app.pipelines.artifact_store.get_catalog_store",
+        lambda: _no_name_category_store(101, extras={EXTRAS_NAME_PRESENT_KEY: False}),
+    )
+    events = await _collect(
+        stream_recommendation(
+            request=_req(thread_id="nc-468-flagged-category-fallback"),
+            decision=RouteDecision(
+                intent="recommend", filters=ProductSearchFilters(), semantic_query_is_fallback=True
+            ),
+            llm=FakeLLM(),
+            search=_make_search([]),
+            push_fn=_RecordingPush(),
+            identity=None,
+            profile=None,
+            settings=get_settings(),
+            cart_store=cart_store,
+            thread_key=thread_key,
+            request_id="req-468-flagged-category-fallback",
+            no_condition=True,
+            popular_fn=_recording_popular()[0],
+            profile_vec=[1.0, 0.0, 0.0],
+        )
+    )
+
+    assert "products.ready" in _types(events)
+    assert dict(await cart_store.get_last_reco(thread_key)) == {101: ""}
 
 
 async def test_member_without_taste_vector_falls_back_to_popular(
@@ -7115,3 +7238,88 @@ async def test_underspecified_flag_off_default_unaffected_by_393() -> None:
 
     assert search_calls  # priceMax 는 payload 축이라 무필터가 아니다 — 필터 검색이 나간다
     assert popular_calls == []
+
+
+# ─────────── I-1 options·optionCount 적재 — 장바구니 옵션 힌트 (이슈 #455) ───────────
+
+
+def _products_with_option_hints():
+    """DEFAULT_RERANK 가 참조하는 101·102 에 options/optionCount 를 실은 후보 — 103 은 미수신."""
+    return [
+        SpringProduct(
+            product_id=101,
+            name="이어폰A",
+            price=39000,
+            rating=4.5,
+            category="무선이어폰",
+            brand="BrandX",
+            options=["레드", "블루"],
+            option_count=5,
+        ),
+        SpringProduct(
+            product_id=102,
+            name="이어폰B",
+            price=48000,
+            rating=4.2,
+            category="무선이어폰",
+            brand="BrandY",
+            option_count=0,  # options 는 없지만 optionCount 만 온 케이스도 적재 대상
+        ),
+        SpringProduct(
+            product_id=103,
+            name="이어폰C",
+            price=29000,
+            rating=3.9,
+            category="무선이어폰",
+            brand="BrandZ",
+        ),
+    ]
+
+
+async def test_push_success_loads_option_hints_for_cart() -> None:
+    """(적재) 추천 push **성공** 턴에 candidates 의 옵션 힌트가 장바구니 상태에 실린다."""
+    from app.agents.buyer.cart.options import OptionHint
+    from app.agents.buyer.cart.state import get_cart_store
+
+    request = _req(thread_id="option-hint-push-success")
+    identity = _member()
+    key = await _thread_key(request, identity)
+    cart_store = await get_cart_store()
+
+    await _collect(
+        run_buyer_turn(
+            request,
+            identity,
+            llm=FakeLLM(),
+            search=_make_search(_products_with_option_hints()),
+            push_fn=_RecordingPush(),
+        )
+    )
+
+    assert await cart_store.get_option_hint(key, 101) == OptionHint(names=("레드", "블루"), total=5)
+    assert await cart_store.get_option_hint(key, 102) == OptionHint(names=(), total=0)
+    # 103 은 I-1 이 options/optionCount 를 안 실어 보냈으므로 힌트가 없다(오늘 경로로 degrade).
+    assert await cart_store.get_option_hint(key, 103) is None
+
+
+async def test_push_failure_does_not_load_option_hints() -> None:
+    """(적재) push **실패** 턴에는 카드가 노출되지 않은 것과 대칭으로 옵션 힌트도 싣지 않는다."""
+    from app.agents.buyer.cart.state import get_cart_store
+
+    request = _req(thread_id="option-hint-push-failure")
+    identity = _member()
+    key = await _thread_key(request, identity)
+    cart_store = await get_cart_store()
+
+    await _collect(
+        run_buyer_turn(
+            request,
+            identity,
+            llm=FakeLLM(),
+            search=_make_search(_products_with_option_hints()),
+            push_fn=_failing_push,
+        )
+    )
+
+    assert await cart_store.get_option_hint(key, 101) is None
+    assert await cart_store.get_option_hint(key, 102) is None

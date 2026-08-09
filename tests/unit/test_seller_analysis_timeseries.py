@@ -51,7 +51,7 @@ def test_reproduces_paper_case_injected_drop_detected_without_weekend_false_posi
     assert date.fromisoformat(target).weekday() < 5, "주입 지점은 평일이어야 한다"
     values[35] *= 0.6  # -40%
 
-    anomalies = timeseries.detect_seasonal_anomalies(dates, values, **_PARAMS)
+    anomalies = timeseries.detect_seasonal_anomalies(dates, values, **_PARAMS).anomalies
 
     flagged_dates = {a.date for a in anomalies}
     assert target in flagged_dates
@@ -67,7 +67,9 @@ def test_reproduces_paper_case_injected_drop_detected_without_weekend_false_posi
 def test_clean_seasonal_series_has_no_anomalies() -> None:
     """주입 없는 순수 계절 시계열은 이상 0건 — 검정 유의수준이 오탐을 통제한다."""
     dates, values = _weekly_series(42)
-    assert timeseries.detect_seasonal_anomalies(dates, values, **_PARAMS) == []
+    detection = timeseries.detect_seasonal_anomalies(dates, values, **_PARAMS)
+    assert detection.decided is True, "42점은 검정 가능 — 보류가 아니라 이상 0건이다"
+    assert detection.anomalies == []
 
 
 def test_deterministic_same_input_same_output() -> None:
@@ -77,14 +79,14 @@ def test_deterministic_same_input_same_output() -> None:
     first = timeseries.detect_seasonal_anomalies(dates, values, **_PARAMS)
     second = timeseries.detect_seasonal_anomalies(dates, values, **_PARAMS)
     assert first == second
-    assert len(first) >= 1
+    assert len(first.anomalies) >= 1
 
 
 def test_short_history_falls_back_to_robust_detection() -> None:
     """이력 < min_history_for_stl 이면 STL 생략(계절 미조정 robust 판정)으로도 급증을 잡는다."""
     dates = _dates(8)
     values = [100.0] * 7 + [10_000.0]
-    anomalies = timeseries.detect_seasonal_anomalies(dates, values, **_PARAMS)
+    anomalies = timeseries.detect_seasonal_anomalies(dates, values, **_PARAMS).anomalies
     assert [a.date for a in anomalies] == [dates[7]]
     assert anomalies[0].direction == "spike"
 
@@ -93,7 +95,7 @@ def test_zero_sales_point_never_flagged() -> None:
     """[#194 규칙 계승] 값 0 포인트는 급락 신호여도 판정하지 않는다(무판매일 노이즈 방지)."""
     dates = _dates(10)
     values = [100.0] * 9 + [0.0]
-    anomalies = timeseries.detect_seasonal_anomalies(dates, values, **_PARAMS)
+    anomalies = timeseries.detect_seasonal_anomalies(dates, values, **_PARAMS).anomalies
     assert all(a.actual != 0 for a in anomalies)
     assert dates[9] not in {a.date for a in anomalies}
 
@@ -103,12 +105,12 @@ def test_sales_after_all_zero_history_is_anomaly_with_undefined_pct() -> None:
     None(0 나눗셈 위장 금지), σ는 MeanAD 폴백으로 강한 신호(>3)가 잡힌다."""
     dates = _dates(10)
     values = [0.0] * 9 + [50_000.0]
-    anomalies = timeseries.detect_seasonal_anomalies(dates, values, **_PARAMS)
+    anomalies = timeseries.detect_seasonal_anomalies(dates, values, **_PARAMS).anomalies
     assert [a.date for a in anomalies] == [dates[9]]
     assert anomalies[0].sigma > 3.0
     assert anomalies[0].deviation_pct is None
     # 전부 0 이면 정상(발생 자체가 없다).
-    assert timeseries.detect_seasonal_anomalies(dates, [0.0] * 10, **_PARAMS) == []
+    assert timeseries.detect_seasonal_anomalies(dates, [0.0] * 10, **_PARAMS).anomalies == []
 
 
 def test_max_anomalies_ratio_caps_flag_count() -> None:
@@ -116,7 +118,7 @@ def test_max_anomalies_ratio_caps_flag_count() -> None:
     dates, values = _weekly_series(30)
     for i in (3, 8, 15, 22, 24, 28):  # 6건 주입 — 상한 floor(30×0.2)=6 경계
         values[i] *= 4.0
-    anomalies = timeseries.detect_seasonal_anomalies(dates, values, **_PARAMS)
+    anomalies = timeseries.detect_seasonal_anomalies(dates, values, **_PARAMS).anomalies
     assert len(anomalies) <= math.floor(30 * _PARAMS["max_anomalies_ratio"])
 
 
@@ -131,10 +133,10 @@ def test_injected_alpha_changes_verdict() -> None:
     values = [100.0, 103.0, 97.0, 101.0, 99.0, 102.0, 98.0, 100.0, 104.0, 108.0]
     strict = timeseries.detect_seasonal_anomalies(
         dates, values, period=7, alpha=1e-7, max_anomalies_ratio=0.2, min_history_for_stl=14
-    )
+    ).anomalies
     lenient = timeseries.detect_seasonal_anomalies(
         dates, values, period=7, alpha=0.4, max_anomalies_ratio=0.2, min_history_for_stl=14
-    )
+    ).anomalies
     assert dates[9] not in {a.date for a in strict}
     assert dates[9] in {a.date for a in lenient}
 
@@ -145,9 +147,35 @@ def test_mismatched_lengths_raise_value_error() -> None:
         timeseries.detect_seasonal_anomalies(["2026-07-01"], [1.0, 2.0], **_PARAMS)
 
 
-def test_too_few_points_returns_empty() -> None:
-    """3점 미만은 검정 불능 — 이상 없음이 아니라 판정 보류(빈 목록)."""
-    assert timeseries.detect_seasonal_anomalies(_dates(2), [1.0, 900.0], **_PARAMS) == []
+def test_too_few_points_is_undecided_not_clean() -> None:
+    """[#512] 3점 미만은 검정 불능 — 빈 목록이 아니라 decided=False 로 판정 보류를 알린다.
+
+    종전엔 이 경우와 "검정했고 이상 0건"이 똑같이 `[]` 라, 호출부가 표본 2개짜리
+    확정적 "이상 감지 없음"을 판매자에게 내보내고 있었다.
+    """
+    detection = timeseries.detect_seasonal_anomalies(_dates(2), [1.0, 900.0], **_PARAMS)
+    assert detection.decided is False
+    assert detection.anomalies == []
+    assert detection.sample_size == 2
+    assert detection.min_samples == 3
+
+
+def test_minimum_sample_is_decided() -> None:
+    """[#512] 경계 — 정확히 3점이면 검정 가능(decided=True)이다."""
+    detection = timeseries.detect_seasonal_anomalies(_dates(3), [100.0, 101.0, 99.0], **_PARAMS)
+    assert detection.decided is True
+    assert detection.sample_size == 3
+
+
+def test_seasonal_adjusted_flag_follows_stl_branch() -> None:
+    """[#512] 계절조정 여부는 판정 모듈이 직접 알린다 — 호출부가 임계를 재계산하지 않도록.
+
+    min_history_for_stl=14 경계에서 뒤집힌다(13점=robust 폴백, 14점=STL).
+    """
+    short = timeseries.detect_seasonal_anomalies(_dates(13), [100.0] * 13, **_PARAMS)
+    long = timeseries.detect_seasonal_anomalies(_dates(14), [100.0] * 14, **_PARAMS)
+    assert short.seasonal_adjusted is False
+    assert long.seasonal_adjusted is True
 
 
 def test_ignores_spring_reference_flags_by_construction() -> None:
@@ -155,5 +183,5 @@ def test_ignores_spring_reference_flags_by_construction() -> None:
     끼어들 자리가 구조적으로 없다 — 도구 층(tools.py)이 sales 원시값만 넘긴다."""
     dates = _dates(20)
     values = [100.0] * 19 + [400.0]
-    anomalies = timeseries.detect_seasonal_anomalies(dates, values, **_PARAMS)
+    anomalies = timeseries.detect_seasonal_anomalies(dates, values, **_PARAMS).anomalies
     assert dates[19] in {a.date for a in anomalies}

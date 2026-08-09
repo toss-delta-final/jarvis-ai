@@ -65,9 +65,15 @@ class AnalysisPlan(BaseModel):
     """analysis_planner 의 구조화 출력 (SPEC §2 — 워커 선택 + 기간 표현, smart tier).
 
     기간의 날짜 환산은 LLM 소관이 아니다(장치 ④) — planner 는 질문의 기간 표현을
-    정규 어휘(period_expr)로 재표현만 하고, 실제 (from, to) 환산은 파이프라인 코드가
-    `calc.normalize_period` 로 수행한다(pipeline.resolve_plan). 환산 불가 표현은
-    ValueError → 되묻기 token 경로(2026-07-18 확정 — "이번 달" 등은 지원하지 않는다).
+    **그대로 옮겨적기만** 하고, 실제 (from, to) 환산과 지원 여부 판정은 파이프라인
+    코드가 `period.resolve_period` 로 수행한다(pipeline.resolve_plan).
+
+    [#345] **이 description 은 PLANNER_PROMPT `[기간]` 절과 한 쌍이다.** 구조화 출력이라
+    LLM 이 프롬프트와 이 설명을 함께 읽으므로, 한쪽만 고치면 서로 반대를 지시해 planner
+    산출이 비결정적이 된다 — 어휘 규약을 바꿀 때는 반드시 둘을 같은 커밋에서 고친다.
+    또한 planner 는 **기간을 이유로 clarification 을 쓰지 않는다**: 기간 관련 사용자
+    대면 문구(되묻기·확인)의 소유자는 period.py 하나다
+    (docs/specs/DESIGN-SELLER-PERIOD.md §4.2).
 
     clarification 이 비어있지 않으면 계획 불성립 — 호출부는 팬아웃 대신 되묻기
     token 으로 전환한다(DraftProposal.clarification 과 동일 패턴).
@@ -81,15 +87,28 @@ class AnalysisPlan(BaseModel):
     period_expr: str = Field(
         default="최근",
         description=(
-            "정규 어휘로 재표현한 기간 — '지난달'/'최근 N일'/'어제'/"
-            "'YYYY-MM-DD~YYYY-MM-DD'(질문에 명시된 날짜 옮겨적기만). "
-            "기간 언급이 없으면 '최근'(기본 일수는 코드 소관)"
+            "판매자가 말한 기간 표현을 그대로 옮겨적은 값 — 단위를 바꾸거나 날짜를 "
+            "계산하지 않는다('최근 3개월'·'이번 달'·'상반기'도 그대로). 표기만 정규화: "
+            "연·월·일이 다 있으면 'YYYY-MM-DD~YYYY-MM-DD', 연도가 없으면 'M월 D일~M월 D일'. "
+            "기간 언급이 없으면 '최근'(기본 일수는 코드 소관). "
+            "해석 불가 여부와 되묻기 문구는 코드가 정한다 — 기간을 이유로 clarification 금지"
+        ),
+    )
+    comparison_expr: str = Field(
+        default="",
+        description=(
+            "판매자가 대조군을 함께 말했을 때만 그 표현을 그대로 옮겨적는다 "
+            "('지난달 대비'·'직전 동일 기간'·'작년 대비'). 비교 요청이 없으면 빈 문자열. "
+            "여기서도 날짜를 계산하지 않는다 — 환산·되묻기 문구는 코드 소관(이슈 #346)"
         ),
     )
     reason: str = Field(description="분석 선택 근거 한 문장 — 오분류 디버깅·회귀 테스트용")
     clarification: str = Field(
         default="",
-        description="기간·범위 해석 불능 시 되물을 질문 — 비어있지 않으면 계획 불성립",
+        description=(
+            "어떤 분석을 원하는지 파악하지 못했을 때 되물을 질문 — 비어있지 않으면 계획 "
+            "불성립. 기간을 이유로는 쓰지 않는다(#345 — 기간 문구는 period.py 소유)"
+        ),
     )
     wants_chart: bool = Field(
         default=False,
@@ -98,6 +117,25 @@ class AnalysisPlan(BaseModel):
             "'한눈에 보여줘' 류 암시 요청이면 True. 최종 판정은 이 값과 코드 "
             "키워드 검사(_CHART_RE)의 OR 다(pipeline.resolve_plan) — LLM 이 놓친 "
             "명시 키워드를 코드가 보강한다."
+        ),
+    )
+    chart_period_expr: str = Field(
+        default="",
+        description=(
+            "[#504] 판매자가 **그래프 기간을 분석 기간과 별도로** 말했을 때만 그 표현을 "
+            "그대로 옮겨적는다('지난달 이탈 보고서 쓰고 최근 7일 매출은 그래프로' → "
+            "period_expr='지난달', chart_period_expr='최근 7일'). 별도 언급이 없으면 빈 "
+            "문자열(차트는 분석 기간을 따른다). 여기서도 날짜를 계산하지 않는다 — "
+            "환산·해석 불가 안내는 코드 소관(period.py 문구 소유권 규약 동일)"
+        ),
+    )
+    chart_only: bool = Field(
+        default=False,
+        description=(
+            "[#504] 보고서 없이 **차트만** 원하는 턴인가('최근 7일 매출 그래프만 보여줘'). "
+            "True 면 워커 분석·보고서·추천을 생략하고 차트만 조립한다 — 오판이 보고서를 "
+            "지우므로 확실할 때만 True. 애매하면 False + wants_chart=True 로 둔다. "
+            "True 일 때는 analyses 를 비워도 된다(차트 소스는 워커와 무관)"
         ),
     )
 
@@ -284,13 +322,33 @@ class DraftProposal(BaseModel):
     )
     changes: list[DraftChange] = Field(
         default_factory=list,
-        description="변경 목록 — delete 는 status ON_SALE→HIDDEN 1건으로 표현(soft delete 가시화)",
+        description="변경 목록 — delete 는 status <조회값>→DELETED 1건으로 표현(soft delete 가시화). DELETED 는 HIDDEN(숨김)과 다른 상태이며 되돌릴 수 없다",
     )
     summary: str = Field(description="diff 카드 보조 한 줄 요약(예: '가격 12,900원으로 인하')")
     clarification: str = Field(
         default="",
         description="대상 모호·제약 위반·추천 적용 발화 시 되물을 질문 — 비어있지 않으면 draft 불성립",
     )
+
+
+# ── [#506] 등록 초안 대기 게이트 (입구 ①.8 — draft_session 대기 중 발화 3분류) ──
+
+
+class PendingDraftAction(BaseModel):
+    """초안 대기 중 발화 분류 — 게이트 LLM 구조화 출력 (FE 계약 §5.7).
+
+    approve 는 실행이 아니다 — 텍스트 승인은 받지 않는다는 안내(버튼 유도)로만
+    이어진다(발화 ≠ 동의 [HARD]). cancel 만 코드 단축경로(정형 발화)와 병행한다 —
+    위험이 비대칭이기 때문(승인 오독은 되돌릴 수 없고, 취소 오독은 재초안이면 된다).
+    """
+
+    action: Literal["modify", "approve", "cancel", "offtopic"] = Field(
+        description=(
+            "modify: 초안 내용 수정 요청 / approve: 등록·승인 의도 / "
+            "cancel: 취소·폐기 의도 / offtopic: 초안과 무관한 다른 주제"
+        )
+    )
+    reason: str = Field(default="", description="판정 근거 한 줄(로그용)")
 
 
 MAX_RECOMMENDATIONS = 5  # 추천 개수 상한 — 스키마 계약(와이어 아님)이라 Settings 가 아닌 상수
@@ -357,21 +415,90 @@ class ChartSpec(BaseModel):
     chart_type: Literal["line", "bar"] = Field(
         description="시계열이면 line, 단계·범주 비교면 bar — 와이어 chartType"
     )
-    unit: Literal["KRW", "COUNT", "PERCENT"] = Field(description="값 단위")
+    unit: Literal["KRW", "COUNT", "PERCENT", "RATING"] = Field(
+        description="값 단위 — RATING 은 상품별 평균 평점(1~5 실수, #504 신설)"
+    )
+    aggregate: Literal["sum", "avg", "none"] = Field(
+        default="sum",
+        description=(
+            "이 계열의 집계 방식(#504 신설) — charts.py 소스 레지스트리가 채운다. "
+            "sum: 합계가 의미 있음 / avg: 평균(평점) / none: 스냅샷(가격·재고)이라 둘 다 무의미. "
+            "FE 헤더 숫자 분기의 근거라 unit 으로 추측하게 두지 않는다"
+        ),
+    )
     series: list[ChartSeries] = Field(
         default_factory=list, max_length=1, description="계열 목록 — MVP 는 1개만(결정 D-3)"
     )
-    summary: str = Field(default="", description="보고서 문장에서 인용한 한 줄 요약(선택)")
+    summary: str = Field(default="", description="버킷·상위 절단·스냅샷 안내 한 줄(선택)")
 
 
 class ChartSet(BaseModel):
-    """graph_agent 구조화 출력 (response_format=ToolStrategy(ChartSet)).
+    """조립 완료된 차트 목록 — `report` 이벤트 charts[] 직렬화 재료.
 
-    도구를 주지 않는다(결정 D-4) — 근거 사슬(도구출력⊇finding⊇보고서⊇차트) 유지가
-    목적이라, graph_agent 는 이미 확보된 finding·보고서에서 숫자를 옮겨 담을 뿐
-    새 조회를 하지 않는다. 그릴 게 없으면 빈 목록을 허용한다(억지 차트 금지).
+    [#504] 종전에는 graph_agent 의 구조화 출력이었으나, 좌표 생성 주체가 LLM → 코드로
+    바뀌며 이제 **charts.py(build_charts)가 조립하는 내부 산출물**이다. LLM 은 축 선언
+    (ChartPlanSet)까지만 하고 좌표·단위·집계는 소스 레지스트리가 채운다.
     """
 
     charts: list[ChartSpec] = Field(
         default_factory=list, max_length=CHART_MAX, description="차트 목록(≤3)"
+    )
+
+
+# ── 5단계-b: ChartPlanSet (graph_agent 구조화 출력 — 이슈 #504 축 선언 계약) ──
+#
+# graph_agent 는 "어떤 축을 그릴 것인가"만 선언한다 — 좌표를 만들지 않는다.
+# 좌표는 charts.py 가 이 선언으로 Spring(I-6·I-13·I-9·I-31)을 직접 호출해 조립한다.
+# 어휘 밖 요청(퍼널·상관관계 등)은 x_axis/y_axis="other" 로 선언하고 title 에 요청명을
+# 남긴다 — charts.py 가 unsupported_axes 안내로 변환한다(지원 목록 포함 완성 문장).
+
+ChartXAxis = Literal["date", "product", "rating", "behavior_type", "other"]
+ChartYAxis = Literal[
+    "sales",
+    "sales_quantity",
+    "order_count",
+    "view",
+    "cart",
+    "review_count",
+    "avg_rating",
+    "price",
+    "stock",
+    "event_count",
+    "other",
+]
+
+
+class ChartAxisPlan(BaseModel):
+    """차트 1개의 축 선언 — 14조합 지원 여부 판정은 charts.py 레지스트리 소관."""
+
+    x_axis: ChartXAxis = Field(
+        description=(
+            "x축 — date(일자별)/product(상품별)/rating(별점별)/behavior_type(행동 유형별). "
+            "네 값으로 표현할 수 없는 요청(퍼널 등)은 other"
+        )
+    )
+    y_axis: ChartYAxis = Field(
+        description=(
+            "y축 — sales(매출)/sales_quantity(판매 수량)/order_count(주문 수)/view(조회수)/"
+            "cart(장바구니)/review_count(리뷰 수)/avg_rating(평균 평점)/price(가격)/"
+            "stock(재고)/event_count(행동 건수). 표현할 수 없으면 other"
+        )
+    )
+    title: str = Field(
+        default="",
+        description=(
+            "차트 제목(선택) — 비우면 코드가 기본 제목을 쓴다. other 선언 시에는 "
+            "판매자가 요청한 그래프 이름을 그대로 적는다(안내 문구 재료)"
+        ),
+    )
+
+
+class ChartPlanSet(BaseModel):
+    """graph_agent 구조화 출력 (response_format=ToolStrategy(ChartPlanSet), #504).
+
+    그릴 게 없으면 빈 목록을 허용한다(억지 차트 금지 — 종전 ChartSet 규약 승계).
+    """
+
+    charts: list[ChartAxisPlan] = Field(
+        default_factory=list, max_length=CHART_MAX, description="축 선언 목록(≤3)"
     )

@@ -3,7 +3,9 @@
 담기: (상품·옵션·수량) 의도 확정 → add_to_cart(I-2, 단건) → SSE action.
       옵션 필수(CART_OPTION_REQUIRED)면 실패 action 없이 token 되물음 → pending 저장 →
       다음 턴 사용자 답을 optionId 로 해석해 재담기(§4.1 멀티턴). 단 후보가 1개뿐이면 되묻지
-      않고 그 옵션으로 즉시 재담기한다(이슈 #114). 담기 전 get_cart(§4.9)로
+      않고 그 옵션으로 즉시 재담기한다(이슈 #114). 이번 발화 조건으로 후보가 정확히 1개로
+      좁혀져도 마찬가지로 되묻지 않고 담는다(이슈 #455, I-1 options·optionCount 소비 —
+      담기 권위는 여전히 I-2 이고 optionId 는 그 400 응답에서만 온다). 담기 전 get_cart(§4.9)로
       기존 보유를 확인해 합산 안내(조회 실패 시에도 담기 진행, degrade).
 조회: get_cart(I-18) → token 텍스트 답변(별도 이벤트 없음, §3.1).
 게스트 담기 허용(userId|guestId, §4.1) — 신원은 JWT sub 유래(요청 본문 불신).
@@ -11,7 +13,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 import logging
 
 from pydantic import ValidationError
@@ -19,6 +21,7 @@ from pydantic import ValidationError
 from app.agents.buyer._frames import sse
 from app.agents.buyer.cart.identity import cart_identity
 from app.agents.buyer.cart.intent_guard import classify_cart_utterance
+from app.agents.buyer.cart.options import OptionHint, narrow_options
 from app.agents.buyer.cart.purchase_state import state_advice_lines, state_suffix
 from app.agents.buyer.cart.remove import stream_cart_remove
 from app.agents.buyer.cart.state import CartStateStore, PendingAdd
@@ -64,6 +67,49 @@ def _options_text(options: list[CartOption]) -> str:
     """옵션 목록을 되물음 문구로 나열한다 — 추가금(extraPrice)이 있으면 함께 표시."""
     parts = [label for opt in options if (label := _option_label(opt))]
     return " / ".join(parts) if parts else "옵션"
+
+
+def _cart_option_required_text(
+    options: list[CartOption],
+    *,
+    message: str,
+    condition_terms: Sequence[str],
+    hint: OptionHint | None,
+    settings,
+) -> str:
+    """CART_OPTION_REQUIRED 되물음 문구(이슈 #455) — 세 갈래.
+
+    (a) 400 목록이 비었는데 I-1 힌트 이름이 있으면 그 이름으로 되묻는다(오늘은
+        `_options_text([])` 가 "옵션" 이라 아무 도움이 안 되는 문구가 나갔다).
+    (b) 400 목록이 있고 누적 조건(`by_condition`)으로 좁혀지면 좁힌 목록만 실은 문구.
+    (c) 그 외 — **오늘 문구를 한 글자도 바꾸지 않는다.**
+    """
+    if not options:
+        if hint is not None and hint.names:
+            names = [name for raw in hint.names if (name := _strip_unsafe(raw))]
+            if names:
+                names_text = " / ".join(names)
+                if hint.total is not None and hint.total > len(names):
+                    return (
+                        f"옵션을 선택해 주세요: {names_text} 외 {hint.total - len(names)}개. "
+                        "어떤 걸로 담을까요?"
+                    )
+                return f"옵션을 선택해 주세요: {names_text}. 어떤 걸로 담을까요?"
+        return f"옵션을 선택해 주세요: {_options_text(options)}. 어떤 걸로 담을까요?"
+
+    narrowing = narrow_options(
+        options,
+        message=message,
+        terms=condition_terms,
+        min_term_len=settings.cart_option_narrow_min_term_len,
+        match_suffixes=settings.cart_option_match_suffixes,
+    )
+    if narrowing.by_condition:
+        return (
+            f"말씀하신 조건에 맞는 옵션이에요: {_options_text(list(narrowing.by_condition))}. "
+            "이 중에서 고르시거나 다른 옵션을 말씀해 주세요."
+        )
+    return f"옵션을 선택해 주세요: {_options_text(options)}. 어떤 걸로 담을까요?"
 
 
 def _all_spans(text: str, needle: str) -> list[tuple[int, int]]:
@@ -127,26 +173,78 @@ def _existing_quantity(items: list[CartViewItem], product_id: int, option_id: in
     )
 
 
-async def _add_with_single_option(
-    add_fn, req: AddToCartRequest
-) -> tuple[AddToCartResult, CartOption | None]:
-    """I-2 담기 — 옵션 후보가 1개뿐이면 되묻지 않고 그 optionId 로 즉시 재담기한다(이슈 #114).
+def _select_auto_option(
+    options: list[CartOption],
+    *,
+    message: str,
+    condition_terms: Sequence[str],
+    hint: OptionHint | None,
+    settings,
+    already_sent: int | None,
+) -> CartOption | None:
+    """자동 선택 후보 판정(이슈 #114·#455) — 순서대로 시도, 아무것도 안 맞으면 `None`.
 
-    선택지가 하나면 되물어도 답이 정해져 있어 왕복만 늘어난다. 계약 변경은 없다 — AI 가 유일
-    옵션의 optionId 로 I-2 를 재호출할 뿐(api-spec §4.1). 자동 선택 재시도는 **1회**로 고정한다:
-    자동 선택한 옵션에도 REQUIRED 가 또 오면 계약 이상이므로 예외를 그대로 올려 기존 되물음
-    멀티턴으로 degrade 한다(무한 재시도 금지). 후보가 여럿이면 임의로 고르지 않고, 이미 보낸
-    optionId 와 같으면 같은 요청을 되풀이하지 않는다. 나머지 오류(INVALID·재고·수량 등)는 그대로
-    상위로 올려 기존 action 매핑을 탄다.
+    1) 후보가 **1개뿐**이면 그 옵션(#114 그대로 — 힌트로 이 규칙을 게이팅하지 않는다).
+    2) 아니면 **이번 발화**로 좁힌 후보(`by_message`)가 정확히 1개이고 `optionCount` 정합
+       가드를 통과하면 그 옵션. 힌트가 없으면 가드는 통과(부재 ≠ 불일치) — 있는데 400 목록
+       개수와 다르면(절단·드리프트) 자동 선택하지 않는다.
+    자동 선택은 **이번 발화 근거(by_message)로만** 한다 — 누적 조건(by_condition)은 되물음
+    문구를 좁히는 데만 쓴다(옛 턴 조건으로 사용자가 고르지 않은 옵션을 결제 대상에 넣지 않는다).
+    """
+    if len(options) == 1:
+        candidate = options[0]
+    else:
+        narrowing = narrow_options(
+            options,
+            message=message,
+            terms=condition_terms,
+            min_term_len=settings.cart_option_narrow_min_term_len,
+            match_suffixes=settings.cart_option_match_suffixes,
+        )
+        if len(narrowing.by_message) != 1:
+            return None
+        if not (hint is None or hint.total is None or hint.total == len(options)):
+            return None
+        candidate = narrowing.by_message[0]
+    if candidate.option_id == already_sent:
+        return None
+    return candidate
+
+
+async def _add_with_single_option(
+    add_fn,
+    req: AddToCartRequest,
+    *,
+    message: str,
+    condition_terms: Sequence[str],
+    hint: OptionHint | None,
+    settings,
+) -> tuple[AddToCartResult, CartOption | None]:
+    """I-2 담기 — 후보가 자동 선택되면 되묻지 않고 그 optionId 로 즉시 재담기한다(이슈 #114·#455).
+
+    선택지가 하나면(#114), 또는 이번 발화로 후보가 정확히 하나로 좁혀지면(#455) 되물어도 답이
+    정해져 있어 왕복만 늘어난다. 계약 변경은 없다 — AI 가 선택한 optionId 로 I-2 를 재호출할
+    뿐(api-spec §4.1). 자동 선택 재시도는 **1회**로 고정한다: 자동 선택한 옵션에도 REQUIRED 가
+    또 오면 계약 이상이므로 예외를 그대로 올려 기존 되물음 멀티턴으로 degrade 한다(무한 재시도
+    금지). 후보를 못 고르면 임의로 고르지 않고, 이미 보낸 optionId 와 같으면 같은 요청을
+    되풀이하지 않는다(`_select_auto_option`). 나머지 오류(INVALID·재고·수량 등)는 그대로 상위로
+    올려 기존 action 매핑을 탄다.
 
     반환값 두 번째는 자동 선택한 옵션(없었으면 None) — AI 가 대신 골랐음을 안내 문구에 밝히기 위함.
     """
     try:
         return await add_fn(req), None
     except CartOptionRequired as exc:
-        if len(exc.options) != 1 or exc.options[0].option_id == req.option_id:
+        option = _select_auto_option(
+            exc.options,
+            message=message,
+            condition_terms=condition_terms,
+            hint=hint,
+            settings=settings,
+            already_sent=req.option_id,
+        )
+        if option is None:
             raise
-        option = exc.options[0]
         return await add_fn(req.model_copy(update={"option_id": option.option_id})), option
 
 
@@ -168,6 +266,7 @@ _UNRESOLVED_DEFAULT = "어떤 상품을 담을까요? 추천을 먼저 받아보
 _UNRESOLVED_WITH_RECO = (
     "어떤 상품을 담을까요? 추천해 드린 상품 중에서 이름을 말씀해 주시면 담아드릴게요."
 )
+_UNRESOLVED_AFTER_PUSH_FAILURE = "어떤 상품을 담을까요? 추천 목록 전달에 문제가 있었어요. 다시 추천을 요청해 주시면 도와드릴게요."
 # 화면을 가리켰지만 **어느 것인지** 특정되지 않은 경우. 후보 다건(`ambiguous_screen_candidates`)과
 # 순번·좌표가 화면 범위를 벗어난 경우(`*_out_of_range`), 좌표를 풀 `columns` 가 없는 경우를 **한
 # 문구로 묶는다** — 사유는 다르지만 사용자가 취해야 할 다음 행동이 "위치를 다시 말한다"로 같기
@@ -191,7 +290,9 @@ _SCREEN_POSITION_REASONS = frozenset(
 )
 
 
-def _unresolved_notice(screen_reason: str | None, has_last_reco: bool) -> str:
+def _unresolved_notice(
+    screen_reason: str | None, has_last_reco: bool, *, has_push_failed: bool = False
+) -> str:
     """되물음 문구를 화면 해소 사유 → `last_reco` 유무 순으로 가른다.
 
     `screen_reason` 이 있으면 화면 문구가 **우선**한다(위 `_UNRESOLVED_WITH_RECO` 정의 참조).
@@ -203,6 +304,8 @@ def _unresolved_notice(screen_reason: str | None, has_last_reco: bool) -> str:
         return _UNRESOLVED_SCREEN_NOT_FOUND
     if has_last_reco:
         return _UNRESOLVED_WITH_RECO
+    if has_push_failed:
+        return _UNRESOLVED_AFTER_PUSH_FAILURE
     return _UNRESOLVED_DEFAULT
 
 
@@ -216,7 +319,9 @@ async def stream_cart_add(
     message: str = "",
     allowed_product_ids: set[int] | None = None,
     screen_reason: str | None = None,
+    condition_terms: Sequence[str] = (),
     has_last_reco: bool = False,
+    has_push_failed: bool = False,
     add_fn=None,
     get_cart_fn=None,
     delete_fn=None,
@@ -244,9 +349,10 @@ async def stream_cart_add(
     찜 해소는 "추천 목록·문맥에서 productId 해소"까지)이며, **[라운드 23]** 플래그 제거로 이제
     이 흐름은 항상 사용자에게 도달한다 — 통합은 여전히 후속 항목이다.
 
-    **`has_last_reco`(#435) 는 위 세 위임 중 `stream_wishlist_add` 로 위임할 때만 전달한다** —
-    나머지 둘(`stream_wishlist_remove`·`stream_cart_remove`)은 누락이 아니라 **불필요**다. 그
-    두 흐름의 미해소 문구는 `last_reco` 를 보지 않고 **실제 찜/장바구니 목록**에서 만들어진다
+    **`has_last_reco`(#435)·`has_push_failed`(#468)는 위 세 위임 중 `stream_wishlist_add`로
+    위임할 때만 전달한다** — 나머지 둘(`stream_wishlist_remove`·`stream_cart_remove`)은 누락이
+    아니라 **불필요**다. 그 두 흐름의 미해소 문구는 `last_reco`·push 실패 마커를 보지 않고
+    **실제 찜/장바구니 목록**에서 만들어진다
     (`wishlist.py::_wishlist_unresolved_notice`·`remove.py`) — 이미 목록을 손에 쥐고 있어
     "추천을 받았는지"와 무관하게 구체적인 문구가 나가므로, `last_reco` 유무가 그 문구를 가를
     이유가 없다.
@@ -265,6 +371,7 @@ async def stream_cart_add(
             settings=settings,
             allowed_product_ids=allowed_product_ids,
             has_last_reco=has_last_reco,
+            has_push_failed=has_push_failed,
             add_wishlist_fn=add_wishlist_fn,
             observer=observer,
         ):
@@ -357,9 +464,11 @@ async def stream_cart_add(
     if unresolved:
         yield sse(
             "token",
-            TokenData(text=_unresolved_notice(screen_reason, has_last_reco)).model_dump(
-                by_alias=True
-            ),
+            TokenData(
+                text=_unresolved_notice(
+                    screen_reason, has_last_reco, has_push_failed=has_push_failed
+                )
+            ).model_dump(by_alias=True),
         )
         yield _done()
         return
@@ -376,6 +485,10 @@ async def stream_cart_add(
         pass  # 조회 실패해도 담기는 진행(§4.9)
     existing = _existing_quantity(existing_items, product_id, option_id)
 
+    # I-1 옵션 힌트 조회(이슈 #455) — product_id 확정 뒤·I-2 호출 전, 인메모리 1회. 미스는 예외
+    # 없이 None(재시작·다중 인스턴스 degrade, 오늘 경로와 동일).
+    hint = await cart_store.get_option_hint(thread_key, product_id)
+
     try:
         req = AddToCartRequest(
             user_id=user_id,
@@ -384,23 +497,35 @@ async def stream_cart_add(
             option_id=option_id,
             quantity=quantity,
         )
-        result, auto_option = await _add_with_single_option(add_fn, req)
+        result, auto_option = await _add_with_single_option(
+            add_fn,
+            req,
+            message=message,
+            condition_terms=condition_terms,
+            hint=hint,
+            settings=settings,
+        )
     except CartOptionRequired as exc:
         # api-spec §4.1 — REQUIRED 는 **상한 없는 되물음 멀티턴**(사용자가 옵션을 아직 안 준 정상 흐름).
         # 각 되물음은 사용자 입력을 요구하므로 서버 무한 루프가 아니다. INVALID 카운터(attempts)는
         # 리셋하지 않고 보존해 사이에 끼어도 INVALID 상한이 유지되게 한다.
+        # PendingAdd.options 에는 **언제나 전체 exc.options** 를 저장한다(좁힌 목록을 저장하면
+        # 사용자가 좁힌 목록 밖 옵션을 답했을 때 다음 턴 decompose 가 optionId 를 못 찾는다 —
+        # `app/agents/buyer/graph.py` 가 pending 옵션 전체를 PENDING_CART 로 프롬프트에 싣는다).
         await cart_store.set_pending(
             thread_key,
             PendingAdd(
                 product_id=product_id, quantity=quantity, options=exc.options, attempts=attempts
             ),
         )
-        yield sse(
-            "token",
-            TokenData(
-                text=f"옵션을 선택해 주세요: {_options_text(exc.options)}. 어떤 걸로 담을까요?"
-            ).model_dump(by_alias=True),
+        text = _cart_option_required_text(
+            exc.options,
+            message=message,
+            condition_terms=condition_terms,
+            hint=hint,
+            settings=settings,
         )
+        yield sse("token", TokenData(text=text).model_dump(by_alias=True))
         yield _done()
         return
     except CartOptionInvalid as exc:

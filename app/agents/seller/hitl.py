@@ -38,6 +38,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 from pydantic import BaseModel, Field
 
+from app.agents.seller import category_catalog
 from app.agents.seller import checkpoint as seller_checkpoint
 from app.agents.seller.schemas import DraftChange, DraftProposal
 from app.core.config import get_settings
@@ -53,6 +54,8 @@ from app.services.spring_client import (
     OrderAlreadyShipped,
     OrderInvalidTransition,
     OrderItemNotFound,
+    ProductAlreadyDeleted,
+    ProductDeletedNotEditable,
     get_spring_client,
 )
 
@@ -62,12 +65,17 @@ logger = logging.getLogger(__name__)
 
 # after(str) → 정수 캐스팅 대상 필드(ProposedChange "수치도 문자열" 계약의 역변환 지점).
 _INT_FIELDS = frozenset({"price", "original_price", "stock_quantity"})
-_STATUS_VALUES = frozenset({"ON_SALE", "HIDDEN"})
+# I-10 등록·I-11 수정으로 지정할 수 있는 status. 삭제(`DELETED`)는 **I-12 전용 전이**라
+# 여기 넣지 않는다 — 넣으면 update 본문으로 새어나가 BE 가 400 으로 막는다(api-spec §4.5).
+_UPDATE_STATUS_VALUES = frozenset({"ON_SALE", "HIDDEN"})
+# delete draft 의 표시용 after — I-12 는 본문이 없어 실행에 실리지 않는다(diff 카드 전용).
+_DELETE_STATUS_VALUE = "DELETED"
 # 도구 출력("가격 15,000원 재고 100건")을 옮겨적은 값 관용 처리용 단위 접미사.
 _INT_SUFFIXES = ("원", "건", "개")
-# C4 + D3(REALIGN, ⚠️ BE 미확인): create 는 image_url/status 지정 불가 —
-# image_url 은 BE 기본값/NULL 처리 가정, status 는 I-10 이 ON_SALE 로 발급.
-_CREATE_FORBIDDEN_FIELDS = frozenset({"image_url", "status"})
+# status 는 create 지정 불가 — I-10 이 ON_SALE 로 발급한다.
+# [#506] 구 금지 필드 image_url 은 해제 — 이미지 기반 등록 초안이 canonical URL 을
+# 싣는다(검증은 validate_draft: http(s) + seller_image_url_max_len ≤ 500, DB VARCHAR).
+_CREATE_FORBIDDEN_FIELDS = frozenset({"status"})
 # I-10 필수 본문(api-spec §4.5) — 누락 draft 는 등록 자체가 불가하므로 되묻기.
 _CREATE_REQUIRED_FIELDS = frozenset({"name", "price", "stock_quantity"})
 # [#297] I-30 MVP 허용 전이는 ORDERED→SHIPPING 하나뿐(§4.19) — toStatus 를 코드가
@@ -106,14 +114,21 @@ def _parse_int(raw: str) -> int:
     return int(text)
 
 
-def _typed_after(change: DraftChange) -> int | str:
-    """changes[].after(str) → I-10/11 본문 타입. 실패는 ValueError 전파(호출부 되묻기)."""
+def _typed_after(change: DraftChange, *, op: str = "update") -> int | str:
+    """changes[].after(str) → I-10/11 본문 타입. 실패는 ValueError 전파(호출부 되묻기).
+
+    status 허용값이 op 별로 갈린다: 삭제 초안은 `DELETED` 뿐(표시용 — I-12 는 본문이 없다)
+    이고 등록·수정은 `ON_SALE`/`HIDDEN` 뿐이다. 한 집합으로 합치면 삭제 값이 I-10·I-11
+    본문으로 새어나가 BE 가 400 으로 막는 요청을 보내게 된다(api-spec §4.5).
+    """
     if change.field in _INT_FIELDS:
         return _parse_int(change.after)
     if change.field == "status":
         value = change.after.strip()
-        if value not in _STATUS_VALUES:
-            raise ValueError(f"status 는 ON_SALE/HIDDEN 만 가능합니다: {change.after!r}")
+        allowed = {_DELETE_STATUS_VALUE} if op == "delete" else _UPDATE_STATUS_VALUES
+        if value not in allowed:
+            allowed_text = _DELETE_STATUS_VALUE if op == "delete" else "ON_SALE/HIDDEN"
+            raise ValueError(f"status 는 {allowed_text} 만 가능합니다: {change.after!r}")
         return value
     return change.after
 
@@ -176,8 +191,9 @@ def validate_draft(
         forbidden = fields & _CREATE_FORBIDDEN_FIELDS
         if forbidden:
             return None, (
-                "상품 등록 시에는 이미지·상태를 함께 지정할 수 없습니다. "
-                "등록 후 수정으로 다시 요청해 주세요."
+                "상품 등록 시에는 상태(status)를 함께 지정할 수 없습니다 — 등록되면 "
+                "판매중(ON_SALE)으로 시작합니다. 숨김이 필요하면 등록 후 수정으로 "
+                "요청해 주세요."
             )
         missing = _CREATE_REQUIRED_FIELDS - fields
         if missing:
@@ -185,9 +201,31 @@ def validate_draft(
                 "상품 등록에는 상품명·가격·재고 수량이 필요합니다. "
                 f"누락된 항목({', '.join(sorted(missing))})을 알려주세요."
             )
+        # [#506] image_url 값 검증 — 2차 방어(1차는 요청 스키마·FE 서버 라우트).
+        # presigned URL 이 저장되면 만료 시점에 상품 이미지가 조용히 죽는다(FE 계약 §2.3).
+        image_url = next((c.after for c in changes if c.field == "image_url"), None)
+        if image_url is not None:
+            settings = get_settings()
+            if not image_url.startswith(("https://", "http://")):
+                return None, "상품 이미지 URL 형식이 올바르지 않습니다. 사진을 다시 첨부해 주세요."
+            if len(image_url) > settings.seller_image_url_max_len or "X-Amz-Signature" in image_url:
+                return None, (
+                    "상품 이미지 URL 이 저장 가능한 형식이 아닙니다(길이 초과 또는 만료형 URL). "
+                    "사진을 다시 첨부해 주세요."
+                )
+        # [#506] category 는 카테고리 스냅샷의 id 여야 한다 — LLM 은 주입된 후보 중에서만
+        # 고르지만(프롬프트), 목록 밖 값·자유 문자열은 여기서 되묻기로 전환한다(이중 방어).
+        # update 의 category 는 기존 계약(자유 문자열) 그대로 둔다 — 스냅샷 강제 확대는
+        # 별도 이슈로 다룬다(기존 수정 흐름 파손 방지).
+        category_id = next((c.after for c in changes if c.field == "category"), None)
+        if category_id is not None and category_catalog.get(category_id) is None:
+            return None, (
+                "카테고리를 확정하지 못했습니다. 원하시는 카테고리를 알려주시면 "
+                "후보를 다시 찾아 초안에 반영하겠습니다."
+            )
     for change in changes:
         try:
-            _typed_after(change)
+            _typed_after(change, op=proposal.op)
         except ValueError:
             return None, (
                 f"'{change.field}' 값 '{change.after}' 을(를) 해석하지 못했습니다. "
@@ -214,16 +252,23 @@ _STALE_EXEMPT_FIELDS = frozenset({"stock_quantity"})
 
 
 def find_stale_changes(
-    row: SellerProductRow, changes: list[DraftChange]
+    row: SellerProductRow, changes: list[DraftChange], *, op: str = "update"
 ) -> list[tuple[str, str, str]]:
     """draft.changes 의 before 를 현재 상품값과 대조 — 불일치 (field, before, current) 목록.
 
     int 필드는 표기 차이("15,000" vs "15000")로 인한 오탐을 막기 위해 정수 비교,
     문자열 필드는 strip 후 비교한다. stock_quantity 는 제외(모듈 docstring 3).
+
+    **삭제(op="delete")는 `status` 를 비교하지 않는다** — `ON_SALE`·`HIDDEN` 어느 쪽에서든
+    `DELETED` 로 가는 것이 정상 전이라(api-spec §4.5) 초안 작성 후 판매자가 상품을 숨겼다는
+    이유로 삭제를 막을 근거가 없다. 비교하면 BE 가 열어준 "숨겼다가 나중에 지운다" 흐름이
+    AI 쪽에서 다시 막힌다(구 계약의 409 `ALREADY_HIDDEN` 이 만들던 것과 같은 증상).
     """
     mismatches: list[tuple[str, str, str]] = []
     for change in changes:
         if change.field in _STALE_EXEMPT_FIELDS:
+            continue
+        if op == "delete" and change.field == "status":
             continue
         current = getattr(row, change.field, None)
         current_str = "" if current is None else str(current)
@@ -319,13 +364,28 @@ async def _execute_draft(record: DraftRecord) -> tuple[str, str]:
 
     if record.op == "create":
         values = {c.field: _typed_after(c) for c in record.changes}
+        # [#506] category 는 changes 에 **스냅샷 id** 로 실려 있다(validate_draft 선검증).
+        # I-10 에 쓸 값은 카탈로그가 결정한다(seller_category_write_mode — leaf/path/id).
+        # 스냅샷 교체(배포) 사이에 id 가 사라진 draft 는 실행하지 않고 되묻는다 —
+        # 보여준 카테고리와 다른 값이 저장되는 것보다 재초안이 낫다.
+        category_value: str | None = None
+        if "category" in values:
+            category_value = category_catalog.spring_write_value(str(values["category"]))
+            if category_value is None:
+                return (
+                    "stale",
+                    "초안의 카테고리가 더 이상 유효하지 않습니다(카테고리 목록 갱신). "
+                    "변경 내용을 다시 말씀해 주시면 새 초안을 만들어 드리겠습니다.",
+                )
         payload = ProductCreate(
             name=str(values["name"]),
             price=int(values["price"]),
             stock_quantity=int(values["stock_quantity"]),
             original_price=(int(values["original_price"]) if "original_price" in values else None),
-            category=str(values["category"]) if "category" in values else None,
+            category=category_value,
             description=str(values["description"]) if "description" in values else None,
+            # [#506] 이미지 기반 등록 — validate_draft 가 canonical URL(≤500자)을 보장.
+            image_url=str(values["image_url"]) if "image_url" in values else None,
         )
         created = await client.create_product(record.brand_id, payload)
         return (
@@ -339,10 +399,11 @@ async def _execute_draft(record: DraftRecord) -> tuple[str, str]:
         return (
             "stale",
             f"대상 상품(productId={record.product_id})을 상품 목록에서 찾을 수 없어 "
-            f"반영을 중단했습니다. 삭제되었거나 변경된 것 같습니다. {_STALE_RETRY_GUIDE}",
+            "반영을 중단했습니다. 이미 삭제되었거나(삭제한 상품은 목록에서 빠집니다) "
+            f"다른 브랜드로 옮겨진 것 같습니다. {_STALE_RETRY_GUIDE}",
         )
 
-    mismatches = find_stale_changes(row, record.changes)
+    mismatches = find_stale_changes(row, record.changes, op=record.op)
     if mismatches:
         lines = [
             f"- {field}: 초안 기준 '{before}' → 현재 '{current}'"
@@ -371,15 +432,30 @@ async def _execute_draft(record: DraftRecord) -> tuple[str, str]:
             )
 
     if record.op == "delete":
-        deleted = await client.delete_product(record.brand_id, record.product_id)
+        try:
+            deleted = await client.delete_product(record.brand_id, record.product_id)
+        except ProductAlreadyDeleted:
+            return (
+                "already_done",
+                f"이미 삭제된 상품입니다 (productId={record.product_id}) — 중복 실행하지 "
+                "않았습니다. 삭제는 되돌릴 수 없어 다시 시도해도 결과가 같습니다.",
+            )
         return (
             "executed",
-            f"상품을 삭제(숨김) 처리했습니다 (productId={deleted.product_id}, "
-            f"status={deleted.status}). 물리 삭제는 아니며 노출만 중단됩니다.",
+            f"상품을 삭제했습니다 (productId={deleted.product_id}, status={deleted.status}). "
+            "숨김(판매정지)과 달리 판매자 상품 목록에서도 빠지며 되돌릴 수 없습니다. "
+            "다만 물리 삭제는 아니라 기존 주문 내역·매출 통계는 그대로 남습니다.",
         )
 
     patch = ProductUpdate(**{c.field: _typed_after(c) for c in record.changes})
-    updated = await client.update_product(record.brand_id, record.product_id, patch)
+    try:
+        updated = await client.update_product(record.brand_id, record.product_id, patch)
+    except ProductDeletedNotEditable:
+        return (
+            "already_done",
+            f"이미 삭제된 상품이라 수정할 수 없습니다 (productId={record.product_id}). "
+            "삭제는 되돌릴 수 없으니 같은 상품이 필요하시면 새로 등록해 주세요.",
+        )
     summary_part = f" {record.summary}" if record.summary else ""
     return (
         "executed",
@@ -391,11 +467,16 @@ async def _execute_draft(record: DraftRecord) -> tuple[str, str]:
 
 
 class HitlState(TypedDict, total=False):
-    """HITL 스레드 상태 — draft 가 입력이자 정본, outcome/result 는 실행 후 기록."""
+    """HITL 스레드 상태 — draft 가 입력이자 정본, outcome/result 는 실행 후 기록.
+
+    cancelled 는 [#506] 무효화 마킹 — 수정 턴이 새 draft 를 발급하면 이전 draft 에
+    True 를 기록해, 브라우저에 남은 옛 카드의 confirm(수정 전 값 등록 사고)을 차단한다.
+    """
 
     draft: dict
     outcome: str
     result: str
+    cancelled: bool
 
 
 async def _hitl_node(state: HitlState) -> HitlState:
@@ -419,8 +500,10 @@ set_checkpointer = seller_checkpoint.set_checkpointer
 
 _graph = None
 
-# confirm 동시성 직렬화용 draftId→Lock 레지스트리(프로세스 내). draft 는 1회성이라
-# 항목 수는 프로세스 수명 동안의 draft 수로 유계 — 명시 정리는 생략한다.
+# confirm 동시성 직렬화용 draftId→Lock 레지스트리(프로세스 내)다. 지금은 프로세스 로컬
+# ActiveStreamRegistry 때문에 워커 다중화가 금지돼 있다. 다중화 허용 조건과 이 락이 워커 간에
+# 무력화되는 위험은 docs/specs/OPS-SCALEOUT-476.md를 따른다. draft 는 1회성이라 항목 수는
+# 프로세스 수명 동안의 draft 수로 유계 — 명시 정리는 생략한다.
 _confirm_locks: dict[str, asyncio.Lock] = {}
 
 
@@ -474,6 +557,29 @@ async def start_draft(record: DraftRecord) -> None:
         raise RuntimeError("HITL draft 저장 실패 — interrupt 가 발생하지 않았다")
 
 
+async def invalidate_draft(draft_id: str) -> None:
+    """[#506] draft 를 무효화한다 — 수정 턴의 새 draft 발급 시 이전 draftId 에 호출.
+
+    FE 계약 §5.6: 수정할 때마다 새 draftId 가 발급되고 **이전 것은 서버가 무효화**한다
+    — 안 그러면 브라우저에 남은 옛 카드의 등록 버튼으로 수정 전 값이 등록된다.
+    무효화된 draft 의 confirm 은 not_found(존재 비노출 문구)로 거절된다.
+    실패는 warning 후 계속 — 이전 draft 는 TTL(⑤)이 최종 방어선이다.
+
+    [리뷰 M-2] confirm 과 같은 draftId 락으로 직렬화한다 — 락 없이는 confirm 의
+    cancelled 검사(snapshot 시점 1회)와 이 쓰기가 경합해 "무효화됐는데 실행"이
+    가능하다. 락·스트림 레지스트리 모두 **프로세스 로컬**이라 다중 워커 배포에서는
+    이 보장이 약하다(체크포인트 단일화가 별도 방어) — 한계를 여기 명시해 둔다.
+    """
+    try:
+        graph = await _get_graph()
+        async with _confirm_lock(draft_id):
+            await graph.aupdate_state(_thread_config(draft_id), {"cancelled": True}, as_node="hitl")
+    except Exception:
+        logger.warning(
+            "draft 무효화 실패 — TTL 만료가 최종 방어 (draftId=%s)", draft_id, exc_info=True
+        )
+
+
 @dataclass(frozen=True)
 class ConfirmOutcome:
     """confirm 처리 결과 — text 는 그대로 사용자 token 이 된다."""
@@ -516,6 +622,11 @@ async def confirm_draft(draft_id: str, *, seller_id: int, brand_id: int) -> Conf
             logger.warning("draft 소유 불일치 confirm 차단 (draftId=%s)", draft_id)
             return ConfirmOutcome("not_found", _NOT_FOUND_TEXT)
 
+        # [#506] 무효화된 draft(수정 턴이 새 draftId 를 발급) — 존재 비노출 거절.
+        # 소유 검증 **뒤**에 두는 이유: 타 판매자에게는 무효화 여부도 노출하지 않는다.
+        if values.get("cancelled"):
+            return ConfirmOutcome("not_found", _NOT_FOUND_TEXT)
+
         if values.get("result"):  # 실행 완료 스레드 — 멱등(안전장치 ③)
             return ConfirmOutcome(
                 "already_done",
@@ -524,7 +635,9 @@ async def confirm_draft(draft_id: str, *, seller_id: int, brand_id: int) -> Conf
 
         settings = get_settings()
         created = datetime.fromisoformat(record.created_at)
-        if datetime.now(UTC) - created > timedelta(minutes=settings.seller_draft_ttl_minutes):
+        # 경계 포함(>=) — draft_session·period_confirm(#346)과 같은 판정: ttl=0 은
+        # "즉시 만료"이고, 엄격 부등호는 시계 분해능(Windows ~15.6ms 틱)에 걸린다.
+        if datetime.now(UTC) - created >= timedelta(minutes=settings.seller_draft_ttl_minutes):
             return ConfirmOutcome(
                 "expired",
                 f"초안이 만료됐습니다(유효 {settings.seller_draft_ttl_minutes}분). "

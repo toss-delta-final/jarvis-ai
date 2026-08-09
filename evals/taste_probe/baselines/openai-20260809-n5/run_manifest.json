@@ -1,0 +1,166 @@
+{
+  "commitSha": "3751594b953500b196d8312444cac1dfbf0dabba",
+  "dirty": true,
+  "hashes": {
+    "config": "d52a31503345d7011162269ca2b27c07b3e91d3cf0170b434af6c55c388b713b",
+    "datasetFixture": "e31dd78646bcfc8725796340dbb3b0517236031d6816faed41d9dfd2904b3d4e",
+    "datasetManifest": "6bc8e13f22aca475dde02f2062eb9270d6ac8abc3c47e90875e22c511567dfd9",
+    "deltaSystemPrompt": "f1087ac09a78458d2f9506fb2b30ff6814e2a2a725da1acbb10fdd7a34fd4c67",
+    "fixtures": {
+      "catalog_snapshot.json": "f98539b2d8d2fea60c586cf31499ecf9187ae815d389dd3f1312f05f3fec840d",
+      "purchase_history.json": "d4203b8d31ef2bbc4c46d5bff6e1eb672c189ffc449299a898eaeb9adf687e3b",
+      "search_responses.json": "9b95d071e0075a8a976bdeabfe1dfc11bf2aa63ca31bc277afa3cc52baf13c1e"
+    },
+    "prompts": {
+      "decompose": "529fd4367e219fed338381ac909d67706bc27b0b642e1eb65fc7256465d70d78",
+      "rerank": "ae3b549237b354f718fc08966a383613e5fec8d200c8d07daed038cda552ea7c"
+    },
+    "tasteProbeModules": {
+      "__init__.py": "8c636ac5aad171b927c75e6599ac33a2d190fd9f754e5c46cf2f685154a10682",
+      "__main__.py": "38a8aabb2f8edf14a2f59004fa84402f21c2cee6b566ba7d836eeef40dff4096",
+      "baseline.py": "07fc7571f896f7f8d18d4b92a04a397f477f07597ab8b1c0c597fd7680bff3cc",
+      "cli.py": "9919a8fd0d5983212440588c31c80e55ab0895ad4bd6642e2b0b7cce565259bf",
+      "fakes.py": "6b490e12aae31ccb146f181832d52c66425ad1f1454558b994465953bc357ee2",
+      "loader.py": "9b9c664268dcca26d72993cbb3ec731662ce15f43c99abbf0e83648ecbe6dfac",
+      "manifest.py": "072859b5e3b05ffdcdc7f3d5080247226071bdde9dd160947c9c4177e7489e9a",
+      "metrics.py": "2a118aa216e8680bf2e4863ba6c11babf93173f58bcced5a549681f2a8dc0d1a",
+      "report.py": "374e6357486a55d7e2fb12e9fec08ecc5b5da07fc97ce800d7ddae75145e2b9e",
+      "runner.py": "d9f86e57e341adb5f91f25c5e8c63d4cb6bc47e93827079255715c2c894a3bd0",
+      "schema.py": "d4178395ce58cde0f08ab61ed88bb6de1177dbc41856657db3c3d2820fc8ccf3",
+      "seams.py": "83a67cfe9494d0b7c7bd81174ff0c986ec94e2e7b9e0e78dfed3469cee1a2576"
+    },
+    "uvLock": "bc79d52c10d7cefba24d91d30408e0777ed75ae64d738e047d74bb325437ec9c"
+  },
+  "image": null,
+  "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+  "pythonVersion": "3.12.3",
+  "run": {
+    "command": "uv run python -m evals.taste_probe --out /tmp/tp-baseline-n5 --n 5",
+    "runId": "7e263340-7dc2-4163-943f-37c6ed32cf87",
+    "timestamp": "2026-08-08T16:38:23.339662+00:00"
+  },
+  "seed": 20260808,
+  "tasteProbe": {
+    "attemptMultiplier": 3,
+    "axisDefinitions": {
+      "falsePositiveRate": {
+        "denominator": "산출 트리플 총수(전체 슬라이스)",
+        "numerator": "어떤 기대 트리플과도 매칭 안 된 산출 트리플 수"
+      },
+      "missRate": {
+        "denominator": "노이즈 제외 세션의 기대 트리플 수 × N",
+        "numerator": "1 - recall 의 분자(매칭 안 된 기대 트리플 수)"
+      },
+      "nodeIdAgreement": {
+        "denominator": "매칭 트리플 수",
+        "numerator": "매칭 트리플 중 produced.node.node_id == expected.node_id"
+      },
+      "noiseFalsePositiveRate": {
+        "denominator": "noise 세션 수 × N(표본 수 기준)",
+        "numerator": "noise 세션 표본에서 산출된 트리플 총수(표본당 0개 이상)"
+      },
+      "recall": {
+        "denominator": "노이즈 제외 세션의 기대 트리플 수 × N",
+        "numerator": "매칭된 기대 트리플 수(최대 이분 매칭, §7 매칭 규칙, A-13)"
+      },
+      "sessionExactSet": {
+        "denominator": "세션 수 × N",
+        "numerator": "산출 트리플 집합이 기대 집합과 정확히 일치(여분 0·누락 0)"
+      }
+    },
+    "budget": {
+      "budgetExceeded": false,
+      "budgetExceededReason": null,
+      "callCount": 150,
+      "costGateStatus": "passed",
+      "limits": {
+        "maxCalls": 450,
+        "maxCostUsd": 20.0,
+        "maxTotalTokens": 30000000
+      },
+      "tokenGateStatus": "passed",
+      "totalCostUsd": 0.04462659999999995,
+      "totalTokens": 95643,
+      "unknownCostCallCount": 0,
+      "unknownTokenCallCount": 0
+    },
+    "concurrency": 1,
+    "datasetVersion": "2026-08-08.2",
+    "dictionary": {
+      "canonicalSha256": "5fc3ec99a9b551f2e47510915b2dc545c3462b8a076179a88280b7395a33977f",
+      "matchesSeed": false,
+      "rowCount": 1003,
+      "seed": {
+        "path": "db/catalog/seed/categories.json",
+        "rowCount": 1007,
+        "sha256": "db81e849616ec5782f9d1b4ecda1f6eb15f9dbc7a2ec939b40e33fa786d65089"
+      },
+      "sha256": "e6baf6b553508106c2be485225f0f97b649e708394e30fea9106f01a500f6755"
+    },
+    "dryRun": false,
+    "fixtureName": "sessions.json",
+    "modelConfig": {
+      "fastModel": "gpt-5-nano",
+      "fastReasoningEffort": "minimal",
+      "maxRetries": 0,
+      "provider": "openai",
+      "smartModel": "gpt-5.6-luna",
+      "smartReasoningEffort": "medium",
+      "timeoutS": 30.0
+    },
+    "n": 5,
+    "notGoldenset": "단발 검색 질의 + 상품 순위 라벨이 아니라 다턴 대화 → 기대 트리플의 추출·resolver 정확도다. evals/goldenset 과 숫자를 섞지 말 것.",
+    "pacer": {
+      "acquireCount": 150,
+      "estimatedTokensPerCall": 2400,
+      "maxRpm": 45,
+      "maxTpm": 200000,
+      "maxWaitS": 1.863,
+      "totalWaitS": 18.365,
+      "waitCount": 19,
+      "windowS": 60.0
+    },
+    "sessionIds": [
+      "conflict-attribute",
+      "conflict-brand",
+      "conflict-category",
+      "kc-attribute-01",
+      "kc-attribute-02",
+      "kc-brand-01",
+      "kc-category-01",
+      "kc-category-02",
+      "kc-priceBand-01",
+      "kc-priceBand-02",
+      "kc-product-01",
+      "kc-ratingBand-01",
+      "kc-situation-01",
+      "noise-account",
+      "noise-cart-inquiry",
+      "noise-delivery-complaint",
+      "noise-general-question",
+      "noise-greeting",
+      "noise-order-inquiry",
+      "noise-payment",
+      "noise-refund",
+      "noise-shipping-policy",
+      "noise-smalltalk",
+      "pol-attribute-avoid",
+      "pol-attribute-prefer",
+      "pol-brand-avoid",
+      "pol-brand-prefer",
+      "rep-attribute-varied",
+      "rep-category-varied",
+      "rep-verbatim-repeat-cap"
+    ],
+    "singleRunNotAVerdict": "단일 실행은 채택 판정이 아니다 — 독립 2~3회 분포로 판정한다.",
+    "thresholds": {
+      "categoryTopK": 5,
+      "graphNodeDistanceMax": 0.1,
+      "graphNodeOverrideMargin": 0.05,
+      "profileBufferRepeatCap": 2,
+      "profileDeltaMaxTokens": 2048,
+      "profileGateThreshold": 0.5,
+      "profileSessionBufferCap": 100
+    }
+  }
+}

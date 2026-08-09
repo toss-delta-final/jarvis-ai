@@ -50,7 +50,7 @@ from app.agents.seller.schemas import (
     AnalysisFinding,
     AnalysisPlan,
     AnalysisScore,
-    ChartSet,
+    ChartPlanSet,
     DraftProposal,
     RecommendationSet,
     ReportScore,
@@ -77,12 +77,12 @@ BEHAVIOR_TOOLS = [
     seller_tools.search_analysis_guide,
 ]
 
-# get_account_events 는 보조 소스(I-8 admin 소유 🔴) — 실패해도 주 소스로 계속(프롬프트).
+# [#481] I-8 은 2026-08-06 자사 코호트 전환으로 abuse 전용 보조 소스가 됐다 —
+# churn 은 더 쓰지 않는다(WITHDRAW 는 member 에 탈퇴 필드가 없어 원래부터 상시 0건).
 CHURN_TOOLS = [
     seller_tools.get_churn_cohort,
     seller_tools.get_order_events,
     seller_tools.get_product_change_logs,
-    seller_tools.get_account_events,
     seller_tools.search_analysis_guide,
 ]
 
@@ -353,18 +353,19 @@ def build_analysis_judge() -> CompiledStateGraph:
 
 
 def build_graph_agent() -> CompiledStateGraph:
-    """차트 생성 에이전트 (smart tier · 도구 없음 · ToolStrategy(ChartSet)).
+    """차트 기획 에이전트 (smart tier · 도구 없음 · ToolStrategy(ChartPlanSet)).
 
-    이슈 #242 5단계 — wants_chart 일 때만 recommend 와 병렬 실행된다(오케스트레이션
-    소관, 6단계까지 미배선). 도구가 없다(결정 D-4) — findings·검증된 보고서·질문만
-    입력으로 받아 이미 있는 수치를 옮겨 담는다. 산출은 G1(verifier.run_chart_checks)
-    검증을 거쳐 미달 차트가 드랍된 뒤에야 SSE 로 나간다.
+    [#504] 출력 계약이 ChartSet(좌표) → ChartPlanSet(축 선언)으로 바뀌었다 — LLM 은
+    "어떤 축을 그릴 것인가"만 정하고, 좌표는 charts.build_charts 가 Spring 을 직접
+    호출해 조립한다(구 결정 D-4 폐기 — 근거 대조 G1 도 검사 대상이 사라져 함께 삭제).
+    도구는 여전히 없다 — 축 판단에는 findings·보고서·질문이면 충분하고, 조회는
+    코드 소관이다.
     """
     return create_agent(
         model=init_seller_model("graph"),
         tools=[],
         system_prompt=GRAPH_PROMPT,
-        response_format=ToolStrategy(ChartSet),
+        response_format=ToolStrategy(ChartPlanSet),
         context_schema=SellerContext,
         middleware=[_model_usage_middleware("graph")],
     )

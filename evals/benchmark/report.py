@@ -7,6 +7,27 @@ import json
 from pathlib import Path
 from typing import Any
 
+from app.core.llm import LOADTEST_MODEL_IDS
+
+# #438 D6/R3 G2 — 접두어 리터럴을 따로 적지 않는다(정본 중복 금지, CLAUDE.md "계약 값의 단일
+# 출처는 스키마다"). app/core/llm.py::LOADTEST_MODEL_IDS(정본) 의 값 집합과 **정확히 일치**하는
+# id 만 스텁으로 본다 — evals 는 이미 app.core.config 를 import 하므로(manifest.py·runner.py)
+# app.core.llm 을 import 해도 새 결합이 생기지 않는다. 접두어 매칭 대신 exact 매칭인 이유: 접두어는
+# 그 자체로 또 하나의 파생 리터럴이라, 정본 값이 바뀌면(예: "scripted-stub-fast" → 다른 형식)
+# 접두어도 같이 손으로 맞춰야 하는 드리프트 지점이 남는다. exact 매칭은 정본 딕셔너리 값만 보므로
+# 그 지점 자체가 없다.
+_STUB_MODEL_IDS = frozenset(LOADTEST_MODEL_IDS.values())
+
+
+def _observed_stub_model_ids(summaries: dict[str, dict[str, Any]]) -> list[str]:
+    """모든 group 의 server_metrics.model_ids 를 모아 스텁 id 만 정렬해 돌려준다."""
+    ids: set[str] = set()
+    for summary in summaries.values():
+        model_ids = summary["server_metrics"].get("model_ids")
+        if isinstance(model_ids, list):
+            ids.update(m for m in model_ids if isinstance(m, str) and m in _STUB_MODEL_IDS)
+    return sorted(ids)
+
 
 def render_markdown(
     summaries: dict[str, dict[str, Any]],
@@ -15,10 +36,35 @@ def render_markdown(
     server_log_provided: bool,
     sample_size_rationale: str | None,
 ) -> str:
-    """분모와 unknown을 숨기지 않는 결정적 Markdown 보고서를 만든다."""
+    """분모와 unknown을 숨기지 않는 결정적 Markdown 보고서를 만든다.
+
+    #438 D6 — 관측된 model id 중 정본 스텁 id(`app.core.llm.LOADTEST_MODEL_IDS`)가 하나라도
+    있으면(=부하 테스트 스텁 모드로 돌았음이 서버 로그로 증언됨) 보고서 최상단에 경고 배너를 낸다: 이 수치는
+    벤더 지연을 포함하지 않으므로 실 LLM p95 로 인용하면 안 된다. `--server-log` 가 없어
+    model id 자체를 확인할 수 없으면(server_log_provided=False) 스텁 여부를 **추정하지
+    않고** "LLM 모드 미확인" 이라고만 적는다.
+    """
     lines = ["# Benchmark report", ""]
     if not server_log_provided:
-        lines.extend(["> **server-side 지표 미수집 — `--server-log` 미지정**", ""])
+        lines.extend(
+            [
+                "> **server-side 지표 미수집 — `--server-log` 미지정**",
+                "> **LLM 모드 미확인** — 스텁(`LLM_PROVIDER=scripted`)인지 실 LLM인지 이 실행만으로는"
+                " 판정할 수 없다. 아래 수치를 실 LLM p95 로 인용하지 말 것.",
+                "",
+            ]
+        )
+    else:
+        stub_model_ids = _observed_stub_model_ids(summaries)
+        if stub_model_ids:
+            lines.extend(
+                [
+                    "> ⚠️ **STUB LLM MODE — 이 수치는 벤더 지연을 포함하지 않는다."
+                    " 실 LLM p95 로 인용 금지.**",
+                    f"> 관측된 스텁 모델 id: {', '.join(stub_model_ids)}",
+                    "",
+                ]
+            )
     lines.extend(
         [
             f"- server join: {join_stats['joined']} / {join_stats['measured']} "
