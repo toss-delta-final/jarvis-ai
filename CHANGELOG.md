@@ -9,7 +9,31 @@
 
 ## [Unreleased]
 
+### Changed
+- **#504 — 판매자 분석 차트 재설계: 좌표 생성 주체를 LLM → 코드로 전환** (api-spec §3.2,
+  v0.30.0 · `docs/specs/DESIGN-SELLER-CHART-V2.md`). 구 구조는 `graph_agent`(도구 없음,
+  결정 D-4)가 워커 요약에서 숫자를 베껴 좌표를 만들고 G1 이 근거 없는 수치를 드랍해
+  `charts` 가 상시 비었다 — 실데이터 좌표를 만들 경로가 구조적으로 없었다. 이제 LLM 은
+  축 선언(`ChartPlanSet`)까지만 하고, 신설 `app/agents/seller/charts.py` 가 14조합 소스
+  레지스트리로 Spring(I-6·I-13·I-9·I-31)을 직접 조회해 좌표를 조립한다(빈 날짜 y:0 채움·
+  기간별 버킷 ≤60점·상품축 상위 15 절단·x 유일성 보장, nullable 수치는 0 으로 뭉개지 않고
+  no_data). 와이어는 추가 전용 — `chartPeriod`(차트 전용 기간, 다를 때만)·
+  `chartUnavailable[]`(사유 5종, message 는 서버 완성 문장)·`charts[].aggregate`·
+  `unit: RATING`. chart_only 턴은 레인 신설 없이 `title="판매 분석 그래프"` 로 구분.
+  구 G1(`verifier.run_chart_checks`)과 결정 D-4 는 폐기.
+
 ### Fixed
+- **#496 — I-31 `sort` 어휘 개명(`rating` → `ratingAsc`) 미반영으로 대표 질문이 400 으로 깨지던 문제**
+  (api-spec §4.20, v0.29.6). 2026-08-06 BE 협의가 구 안을 폐기했는데 사본이 갱신되지 않았고
+  (v0.29.4/#472 전수 대조가 §4.20 을 "확정·구현 완료"로 표시하면서도 이 행은 놓쳤다), 그 문구가
+  `get_reviews` 도구 docstring 과 `SpringClient.get_reviews` docstring 으로 전파돼 워커가 폐기된
+  값을 그대로 호출했다 — "평점 낮은 리뷰 뭐가 문제야?" 가 `sort="rating"` → `400
+  VALIDATION_ERROR` → `SpringUnavailableError` 로 새면서 **정상 질문에 시스템 장애를 보고**하고
+  있었다. 사본·docstring 2곳을 `ratingAsc` 로 갱신하고(`ratingDesc` 는 없다 — 높은 별점은
+  `rating="4,5"` 필터), `_REVIEW_SORT` 화이트리스트로 어휘 밖 값을 Spring 왕복(3s 타임아웃 예산)
+  전에 거른다(`_ACCOUNT_EVENTS_GROUP_BY` 와 같은 패턴, 오류 문구에 유효 어휘를 실어 재시도 유도).
+  stats 모드는 `sort` 를 서버에 싣지 않아 검증 대상에서 제외했다(#494 의 `rating` 전달과 무간섭).
+  와이어 계약 불변.
 - **#495 — I-16 이탈 회원 라벨 결측 표기·서버 절단 상한 고지 정합** (api-spec §4.4, v0.29.5).
   결측 표기를 `[?]` → `[라벨없음]` 으로 갈랐다 — 같은 요약 줄의 마지막 활동·세션도 결측을
   `?` 로 쓰기 때문에 `[?]` 는 "라벨 미수신"인지 "개명 미반영(#487 이 고친 증상)"인지
