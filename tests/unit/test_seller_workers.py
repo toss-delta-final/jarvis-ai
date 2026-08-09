@@ -96,11 +96,12 @@ WORKERS = [
         CHURN_TOOLS,
         CHURN_PROMPT,
         build_churn_agent,
+        # [#481] I-8 자사 코호트 전환(2026-08-06)으로 churn 은 get_account_events 를
+        # 더 쓰지 않는다 — WITHDRAW 는 member 에 탈퇴 필드가 없어 원래부터 상시 0건.
         {
             "get_churn_cohort",
             "get_order_events",
             "get_product_change_logs",
-            "get_account_events",
             "search_analysis_guide",
         },
     ),
@@ -160,11 +161,15 @@ def test_prompt_required_elements(analysis_type, tools, prompt, builder, expecte
     assert prompt.endswith(WORKER_COMMON_RULES)  # 공통 규칙이 말미에 결합됨
 
 
-def test_secondary_source_rule_in_churn_abuse() -> None:
-    """I-8 보조 소스 규약(HANDOFF §3) — 보조 실패는 degrade 사유가 아님을 명시한다."""
-    for prompt in (CHURN_PROMPT, ABUSE_PROMPT):
-        assert "get_account_events 는 보조 소스" in prompt
-        assert "주 소스 결과만으로 계속" in prompt
+def test_secondary_source_rule_in_abuse() -> None:
+    """I-8 보조 소스 규약 — 보조 실패는 degrade 사유가 아님을 명시한다.
+
+    [#481] I-8 자사 코호트 전환으로 소비 워커는 abuse 하나다 — churn 프롬프트에는
+    get_account_events 절차가 없어야 한다(배정표와 프롬프트의 정합).
+    """
+    assert "get_account_events 는 보조 소스" in ABUSE_PROMPT
+    assert "주 소스 결과만으로 계속" in ABUSE_PROMPT
+    assert "get_account_events" not in CHURN_PROMPT
 
 
 def test_common_rules_content() -> None:
@@ -209,12 +214,26 @@ def test_general_tool_assignment() -> None:
 def test_general_prompt_principles() -> None:
     """확정 3원칙 — 해석 금지·calculate 강제·미지원 안내 + today 주입 슬롯."""
     prompt = GENERAL_PROMPT_TEMPLATE.format(today="2026-07-18")
-    assert "2026-07-18" in prompt  # today 주입(기간 환산 기준)
+    assert "2026-07-18" in prompt  # today 주입(대화 맥락 — 기간 환산용이 아니다)
     assert "해석 금지" in prompt
     assert "calculate" in prompt
     assert "암산·추정 금지" in prompt
     assert "미지원 안내" in prompt
-    assert "지난달" in prompt  # normalize_period 와 동일 정의 문구
+
+
+def test_general_prompt_delegates_period_to_code() -> None:
+    """[#346] 기간 문구 소유권 — general 프롬프트는 어휘도 환산 규칙도 알지 않는다.
+
+    이 레인의 기간 정의가 프롬프트에 적혀 있었기 때문에 period.py 와 갈라졌고
+    (`이번 달` = 당월 1일~오늘 vs ~어제), 상한·0/음수 가드도 통째로 비켜갔다.
+    어휘를 하나라도 다시 프롬프트에 적으면 그 분기가 되살아나므로 **부재**를 고정한다.
+    """
+    prompt = GENERAL_PROMPT_TEMPLATE.format(today="2026-07-18")
+    assert "입력에 주어진 from/to 를 그대로" in prompt
+    assert "날짜를 직접 계산·추론하지" in prompt
+    # 어휘·환산 정의가 프롬프트로 돌아오지 않았는가 — 정의의 유일한 소유자는 period.py 다.
+    for vocab in ("지난달", "이번 달", "최근 N일", "전월 1일", "당월 1일"):
+        assert vocab not in prompt, f"기간 어휘 '{vocab}' 가 프롬프트로 돌아왔다(#346)"
 
 
 def test_build_general_agent_compiles() -> None:
@@ -269,14 +288,34 @@ def test_planner_prompt_covers_all_workers() -> None:
 
 
 def test_planner_prompt_period_vocabulary() -> None:
-    """기간 정규 어휘 4종 + 날짜 산수 금지(장치 ④) + 미지원 표현 되묻기(3-1 확정)."""
-    assert "지난달" in PLANNER_PROMPT
-    assert "최근 N일" in PLANNER_PROMPT
-    assert "어제" in PLANNER_PROMPT
-    assert "YYYY-MM-DD~YYYY-MM-DD" in PLANNER_PROMPT
-    assert "날짜를 직접 계산·추론하지 않는다" in PLANNER_PROMPT
-    assert "이번 달" in PLANNER_PROMPT  # 미지원 예시 명시 — 임의 변환 금지
+    """[#345] 기간 규약 — 원문 옮겨적기 + 날짜 산수 금지(장치 ④) + 표기 정규화 2종.
+
+    3-1 확정 당시에는 "정규 어휘 4종 외에는 clarification" 이었으나, P1 어휘 확장으로
+    **판정 자체가 코드로 넘어갔다**. planner 는 이제 어휘 목록을 알지 않는다.
+    """
+    assert "그대로 옮겨적는다" in PLANNER_PROMPT
+    assert "날짜를 계산·추론·환산하지 않는다" in PLANNER_PROMPT
+    assert "YYYY-MM-DD~YYYY-MM-DD" in PLANNER_PROMPT  # 표기 정규화 ①
+    assert "M월 D일~M월 D일" in PLANNER_PROMPT  # 표기 정규화 ② — 연도 없는 날짜
+    assert "최근" in PLANNER_PROMPT  # 기간 미언급 기본값
     assert "clarification" in PLANNER_PROMPT
+
+
+def test_planner_prompt_forbids_period_clarification() -> None:
+    """[#345] 기간 문구 소유권 — planner 는 기간을 이유로 되묻지 않는다(DESIGN §4.2).
+
+    이 문장이 사라지면 planner 가 다시 자기 clarification 을 써서, "예외 메시지가 곧
+    사용자 문구"라는 P0 보장이 조건부로 되돌아간다 — 되묻기 문구가 코드와 LLM 두 곳에서
+    나오던 #345 §3 의 상태다. 스키마 description(AnalysisPlan)과 한 쌍으로 지켜야 한다.
+    """
+    assert "기간을 이유로 clarification 을 쓰지 않는다" in PLANNER_PROMPT
+    assert "되묻기가 필요한지는 코드가 판단하고" in PLANNER_PROMPT
+
+    from app.agents.seller.schemas import AnalysisPlan
+
+    fields = AnalysisPlan.model_fields
+    assert "기간을 이유로 clarification 금지" in (fields["period_expr"].description or "")
+    assert "기간을 이유로는 쓰지 않는다" in (fields["clarification"].description or "")
 
 
 def test_planner_prompt_clarification_contract() -> None:
@@ -365,3 +404,16 @@ def test_graph_prompt_principles() -> None:
     assert "bar" in GRAPH_PROMPT
     assert "1개만" in GRAPH_PROMPT
     assert "charts=[]" in GRAPH_PROMPT  # 억지 차트 금지
+
+
+def test_planner_prompt_comparison_vocabulary() -> None:
+    """[#346] 비교 기간도 planner 는 표현만 옮겨적는다 — 환산·되묻기는 코드 소관."""
+    assert "comparison_expr" in PLANNER_PROMPT
+    assert "직전 동일 기간" in PLANNER_PROMPT
+    assert "period_expr 에 섞어 적지 않는다" in PLANNER_PROMPT
+
+
+def test_worker_common_rules_cover_comparison_period() -> None:
+    """워커는 [비교 기간] 을 받으면 두 기간을 각각 조회한다 — 차이를 직접 산술하지 않는다."""
+    assert "[비교 기간]" in WORKER_COMMON_RULES
+    assert "각각 호출" in WORKER_COMMON_RULES

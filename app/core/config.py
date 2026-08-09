@@ -530,12 +530,12 @@ class Settings(BaseSettings):
     # seller_anomaly_deviation_pct·seller_conversion_drop_pct)은 논문 기반 교체로
     # 폐기 — 아래 "분석 계산 층" 블록(S-H-ESD·Wilson/z-검정)이 대체한다.
     seller_churn_inactive_days: int = 30  # 이탈 코호트 무활동 일수(I-16 inactiveDays 기본)
-    # [#197 PR 리뷰] I-8 계정/보안 이벤트는 전역 데이터(브랜드 스코프 아님)이고
-    # admin 소유 협의가 미완(🔴, api-spec §4.4 v0.19.1)이다. 종전엔 코드 결함(쿼리
-    # 400·스키마 미스매치)이 사실상 차단막이었으나 #197 정합으로 실노출이 가능해져,
-    # 협의 완료 전까지 판매자 워커 표면 노출을 기본 비활성으로 보류한다.
-    seller_account_events_enabled: bool = False
-    seller_recent_days_default: int = 7  # normalize_period "최근 N일" 기본 N
+    # [#481] I-8 이 브랜드 스코프(/internal/seller/{brandId}/account-events, 자사
+    # 코호트)로 전환(노션 2026-08-06 개정)돼 #197 보류 사유(전역 데이터·admin 소유
+    # 협의 미완 🔴)가 해소됐다 — 기본 활성으로 전환. 플래그는 운영 킬스위치로 유지한다
+    # (BE 신경로 미배포 구간은 404 → 보조 소스 degrade 관용으로 흡수).
+    seller_account_events_enabled: bool = True
+    seller_recent_days_default: int = 7  # period.resolve_period "최근"(단독) 기본 N
     # 기간 상한(일) — 초과는 ValueError(되묻기)로 떨어뜨린다. 상한이 없으면
     # "최근 999999일" 이 date 연산에서 OverflowError 를 내고 호출부의
     # except ValueError 를 빠져나가 되묻기 대신 에러 경로로 샌다(#269). 기본 2년.
@@ -544,6 +544,11 @@ class Settings(BaseSettings):
     # env 오설정을 기동 시점에 끊는다. 10년(3653일)은 판매 데이터 분석에 필요한 범위를
     # 한참 넘고 date 연산 한계보다 훨씬 앞이라, 자릿수 오타(731 → 7310000)를 일찍 잡는다.
     seller_period_max_days: int = Field(default=731, ge=1, le=3653)
+    # [#345] 기간 확인 대기 만료(분) — 코드가 값을 보충한 기간 해석("이번 달"·"올해")을
+    # 판매자에게 확인받는 동안만 유효하다(DESIGN-SELLER-PERIOD §5). 만료된 대기의
+    # 후속 발화는 승인이 아니라 신규 질문으로 처리한다 — 한참 전 확인 질문에 대한
+    # "응" 이 엉뚱한 기간의 분석을 돌리는 것을 막는다. HITL draft TTL 과 같은 감각(10분).
+    seller_period_confirm_ttl_minutes: int = Field(default=10, ge=1)
     # safe_eval `**` 결과 자릿수 상한(DoS 방어) — 초과 식은 ValueError 로 거부(리뷰 반영).
     seller_calc_max_result_digits: int = 100
     # 도구 반환 상세도 상한(안 1+차등, 2026-07-17 사용자 확정) — 컨텍스트 폭주 방지.
