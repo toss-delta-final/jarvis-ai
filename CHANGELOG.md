@@ -10,6 +10,17 @@
 ## [Unreleased]
 
 ### Fixed
+- **#496 — I-31 `sort` 어휘 개명(`rating` → `ratingAsc`) 미반영으로 대표 질문이 400 으로 깨지던 문제**
+  (api-spec §4.20, v0.29.6). 2026-08-06 BE 협의가 구 안을 폐기했는데 사본이 갱신되지 않았고
+  (v0.29.4/#472 전수 대조가 §4.20 을 "확정·구현 완료"로 표시하면서도 이 행은 놓쳤다), 그 문구가
+  `get_reviews` 도구 docstring 과 `SpringClient.get_reviews` docstring 으로 전파돼 워커가 폐기된
+  값을 그대로 호출했다 — "평점 낮은 리뷰 뭐가 문제야?" 가 `sort="rating"` → `400
+  VALIDATION_ERROR` → `SpringUnavailableError` 로 새면서 **정상 질문에 시스템 장애를 보고**하고
+  있었다. 사본·docstring 2곳을 `ratingAsc` 로 갱신하고(`ratingDesc` 는 없다 — 높은 별점은
+  `rating="4,5"` 필터), `_REVIEW_SORT` 화이트리스트로 어휘 밖 값을 Spring 왕복(3s 타임아웃 예산)
+  전에 거른다(`_ACCOUNT_EVENTS_GROUP_BY` 와 같은 패턴, 오류 문구에 유효 어휘를 실어 재시도 유도).
+  stats 모드는 `sort` 를 서버에 싣지 않아 검증 대상에서 제외했다(#494 의 `rating` 전달과 무간섭).
+  와이어 계약 불변.
 - **#495 — I-16 이탈 회원 라벨 결측 표기·서버 절단 상한 고지 정합** (api-spec §4.4, v0.29.5).
   결측 표기를 `[?]` → `[라벨없음]` 으로 갈랐다 — 같은 요약 줄의 마지막 활동·세션도 결측을
   `?` 로 쓰기 때문에 `[?]` 는 "라벨 미수신"인지 "개명 미반영(#487 이 고친 증상)"인지
