@@ -20,7 +20,7 @@ if not ("smoke" in " ".join(sys.argv) and "not smoke" not in " ".join(sys.argv))
 from app.agents.buyer.cart.state import reset_cart_store
 from app.agents.buyer.graph import reset_thread_store
 from app.agents.buyer.recommendation.state import reset_repurchase_store, reset_revert_store
-from app.agents.profile import processed_events, session_activity
+from app.agents.profile import graph_journal, processed_events, session_activity
 from app.agents.profile import store as profile_store_module
 from app.agents.profile.store import reset_profile_store
 from app.core import conversation as conversation_module
@@ -104,6 +104,7 @@ async def close_pg_pools_on_loop() -> None:
     for close in (
         processed_events.close_pool,
         session_activity.close_pool,
+        graph_journal.close_pool,
         conversation_module.close_store,
         pg_store.close_store,
         profile_store_module.close_store,

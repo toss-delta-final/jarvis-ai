@@ -30,7 +30,7 @@ from langgraph.store.base import BaseStore
 from langgraph.store.memory import InMemoryStore
 from pydantic import ValidationError
 
-from app.agents.profile import processed_events, session_activity
+from app.agents.profile import graph_journal, processed_events, session_activity
 from app.agents.profile.graph_models import GraphDocument
 from app.core.config import get_settings
 from app.core.pg_resilience import (
@@ -681,6 +681,7 @@ def reset_profile_store() -> None:
     set_store(InMemoryStore(index=_fallback_index_config()))
     processed_events.reset()
     session_activity.reset()
+    graph_journal.reset()  # 감사·멱등 원장·중지 플래그(#358)도 같은 격리 경계에 든다
     _init_lock = asyncio.Lock()
     _session_locks.clear()
     _fact_locks.clear()
