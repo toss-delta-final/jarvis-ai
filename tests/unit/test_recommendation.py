@@ -1839,6 +1839,24 @@ async def test_attr_conditions_preserve_axis_absent() -> None:
     assert {p.product_id for p in res.products} == {1, 2}  # 축 부재 2 보존
 
 
+async def test_color_attr_conditions_preserve_axis_absent_and_exclude_mismatch() -> None:
+    """[#461 §4.6 ②] 색상 축 부재는 보존하고, 명시 색상 불일치는 사후필터에서 제외한다."""
+    from app.schemas.spring import ProductSearchFilters, SpringProduct
+    from app.services.search_service import search_catalog
+    from tests._fakes import FakeBackend
+
+    products = [
+        SpringProduct(product_id=1, name="무색상 속성 상품", price=1, attributes={"소재": "린넨"}),
+        SpringProduct(product_id=2, name="그레이 상품", price=1, attributes={"색상": "그레이"}),
+        SpringProduct(product_id=3, name="빨강 상품", price=1, attributes={"색상": "빨강"}),
+    ]
+    res = await search_catalog(
+        ProductSearchFilters(attr_conditions={"색상": "그레이"}),
+        backend=FakeBackend(products=products),
+    )
+    assert {product.product_id for product in res.products} == {1, 2}
+
+
 async def test_attr_conditions_lenient_match() -> None:
     """[PR②] 관대 매칭 — 부분·대소문자 무시. bool/숫자 값(dict[str,object])도 문자열화 비교."""
     from app.schemas.spring import ProductSearchFilters, SpringProduct
