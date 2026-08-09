@@ -38,3 +38,14 @@ CREATE TABLE IF NOT EXISTS batch_state (
 
 INSERT INTO batch_state (id, cursor) VALUES (1, NULL)
     ON CONFLICT (id) DO NOTHING;
+
+-- I-17 배치 2선·3선 연속 실패 스트릭 영속화(이슈 #416) — 프로세스 재시작이 잦아도
+-- artifacts_batch_failure_streak_ttl_s 안의 연속만 세어 유계 수렴을 보장한다
+-- (기존 프로세스 메모리 dict 대체, app/pipelines/pg_artifact_store.py 가 읽고 쓴다).
+CREATE TABLE IF NOT EXISTS batch_failure_state (
+    kind       text        NOT NULL,  -- "item"(key=product_id) | "page"(key=cursor)
+    state_key  text        NOT NULL,
+    streak     int         NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (kind, state_key)
+);

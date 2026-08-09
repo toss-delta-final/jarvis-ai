@@ -7,6 +7,7 @@ _general_stream 제너레이터를 직접 소비한다(스텁 에이전트 주�
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import json
 import logging
 import types
@@ -15,9 +16,10 @@ import pytest
 from langchain_core.messages import AIMessageChunk
 from langgraph.checkpoint.memory import InMemorySaver
 
-from app.agents.seller import hitl
+from app.agents.seller import hitl, period
 from app.api import seller as seller_api
 from app.core.auth import Identity
+from app.core.config import get_settings
 from app.core.llm import LLMNotConfigured
 from app.core.logging import safe_fingerprint
 from app.schemas.seller import SellerChatRequest
@@ -88,6 +90,8 @@ class _StubStreamAgent:
     def __init__(self, chunks: list[object], exc: Exception | None = None) -> None:
         self._chunks = chunks
         self._exc = exc
+        # [#346] 기간 주입 검증용 — 입력 메시지를 그대로 보관한다.
+        self.seen_input: dict | None = None
 
     async def astream(
         self,
@@ -96,6 +100,7 @@ class _StubStreamAgent:
         context: object = None,
         stream_mode: str = "",
     ):
+        self.seen_input = _input
         for chunk in self._chunks:
             yield (chunk, {"langgraph_node": "model"})
         if self._exc is not None:
@@ -727,12 +732,16 @@ def test_analysis_route_emits_report_between_token_and_done(
     assert "chartDataHint" not in data["findings"][0]
     # limitations — degrade finding(evidence==[])의 summary 모음
     assert data["limitations"] == ["데이터 확보 실패 — 분석 실행 오류(응답 시간 초과)"]
+    # [#504] 차트 기간 별도 지정 없음 → chartPeriod null, 실패 사유 없음 → 빈 배열
+    assert data["chartPeriod"] is None
+    assert data["chartUnavailable"] == []
     # charts — 구 chart 이벤트 직렬화 형식 그대로 이관
     assert data["chartRequested"] is True
     chart_data = data["charts"][0]
     assert chart_data["title"] == "일별 매출"
     assert chart_data["chartType"] == "line"  # 와이어 camelCase
     assert chart_data["unit"] == "KRW"
+    assert chart_data["aggregate"] == "sum"  # [#504] 소스 레지스트리 집계 방식(기본 sum)
     assert chart_data["series"][0]["label"] == "매출"
     assert chart_data["series"][0]["points"][0] == {"x": "07-01", "y": 1240000}
     assert chart_data["summary"] == "6월 대비 12% 감소"
@@ -774,6 +783,96 @@ def test_analysis_report_event_allows_empty_charts(monkeypatch: pytest.MonkeyPat
         data = events[2]["data"]
         assert data["charts"] == []
         assert data["chartRequested"] is overrides["chart_requested"]
+
+
+def test_analysis_report_event_chart_fields_504(monkeypatch: pytest.MonkeyPatch) -> None:
+    """[#504] chartPeriod(다를 때만)·chartUnavailable(부분 성공 공존)·unit RATING·
+    aggregate avg — 재설계 신필드 직렬화 계약."""
+    import datetime as dt
+
+    from app.agents.seller.charts import ChartUnavailable
+    from app.agents.seller.schemas import ChartPoint, ChartSeries, ChartSet, ChartSpec
+
+    rating_chart = ChartSpec(
+        title="상품별 평균 평점",
+        chart_type="bar",
+        unit="RATING",
+        aggregate="avg",
+        series=[ChartSeries(label="평점", points=[ChartPoint(x="감귤청 500ml", y=4.6)])],
+        summary="상품 42개 중 상위 15개만 표시했습니다.",
+    )
+    result = _report_pipeline_result(
+        charts=ChartSet(charts=[rating_chart]),
+        chart_period=(dt.date(2026, 8, 1), dt.date(2026, 8, 7)),
+        chart_unavailable=(
+            ChartUnavailable(
+                reason="unsupported_axes", message="'퍼널'은(는) 그래프로 만들 수 없습니다."
+            ),
+        ),
+    )
+
+    async def fake_pipeline(question, context, *, today, emit, recent_turns=(), screen=None):
+        return result
+
+    monkeypatch.setattr(seller_api, "route_question", _route_stub("analysis"))
+    monkeypatch.setattr(seller_api, "run_analysis_pipeline", fake_pipeline)
+
+    events = _collect_seller(_request("차트 보여줘"))
+    data = next(e for e in events if e["type"] == "report")["data"]
+
+    # 차트 기간이 분석 기간과 다르면 chartPeriod 를 싣는다
+    assert data["chartPeriod"] == {"from": "2026-08-01", "to": "2026-08-07"}
+    # 부분 성공 — charts 와 chartUnavailable 이 동시에 나간다
+    assert data["charts"][0]["unit"] == "RATING"
+    assert data["charts"][0]["aggregate"] == "avg"
+    assert data["chartUnavailable"] == [
+        {"reason": "unsupported_axes", "message": "'퍼널'은(는) 그래프로 만들 수 없습니다."}
+    ]
+
+
+def test_analysis_report_event_chart_period_equal_is_omitted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#504] 차트 기간이 분석 기간과 같으면 chartPeriod 는 null — "없으면 period 와
+    같다"는 FE 계약이라 같은 값을 중복으로 싣지 않는다."""
+    import datetime as dt
+
+    result = _report_pipeline_result(
+        chart_period=(dt.date(2026, 7, 1), dt.date(2026, 7, 31))  # == period
+    )
+
+    async def fake_pipeline(question, context, *, today, emit, recent_turns=(), screen=None):
+        return result
+
+    monkeypatch.setattr(seller_api, "route_question", _route_stub("analysis"))
+    monkeypatch.setattr(seller_api, "run_analysis_pipeline", fake_pipeline)
+
+    events = _collect_seller(_request("차트 보여줘"))
+    data = next(e for e in events if e["type"] == "report")["data"]
+    assert data["chartPeriod"] is None
+
+
+def test_analysis_report_event_chart_only_title(monkeypatch: pytest.MonkeyPatch) -> None:
+    """[#504] chart_only 턴 — 제목이 "판매 분석 그래프"로 나간다(FE 는 title 을 그대로
+    쓰므로 이 값이 화면 구분의 전부다). 보고서 재료 없이도 이벤트가 성립한다."""
+    result = _report_pipeline_result(
+        verified=None,
+        recommendations=None,
+        findings=None,
+        chart_only=True,
+    )
+
+    async def fake_pipeline(question, context, *, today, emit, recent_turns=(), screen=None):
+        return result
+
+    monkeypatch.setattr(seller_api, "route_question", _route_stub("analysis"))
+    monkeypatch.setattr(seller_api, "run_analysis_pipeline", fake_pipeline)
+
+    events = _collect_seller(_request("최근 7일 매출 그래프만"))
+    data = next(e for e in events if e["type"] == "report")["data"]
+    assert data["title"] == "판매 분석 그래프"
+    assert data["body"] == "" and data["findings"] == []
+    assert data["charts"][0]["title"] == "일별 매출"
 
 
 def test_analysis_route_no_report_event_for_non_report_kind(
@@ -1568,3 +1667,99 @@ def test_routing_receives_none_screen_for_a_legacy_request(
     _collect_seller(_request("안녕하세요"))
 
     assert seen["screen"] is None
+
+
+# ─────────── 기간 환산 이관 (이슈 #346 — general 레인) ───────────
+
+
+def test_general_stream_injects_code_resolved_period(monkeypatch: pytest.MonkeyPatch) -> None:
+    """[#346] 기간은 코드가 환산해 입력 메시지로 주입된다 — 프롬프트가 산수하지 않는다.
+
+    이 배선이 빠지면 period.py 단위 테스트는 전부 초록인데 실 응답은 종전대로
+    LLM 이 날짜를 지어내는 상태가 된다 — 레인 통일이 코드에만 있고 와이어에는 없다.
+    """
+    agent = _StubStreamAgent([AIMessageChunk(content="1,200,000원입니다.")])
+    monkeypatch.setattr(seller_api, "build_general_agent", lambda today, checkpointer=None: agent)
+
+    _collect(_request("지난달 매출 알려줘"))
+
+    expected = period.resolve_period("지난달", today=dt.date.today(), recent_default_days=7)
+    assert agent.seen_input is not None
+    content = agent.seen_input["messages"][0].content
+    assert (
+        f"[조회 기간] from={expected.date_from.isoformat()} "
+        f"to={expected.date_to.isoformat()}" in content
+    )
+    assert "[판매자 질문] 지난달 매출 알려줘" in content
+
+
+def test_general_stream_asks_back_before_calling_the_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """해석 불가 기간은 LLM·도구 호출 **앞에서** 되묻기로 끝난다(비용 0).
+
+    빌더가 불리면 실패하도록 두어 "되묻기인데 모델은 이미 돌았다"를 구조적으로 막는다.
+    """
+
+    def _must_not_build(**_kwargs: object) -> object:
+        raise AssertionError("되묻기 경로에서 general 에이전트를 빌드하면 안 된다")
+
+    monkeypatch.setattr(seller_api, "build_general_agent", _must_not_build)
+
+    events = _collect(_request("오늘 매출 얼마야?"))
+
+    assert [e["type"] for e in events] == ["meta", "token", "done"]
+    assert "오늘" in events[1]["data"]["text"]
+    assert events[-1]["data"]["panel"] == "keep"  # 되묻기는 대화 — 패널 유지
+
+
+def test_general_stream_enforces_period_upper_bound(monkeypatch: pytest.MonkeyPatch) -> None:
+    """[#346 완료 조건 ②] general 레인에도 seller_period_max_days 상한이 걸린다.
+
+    종전에는 이 환산이 프롬프트에만 있어 상한·0/음수 가드가 통째로 비켜갔다 —
+    "최근 999999일" 이 그대로 도구 인자가 될 수 있었다.
+    """
+
+    def _must_not_build(**_kwargs: object) -> object:
+        raise AssertionError("상한 위반은 모델 호출 전에 끊어야 한다")
+
+    monkeypatch.setattr(seller_api, "build_general_agent", _must_not_build)
+
+    events = _collect(_request("최근 999999일 매출 얼마야?"))
+
+    limit = get_settings().seller_period_max_days
+    assert f"{limit}일 이내" in events[1]["data"]["text"]
+
+
+def test_general_stream_discloses_supplemented_period(monkeypatch: pytest.MonkeyPatch) -> None:
+    """코드가 값을 보충한 해석("이번 달")은 확인 대신 **고지**하고 바로 실행한다.
+
+    분석 레인은 실행 전에 확인을 받지만(#345) general 은 조회 한두 번이라 비용이
+    비대칭이다 — 확인 왕복 대신 무엇으로 봤는지를 먼저 밝혀 조용한 대체를 막는다.
+    """
+    agent = _StubStreamAgent([AIMessageChunk(content="1,200,000원입니다.")])
+    monkeypatch.setattr(seller_api, "build_general_agent", lambda today, checkpointer=None: agent)
+
+    events = _collect(_request("이번 달 매출 얼마야?"))
+
+    texts = [e["data"]["text"] for e in events if e["type"] == "token"]
+    assert "이번 달" in texts[0] and "기간으로 봤습니다" in texts[0]
+    assert texts[-1] == "1,200,000원입니다."  # 고지 뒤에 모델 응답이 이어진다
+    assert agent.seen_input is not None, "고지만 하고 실행을 멈추면 안 된다"
+
+
+def test_general_stream_does_not_disclose_plain_vocabulary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """확인이 필요 없는 어휘("지난달")에는 고지를 붙이지 않는다.
+
+    전부 고지하면 "재고 얼마 남았어?" 같은 기간 무관 질문에도 무관한 한 줄이 매번
+    따라붙어, 정작 필요한 고지가 묻힌다.
+    """
+    agent = _StubStreamAgent([AIMessageChunk(content="1,200,000원입니다.")])
+    monkeypatch.setattr(seller_api, "build_general_agent", lambda today, checkpointer=None: agent)
+
+    events = _collect(_request("지난달 매출 알려줘"))
+
+    texts = [e["data"]["text"] for e in events if e["type"] == "token"]
+    assert texts == ["1,200,000원입니다."]

@@ -50,7 +50,7 @@ async def test_expansion_flag_off_never_loads_db(monkeypatch) -> None:
     settings = get_settings().model_copy(update={"color_synonym_expansion_enabled": False})
     seen = []
     monkeypatch.setattr(sc, "get_settings", lambda: settings)
-    monkeypatch.setattr(sc, "_client", lambda: _Client(seen))
+    monkeypatch.setattr(sc, "_client", lambda *, timeout=None: _Client(seen))
 
     from app.pipelines import color_synonyms
 
@@ -67,7 +67,7 @@ async def test_expansion_failure_degrades_to_single_original_color(monkeypatch, 
     settings = get_settings().model_copy(update={"color_synonym_expansion_enabled": True})
     seen = []
     monkeypatch.setattr(sc, "get_settings", lambda: settings)
-    monkeypatch.setattr(sc, "_client", lambda: _Client(seen))
+    monkeypatch.setattr(sc, "_client", lambda *, timeout=None: _Client(seen))
 
     from app.pipelines import color_synonyms
 
@@ -90,7 +90,7 @@ async def test_expansion_timeout_degrades_to_single_original_color(monkeypatch, 
     )
     seen = []
     monkeypatch.setattr(sc, "get_settings", lambda: settings)
-    monkeypatch.setattr(sc, "_client", lambda: _Client(seen))
+    monkeypatch.setattr(sc, "_client", lambda *, timeout=None: _Client(seen))
 
     # 멈춰 세울 대상은 **색상 맵 조회 하나**다. 종전엔 `asyncio.to_thread` 를 모듈 전역으로
     # 스텁했는데, 검색 경로도 `to_thread` 를 쓰게 되면서(#132 파싱 이관) 그 스텁이 검색까지
@@ -132,7 +132,7 @@ async def test_expansion_saturation_degrades_immediately_then_recovers(monkeypat
     calls = 0
 
     monkeypatch.setattr(sc, "get_settings", lambda: current_settings[0])
-    monkeypatch.setattr(sc, "_client", lambda: _Client(seen))
+    monkeypatch.setattr(sc, "_client", lambda *, timeout=None: _Client(seen))
     monkeypatch.setattr(sc, "_color_synonym_limiters", {}, raising=False)
     monkeypatch.setattr(sc, "_background_synonym_tasks", set(), raising=False)
 
@@ -199,14 +199,21 @@ async def test_expansion_loads_off_loop_and_sends_repeated_values(monkeypatch) -
     settings = get_settings().model_copy(update={"color_synonym_expansion_enabled": True})
     seen = []
     monkeypatch.setattr(sc, "get_settings", lambda: settings)
-    monkeypatch.setattr(sc, "_client", lambda: _Client(seen))
+    monkeypatch.setattr(sc, "_client", lambda *, timeout=None: _Client(seen))
 
     from app.pipelines import color_synonyms
+
+    empty_guard_flags = []
+
+    def loaded_map(dsn, ttl_s, warn_if_empty):
+        empty_guard_flags.append(warn_if_empty)
+        return {"남색": ["네이비", "남색"]}
 
     monkeypatch.setattr(
         color_synonyms,
         "get_synonym_map",
-        lambda dsn, ttl_s: {"남색": ["네이비", "남색"]},
+        loaded_map,
     )
     await sc.search_products(ProductSearchFilters(color="남색"))
     assert seen == [{"color": ["네이비", "남색"]}]
+    assert empty_guard_flags == [True]

@@ -5,10 +5,11 @@
 | SPEC | 버전 | 다루는 것 | 코드 |
 |---|---|---|---|
 | [SPEC-RECOMMEND-001](SPEC-RECOMMEND-001.md) | v0.10.0 | 추천 그래프 — Case 1/2/3 분기, decompose/rerank 규칙, 예산 검증, dedup(14-F), shopping_list 전개 전용 호출(#198) | `app/agents/buyer/` |
-| [SPEC-PROFILE-001](SPEC-PROFILE-001.md) | v0.7.0 | 프로필 — 승격 게이트, I-20/AI inactivity 공통 finalizer, /profile/me | `app/agents/profile/` |
-| [SPEC-PROFILE-GRAPH-149](SPEC-PROFILE-GRAPH-149.md) | v0.1.0 | 개인화 관계 그래프 — node·edge 투영, 결정론적 식별·병합, 사용자 수정·삭제·초기화·개인화 중지, 민감정보 경계 (⚠️ **본 저장소 최초 작성 — 정본 승격 필요**, 🔴 초안·Post-MVP / 구현은 #150) | `app/agents/profile/`(#150 예정) |
+| [SPEC-PROFILE-001](SPEC-PROFILE-001.md) | v0.9.0 | 프로필 — 승격 게이트, I-20/AI inactivity 공통 finalizer, /profile/me | `app/agents/profile/` |
+| [SPEC-PROFILE-GRAPH-149](SPEC-PROFILE-GRAPH-149.md) | v0.3.1 | 개인화 관계 그래프 — node·edge 투영, 결정론적 식별·병합, 사용자 수정·삭제(즉시 물리 삭제 + 영구 tombstone)·초기화·개인화 중지, 민감정보 경계 (⚠️ **본 저장소 최초 작성 — 정본 승격 필요**, 계약 확정·Post-MVP / 구현은 #150) | `app/agents/profile/`(#150 예정) |
 | [SPEC-CATALOG-DATA-001](SPEC-CATALOG-DATA-001.md) | v0.1.2 | AI 생성물 — enrichment→임베딩 (⚠️ 동기화 방식은 api-spec §4.8 pull 배치가 우선) | `app/pipelines/` |
 | [SPEC-SELLER-001](SPEC-SELLER-001.md) | v1.0.0 | 판매자 그래프 — supervisor 라우팅, 분석 서브그래프(워커 5종·검증 루프), 전 쓰기 HITL, 분석 이력 (⚠️ **본 저장소 최초 작성 — 정본 승격 필요**) | `app/agents/seller/` |
+| [BE-NEGOTIATION-GRAPH-357](BE-NEGOTIATION-GRAPH-357.md) | v2.3.0 | 개인화 그래프 Spring 협의 4건 — ✅ **종결**: C-20·C-21·C-27 은 `jarvis-backend#132`(2026-08-08)로 회신 완료(api-spec 반영 #499), C-28·잔여 표기는 #357 에서 🟢 로 내렸다(api-spec v0.32.2). ⚠️ 본문의 "C-27 캐시 무효화 2곳 축소" 제안은 **실제 구현 4곳과 다르다**(api-spec §5 C-27 이 정본) | 코드 없음(문서 전용, #150 착수 전) |
 
 > SPEC은 로직 상세용. 계약(무엇을 주고받나)은 api-spec, 결정 배경(왜)은 기획 저장소 `product.md`.
 

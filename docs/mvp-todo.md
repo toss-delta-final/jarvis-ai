@@ -53,7 +53,7 @@ MVP 골격(인프라·구매자·판매자·프로필·배치)은 배선 완료�
 
 ## 1. 구매자 추천 그래프
 
-- [x] 그래프 스캐폴드(intent router 분기) — `agents/buyer/graph.py` **5-way 라우팅** (`recommend` / `cart_add` / `cart_view` / `order_status` / `general`)
+- [x] 그래프 스캐폴드(intent router 분기) — `agents/buyer/graph.py` **9-way 라우팅** (`recommend` / `cart_add` / `cart_view` / `order_status` / `general` / `cart_remove` / `wishlist_add` / `wishlist_remove` / `wishlist_view`). 최초 5종에서 #116·#117 이 3종, #386 이 `wishlist_view` 를 더했다 — 정본은 `RouteDecision.intent` Literal 이다
 - [x] **#164 주문 상태 문의(I-4)** — `recommendation/decompose.py` `order_status` 분류 → `spring_client.py:get_order_status` (`recent=3`) → `order_status.py` 엄격 검증·결정적 요약 → `graph.py` early return; 계약 api-spec §4.10, 회귀 `tests/unit/test_order_status.py`·`tests/integration/test_buyer_flow_e2e.py`
 - [x] `search_products` Spring 연결 (§4.6) — I-1 배선. **잔여 계약 정합은 #100**
 - [x] decompose 노드 (구조화 필터 + 키워드) — `recommendation/decompose.py`

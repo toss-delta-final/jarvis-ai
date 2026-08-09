@@ -53,6 +53,20 @@ uv run python -m evals.intent_probe --dump-prompt system.txt
 `priorFilters` 에 `category` 가 없어 게이트(`prior_category` 가 있어야 호출)가 열리지 않는다
 (D-6 실측 확인, `baselines/fast-2026-08-05-300-screen/`).
 
+## ⚠️ `--prompt`/`--prompt-rev` 런은 screen 축을 재지 못한다
+
+`SystemPromptOverrideLLM` 은 통과하는 decompose `complete` 의 system 을 후보 텍스트로
+갈아끼우는데, **screen 이 실린 셀은 프로덕션에서 `_SYSTEM_WITH_SCREEN`**(= `_SYSTEM` +
+`_SCREEN_CART_RULE`)을 쓴다. 오버라이드가 그 문면까지 평평한 후보 텍스트로 덮으므로,
+`--prompt` 런의 **screen 축 4개**(`screenExactPick`·`screenResolution`·
+`screenNoHallucination`·`screenReask`)와 진단 `screenPromptLayerHitCount`·
+`screenOutOfListConfirmCount` 는 `repo:_SYSTEM` 런과 **비교할 수 없다**(#430 에서 실측 발견 —
+같은 before 프롬프트인데 `screenPromptLayerHitCount` 가 16·18 대 21·28 로 갈렸다).
+
+**screen 축이 걸린 후보를 잴 때는 후보를 리포 `_SYSTEM` 에 넣고 `--prompt` 없이 돌려라**
+(`prompt.source` 가 `repo:_SYSTEM` 이어야 한다). 비-screen 축만 볼 때는 `--prompt` 런이 그대로
+유효하다 — 그 셀들에서는 프롬프트 문자열이 리포 판과 같다.
+
 ## 기준선
 
 `baselines/fast-2026-08-04/` — 현재 `_SYSTEM`(`e5e7f9b8d844`) × `fast`(gpt-5-nano) × 앵커 B.
@@ -72,11 +86,51 @@ replace, 남은 11건은 `decompose` 추출 실패) · 인라인 `categoryAction
 37·38 → 32·32)가 있다 — **프롬프트를 고치기 전에 그 표를 볼 것.**
 위 두 기준선은 픽스처 v1 이라 이 표와 직접 비교하지 않는다.
 
+**[#386] 찜 조회 축 실측(2026-08-07, 픽스처 v6 · 85셀 · `fast` · N=8, 산출물 미커밋)** —
+전량 재실행 1회. 신규 축은 `wishlistViewPositive` **24/24** · `wishlistViewNoSteal` **23/24** ·
+`wishlistViewRouting` **47/48**.
+
+- 양성 3발화(`내가 뭐 찜했지?`·`찜한 거 보여줘`·`위시리스트 뭐 있어?`)가 **각각 8/8** 로
+  `wishlist_view` 에 갔다.
+- `noSteal` 의 1건 미달은 `뭐 있어?` 가 `general` 로 간 것이고 **`wishlist_view` 로 샌 것이
+  아니다** — 이 축이 재려던 "새 의도가 남의 발화를 훔치는가"는 **0건**이다.
+  `보여줘` 8/8 recommend · `찜한 거 담아줘` 8/8 cart_add(강한 신호 우선 유지).
+- 기존 8축은 **`fast-2026-08-05-84`(직전 비교 가능 기준선)** 대비 `mainIntent`·`demonstrative`·
+  `general` 이 **완전히 동일**, `switchAll7` −1. `switchLegacy2`(9→6)·
+  `cartAddProductIdLegacy2`(14→12)는 **같은 2발화를 다르게 세는 축**이라 실질적으로 한 신호이며,
+  흔들린 `switch-001`(`이어폰으로 할래`)에는 `찜`·`위시리스트` 토큰이 없어 #386 이 더한 규칙
+  (그 토큰이 있을 때만 발동)의 사정거리 밖이다. 분모 16 · N=8 에서 −3 은 "축당 ±2" 노이즈의
+  경계라 **단정하지 않고 관찰 항목으로 남긴다**(재현 함정 4 — 단일 실행으로 판정 금지).
+- ⚠️ 이 런은 픽스처 파일이 CRLF 이던 시점에 돌았다(내용 동일, 줄바꿈만 다름) — 산출물의
+  `fixtureSha256` 은 LF 정규화 **전** 값이라 현재 커밋본 해시와 다르다.
+
 `baselines/fast-2026-08-05-300-screen/` — **#300 이 흡수한 screen 6셀만** 잰 실측(전량
 재실행이 아니다). 픽스처 **v4**(46발화·9컨텍스트) × `fast` × N=8 × 6셀 = 48콜. 이관 전
 별도 프로브(#118, PR #292 — #300 이 흡수하며 삭제했다)의 채택 근거(48/48 · 안전 셀 8/8 ·
 오담기 0)를 `screenResolution` 47/48 · `screenReask` 8/8 · `screenNoHallucination` 8/8 로
 재현한다. 그 디렉터리 README 에 셀별 원본(해소기 전) vs 최종값 대조표가 있다.
+
+`baselines/fast-2026-08-07-430-{before-1,before-2,after-1,after-2,after-3}/` — **#430
+(decompose 프롬프트 수정)의 타축 회귀 대조, 픽스처 v5(79셀)·`#386` 병합 전**. 전부
+`source=repo:_SYSTEM`(위 ⚠️ 절 참조 — screen 축 때문에 `--prompt` 로 잴 수 없었다).
+before `11c6fe3bfa0c` 2런 vs after `81e3770e1340` 3런. **깎인 독립 축은 `screenExactPick`
+하나**(32·32 → 31·31·29, 진단 `screenOutOfListConfirmCount` 0·0 → 1·1·3)이고 안전축
+`screenNoHallucination`·`screenReask` 는 전 런 8/8 무회귀다.
+`conditionOnlyNoCategoryQuery`·`switchAll7`·`categoryMixedReplace` 등은 개선됐다.
+
+`baselines/fast-2026-08-07-430-v6-{merged-1,merged-2,adopted-1,adopted-2}/` — 같은 이슈의
+**출고판 대조, 픽스처 v6(85셀)**. `merged-*` 는 `#386`(PR #441) 병합 직후 판(`f99a98867e4a`),
+`adopted-*` 는 **출고판**(`865ed6fd771e`) — 두 팔은 픽스처·모델·앵커·N 이 전부 같고 `_SYSTEM`
+이 **10자만** 다르다(비움 트리거 단서 목록의 `·브랜드·색상`). 그래서 이 대조는 인과가 깨끗하다:
+`categoryClear` **31·31 → 28·28(−3)** · `demonstrative`·`mainIntent` 각 −3 · `screenExactPick`
+31·31 → 31·30 · 안전축 무회귀 · 반대로 `categoryAction3Way` +4.5 · `general` +3.5 ·
+`categoryMixedReplace` +3.5 · `conditionOnlyNoCategoryQuery` +3.0 등 **10축 상승**.
+전 축 대조표는 `fast-2026-08-07-430-v6-adopted-1/README.md` 가 정본이다.
+
+⚠️ **v5 표와 v6 표의 축 수치를 같은 표에서 빼지 마라** — 프롬프트도 픽스처도 다르다. 다만 v6 는
+#386 이 `wishlist_view` 발화 **6건을 추가만** 했고 기존 발화는 **0건 변경**이라(확인함) 기존 축의
+셀 입력은 동일하다 — 위 `categoryClear` −3 이 픽스처 탓이 아닌 근거가 그것이다.
+**PR 수준의 진짜 before(순수 dev `e62fd0f6e03d`)를 v6 로 잰 팔은 없다**(예산 소진).
 
 ## CI 에서 돌리지 않는다
 

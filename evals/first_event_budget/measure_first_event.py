@@ -157,7 +157,7 @@ def install() -> ScriptedLLM:
 
     settings = get_settings()
 
-    def _stub_client() -> httpx.AsyncClient:
+    def _stub_client(*, timeout: float | None = None) -> httpx.AsyncClient:
         return httpx.AsyncClient(
             base_url=settings.spring_base_url,
             timeout=settings.spring_timeout_s,

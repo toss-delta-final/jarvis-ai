@@ -1,4 +1,4 @@
-"""E2E 스모크용 Spring stub + 스크립트 LLM (이슈 #35).
+"""E2E 스모크용 Spring stub + 스크립트 LLM 재수출 (이슈 #35, #438).
 
 AI 서버는 단독 실행이 불가하고 Spring 역호출에 의존한다(api-spec §1.2 레인 c). 이 모듈은
 라이브 Spring/Anthropic 없이 **결정적으로** 전 흐름을 돌리기 위한 대역을 제공한다.
@@ -7,7 +7,8 @@ AI 서버는 단독 실행이 불가하고 Spring 역호출에 의존한다(api-
   - Spring 은 `httpx.MockTransport`(HTTP 경계)로 세운다. `spring_client` 함수를 patch 하지
     않으므로 URL 조립·쿼리 파라미터·`X-Internal-Token` 헤더·응답 envelope 파싱·오류 매핑이
     **실코드 그대로** 검증된다(함수 patch 는 이 계층을 통째로 건너뛰어 계약 회귀를 못 잡는다).
-  - LLM 은 주입형 `ScriptedLLM`(프롬프트 시그니처로 5종 호출을 분기).
+  - LLM 은 주입형 `ScriptedLLM`(프롬프트 시그니처로 5종 호출을 분기) — 정의는
+    `app/core/llm_scripted.py` 로 이동했고(#438) 이 모듈은 재수출만 한다.
 
 Spring stub 커버 범위 (api-spec §4):
   I-1  GET  /internal/products/search      (§4.6 후보 검색)
@@ -28,7 +29,18 @@ from typing import Any
 
 import httpx
 
-from app.core.llm import LLMError
+# ScriptedLLM/DEFAULT_*/마커 상수는 app/core/llm_scripted.py 로 이동했다(#438) — app/ 런타임이
+# LLM_PROVIDER=scripted 로 같은 정의를 써야 하는데 Dockerfile 은 tests/ 를 이미지에 넣지 않아
+# app/ 이 tests.* 를 import 하면 컨테이너에서 깨진다. 여기는 재수출만 해 기존 10개 import 지점을
+# 한 줄도 고치지 않는다.
+from app.core.llm_scripted import (  # noqa: F401
+    DEFAULT_DECOMPOSE,
+    DEFAULT_DELTA,
+    DEFAULT_ENRICH,
+    DEFAULT_PROFILE_MD,
+    DEFAULT_RERANK,
+    ScriptedLLM,
+)
 
 # ── 기본 카탈로그 (숫자 BIGINT id — §2.6) ──
 DEFAULT_CATALOG: list[dict] = [
@@ -75,6 +87,8 @@ class SpringStub:
     orders: list[dict] = field(default_factory=list)
     changes_pages: list[dict] = field(default_factory=list)
     cart_items: list[dict] = field(default_factory=list)
+    # I-28 찜 목록(§4.16, 이슈 #386). `name` 은 I-18 의 `productName` 과 필드명이 다르다.
+    wishlist_items: list[dict] = field(default_factory=list)
     # listId → productIds (경로 B: push 로 저장 → CH-5 로 조회)
     pushed_lists: dict[str, list[int]] = field(default_factory=dict)
     # 요청 감사 로그 — (method, path, query, headers, body)
@@ -88,6 +102,7 @@ class SpringStub:
     fail_purchases: bool = False
     fail_push: bool = False
     fail_cart_add_code: str | None = None  # CART_OPTION_REQUIRED 등
+    fail_wishlist: bool = False  # I-28 조회 5xx (#386 degrade 검증)
     cart_option_payload: list[dict] = field(default_factory=list)
 
     # ── 라우팅 ──
@@ -117,6 +132,8 @@ class SpringStub:
             return self._cart_add(body)
         if request.method == "GET" and path == "/internal/cart":
             return self._cart_view()
+        if request.method == "GET" and path == "/internal/wishlist":
+            return self._wishlist_view()
         # I-4 must precede the generic I-19 member route: both share the same prefix.
         if (
             request.method == "GET"
@@ -191,6 +208,14 @@ class SpringStub:
 
     def _cart_view(self) -> httpx.Response:
         return httpx.Response(200, json={"success": True, "data": {"items": self.cart_items}})
+
+    # ── I-28 찜 목록 조회 (§4.16, 이슈 #386) ──
+
+    def _wishlist_view(self) -> httpx.Response:
+        """찜 0건도 200 + `items: []` 다(404 아님) — I-28 정상 응답."""
+        if self.fail_wishlist:
+            return httpx.Response(500, json={"success": False, "error": {"code": "INTERNAL"}})
+        return httpx.Response(200, json={"success": True, "data": {"items": self.wishlist_items}})
 
     def _name_of(self, product_id: Any) -> str | None:
         for product in self.catalog:
@@ -288,122 +313,3 @@ class SpringStub:
     def requests_to(self, path_prefix: str) -> list[dict]:
         """경로 접두어로 기록된 요청을 추린다."""
         return [r for r in self.requests if r["path"].startswith(path_prefix)]
-
-
-# ── 스크립트 LLM ──
-
-# enrichment/프로필 시스템 프롬프트의 식별 문구 (app/pipelines/enrichment.py·agents/profile/builder.py)
-_ENRICH_MARK = "상품 태깅기"
-_DELTA_MARK = "델타 추출기"
-_CONSOLIDATE_MARK = "요약 작성기"
-
-DEFAULT_DECOMPOSE = {
-    "intent": "recommend",
-    "reply": "",
-    "case": 2,
-    "semanticQuery": "여행용 파우치",
-    # category 는 이제 filters 가 아니라 categoryQueries 로(이슈 #59, 새 스키마 정합)
-    "categoryQueries": [{"category": "여행용품", "query": "여행 파우치"}],
-    "filters": {"priceMax": 30000, "keyword": "여행 파우치"},
-}
-
-DEFAULT_RERANK = {
-    "ranked": [
-        {"productId": 102, "rationale": "기내 반입 규격에 맞아요"},
-        {"productId": 101, "rationale": "방수라 세면도구에 좋아요"},
-    ],
-    "overallComment": "여행에 맞는 파우치를 골랐어요",
-}
-
-DEFAULT_ENRICH = {"tags": ["여행", "방수", "기내반입"], "attributes": {"소재": "방수 원단"}}
-
-DEFAULT_DELTA = {
-    "deltas": [
-        {
-            "fact": "3만원 이하 여행용품을 선호한다",
-            "salience": 0.9,
-            "explicit": True,
-            "repetitionEma": 0.8,
-        }
-    ]
-}
-
-DEFAULT_PROFILE_MD = "## 취향 요약\n- 3만원 이하 여행용품 선호\n"
-
-
-class ScriptedLLM:
-    """호출 5종(decompose·rerank·enrich·profile delta·consolidate)을 프롬프트로 분기하는 fake.
-
-    tests/_fakes.py 의 FakeLLM 은 모델 id 만 보고 2종을 분기하므로 배치·프로필까지 함께 도는
-    E2E 에는 부족하다. 여기서는 **system 프롬프트 시그니처**로 용도를 판정한다.
-    실패 주입(*_error)으로 degrade 경로(LLM_UNAVAILABLE·LLM_TIMEOUT·rerank 폴백)를 재현한다.
-    """
-
-    def __init__(
-        self,
-        *,
-        decompose: dict | None = None,
-        rerank: dict | None = None,
-        enrich: dict | None = None,
-        delta: dict | None = None,
-        profile_markdown: str = DEFAULT_PROFILE_MD,
-        decompose_error: bool = False,
-        rerank_error: bool = False,
-        timeout: bool = False,
-    ) -> None:
-        self._decompose = DEFAULT_DECOMPOSE if decompose is None else decompose
-        self._rerank = DEFAULT_RERANK if rerank is None else rerank
-        self._enrich = DEFAULT_ENRICH if enrich is None else enrich
-        self._delta = DEFAULT_DELTA if delta is None else delta
-        self._profile_markdown = profile_markdown
-        self._decompose_error = decompose_error
-        self._rerank_error = rerank_error
-        self._timeout = timeout
-        self.calls: list[tuple[str, str]] = []  # (kind, tier)
-        # (kind, max_tokens, reasoning_effort) — #325 enrichment 토큰 예산 배선 회귀 검증용.
-        self.complete_kwargs: list[tuple[str, int, str | None]] = []
-
-    async def complete(
-        self,
-        *,
-        system: str,
-        user: str,
-        tier: str,
-        max_tokens: int = 1024,
-        json_output: bool = True,
-        reasoning_effort: str | None = None,
-    ) -> str:
-        kind = self._classify(system, tier)
-        self.calls.append((kind, tier))
-        self.complete_kwargs.append((kind, max_tokens, reasoning_effort))
-        if kind == "enrich":
-            return json.dumps(self._enrich, ensure_ascii=False)
-        if kind == "delta":
-            return json.dumps(self._delta, ensure_ascii=False)
-        if kind == "consolidate":
-            return self._profile_markdown
-        if kind == "decompose":
-            if self._decompose_error:
-                raise LLMError("timeout" if self._timeout else "decompose boom")
-            return json.dumps(self._decompose, ensure_ascii=False)
-        if self._rerank_error:
-            raise LLMError("rerank boom")
-        return json.dumps(self._rerank, ensure_ascii=False)
-
-    async def stream(self, *, system: str, user: str, tier: str, max_tokens: int = 1024):
-        yield "네, 도와드릴게요."
-
-    @staticmethod
-    def _classify(system: str, tier: str) -> str:
-        """system 프롬프트 시그니처 → 호출 용도. 미상은 tier 로 decompose/rerank 판정."""
-        if _ENRICH_MARK in system:
-            return "enrich"
-        if _DELTA_MARK in system:
-            return "delta"
-        if _CONSOLIDATE_MARK in system:
-            return "consolidate"
-        return "decompose" if tier == "fast" else "rerank"
-
-    def calls_of(self, kind: str) -> int:
-        """용도별 호출 횟수 — LLM 호출 예산(§llm_call_limit) 확인용."""
-        return sum(1 for k, _ in self.calls if k == kind)

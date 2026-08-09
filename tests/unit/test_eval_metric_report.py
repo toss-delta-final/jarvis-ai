@@ -4,9 +4,15 @@ from __future__ import annotations
 
 import json
 
+from evals.ablation import report as ablation_report
+from evals.category_probe import report as category_probe_report
+from evals.intent_probe import report as intent_probe_report
+from evals.legs_probe import report as legs_probe_report
 from evals.metrics.report import normalize_artifacts, write_artifacts
-from evals.metrics.run_manifest import build_run_manifest
+from evals.metrics.run_manifest import VOLATILE_MANIFEST_KEYS, build_run_manifest
 from evals.metrics.cli import main
+from evals.taste_probe import report as taste_probe_report
+from evals.underspecified_probe import report as underspecified_probe_report
 
 
 def _filter_axes_aggregate() -> dict:
@@ -152,6 +158,78 @@ def test_artifacts_are_byte_identical_after_runtime_normalization(tmp_path) -> N
     assert "filter-axes-v1" in markdown
     assert "valueStrict F1" in markdown
     assert "| axis | support | spurious | missing |" in markdown
+
+
+def test_normalize_artifacts_ignores_dirty_flip_and_commit_sha_change(tmp_path) -> None:
+    """#413 — 두 실행 사이에 워킹트리가 dirty 뒤집히거나(False→True) 커밋이 껴 commitSha 가
+    달라져도 그것만으로는 정규화 결과가 갈리면 안 된다. 기존
+    `test_artifacts_are_byte_identical_after_runtime_normalization`은 양쪽 `dirty`/`commitSha`가
+    동일해 이 축을 전혀 재지 못했다."""
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    report = _report()
+    write_artifacts(
+        first,
+        report,
+        {
+            "run": {"runId": "one", "timestamp": "2026-08-03T00:00:00Z", "command": "cmd"},
+            "commitSha": "a" * 40,
+            "dirty": False,
+        },
+    )
+    write_artifacts(
+        second,
+        report,
+        {
+            "run": {"runId": "two", "timestamp": "2026-08-03T01:00:00Z", "command": "cmd"},
+            "commitSha": "b" * 40,
+            "dirty": True,
+        },
+    )
+
+    assert normalize_artifacts(first) == normalize_artifacts(second)
+
+
+def test_normalize_artifacts_still_catches_hash_and_seed_changes(tmp_path) -> None:
+    """음성/변이 방어 — `hashes`(평가 대상 소스 지문)나 `seed` 가 달라지면 정규화 결과도
+    달라져야 한다. 그렇지 않다면 정규화가 매니페스트 전체를 걷어내는 공허한 구현이라는 뜻이다."""
+    report = _report()
+    base_manifest = {
+        "run": {"runId": "one", "timestamp": "t", "command": "c"},
+        "commitSha": "a" * 40,
+        "dirty": False,
+        "seed": 1,
+        "hashes": {"prompts": {"decompose": "x" * 64}},
+    }
+    baseline = tmp_path / "baseline"
+    write_artifacts(baseline, report, dict(base_manifest))
+
+    hash_changed = tmp_path / "hash-changed"
+    write_artifacts(
+        hash_changed,
+        report,
+        {**base_manifest, "hashes": {"prompts": {"decompose": "y" * 64}}},
+    )
+    assert normalize_artifacts(baseline) != normalize_artifacts(hash_changed)
+
+    seed_changed = tmp_path / "seed-changed"
+    write_artifacts(seed_changed, report, {**base_manifest, "seed": 2})
+    assert normalize_artifacts(baseline) != normalize_artifacts(seed_changed)
+
+
+def test_volatile_manifest_keys_is_subsumed_by_every_probe_normalization() -> None:
+    """공유 구조가 실제로 공유되는지 고정 — 정본 `VOLATILE_MANIFEST_KEYS` 가 각 프로브
+    정규화의 `VOLATILE_JSON_KEYS` 부분집합이 아니면, 한쪽만 고쳐지고 나머지가 남는 구조로
+    되돌아간 것이다(#413)."""
+    for module in (
+        ablation_report,
+        category_probe_report,
+        intent_probe_report,
+        legs_probe_report,
+        taste_probe_report,
+        underspecified_probe_report,
+    ):
+        assert VOLATILE_MANIFEST_KEYS <= module.VOLATILE_JSON_KEYS, module.__name__
 
 
 def test_filter_axes_csv_case_rows_carry_real_precision_recall_f1_numbers(tmp_path) -> None:

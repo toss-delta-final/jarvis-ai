@@ -203,7 +203,7 @@ async def test_pg_coordinator_signed_claim_replaces_legacy_guess(pg_claim) -> No
 async def test_pg_coordinator_rejects_active_unregistered_thread_scope(pg_claim) -> None:
     repository, pool, registry, prefix = pg_claim
     session_id = prefix + "-active"
-    assert registry.acquire(
+    assert await registry.acquire(
         "G1:new-thread",
         owner_id="G1",
         session_id=session_id,

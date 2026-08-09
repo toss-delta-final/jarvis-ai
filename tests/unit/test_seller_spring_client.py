@@ -12,7 +12,7 @@ import httpx
 import pytest
 
 from app.core.config import get_settings
-from app.schemas.spring import ProductCreate, ProductUpdate
+from app.schemas.spring import ChurnMember, ProductCreate, ProductUpdate
 from app.services.spring_client import SpringClient, SpringUnavailableError
 
 BASE_URL = "http://spring.internal.test"
@@ -74,6 +74,52 @@ async def test_get_sales_parses_camel_response() -> None:
     assert point.order_count == 5
     assert point.is_anomaly is False
     assert point.deviation_pct == 1.2
+
+
+async def test_get_sales_parses_sales_count() -> None:
+    """[#489] I-6 series[].salesCount(판매 수량) 수신 — 구현엔 있었으나 스키마에
+    필드가 없어 파싱되지 않고 버려지던 드리프트 정정(api-spec §4.4 v0.29.3)."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "granularity": "daily",
+                "series": [
+                    {
+                        "date": "2026-06-14",
+                        "sales": 1250000,
+                        "orderCount": 18,
+                        "salesCount": 27,
+                        "isAnomaly": True,
+                        "deviationPct": -42.1,
+                    }
+                ],
+            },
+        )
+
+    client = _client(handler)
+    result = await client.get_sales("brand-1", "2026-06-14", "2026-06-14")
+
+    point = result.series[0]
+    assert point.sales_count == 27  # orderCount(18, 건수)와 단위가 다르다
+    assert point.order_count == 18
+
+
+async def test_get_sales_sales_count_absent_stays_none() -> None:
+    """[#489] salesCount 부재는 0 이 아니라 None — granularity=summary 응답에는
+    수량 필드가 없고 BE 미배포 구간도 같다. 0 이면 '안 팔림'으로 오독된다."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"series": [{"date": "2026-06-14", "sales": 0, "orderCount": 0}]},
+        )
+
+    client = _client(handler)
+    result = await client.get_sales("brand-1", "2026-06-14", "2026-06-14")
+
+    assert result.series[0].sales_count is None
 
 
 async def test_get_sales_accepts_null_deviation_pct() -> None:
@@ -155,8 +201,9 @@ async def test_get_funnel_flattens_stages_response() -> None:
     assert (result.view, result.cart, result.checkout, result.purchase) == (5000, 800, 0, 120)
 
 
-async def test_account_events_has_no_brand_in_path_and_sends_period() -> None:
-    """I-8은 /internal/account-events (brandId 없음) + from/to 필수 전송(#197).
+async def test_account_events_uses_brand_scoped_path_and_sends_period() -> None:
+    """[#481] I-8은 브랜드 스코프 /internal/seller/{brandId}/account-events 를 탄다
+    (2026-08-06 자사 코호트 전환 — 구 전역 /internal/account-events 는 admin 존치분).
 
     from/to 는 Spring AnalysisPeriod.of 필수 — 종전 optional 미전달 호출은 400 이었다.
     """
@@ -168,10 +215,9 @@ async def test_account_events_has_no_brand_in_path_and_sends_period() -> None:
         return httpx.Response(200, json={"groupBy": "eventType", "rows": []})
 
     client = _client(handler)
-    await client.get_account_events("2026-07-01", "2026-07-31", event_type="LOGIN_FAIL")
+    await client.get_account_events(93, "2026-07-01", "2026-07-31", event_type="LOGIN_FAIL")
 
-    assert captured["url"].startswith(f"{BASE_URL}/internal/account-events")
-    assert "brand" not in captured["url"].lower().split("?")[0]
+    assert captured["url"].startswith(f"{BASE_URL}/internal/seller/93/account-events")
     assert captured["params"]["from"] == "2026-07-01"
     assert captured["params"]["to"] == "2026-07-31"
     assert captured["params"]["eventType"] == "LOGIN_FAIL"
@@ -180,7 +226,8 @@ async def test_account_events_has_no_brand_in_path_and_sends_period() -> None:
 async def test_account_events_parses_rows_and_group_by_echo() -> None:
     """I-8 실측 응답(rows — groupBy 별 이형) 파싱(#197 — 구 events 스키마는 상시 0건).
 
-    groupBy=ip 의 IpRow(무차별 대입 신호)도 dict 로 보존돼 요약에 쓸 수 있어야 한다.
+    [#481] 2026-08-06 개정 응답 — ip IpRow 는 suspiciousMemberCount·eventCount
+    (failCount·isSuspicious·nullMemberRatio 제거), scope="brand" 에코가 실린다.
     """
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -190,16 +237,16 @@ async def test_account_events_parses_rows_and_group_by_echo() -> None:
                 "success": True,
                 "data": {
                     "groupBy": "ip",
+                    "scope": "brand",
                     "eventType": "LOGIN_FAIL",
                     "from": "2026-07-01",
                     "to": "2026-07-31",
                     "rows": [
                         {
-                            "ipMasked": "121.140.xxx.xxx",
-                            "failCount": 42,
-                            "distinctMembers": 3,
-                            "nullMemberRatio": 0.5,
-                            "isSuspicious": True,
+                            "ipMasked": "121.140.xx.xx",
+                            "distinctMembers": 7,
+                            "suspiciousMemberCount": 5,
+                            "eventCount": 87,
                             "firstSeen": "2026-07-30T01:00:00+09:00",
                             "lastSeen": "2026-07-30T02:00:00+09:00",
                         }
@@ -209,12 +256,14 @@ async def test_account_events_parses_rows_and_group_by_echo() -> None:
         )
 
     client = _client(handler)
-    result = await client.get_account_events("2026-07-01", "2026-07-31", group_by="ip")
+    result = await client.get_account_events(93, "2026-07-01", "2026-07-31", group_by="ip")
 
     assert result.group_by == "ip"
+    assert result.scope == "brand"  # 구버전(전역) 응답 오독 차단 에코
     assert len(result.rows) == 1
-    assert result.rows[0]["failCount"] == 42
-    assert result.rows[0]["isSuspicious"] is True
+    assert result.rows[0]["suspiciousMemberCount"] == 5
+    assert "failCount" not in result.rows[0]  # 2026-08-06 개정으로 제거된 필드
+    assert "isSuspicious" not in result.rows[0]
 
 
 async def test_get_churn_sends_period_and_inactive_days() -> None:
@@ -276,9 +325,8 @@ async def test_get_churn_parses_measured_response_shape() -> None:
                     },
                     "members": [
                         {
-                            "memberId": 103,
+                            "customerLabel": "A3F29C",
                             "lastActivityAt": "2026-06-15T10:00:00+09:00",
-                            "lastLoginAt": None,
                             "sessions30d": 0,
                             "preChurnEvent": "RETURNED(상품불량)",
                         }
@@ -298,10 +346,29 @@ async def test_get_churn_parses_measured_response_shape() -> None:
     assert result.pre_churn_signals.price_increase_exposed == 2
     assert len(result.members) == 1
     member = result.members[0]
-    assert member.member_id == 103
+    assert member.customer_label == "A3F29C"  # [#487] 구 memberId(Long) 대체
     assert member.sessions_30d == 0  # camel alias "sessions30d" 매핑 고정
-    assert member.last_login_at is None
     assert member.pre_churn_event == "RETURNED(상품불량)"
+
+
+async def test_churn_member_drops_raw_identifier_fields() -> None:
+    """[#487] ChurnMember 는 memberId·lastLoginAt 을 필드로 갖지 않는다.
+
+    구응답이 와도 extra="allow" 로 흡수돼 파싱은 계속 성공하지만(배포 순서 무관),
+    model_extra 에 남을 뿐 속성으로는 읽히지 않는다 — 표시 계층이 실수로도 원시
+    회원 키를 집어들 수 없게 하는 것이 이 단언의 목적이다.
+    """
+    assert "member_id" not in ChurnMember.model_fields
+    assert "last_login_at" not in ChurnMember.model_fields
+    assert "customer_label" in ChurnMember.model_fields
+
+    legacy = ChurnMember.model_validate(
+        {"memberId": 103, "lastLoginAt": "2026-06-10T10:00:00+09:00", "sessions30d": 0}
+    )
+
+    assert legacy.customer_label is None  # 라벨 미수신 — memberId 로 대체되지 않는다
+    assert not hasattr(legacy, "member_id")
+    assert legacy.model_extra.get("memberId") == 103  # 흡수는 되되 표면엔 안 나온다
 
 
 async def test_get_churn_missing_rate_parses_as_none_not_zero() -> None:
@@ -596,11 +663,12 @@ async def test_get_order_events_parses_rows_total_and_stats_shape() -> None:
                 "rows": [
                     {
                         "orderId": 5001,
+                        "orderItemId": None,  # 주문 상태 전이는 null(2026-08-06 개정)
                         "fromStatus": "PAID",
                         "toStatus": "CANCELLED",
                         "actorType": "USER",
                         "reason": "단순변심",
-                        "buyerMemberId": 7,
+                        "customerLabel": "A3F29C",  # 구 buyerMemberId(Long) 대체
                         "createdAt": "2026-07-10T09:00:00+09:00",
                     }
                 ],
@@ -953,12 +1021,12 @@ async def test_get_reviews_url_params_and_parsing() -> None:
 
     client = _client(handler)
     result = await client.get_reviews(
-        12, from_="2026-07-01", to="2026-07-31", rating="1,2", sort="rating"
+        12, from_="2026-07-01", to="2026-07-31", rating="1,2", sort="ratingAsc"
     )
 
     assert "/internal/seller/12/reviews" in captured["url"]
     assert "rating=1%2C2" in captured["url"] or "rating=1,2" in captured["url"]
-    assert "sort=rating" in captured["url"]
+    assert "sort=ratingAsc" in captured["url"]
     assert result.total == 47
     assert result.rows[0].rating == 2
     assert result.rows[0].product_name == "여행용 파우치"
@@ -989,3 +1057,178 @@ async def test_get_review_stats_parses_null_average() -> None:
     assert "stats=true" in captured["url"]
     assert result.total_count == 0
     assert result.average_rating is None
+
+
+async def test_get_events_parses_new_row_fields() -> None:
+    """[#489] I-13 2026-08-06 개정 신필드 수신 — removeFromCart·salesQuantity·체류 4종.
+
+    개정 전 BehaviorProductRow 는 CamelModel(pydantic 기본 extra="ignore") 상속이라
+    이 필드들이 예외도 없이 통째로 소실됐다. 베이스를 SellerAggregateModel 로 교체한
+    근본 수정의 회귀 가드다.
+    """
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "success": True,
+                "data": {
+                    "groupBy": "product",
+                    "rows": [
+                        {
+                            "productId": 101,
+                            "productName": "에어 러너 2",
+                            "counts": {
+                                "productView": 1820,
+                                "addToCart": 240,
+                                "removeFromCart": 35,
+                                "checkoutStart": 96,
+                                "purchaseComplete": 61,
+                            },
+                            "salesQuantity": 74,
+                            "medianDwellSeconds": 42.0,
+                            "avgDwellSeconds": 71.3,
+                            "dwellSampleCount": 1180,
+                            "dwellSource": "next_event",
+                            "viewToCartRate": 0.132,
+                            "uniqueVisitors": 1503,
+                        }
+                    ],
+                    "total": 17,
+                },
+            },
+        )
+
+    client = _client(handler)
+    row = (await client.get_events("brand-1", "2026-07-01", "2026-07-14")).rows[0]
+
+    assert row.counts["removeFromCart"] == 35  # 4종 → 5종 편입
+    assert row.sales_quantity == 74  # 수량 — purchaseComplete(61 건)와 단위가 다르다
+    assert row.median_dwell_seconds == 42.0
+    assert row.avg_dwell_seconds == 71.3
+    assert row.dwell_sample_count == 1180
+    assert row.dwell_source == "next_event"
+
+
+async def test_get_events_new_row_fields_absent_stay_none() -> None:
+    """[#489] 신필드 부재는 0 이 아니라 None — BE 미배포 구간·필터 미포함 시 계약값이
+    null 이다(0="안 팔림"/"체류 0초", null="미조회"/"표본 없음"). 기본값 0 을 두면
+    churn_rate 에서 잡았던 silent-mismatch(#197)를 그대로 재도입한다."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "success": True,
+                "data": {"groupBy": "product", "rows": [{"productId": 101}], "total": 1},
+            },
+        )
+
+    client = _client(handler)
+    row = (await client.get_events("brand-1", "2026-07-01", "2026-07-14")).rows[0]
+
+    assert row.sales_quantity is None
+    assert row.median_dwell_seconds is None
+    assert row.avg_dwell_seconds is None
+    assert row.dwell_sample_count is None
+    assert row.dwell_source is None
+
+
+async def test_get_events_row_preserves_unknown_extra_field() -> None:
+    """[#489 근본 수정] BehaviorProductRow 가 미지 필드를 model_extra 에 보존한다.
+
+    형제 판매자 모델은 전부 SellerAggregateModel(extra="allow")인데 이 모델만
+    CamelModel 이라 BE 신설 필드가 예외도 안 나고 model_extra 에도 안 남고 사라졌다.
+    필드 5종 추가보다 이 베이스 교체가 근본 수정이며, 다음 BE 추가 때 같은 일이
+    반복되지 않는지를 지키는 가드다.
+    """
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "success": True,
+                "data": {
+                    "groupBy": "product",
+                    "rows": [{"productId": 101, "someFutureBeField": 7}],
+                    "total": 1,
+                },
+            },
+        )
+
+    client = _client(handler)
+    row = (await client.get_events("brand-1", "2026-07-01", "2026-07-14")).rows[0]
+
+    assert row.model_extra == {"someFutureBeField": 7}
+
+
+async def test_get_review_stats_sends_rating_and_product_filters() -> None:
+    """[#494] rating·productId·기간이 집계 요청 쿼리스트링에 전부 실린다(I-31).
+
+    응답 픽스처를 고정하는 계약 테스트로는 이 회귀가 안 잡힌다 — shape 가 아니라
+    **요청 파라미터** 누락이라 HTTP 200 이 그대로 돌아온다. 그래서 요청 URL 을
+    직접 스냅샷한다.
+    """
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        return httpx.Response(
+            200,
+            json={
+                "success": True,
+                "data": {
+                    "totalCount": 18,
+                    "averageRating": 1.4,
+                    "distribution": {"5": 0, "4": 0, "3": 0, "2": 11, "1": 7},
+                    "byProduct": [
+                        {
+                            "productId": 3,
+                            "productName": "여행용 파우치",
+                            "count": 12,
+                            "averageRating": 1.3,
+                        }
+                    ],
+                },
+            },
+        )
+
+    client = _client(handler)
+    result = await client.get_review_stats(
+        12, from_="2026-07-01", to="2026-07-31", product_id=3, rating="1,2"
+    )
+
+    url = captured["url"]
+    assert "stats=true" in url
+    assert "rating=1%2C2" in url or "rating=1,2" in url
+    assert "productId=3" in url
+    assert "from=2026-07-01" in url and "to=2026-07-31" in url
+    # 집계 모드에는 rows 가 없다 — 목록 전용 파라미터는 실리지 않아야 한다.
+    assert "sort=" not in url and "limit=" not in url and "offset=" not in url
+    assert result.total_count == 18
+    assert result.by_product[0].product_id == 3
+
+
+async def test_get_review_stats_omits_rating_when_absent() -> None:
+    """[#494 회귀] rating 미지정이면 쿼리스트링에 rating 이 실리지 않는다."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        return httpx.Response(
+            200,
+            json={
+                "success": True,
+                "data": {
+                    "totalCount": 47,
+                    "averageRating": 3.8,
+                    "distribution": {"5": 12, "4": 15, "3": 8, "2": 7, "1": 5},
+                    "byProduct": [],
+                },
+            },
+        )
+
+    client = _client(handler)
+    await client.get_review_stats(12)
+
+    assert "rating" not in captured["url"]

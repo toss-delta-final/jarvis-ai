@@ -58,11 +58,53 @@ def test_resolve_plan_empty_analyses_raises() -> None:
 
 
 def test_resolve_plan_unsupported_period_propagates() -> None:
-    """미지원 기간 표현("이번 달")은 normalize_period 의 ValueError 가 전파된다."""
+    """해석 불가 기간 표현("작년 여름")은 period.resolve_period 의 ValueError 가 전파된다.
+
+    [#345] 종전에는 "이번 달" 이 이 케이스였다 — 어휘 확장으로 지금은 확인 후 통과다.
+    """
     with pytest.raises(ValueError):
         pipeline.resolve_plan(
-            _plan(period_expr="이번 달"), today=dt.date(2026, 7, 18), recent_default_days=7
+            _plan(period_expr="작년 여름"), today=dt.date(2026, 7, 18), recent_default_days=7
         )
+
+
+# ── #345 P1: 확인 흐름 계약 (어휘 판정 자체는 test_seller_period.py) ──────────────
+
+
+def test_resolve_plan_canonical_vocab_never_needs_confirmation() -> None:
+    """회귀 가드 — 기존 어휘 5종은 needs_confirmation=False 로 통과한다(#345 완료 조건).
+
+    이 테스트가 깨지면 잘 쓰던 판매자에게 없던 확인 왕복을 새로 물린 것이다.
+    """
+    today = dt.date(2026, 8, 6)
+    for expr in ("지난달", "최근 7일", "최근", "어제", "2026-06-01~2026-06-30"):
+        resolved = pipeline.resolve_plan(
+            _plan(period_expr=expr), today=today, recent_default_days=7
+        )
+        assert resolved.needs_confirmation is False, expr
+
+
+def test_resolve_plan_expanded_vocab_needs_confirmation() -> None:
+    """신규 어휘는 값이 나오되 확인 대기 신호를 함께 올린다(#345)."""
+    today = dt.date(2026, 8, 6)
+    for expr in ("이번 달", "올해", "상반기", "최근 3개월"):
+        resolved = pipeline.resolve_plan(
+            _plan(period_expr=expr), today=today, recent_default_days=7
+        )
+        assert resolved.needs_confirmation is True, expr
+        assert resolved.period_expr == expr
+        assert resolved.date_to <= dt.date(2026, 8, 5)  # R1 — 오늘 제외
+
+
+def test_period_confirmation_text_shows_resolved_dates() -> None:
+    """확인 문구는 어휘가 아니라 **환산된 날짜**를 되돌려 보여준다(DESIGN §4.3)."""
+    resolved = pipeline.resolve_plan(
+        _plan(period_expr="이번 달"), today=dt.date(2026, 8, 6), recent_default_days=7
+    )
+    text = pipeline.period_confirmation_text(resolved)
+    assert "2026-08-01" in text
+    assert "2026-08-05" in text
+    assert "이번 달" in text
 
 
 def test_resolve_plan_wants_chart_from_plan_field() -> None:
@@ -101,6 +143,44 @@ def test_resolve_plan_question_default_keeps_backward_compat() -> None:
         _plan(wants_chart=False), today=dt.date(2026, 7, 18), recent_default_days=7
     )
     assert resolved.wants_chart is False
+
+
+def test_resolve_plan_chart_period_expr_resolved_separately() -> None:
+    """[#504] 차트 전용 기간 표현은 본 기간과 별도로 환산돼 chart_from/to 에 담긴다."""
+    plan = _plan(period_expr="지난달", chart_period_expr="최근 7일")
+    resolved = pipeline.resolve_plan(plan, today=dt.date(2026, 7, 18), recent_default_days=7)
+    assert (resolved.date_from, resolved.date_to) == (dt.date(2026, 6, 1), dt.date(2026, 6, 30))
+    assert (resolved.chart_from, resolved.chart_to) == (dt.date(2026, 7, 11), dt.date(2026, 7, 17))
+    assert resolved.chart_period_error == ""
+    assert resolved.wants_chart is True  # 차트 기간을 말했다 = 차트를 원한다
+
+
+def test_resolve_plan_chart_period_error_does_not_kill_pipeline() -> None:
+    """[#504] 차트 기간만 해석 불가("작년 여름")면 ValueError 로 죽이지 않고
+    chart_period_error 에 담는다 — 보고서는 살리고 차트만 chartUnavailable 로 강등."""
+    plan = _plan(period_expr="지난달", chart_period_expr="작년 여름")
+    resolved = pipeline.resolve_plan(plan, today=dt.date(2026, 7, 18), recent_default_days=7)
+    assert resolved.date_from == dt.date(2026, 6, 1)  # 본 기간은 정상 환산
+    assert resolved.chart_from is None and resolved.chart_to is None
+    assert resolved.chart_period_error != ""
+
+
+def test_resolve_plan_chart_period_absent_leaves_fields_empty() -> None:
+    """[#504] 차트 기간 별도 언급이 없으면 chart_* 는 비어 있다 — 차트는 본 기간을 따른다."""
+    resolved = pipeline.resolve_plan(_plan(), today=dt.date(2026, 7, 18), recent_default_days=7)
+    assert resolved.chart_period_expr == ""
+    assert resolved.chart_from is None and resolved.chart_to is None
+    assert resolved.chart_period_error == ""
+
+
+def test_resolve_plan_chart_only_allows_empty_analyses() -> None:
+    """[#504] chart_only 턴은 워커를 쓰지 않으므로 analyses 가 비어도 계획이 성립하고,
+    wants_chart 가 강제로 True 다."""
+    plan = _plan(analyses=[], chart_only=True, period_expr="최근 7일")
+    resolved = pipeline.resolve_plan(plan, today=dt.date(2026, 7, 18), recent_default_days=7)
+    assert resolved.analyses == ()
+    assert resolved.chart_only is True
+    assert resolved.wants_chart is True
 
 
 def test_format_worker_input_contains_period_and_question() -> None:
@@ -228,6 +308,19 @@ def test_compose_response_chart_requested_but_missing_appends_notice() -> None:
         "본문", RecommendationSet(), ChartSet(charts=[]), chart_requested=True
     )
     assert "[차트 안내]" in empty_charts_text
+
+
+def test_compose_response_chart_unavailable_messages_verbatim() -> None:
+    """[#504] 사유(ChartUnavailable)가 있으면 그 완성 문장을 그대로 싣는다 — 원인을
+    아는데 일반 문구로 뭉개면 오보다. 부분 성공(charts 있음)에도 사유는 붙는다."""
+    from app.agents.seller.charts import ChartUnavailable
+
+    reason = ChartUnavailable(reason="no_data", message="해당 기간에 표시할 데이터가 없습니다.")
+    text = pipeline.compose_response(
+        "본문", RecommendationSet(), _chart_set(), chart_requested=True, chart_unavailable=[reason]
+    )
+    assert "[차트 안내]" in text
+    assert "해당 기간에 표시할 데이터가 없습니다." in text
 
 
 def test_compose_response_chart_not_requested_no_notice() -> None:
@@ -391,3 +484,68 @@ def test_split_report_summary_heading_and_text_in_same_block() -> None:
 def test_split_report_summary_headings_only_returns_empty() -> None:
     """전부 헤딩뿐인 비정상 산출 — ""(FE 는 body fallback)."""
     assert pipeline.split_report_summary("## 제목\n\n### 소제목") == ""
+
+
+# ── 비교(기준) 기간 (#346) ─────────────────────────────────────────────────────
+
+
+def test_resolve_plan_resolves_comparison_expression() -> None:
+    """[#346] comparison_expr 도 코드가 환산한다 — planner 는 표현만 옮겨적는다."""
+    plan = _plan(analyses=["conversion"], period_expr="이번 달", comparison_expr="지난달 대비")
+
+    resolved = pipeline.resolve_plan(
+        plan, today=dt.date(2026, 8, 6), recent_default_days=7, max_days=731
+    )
+
+    assert (resolved.date_from, resolved.date_to) == (dt.date(2026, 8, 1), dt.date(2026, 8, 5))
+    assert (resolved.compare_from, resolved.compare_to) == (
+        dt.date(2026, 7, 1),
+        dt.date(2026, 7, 5),
+    )
+    assert resolved.comparison_expr == "지난달 대비"
+
+
+def test_resolve_plan_confirmation_is_the_union_of_both_periods() -> None:
+    """본 기간이 명시적이어도 비교 기간이 보충됐으면 확인 대상이다(합집합)."""
+    plan = _plan(
+        analyses=["conversion"],
+        period_expr="2026-06-01~2026-06-30",
+        comparison_expr="작년 대비",
+    )
+
+    resolved = pipeline.resolve_plan(
+        plan, today=dt.date(2026, 8, 6), recent_default_days=7, max_days=731
+    )
+
+    assert resolved.needs_confirmation is True
+
+
+def test_format_worker_input_injects_comparison_period() -> None:
+    """비교 기간이 있으면 워커 입력에 한 줄 더 실린다 — 도구 시그니처는 그대로다.
+
+    워커는 두 기간으로 같은 도구를 각각 호출한다(CONVERSION_PROMPT 절차 4) — 그래서
+    Spring 계약도, 도구 인자도 건드리지 않고 비교가 성립한다.
+    """
+    plan = pipeline.ResolvedPlan(
+        analyses=("conversion",),
+        date_from=dt.date(2026, 8, 1),
+        date_to=dt.date(2026, 8, 5),
+        comparison_expr="지난달 대비",
+        compare_from=dt.date(2026, 7, 1),
+        compare_to=dt.date(2026, 7, 5),
+    )
+
+    body = pipeline.format_worker_input("지난달 대비 이번 달 전환율", plan)
+
+    assert "[분석 기간] from=2026-08-01 to=2026-08-05" in body
+    assert "[비교 기간] from=2026-07-01 to=2026-07-05" in body
+    assert body.index("[분석 기간]") < body.index("[비교 기간]") < body.index("[판매자 질문]")
+
+
+def test_format_worker_input_omits_comparison_line_when_absent() -> None:
+    """비교가 없으면 줄 자체가 없다 — 빈 값을 흘려 워커가 오해하게 두지 않는다."""
+    plan = pipeline.ResolvedPlan(
+        analyses=("conversion",), date_from=dt.date(2026, 8, 1), date_to=dt.date(2026, 8, 5)
+    )
+
+    assert "[비교 기간]" not in pipeline.format_worker_input("전환율", plan)

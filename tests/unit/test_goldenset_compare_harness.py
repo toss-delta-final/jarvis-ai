@@ -15,7 +15,7 @@ def test_committed_search_slice_matches_compare_adapter() -> None:
     cases = search_slice_cases()
     adapted = to_compare_golden_cases("dev")
 
-    assert len(cases) == 62
+    assert len(cases) == 68
     assert len({case.query for case in cases}) == len(cases)
     assert [case.query for case in adapted] == [case.query for case in cases]
     assert [case.relevant_ids for case in adapted] == [

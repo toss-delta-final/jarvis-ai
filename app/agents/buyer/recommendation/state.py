@@ -96,6 +96,10 @@ class RouteDecision:
         "cart_remove",
         "wishlist_add",
         "wishlist_remove",
+        # [#386] 찜 목록 조회. cart_view 와 같은 성격(상태를 바꾸지 않는 조회)이라
+        # classify_cart_utterance 의 값 집합에는 들어가지 않는다 — 그 판별기는 cart_add 로
+        # 라우팅된 발화만 보고, 조회 발화는 애초에 거기 도달하지 않는다(intent_guard.py 참조).
+        "wishlist_view",
     ]
     filters: ProductSearchFilters
     # [#101] 의미쿼리는 검색 입력이라 filters.semantic_query 로 이관(decompose 가 세팅). 하류가
