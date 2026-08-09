@@ -9,6 +9,20 @@
 
 ## [Unreleased]
 
+### Added
+- **#506 — 이미지 기반 상품 등록 초안** (api-spec §3.2, v0.31.0 — 추가 전용, 기존 op 와이어
+  불변). 판매자가 채팅에 상품 사진을 첨부하면(`imageUrls`, 새로 첨부한 턴에만) vision 이 1회
+  분석해 등록 초안(`draft{op:"create"}`)을 만들고, FE 등록 미리보기 카드용 **`preview{}`**(11키
+  고정·null 계약·서버 포맷 완료·`sections` source/warning/note)를 함께 싣는다. 카테고리는 BE
+  조회 없이 **로컬 스냅샷**(`app/data/seller_categories.json`, 파일 교체=배포)이 후보 검색·
+  `categoryPath` 변환·검증의 단일 원천이고, LLM 은 주입된 후보 id 중에서만 고른다(계약값은
+  코드). 초안 대기 중 발화는 입구 게이트가 분류한다 — 수정→새 draftId 발급+**이전 draft
+  무효화**(옛 카드 confirm 차단), 승인 텍스트→버튼 안내(발화≠동의 유지), "취소"→폐기(LLM 0회
+  단축경로), 딴 주제→차단 안내(초안 유지). create 의 `image_url` 금지를 해제하고 confirm 실행이
+  I-10 에 `image_url`·카테고리 쓰기 값(`seller_category_write_mode`, 기본 leaf — **BE 정렬 1건
+  잔여**)을 전달한다. 신규 모듈 `vision/category_catalog/preview/draft_session`, 수신 검증
+  (canonical URL ≤500자·presigned 거부)은 요청 스키마+hitl 이중 방어.
+
 ### Changed
 - **#504 — 판매자 분석 차트 재설계: 좌표 생성 주체를 LLM → 코드로 전환** (api-spec §3.2,
   v0.30.0 · `docs/specs/DESIGN-SELLER-CHART-V2.md`). 구 구조는 `graph_agent`(도구 없음,
@@ -96,6 +110,23 @@
   와이어 계약 무변경.
 
 ### Added
+- **#476 — 스트림 레지스트리를 워커 간 공유로 올릴 수 있게 했다** (`STREAM_REGISTRY_BACKEND=shared`,
+  기본값은 종전 `memory` — **출하 동작 무변경**, 계약 무변경). §2.9(a) 활성 슬롯·scope fence·
+  scope idle 대기를 **셋 다** pg-profile 테이블 2종(`active_streams`·`stream_scope_fences`)으로
+  옮겨, 워커를 다중화해도 409 가드가 유효하고 세션 claim 경로가 워커 간에 어긋나지 않는다.
+  fence 원자성의 근거를 "`acquire_fence()`에 await 가 없다"(이벤트 루프)에서 **스코프 키에 건
+  `pg_advisory_xact_lock`**(트랜잭션)으로 갈아끼웠고, 모든 행에 lease/TTL 을 둬 죽은 워커가
+  방을 영구히 409 로 만드는 #48 성질의 누수를 막는다. 공유 저장소 장애는 fail-closed —
+  기존 계약 코드 `503 STATE_UNAVAILABLE` 로 나간다(새 오류 코드 없음). `active_count()` 는
+  프레임마다 호출되는 관측 경로라 여전히 프로세스 로컬 O(1) 이며, 그래서 `chat_request` 에
+  워커 지문 `workerFp` 를 추가해 워커별 값을 갈라 합산할 수 있게 했다.
+  `REGISTRY_IS_PROCESS_LOCAL` 하드코딩 상수는 설정 파생 `registry_is_process_local()` 로 바뀌었고,
+  Dockerfile 가드는 "워커를 켜려면 공유 백엔드도 함께 켜라"로 정확해졌다.
+  (`docs/specs/DESIGN-SHARED-STREAM-REGISTRY-476.md`)
+- **#476 — `chat_request`에 활성 스트림 도착 표본(`activeStreams`)과 턴 중 피크
+  (`activeStreamsPeak`)를 추가** — 단일 이벤트 루프의 검색 파싱 부하가 동시 20에서 3초 예산을
+  넘은 실측(#427)을 운영 로그로 판단할 수 있게 한다. 동일 방 409 거절도 선행 활성 수와 함께
+  남기며, 이 값은 외부 API 계약이 아닌 서버 내부 관측이다(**워커별 값** — `workerFp` 로 가른다).
 - **#346 — 비교(기준) 기간 어휘 양 레인 지원** (`직전 동일 기간`·`지난달 대비`·`전월 동기간`·
   `작년 대비`·`전년 동기간`). `period.resolve_comparison(expr, base)` 가 본 기간을 받아 환산하고
   (`직전 동일 기간` 은 보충값이 없어 확인 불필요 — `tools._previous_period` 와 같은 정의,
@@ -164,6 +195,10 @@
   오배선(상시 0건)은 #194 에서 기수정 — 이번 범위 아님(노션 확인 요청에는 기수정으로 회신).
 
 ### Docs
+- **#476 — 워커 다중화 선행조건과 프로세스 로컬 상태 인벤토리를 문서화하고 증설 가드를 추가** —
+  `ActiveStreamRegistry`가 프로세스 로컬인 동안 Dockerfile worker 설정을 테스트로 막고,
+  `WEB_CONCURRENCY >= 2` 기동은 경고로 관측한다. 권고는 owner(JWT `sub`) sticky를 1단계로 하고,
+  다중 EC2 또는 sticky 불가 시 TTL/만료를 갖춘 공유 레지스트리로 전환하는 것이다.
 - **#472 — Notion API 정본 전수 대조와 사본 동기화** (api-spec §3.1, §3.5, §3.7, §3.8~3.9.4, §4.2, §4.5~4.6, §4.8, §4.11~4.12, §4.14~4.20, §6.1~6.2, v0.29.4) — 코드 변경이 필요한 계약 드리프트와 정본 미해결을 별도 감사표로 분리하고, 문서 전용 확정 사항만 사본에 반영했다.
 - **#357 — 개인화 그래프 Spring 협의 패킷 v1→v2 전면 개정: BE 회신 3건·운영 덤프·`jarvis-backend`
   코드 실측으로 C-28 종결·C-27 코드로 대부분 확정·C-18/C-19 해소를 반영** — v1(2026-08-07)은 "전
@@ -799,7 +834,7 @@
   됐으니 AI도 됐다"는 오독을 막았다. §3.1 상태 서술을 `AI 구현`·`Spring 구현`·`FE 수신` 3축
   bullet으로 분리하고, 표기 규약에 "상태 마커에는 근거(리포·브랜치·PR·실측일)를 병기한다"·
   "세 축을 뭉뚱그리지 않는다" 2항목을 신설해 재발을 막는다.
-  (api-spec §3.1·§4.12~4.16, v0.30.1)
+  (api-spec §3.1·§4.12~4.16, v0.31.3)
 - **#258 — I-1 `color` 반복 파라미터(BE 송부용 계약 제안문)** — 현행 `color: string | null`
   단일값 LIKE 필터로는 표기 분포가 극단적으로 치우친 색상 동의어(`블랙` 2,358 vs `검정` 11)를
   원리적으로 못 잡는다는 실측 근거와 함께, `brandName` 방법 D(§4.6, v0.15.23)와 동일 규약인

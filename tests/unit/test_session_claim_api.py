@@ -336,12 +336,12 @@ async def test_session_end_keeps_terminal_durable_when_profile_is_retryable(
 
 async def test_stream_scope_idle_wait_is_event_driven() -> None:
     registry = ActiveStreamRegistry()
-    assert registry.acquire("7:thread", owner_id="7", session_id="session-1")
+    assert await registry.acquire("7:thread", owner_id="7", session_id="session-1")
     waiter = asyncio.create_task(registry.wait_for_scope_idle("7", "session-1"))
     await asyncio.sleep(0)
     assert not waiter.done()
 
-    registry.release("7:thread")
+    await registry.release("7:thread")
     await asyncio.wait_for(waiter, timeout=0.1)
     assert registry._scope_idle == {}
 
@@ -350,33 +350,33 @@ async def test_stream_scope_idle_events_are_lazy_and_follow_reacquire_race() -> 
     registry = ActiveStreamRegistry()
     for index in range(100):
         scope = f"session-{index}"
-        assert registry.acquire(f"stream-{index}", owner_id="7", session_id=scope)
-        registry.release(f"stream-{index}")
+        assert await registry.acquire(f"stream-{index}", owner_id="7", session_id=scope)
+        await registry.release(f"stream-{index}")
     assert registry._scope_idle == {}
 
-    assert registry.acquire("first", owner_id="7", session_id="same")
+    assert await registry.acquire("first", owner_id="7", session_id="same")
     waiter = asyncio.create_task(registry.wait_for_scope_idle("7", "same"))
     await asyncio.sleep(0)
     assert len(registry._scope_idle) == 1
 
-    registry.release("first")
-    assert registry.acquire("second", owner_id="7", session_id="same")
+    await registry.release("first")
+    assert await registry.acquire("second", owner_id="7", session_id="same")
     assert not registry._scope_idle[("7", "same")].event.is_set()
     await asyncio.sleep(0)
     assert not waiter.done()
-    registry.release("second")
+    await registry.release("second")
     await asyncio.wait_for(waiter, timeout=0.1)
     assert registry._scope_idle == {}
 
 
 async def test_stream_scope_idle_wakes_all_same_scope_waiters_and_cleans_state() -> None:
     registry = ActiveStreamRegistry()
-    assert registry.acquire("stream", owner_id="7", session_id="shared")
+    assert await registry.acquire("stream", owner_id="7", session_id="shared")
     waiters = [asyncio.create_task(registry.wait_for_scope_idle("7", "shared")) for _ in range(5)]
     await asyncio.sleep(0)
     assert registry._scope_idle[("7", "shared")].count == 5
 
-    registry.release("stream")
+    await registry.release("stream")
     await asyncio.wait_for(asyncio.gather(*waiters), timeout=0.1)
 
     assert registry._scope_idle == {}
@@ -384,7 +384,7 @@ async def test_stream_scope_idle_wakes_all_same_scope_waiters_and_cleans_state()
 
 async def test_stream_scope_idle_cancelled_last_waiter_does_not_leak_state() -> None:
     registry = ActiveStreamRegistry()
-    assert registry.acquire("first", owner_id="7", session_id="cancelled")
+    assert await registry.acquire("first", owner_id="7", session_id="cancelled")
     cancelled = asyncio.create_task(registry.wait_for_scope_idle("7", "cancelled"))
     await asyncio.sleep(0)
 
@@ -396,7 +396,7 @@ async def test_stream_scope_idle_cancelled_last_waiter_does_not_leak_state() -> 
     replacement = asyncio.create_task(registry.wait_for_scope_idle("7", "cancelled"))
     await asyncio.sleep(0)
     assert len(registry._scope_idle) == 1
-    registry.release("first")
+    await registry.release("first")
     await asyncio.wait_for(replacement, timeout=0.1)
     assert registry._scope_idle == {}
 
@@ -406,10 +406,10 @@ def test_stream_scope_idle_registry_can_be_reused_across_event_loops() -> None:
 
     async def run_once(index: int) -> None:
         stream_key = f"stream-{index}"
-        assert registry.acquire(stream_key, owner_id="7", session_id="cross-loop")
+        assert await registry.acquire(stream_key, owner_id="7", session_id="cross-loop")
         waiter = asyncio.create_task(registry.wait_for_scope_idle("7", "cross-loop"))
         await asyncio.sleep(0)
-        registry.release(stream_key)
+        await registry.release(stream_key)
         await waiter
         assert registry._scope_idle == {}
 
@@ -422,7 +422,7 @@ async def test_terminal_gate_precedes_stream_wait_and_watermark_capture(
 ) -> None:
     registry = ActiveStreamRegistry()
     await repo.touch(BuyerSessionInput("stream-terminal", "thread-1", "member", "7"))
-    assert registry.acquire(
+    assert await registry.acquire(
         "7:thread-1",
         owner_id="7",
         session_id="stream-terminal",
@@ -447,7 +447,7 @@ async def test_terminal_gate_precedes_stream_wait_and_watermark_capture(
     assert not snapshot_called.is_set()
     assert not terminal_task.done()
 
-    registry.release("7:thread-1")
+    await registry.release("7:thread-1")
     outcome = await asyncio.wait_for(terminal_task, timeout=0.2)
     assert snapshot_called.is_set()
     assert outcome.duplicate is False
@@ -504,7 +504,7 @@ async def test_exact_duplicate_never_mutates_context_generation_or_history(
     first = await _post_claim(client)
     before = await repo.get_context("session-1")
     history_before = dict(repo._owner_claims)
-    assert get_registry().acquire(
+    assert await get_registry().acquire(
         "guest-1:thread-1",
         owner_id="guest-1",
         session_id="session-1",
@@ -526,7 +526,7 @@ async def test_claim_rejects_active_stream_in_any_registered_thread(
 ) -> None:
     original = await repo.touch(BuyerSessionInput("session-1", "thread-1", "guest", "guest-1"))
     await repo.touch(BuyerSessionInput("session-1", "thread-2", "guest", "guest-1"))
-    assert get_registry().acquire(
+    assert await get_registry().acquire(
         "guest-1:thread-2",
         owner_id="guest-1",
         session_id="session-1",
@@ -643,7 +643,7 @@ async def test_claim_fence_blocks_new_guest_slot_until_transition_finishes(
     outcome = await task
     assert outcome.claimed is True
     assert not registry.is_fenced("guest-1", "session-1")
-    assert registry.acquire(
+    assert await registry.acquire(
         "guest-1:new-thread",
         owner_id="guest-1",
         session_id="session-1",
@@ -727,7 +727,7 @@ async def test_claim_rejects_idle_finalizing_before_active_stream_check(
 ) -> None:
     context = await repo.touch(BuyerSessionInput("session-1", "thread-1", "guest", "guest-1"))
     repo._contexts["session-1"].state = "idle_finalizing"
-    assert get_registry().acquire(
+    assert await get_registry().acquire(
         "guest-1:thread-1",
         owner_id="guest-1",
         session_id="session-1",

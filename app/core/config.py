@@ -607,6 +607,24 @@ class Settings(BaseSettings):
     seller_report_score_threshold: int = 21  # 보고서 검증 통과 점수(21/30)
     seller_report_max_retries: int = 3  # 검증 루프 상한
     seller_draft_ttl_minutes: int = 10  # HITL 미승인 draft 만료
+    # ── 이미지 기반 상품 등록 초안 (#506, api-spec §3.2 v0.31.0) ─────────────────
+    # imageUrls 요청 필드 상한 — MVP 는 1장(2장째 첨부는 FE 가 교체로 처리).
+    seller_image_max_count: int = 1
+    # image_url 길이 2차 방어(FE 서버 라우트가 1차) — DB VARCHAR(500) 계약과 동일값.
+    # presigned URL(서명 쿼리스트링)은 보통 1,000자를 넘어 여기서 걸린다.
+    seller_image_url_max_len: int = 500
+    # vision 분석(이미지 첨부 턴 1회) 상한 — 워커 예산(seller_worker_timeout_s)과
+    # 분리한다: 분석은 product 워커 진입 전 입구에서 별도 수행된다.
+    seller_vision_timeout_s: float = 20.0
+    # 카테고리 스냅샷(#506) — BE 조회 없이 AI 가 로컬 JSON 으로 보유한다.
+    # 파일 교체 = 배포(정합 리스크는 스냅샷 meta.version 으로 추적).
+    seller_category_snapshot_path: str = "app/data/seller_categories.json"
+    seller_category_candidates_k: int = 5  # 초안 에이전트에 주입할 카테고리 후보 수
+    # confirm 시 Spring I-10 `category`(자유 문자열)에 쓸 값 — BE 와 맞출 유일한 지점.
+    # leaf(말단 명칭) | path("A > B > C") | id(스냅샷 id 그대로).
+    seller_category_write_mode: Literal["leaf", "path", "id"] = "leaf"
+    # 초안 대기 게이트(수정/승인안내/취소/딴주제 분류) LLM 상한 — 실패 시 일반 흐름 폴백.
+    seller_pending_gate_timeout_s: float = 8.0
     # 4-2 HITL 실행(hitl.py): confirm 시점 I-9 재조회(stale 검증)의 페이지 순회 상한 —
     # I-9 에 productId 필터가 없어 목록을 넘겨가며 찾는다(페이지 크기 = seller_list_default_limit).
     seller_draft_lookup_max_pages: int = 10
@@ -1610,6 +1628,20 @@ class Settings(BaseSettings):
     stream_total_timeout_buyer_s: float = Field(default=30.0, gt=0.0)
     # disconnect 감지 폴링 간격 (취소 = 연결 종료, §2.9 b).
     stream_disconnect_poll_s: float = 0.5
+    # ── 공유 스트림 레지스트리 (#476, docs/specs/DESIGN-SHARED-STREAM-REGISTRY-476.md) ──
+    # "memory"(기본) = 프로세스 로컬. 현재 배포는 워커 1개라 공유 백엔드는 이득 없이 DB 왕복과
+    # 새 실패 모드만 더한다 — 출하 기본 동작은 이 기능 도입 이전과 동일하다. "shared" 는
+    # pg-profile 테이블로 §2.9(a) 슬롯·scope fence·scope idle 을 워커 간에 공유해 워커 다중화의
+    # 선행조건 하나를 충족시킨다(나머지 조건은 OPS-SCALEOUT-476.md §2 인벤토리 참조).
+    stream_registry_backend: Literal["memory", "shared"] = "memory"
+    # 공유 백엔드 행의 lease 수명. 워커가 죽어도 이 시간 뒤엔 슬롯이 반드시 풀린다(#48 재발 방지).
+    stream_registry_lease_ttl_s: float = Field(default=60.0, gt=0.0)
+    # lease 연장 최소 간격 — 이미 도는 stream_disconnect_poll_s tick 에 얹는다(프레임마다 DB 금지).
+    stream_registry_lease_renew_interval_s: float = Field(default=5.0, gt=0.0)
+    # 공유 백엔드 wait_for_scope_idle 폴링 주기 (asyncio.Event 는 프로세스를 못 넘는다).
+    stream_registry_scope_poll_s: float = Field(default=0.5, gt=0.0)
+    # 같은 대기의 전체 상한 — 무한 대기 금지.
+    stream_registry_scope_idle_wait_max_s: float = Field(default=120.0, gt=0.0)
     # AI→Spring 콜백 타임아웃 (§2.9 c, BE I-2 기준 통일). 실제 호출부에서 사용.
     spring_timeout_s: float = 3.0
     # [#427] I-1 검색 전용 타임아웃 — `spring_timeout_s`(전 구간 공용)와 분리한다. 기본값은
@@ -2172,6 +2204,40 @@ class Settings(BaseSettings):
                 "COLOR_SYNONYM_HARVEST_MAX_TERMS_PER_PRODUCT "
                 f"(got {self.color_synonym_harvest_scan_max_values_per_product} <= "
                 f"{self.color_synonym_harvest_max_terms_per_product})"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _require_consistent_stream_registry_leases(self) -> "Settings":
+        """공유 레지스트리 lease 관계를 기동 시점에 고정한다 (#476).
+
+        연장 간격이 TTL 의 절반 이상이면 연장을 한 번만 놓쳐도 살아있는 스트림의 슬롯이
+        만료돼 다른 워커가 같은 방을 잡을 수 있다 — §2.9(a) 가 조용히 뚫린다. 반대로
+        scope idle 대기 상한이 TTL 보다 짧으면, 죽은 워커가 남긴 행이 만료되기도 전에 대기가
+        끝나 "기다렸다" 는 보장이 무의미해진다. 값은 `memory` 백엔드에서도 검증한다 —
+        운영이 백엔드를 켜는 순간 발견하는 것보다 기동 시점에 막는 편이 싸다.
+        """
+        if self.stream_registry_lease_renew_interval_s >= self.stream_registry_lease_ttl_s / 2:
+            raise ValueError(
+                "STREAM_REGISTRY_LEASE_RENEW_INTERVAL_S must be under half of "
+                "STREAM_REGISTRY_LEASE_TTL_S "
+                f"(got {self.stream_registry_lease_renew_interval_s} >= "
+                f"{self.stream_registry_lease_ttl_s / 2})"
+            )
+        if self.stream_registry_scope_idle_wait_max_s <= self.stream_registry_lease_ttl_s:
+            raise ValueError(
+                "STREAM_REGISTRY_SCOPE_IDLE_WAIT_MAX_S must exceed "
+                "STREAM_REGISTRY_LEASE_TTL_S "
+                f"(got {self.stream_registry_scope_idle_wait_max_s} <= "
+                f"{self.stream_registry_lease_ttl_s}): "
+                "a dead worker's row must be able to expire before the wait gives up"
+            )
+        if self.stream_registry_scope_poll_s >= self.stream_registry_scope_idle_wait_max_s:
+            raise ValueError(
+                "STREAM_REGISTRY_SCOPE_POLL_S must be under "
+                "STREAM_REGISTRY_SCOPE_IDLE_WAIT_MAX_S "
+                f"(got {self.stream_registry_scope_poll_s} >= "
+                f"{self.stream_registry_scope_idle_wait_max_s})"
             )
         return self
 

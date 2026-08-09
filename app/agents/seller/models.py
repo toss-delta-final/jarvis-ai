@@ -86,6 +86,9 @@ SellerRole = Literal[
     "recommend",
     "analysis_judge",
     "graph",
+    # [#506] 이미지 기반 등록 초안 — vision(사진 1회 분석)·draft_gate(초안 대기 발화 분류).
+    "vision",
+    "draft_gate",
 ]
 
 # SPEC §8 표의 코드화 — 판매자 전 역할 smart(2026-07-29, 품질 우선 전환).
@@ -103,6 +106,11 @@ ROLE_TIER: dict[SellerRole, ModelTier] = {
     "recommend": "smart",
     "analysis_judge": "smart",
     "graph": "smart",
+    # [#506] 전 역할 smart 정책 유지 — vision 은 이미지 이해 품질이 초안 전체의 원천이고,
+    # draft_gate 는 오분류가 곧 UX 사고(초안 방치·오폐기)다. 지연이 문제가 되면
+    # draft_gate 부터 fast 강등을 검토한다(모듈 docstring 정책과 동일한 완화 순서).
+    "vision": "smart",
+    "draft_gate": "smart",
 }
 
 
