@@ -23,3 +23,22 @@ rerank_only의 leakage 1건(`buy-pers-0001`)은 회원과 게스트의 decompose
 leakage 지표는 repeats>1 없이 단건만으로 유출을 단정할 수 없다.
 
 이 baseline은 실제 LLM을 사용한 비결정 산출물이라 재실행 시 수치가 달라질 수 있다.
+
+## [#484] arm 의미 변경 — 이 baseline 의 수치를 이후 실행과 직접 비교하지 말 것
+
+이 baseline 을 낼 때 `clean_rerank_only`·`clean_both` 는 `fixtures/profiles.json` 의 **케이스
+무관 고정 프로필 하나**("Sony 이어폰 / 3~5만원 / 평점 4.5+")를 dev 전 케이스에 먹였다. 따라서
+위 표의 `-0.056445` 는 "좋은 프로필의 효과"가 아니라 **"질의와 무관한 프로필의 효과"** 다.
+
+\#484 이후 같은 이름의 arm 은 **케이스별로 파생·렌더한 프로필**을 받는다. 이름은 같지만 다른
+것을 재므로 위 수치와 나란히 놓으면 오독이다. 전후를 비교하려면 고정 프로필을 그대로 쓰는
+`clean_fixed` arm 을 **같은 실행 안에서** 함께 돌려야 한다:
+
+```
+uv run python -m evals.personalization --live \
+  --arms guest,clean_rerank_only,clean_both,clean_fixed --out <dir>
+```
+
+또한 이후 실행의 `comparison.json` 은 프로필 신호가 있는 케이스만 모은
+`slices.profile_signal` 을 함께 낸다 — dev 109건 중 35건은 후보에 grade≥2 정답이 없어 프로필이
+비고, 그 케이스까지 섞은 전체 평균은 오라클 천장을 0쪽으로 희석한다.

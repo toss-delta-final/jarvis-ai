@@ -10,6 +10,40 @@
 ## [Unreleased]
 
 ### Added
+- **#518 — 리뷰 분석에 기간별 추이(`bucket`)와 긍부정 감성 집계 추가** (api-spec 계약 무변경).
+  `get_reviews(stats=True, bucket="daily|weekly|monthly")` 가 기간을 구간으로 나눠 I-31 집계를
+  한 번의 도구 호출로 모아 온다 — 워커가 구간마다 호출하면 추이 하나가 도구 호출 한도(8)를
+  넘긴다. 실패한 구간은 `조회 실패` 로 남기고 **0건으로 뭉개지 않는다**(못 본 구간을 급락으로
+  서술하는 것을 막는다). 집계 출력에는 긍정(4-5점)·중립(3점)·부정(1-2점) 건수와 **비율**을
+  함께 싣는다 — 비율을 워커가 암산하면 verifier F2(근거 대조)가 근거 없는 수치로 강등한다.
+  리뷰 워커 프롬프트는 5단계로 늘려 만족 요인(`rating="4,5"`)까지 읽는다.
+- **#385 — 구제 체인 JSONL 재실행 집계기와 실측 불가 판정 근거**. `recommend_zero_result`·
+  `recommend_pipeline` 합집합의 first-token 기여분과 0건 종결 진입 하한, `UPSTREAM_TIMEOUT` 상한을
+  Markdown·CSV로 남긴다.
+
+### Fixed
+- **#518 — 내용 없는 리뷰 한 행이 리뷰 조회 전체를 죽이던 문제** (api-spec §4.20, 계약 무변경).
+  DDL 이 `content TEXT NULL` 이라 별점만 남긴 리뷰가 실재하는데 `SellerReviewRow.content` 가
+  `str = ""` 였다. 기본값은 키 **결측**만 흡수하고 명시적 `null` 은 거부하므로, rows 한 행만
+  content 가 null 이어도 ValidationError → SpringUnavailableError 로 그 페이지 전체가 degrade
+  됐다 — 판매자에게는 "리뷰 조회에 실패했습니다" 로만 보였다. `content`·`authorNickname` 을
+  nullable 로 열고 표시 폴백(`(내용 없음)`·`익명`)을 도구에 둔다. `extra="allow"` 는 여분 필드만
+  다루지 이 경로를 구제하지 못한다(#489 와 층위가 다르다).
+- **#385 — 구제 체인 4개 구조화 이벤트가 평문 logging sink에서 계측 필드를 잃던 문제**. JSON message와
+  기존 `extra`를 함께 기록해 `aggregate_rescue_chain.py`가 운영 stdout 줄을 그대로 파싱하면서도 기존
+  `LogRecord` 속성 기반 검증을 보존한다. 전역 formatter는 `chat_request` 이중 인코딩과 카테고리 문자열
+  노출 위험 때문에 바꾸지 않았다.
+- **#484 — Tier L 이 케이스별 프로필을 받는다. 그전까지는 dev 전 케이스에 고정 프로필 하나를
+  먹이고 있었다** (평가 하네스 한정, api-spec 무개정). Tier D 는 케이스별 구조화 선호를
+  파생하지만 Tier L 은 서빙과 같은 마크다운을 소비하는데 그 변환기가 없어, `profiles.json` 의
+  "Sony 이어폰 / 3~5만원" 한 개가 라면·립스틱 질의에도 그대로 들어갔다. 즉 `live-v1` 의
+  `clean_rerank_only ΔnDCG@10 = −0.056445` 는 개인화의 손해가 아니라 **무관한 프로필의 손해**를
+  잰 값이다. 구조화 선호 → §5.1 3섹션 마크다운 결정론 렌더러(`render_profile_markdown`,
+  강/중/약을 자연어로만 노출·상한은 생성측 압축)를 신설하고 `clean_rerank_only`·`clean_both`
+  를 갈아끼웠다. 옛 방식은 `clean_fixed` arm(옵트인, 기본 arm 목록 밖)으로 남겨 같은 실행 안에서
+  대조할 수 있게 했고, 선호가 비는 35/109건을 가르는 `profile_signal` 슬라이스와
+  `run_manifest.json` 의 `profileMarkdownRenderVersion` 을 함께 실었다. **실측은 병합 후 별도
+  live 실행이 필요하다** — 이 변경만으로는 새 수치가 나오지 않는다.
 - **#506 — 이미지 기반 상품 등록 초안** (api-spec §3.2, v0.31.0 — 추가 전용, 기존 op 와이어
   불변). 판매자가 채팅에 상품 사진을 첨부하면(`imageUrls`, 새로 첨부한 턴에만) vision 이 1회
   분석해 등록 초안(`draft{op:"create"}`)을 만들고, FE 등록 미리보기 카드용 **`preview{}`**(11키
@@ -22,8 +56,19 @@
   I-10 에 `image_url`·카테고리 쓰기 값(`seller_category_write_mode`, 기본 leaf — **BE 정렬 1건
   잔여**)을 전달한다. 신규 모듈 `vision/category_catalog/preview/draft_session`, 수신 검증
   (canonical URL ≤500자·presigned 거부)은 요청 스키마+hitl 이중 방어.
+- **#505(#461 승계) — 정본 I-1 3갈래 판정 ②(상품 `attributes` 에 색상 축이 없으면 통과)와
+  부분일치 판정의 주체가 Spring BE 라는 사실을 회귀로 고정했다**. AI 사후필터는 색상을 판정하지
+  않고, 확장 on/off 모두 `color` 를 Spring payload 축으로 유지하며 배열 원소를 변형하지 않는다.
+  승인 0건 가드는 PR #502 가 이미 넣은 구현이므로 그 정본을 유지한다 — 같은 판정을 중복 구현하지
+  않도록 이 브랜치의 중복분은 back-merge에서 제거했다.
 
 ### Changed
+- **#394 원복 — I-1 `spring_max_retries` 기본값을 1로 복구하고 `rescue_budget_mode`를
+  `narrow`로 함께 올렸다.** 사람의 명시 지시로 수행했으며, #394가 제시한 원복 조건인 BE #395
+  검색 쿼리 개선은 충족됐다: BE PR #133 커버링 인덱스와 `attributes` 4키 축소가 배포됐고,
+  2026-08-09 라이브 응답에서 4키 부재 및 항목당 약 1,780B→1,052B로 확인됐다(`size` 상한 폐지).
+  `narrow`는 꼬리 예약 예산이 부족한 구제 단의
+  타임아웃을 좁혀도 시도하며 건너뛰지 않고, 다시 끄려면 `SPRING_MAX_RETRIES=0`을 설정한다.
 - **#504 — 판매자 분석 차트 재설계: 좌표 생성 주체를 LLM → 코드로 전환** (api-spec §3.2,
   v0.30.0 · `docs/specs/DESIGN-SELLER-CHART-V2.md`). 구 구조는 `graph_agent`(도구 없음,
   결정 D-4)가 워커 요약에서 숫자를 베껴 좌표를 만들고 G1 이 근거 없는 수치를 드랍해
@@ -37,6 +82,23 @@
   구 G1(`verifier.run_chart_checks`)과 결정 D-4 는 폐기.
 
 ### Docs
+- **#518 — api-spec §3.2 `findings[].analysisType` 표에 `"review"` 등재** (v0.32.5, 사본
+  드리프트 정정). v0.25.0(#297)이 리뷰 워커를 6종째로 붙일 때 이 열거 표만 5종에 멈춰 있었다
+  — 코드·실 와이어는 처음부터 6종이라 신설 협의가 아니라 문서 정정이다.
+- **#357 — 개인화 그래프 협의 항목 표기를 정리해 BE 협의 트랙을 닫았다** (api-spec §3.8·§5,
+  v0.32.2 / `SPEC-PROFILE-GRAPH-149` v0.3.1). `C-20`(4)·`C-21`(3)·`C-22`(1)(2)·`C-28` 을 🔴 → 🟢 로
+  내렸다. **계약 내용은 한 글자도 바뀌지 않았고 상태 표기만 바뀌었다** — 네 항목 모두 **답이 이미
+  나와 있었는데 반영이 안 돼 있던 것**이다.
+  - `C-20`(4) 게스트 미노출 → 정본 `M-11` 이 `인증: 필요`·`401 AUTH_REQUIRED`·`403 AUTH_FORBIDDEN`
+    (`USER` 전용)이라 비로그인은 `401` 에서 끊긴다. `C-21`(3) FE 의 `ETag` 헤더 비의존 → 정본
+    `M-12`·`M-13` 이 *"응답은 본문이 정규, 헤더는 CORS 로 브라우저 JS 가 못 읽는다"* 로 규약화했다.
+  - `C-22`(1) `409` 수용 동의 → **정본 등재가 곧 동의의 기록**이다. `C-22`(2) 게이트웨이 `409`
+    재작성 → **운영이 이미 답한다** — `401 TOKEN_EXPIRED`·`400 CART_STOCK_INSUFFICIENT`+`detail`·
+    **`409 STREAM_IN_PROGRESS`** 가 지금도 이 경로를 통과 중이다.
+  - `C-28` 브랜드 통제 어휘 → BE 정리 완료 + 2026-08-08 덤프 실측으로 **BE 요청 0건** 확인.
+  - **왜 남아 있었나** — 협의 문서가 *"계약 문서라 사용자 승인 후 별건으로"* 적용을 미뤘는데
+    **그 "별건"을 추적할 자리가 없었다.** #499 도 `C-28` 을 범위 밖에 두어 한 칸 더 갔다.
+  - 남은 미합의는 **`C-24`(민감 카테고리 목록 소유 — 기획·법무 트랙) 하나뿐**이다.
 - **#499 — 개인화 그래프 계약(§3.8·§3.9)을 노션 정본 10벌에 전수 동기화하고 🔴 초안 → 확정으로
   올렸다** (api-spec §2.5·§3.8·§3.9·§4.11·§5·§6.3, v0.32.0 / `SPEC-PROFILE-GRAPH-149` v0.3.0 /
   `SPEC-PROFILE-001` v0.9.0). 두 사건이 겹쳤다 — **2026-08-08 BE 프록시 구현**(`jarvis-backend#132`)이
@@ -76,6 +138,24 @@
   **판정 보류**로 갈라 표기한다(워커 프롬프트의 "판정 보류 ≠ 이상 없음" 규칙 정합, Tukey 경로와
   같은 어휘). `n>=3` 이고 이상 0건인 경우의 문구·`salesCount` 표기(#489)는 불변.
 
+- **#511 — 상품 "삭제"를 여전히 숨김(`HIDDEN`)으로 다루던 문제** (api-spec §3.2·§4.5·§4.8, v0.29.7).
+  BE 가 2026-08-05 에 `ProductStatus.DELETED` 를 신설해(02 D41 · 정본 Notion I-12) 숨김과 삭제를
+  갈랐는데, 사본은 v0.29.4(#472)가 §4.5 표만 맞추고 §3.2 HITL 서술을 놓쳤으며 **코드는 전혀
+  손대지 않아 `DELETED` 가 `app/` 에 0회 등장**했다. 세 갈래로 새고 있었다. ① I-12 409
+  `ALREADY_DELETED`·I-11 409 `PRODUCT_DELETED` 가 `SpringUnavailableError` 로 뭉개져 **"안 되는
+  일"이 "일시 장애, 재시도해 주세요"로** 안내됐다 — HITL 은 재confirm 이 가능해 판매자가 무한
+  재시도에 갇힌다(같은 논리로 I-30 에는 이미 전용 예외가 있었다). ② HITL 삭제 초안이 `status:
+  ON_SALE→HIDDEN` 으로 고정돼 diff 카드·결과 문구가 삭제를 **"숨김"이라 안내** — 되돌릴 수 있는
+  조작으로 오인한 채 승인하게 된다. ③ 그 고정값 때문에 **이미 숨겨둔 상품의 삭제가 stale 로
+  차단**됐다(`before="ON_SALE"` vs 실제 `HIDDEN`) — BE 가 D41 로 열어준 "숨겼다가 나중에 지운다"
+  흐름이 AI 쪽에서 다시 막히던, 구 `ALREADY_HIDDEN` 과 같은 증상. 전용 예외 2종(`ProductAlreadyDeleted`·
+  `ProductDeletedNotEditable`, `SpringUnavailableError` 하위 아님)을 두고 `error_code_map` 으로
+  연결했으며, delete 초안은 `<조회값>→DELETED` 로 바꾸고 `status` 허용값을 op 별로 갈라
+  (`DELETED` 는 delete 전용) I-10·I-11 본문 유출을 막았다. 삭제 op 는 `status` 를 stale 비교하지
+  않는다 — `ON_SALE`·`HIDDEN` 어느 쪽에서든 정상 전이다. **I-17(§4.8)은 무변경** — Spring 이
+  `!= ON_SALE` 을 전부 `"HIDDEN"` 으로 싣는 것을 BE 구현(`ProductChangesResponse.Item.hidden()`)으로
+  확인했고, status 를 3값으로 넓히면 fail-closed 규약과 충돌해 정상 페이지가 전량 실패한다는
+  사유를 스키마·명세에 남겼다. 와이어 계약 불변 — 바뀌는 것은 AI 소비측 처리다.
 - **#496 — I-31 `sort` 어휘 개명(`rating` → `ratingAsc`) 미반영으로 대표 질문이 400 으로 깨지던 문제**
   (api-spec §4.20, v0.29.6). 2026-08-06 BE 협의가 구 안을 폐기했는데 사본이 갱신되지 않았고
   (v0.29.4/#472 전수 대조가 §4.20 을 "확정·구현 완료"로 표시하면서도 이 행은 놓쳤다), 그 문구가
@@ -149,6 +229,7 @@
   와이어 계약 무변경.
 
 ### Added
+- **#406 — 구매자 `progress`에 `retrying` stage를 추가** (api-spec §3.1, v0.32.4). I-1 검색이 재시도 가능한 실패 뒤 실제 다음 시도에 들어갈 때만 즉시 내보내며, 기본 `spring_max_retries=0`(#394 한시 조치)에서는 기존 인라인 검색 경로를 그대로 유지한다.
 - **#476 — 스트림 레지스트리를 워커 간 공유로 올릴 수 있게 했다** (`STREAM_REGISTRY_BACKEND=shared`,
   기본값은 종전 `memory` — **출하 동작 무변경**, 계약 무변경). §2.9(a) 활성 슬롯·scope fence·
   scope idle 대기를 **셋 다** pg-profile 테이블 2종(`active_streams`·`stream_scope_fences`)으로
@@ -234,6 +315,13 @@
   오배선(상시 0건)은 #194 에서 기수정 — 이번 범위 아님(노션 확인 요청에는 기수정으로 회신).
 
 ### Docs
+- **#473 — api-spec §2.9(c) I-1 재시도 행의 BE 관측 포인트가 첫 `conditions` 앞 Spring 직렬 단 수를
+  2단(`2 × 3s = 6s`)으로 세던 것을 3단(최대 `3 × 3s = 9s`)으로 정정** — 빠져 있던 단은 확장 턴의 구제
+  재검색(F-1/#222·#343, 상호배타라 턴당 최대 1회)이다. 코드는 #383(PR #414)·#427(PR #452)로 이미 3을
+  세고 회귀 테스트가 그 값을 고정하는데 명세 사본만 2로 남아 있던 drift 정정이다. 2026-08-09 확인 결과 이
+  수치는 사본에만 있다 — Notion 정본도 BE 레포도 콜백 `3s` 만 적어, 정정할 BE 기준이 있는 게 아니라 직렬
+  3회·최대 9s 가 미고지였던 것이다. 그 고지는 2026-08-09 BE 에 완료했다(최초 고지, BE 조치 불필요).
+  (api-spec §2.9(c), v0.32.1)
 - **#476 — 워커 다중화 선행조건과 프로세스 로컬 상태 인벤토리를 문서화하고 증설 가드를 추가** —
   `ActiveStreamRegistry`가 프로세스 로컬인 동안 Dockerfile worker 설정을 테스트로 막고,
   `WEB_CONCURRENCY >= 2` 기동은 경고로 관측한다. 권고는 owner(JWT `sub`) sticky를 1단계로 하고,

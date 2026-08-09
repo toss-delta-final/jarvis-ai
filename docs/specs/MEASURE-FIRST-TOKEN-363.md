@@ -278,3 +278,72 @@ elapsed_once`·기존 성공 경로 테스트로 각각 지연을 주입해 수�
 실빈도가 무시 못 할 수준으로 확인되면 공유 왕복 예산 또는 first-token 데드라인 가드 설계로
 이어간다 — relaxation(#113)·기동 가드 보정(#288, §5)과 교차하는 영역이라 별도 설계 문서가
 필요하다(이번 PR 범위 밖).
+
+## 8. 실측 결과 — 싱크는 수정됐지만 운영 표본은 아직 없다 (2026-08-10)
+
+**판정: 오늘 시점 운영 실측값은 없다.** `app/core/logging.py::configure_logging`은 `logging.basicConfig(level=..., format="%(asctime)s
+%(levelname)s %(name)s %(message)s")`만 설정한다. 표준 `logging.Formatter`는 format 문자열에 없는
+`LogRecord` 속성을 렌더링하지 않으므로, 수정 전 `logger.info("recommend_zero_result", extra={...})`의
+`rescue_elapsed_ms`·`may_auto_relax` 등은 LogRecord에는 붙어도 컨테이너 stdout 문자열에서는 폐기된다.
+수정 전 재현은 이 설정으로 해당 로그 호출을 실행한 뒤 렌더 결과가
+`INFO app.agents.buyer.recommendation.graph recommend_zero_result`까지만 남고 extra 키가 없는지를
+확인하면 된다. 이 문제는 #385 후속에서 **구제 체인 4개 이벤트만** `log_structured()`로 JSON message와
+기존 `extra` 양쪽에 싣도록 수정했다. 따라서 평문 formatter의 렌더 줄도 파서가 받는 `{"event": ...}`
+JSON을 포함하고, 기존 `record.rescue_elapsed_ms`류 테스트의 LogRecord 속성도 유지한다. `app/`의 나머지
+88개 `extra={` 호출은 여전히 미렌더 상태다. docker json-file 드라이버는 `max-size=10m`, `max-file=3`으로
+총 30MB만 보관하므로 JSON 줄 증가로 회전이 빨라져 표본 축적 창이 짧아질 수 있다.
+
+`chat_request`만은 예외다. `app/core/observability.py`가 `logger.info(json.dumps(record))`로 JSON을
+message 자체에 실으므로 오늘도 `latencyFirstToken`·`latencyTotal`·`errorType`·`lane`·`role`을
+정상 출력한다. 기존 테스트가 `caplog.records`의 `zero_log.rescue_elapsed_ms`처럼 LogRecord 속성만
+읽어 포맷 단계의 폐기를 잡지 못했던 것이 원인이다. 이제 sink는 고쳐졌지만, 아직 배포·축적·승인된
+운영 로그 조회가 없으므로 실측값은 없다.
+
+### 8.1 싱크 수정 범위와 남은 전제
+
+채택한 방식은 `recommend_zero_result`, `recommend_pipeline`, `category_expand_zero_fallback`,
+`category_expand_post_suppress_fallback`만 JSON message로 만드는 국소 수정이다. 전역 JSON formatter는
+기각했다. `chat_request`가 이미 JSON message를 쓰므로 바깥 JSON 레코드 안의 문자열로 이중 인코딩되고,
+`aggregate_observability.py::parse_log_line`이 최상위 `event`를 찾지 못해 기존 관측 파이프라인을 버린다.
+전역 extras 렌더도 기각했다. `raw`·`query`·`canonical` 같은 카테고리 문자열을 포함한 나머지 88개 호출을
+새로 stdout에 노출해 PII 규약을 회귀시킨다.
+
+이 수정만으로는 실측값이 생기지 않는다. 이 브랜치가 `dev`에 병합된 뒤 `main`으로 승격되어 **배포**돼야
+하고, 그 뒤 표본 축적 기간이 지나야 한다. 운영 로그 접근은 사람 승인 게이트이므로 이 작업에서는 조회하지
+않았다. `.github/workflows/deploy.yml`은 수정하지 않았다.
+
+### 8.2 운영 표본이 생긴 뒤의 집계 규약
+
+선행 싱크 수정 뒤 JSON lines를 받으면 다음 명령으로 재실행한다.
+
+```bash
+uv run python scripts/aggregate_rescue_chain.py LOGFILE ... --markdown rescue-chain.md --csv rescue-chain.csv
+```
+
+결과는 이 문서의 후속 실측 절에 운영 날짜·로그 범위·표본 수와 함께 기록한다. 1급 지표의 모집단은
+`recommend_zero_result ∪ recommend_pipeline`이고, 분모는 그중 `may_auto_relax=True`인 턴이다.
+분자는 `rescue_elapsed_ms + relax_auto_elapsed_ms`이며 first SSE 뒤의
+`relax_chip_elapsed_ms`는 제외한다. 빈도 가중 p50/p95/p99와 n, zero_result/pipeline 이벤트별 n을
+함께 보고하고, `may_auto_relax=False` 턴은 first-token 비기여 별도 그룹으로 남긴다. 다만
+`recommend_pipeline`은 구제 미진입 성공 턴도 남기므로 0ms가 빈도 가중 분위수를 희석할 수 있다.
+그래서 `구제 기여 > 0`인 턴만의 조건부 p50/p95/p99·n, 그 n/전체 분모의 노출률, 9.0s 기준선 이상
+턴 수, `stream_first_token_timeout_s` 상한 이상 턴 수, 최댓값을 반드시 함께 읽는다. 근접도는
+희석된 전체 p95 하나가 아니라 이 조건부 분포와 임계 초과 건수로 판정하고, p95/상한의 소모율도
+기록한다. 최소 표본 기본값은 기존 `degrade_alert_min_samples`를 **빌린 값**이며(새 설정 추가 없음),
+운영자는 `--min-samples`로 이 보고서 실행마다 덮어쓸 수 있다. 최소 표본에 못 미치면 수치 결론 대신
+"표본 부족 — 판정 보류"를 낸다.
+
+체인 진입 빈도는 `recommend_zero_result`만을 분모로
+`post_suppress_fallback_attempted=True`, `category_expanded=True and had_candidates=True` 비율을 낸다.
+`recommend_pipeline`에는 마지막 네 필드가 없으므로 이는 0건으로 끝난 진입의 하한이며, 성공 종결
+턴까지 대표하는 실빈도로 확대 해석하지 않는다. `chat_request`의 `errorType=UPSTREAM_TIMEOUT`은
+오늘도 즉시 대조 가능하지만, home recommendation·랭킹 등 다른 경로도 같은 오류를 낼 수 있어
+로그만으로 first-token 초과를 분리하지 못한다. 따라서 이 값은 first-token 초과의 **상한**으로
+라벨링한다. 운영 로그 접근은 사람 승인 게이트라 이 작업에서는 조회하지 않았다.
+
+### 8.3 후속 판단 경계
+
+§5 마지막 항목처럼 #396 progress 상시화 이후 §4.1의 "최악 경로는 오늘 이미 first-token을 넘어
+504" 결론은 유효하지 않으므로 여기서 되살리지 않는다. 실측값이 없으니 후속 ②(#384)의 집행 강도도
+정할 수 없으며, 합성 표본이나 상한 추정치를 운영 측정값으로 대체하지 않는다. 로컬 합성 표본은
+집계 도구 검증용일 뿐 운영 실측값이 아니다.

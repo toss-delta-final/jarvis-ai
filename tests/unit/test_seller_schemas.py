@@ -345,14 +345,18 @@ def test_draft_proposal_update_shape() -> None:
 
 
 def test_draft_proposal_delete_as_status_change() -> None:
-    """delete draft — soft delete 를 status ON_SALE→HIDDEN 1건으로 가시화한다."""
+    """delete draft — soft delete 를 status <조회값>→DELETED 1건으로 가시화한다.
+
+    `HIDDEN`(숨김·판매정지)이 아니다 — 숨김은 판매자 목록에 남아 되돌릴 수 있고 삭제는
+    목록에서도 빠지며 되돌릴 수 없다(api-spec §4.5).
+    """
     draft = DraftProposal(
         op="delete",
         product_id=102,
-        changes=[DraftChange(field="status", before="ON_SALE", after="HIDDEN")],
-        summary="상품 숨김 처리(물리 삭제 아님)",
+        changes=[DraftChange(field="status", before="ON_SALE", after="DELETED")],
+        summary="상품 삭제(물리 삭제는 아니나 복구 불가)",
     )
-    assert draft.changes[0].after == "HIDDEN"
+    assert draft.changes[0].after == "DELETED"
 
 
 def test_draft_proposal_clarification_pattern() -> None:

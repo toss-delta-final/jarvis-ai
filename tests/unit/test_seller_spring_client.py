@@ -13,7 +13,12 @@ import pytest
 
 from app.core.config import get_settings
 from app.schemas.spring import ChurnMember, ProductCreate, ProductUpdate
-from app.services.spring_client import SpringClient, SpringUnavailableError
+from app.services.spring_client import (
+    ProductAlreadyDeleted,
+    ProductDeletedNotEditable,
+    SpringClient,
+    SpringUnavailableError,
+)
 
 BASE_URL = "http://spring.internal.test"
 TOKEN = "svc-token-123"
@@ -473,20 +478,57 @@ async def test_update_product_uses_patch_and_product_path() -> None:
     assert captured["body"] == {"price": 9000}
 
 
-async def test_delete_product_uses_delete_and_returns_hidden() -> None:
-    """DELETE, 응답 status=HIDDEN."""
+async def test_delete_product_uses_delete_and_returns_deleted() -> None:
+    """DELETE, 응답 status=DELETED — 숨김(HIDDEN)이 아니다(§4.5, 정본 Notion I-12)."""
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured["method"] = request.method
-        return httpx.Response(200, json={"productId": 101, "status": "HIDDEN"})
+        return httpx.Response(200, json={"productId": 101, "status": "DELETED"})
 
     client = _client(handler)
     result = await client.delete_product("brand-1", 101)
 
     assert captured["method"] == "DELETE"
-    assert result.status == "HIDDEN"
+    assert result.status == "DELETED"
     assert result.product_id == 101
+
+
+# ── [#511] I-11/I-12 409 전용 예외 (§4.5 — 정본 Notion I-12 2026-08-05 개정) ──────
+
+
+async def test_delete_product_maps_already_deleted() -> None:
+    """409 ALREADY_DELETED → 전용 예외. SpringUnavailableError 로 뭉개면 HITL 이
+    "재시도해 주세요"로 안내하는데, 삭제는 되돌릴 수 없어 재시도가 무의미하다."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(409, json={"success": False, "error": {"code": "ALREADY_DELETED"}})
+
+    client = _client(handler)
+    with pytest.raises(ProductAlreadyDeleted):
+        await client.delete_product("brand-1", 101)
+
+
+async def test_update_product_maps_product_deleted() -> None:
+    """409 PRODUCT_DELETED → 전용 예외 — 삭제된 상품을 챗봇이 되살릴 수 없다."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(409, json={"success": False, "error": {"code": "PRODUCT_DELETED"}})
+
+    client = _client(handler)
+    with pytest.raises(ProductDeletedNotEditable):
+        await client.update_product("brand-1", 101, ProductUpdate(price=9000))
+
+
+async def test_product_write_unknown_code_falls_back_to_unavailable() -> None:
+    """매핑 밖 코드(404·401·500)는 종전대로 SpringUnavailableError — 추가 전용 변경이다."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"success": False, "error": {"code": "PRODUCT_NOT_FOUND"}})
+
+    client = _client(handler)
+    with pytest.raises(SpringUnavailableError):
+        await client.delete_product("brand-1", 101)
 
 
 async def test_timeout_maps_to_spring_unavailable() -> None:
@@ -1030,6 +1072,54 @@ async def test_get_reviews_url_params_and_parsing() -> None:
     assert result.total == 47
     assert result.rows[0].rating == 2
     assert result.rows[0].product_name == "여행용 파우치"
+
+
+async def test_get_reviews_parses_null_content_without_failing_the_page() -> None:
+    """[#518] content·authorNickname 이 null 인 행이 섞여도 페이지 전체가 살아야 한다.
+
+    DDL 이 `content TEXT NULL` 이라 별점만 남긴 리뷰가 실재한다. 구 스키마의
+    `content: str = ""` 는 키 결측만 흡수하고 명시적 null 은 거부해서, 한 행 때문에
+    ValidationError → SpringUnavailableError → 리뷰 조회 **전체**가 degrade 됐다.
+    응답 픽스처가 아니라 이 실패 모드 자체를 고정한다.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "success": True,
+                "data": {
+                    "rows": [
+                        {
+                            "reviewId": 7,
+                            "productId": 3,
+                            "productName": "여행용 파우치",
+                            "rating": 5,
+                            "content": None,
+                            "authorNickname": None,
+                            "createdAt": "2026-07-21T12:00:00+09:00",
+                        },
+                        {
+                            "reviewId": 8,
+                            "productId": 3,
+                            "productName": "여행용 파우치",
+                            "rating": 2,
+                            "content": "지퍼가 일주일 만에 고장났어요",
+                            "authorNickname": "자비스",
+                            "createdAt": "2026-07-22T12:00:00+09:00",
+                        },
+                    ],
+                    "total": 2,
+                },
+            },
+        )
+
+    result = await _client(handler).get_reviews(12)
+
+    assert result.total == 2
+    assert result.rows[0].content is None
+    assert result.rows[0].author_nickname is None
+    assert result.rows[1].content == "지퍼가 일주일 만에 고장났어요"
 
 
 async def test_get_review_stats_parses_null_average() -> None:

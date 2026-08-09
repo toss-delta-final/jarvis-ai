@@ -263,12 +263,14 @@ def test_product_agent_binds_read_only() -> None:
 
 
 def test_product_prompt_principles() -> None:
-    """확정 원칙 — before 조회 강제·모호 시 되묻기·추천 적용 발화 격리·숨김 명시."""
+    """확정 원칙 — before 조회 강제·모호 시 되묻기·추천 적용 발화 격리·삭제/숨김 구분."""
     assert "list_my_products" in PRODUCT_PROMPT  # before 는 조회값에서만
     assert "추측·기억으로 채우지 않는다" in PRODUCT_PROMPT
     assert "clarification" in PRODUCT_PROMPT  # 모호 시 되묻기(임의 선택 금지)
     assert "N번 적용해줘" in PRODUCT_PROMPT  # §6.3 — 이력 조회 경로로 격리
-    assert "ON_SALE→HIDDEN" in PRODUCT_PROMPT  # delete = soft delete 가시화
+    assert "after 는 DELETED" in PRODUCT_PROMPT  # delete = DELETED 전이(api-spec §4.5)
+    # 삭제를 숨김이라 부르면 판매자가 되돌릴 수 있는 조작으로 오인한 채 승인한다.
+    assert '삭제를 "숨김"이라고 표현하지 않는다' in PRODUCT_PROMPT
     assert "쓰기 도구는 없다" in PRODUCT_PROMPT
 
 

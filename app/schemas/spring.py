@@ -566,6 +566,11 @@ class ProductChange(CamelModel):
 
     콘텐츠 필드는 enrichment·search_doc 조립 입력 — AI 는 저장하지 않고 산출물 생성에만 사용.
     미정의 status 는 페이지 전체 계약 위반으로 거부해 해당 페이지 artifact·커서를 보존한다.
+
+    **`DELETED`(BE 02 D41)를 여기 추가하지 않는다** — Spring 이 `!= ON_SALE` 을 전부
+    `"HIDDEN"` 으로 실어 보내므로(`ProductChangesResponse.Item.hidden()`) 삭제·숨김이
+    AI 에겐 같은 신호(생성물 제거)이고 동작이 동일하다. 3값으로 넓히면 위 fail-closed
+    규약과 충돌해 정상 페이지가 전량 실패한다.
     """
 
     product_id: (
@@ -961,7 +966,10 @@ class AccountEventsResult(SellerAggregateModel):
 
 class SellerProductRow(CamelModel):
     """I-9 rows[] 항목. originalPrice 는 구매자 SpringProduct.listPrice 와 필드명이 달라
-    별도 모델로 유지한다(§2.4)."""
+    별도 모델로 유지한다(§2.4).
+
+    `status` 는 `ON_SALE`|`HIDDEN` 만 온다 — `DELETED` 는 BE 가 목록에서 제외한다(§4.5).
+    """
 
     product_id: int
     name: str
@@ -1006,7 +1014,7 @@ class ProductUpdate(CamelModel):
     category: str | None = None
     description: str | None = None
     image_url: str | None = None
-    status: str | None = None  # ON_SALE | HIDDEN
+    status: str | None = None  # ON_SALE | HIDDEN — DELETED 는 BE 가 거부(삭제는 I-12 전용)
 
 
 class ProductCreateResult(SellerAggregateModel):
@@ -1023,10 +1031,13 @@ class ProductUpdateResult(SellerAggregateModel):
 
 
 class ProductDeleteResult(SellerAggregateModel):
-    """I-12 200 응답 — soft delete, {productId, status:"HIDDEN"}."""
+    """I-12 200 응답 — soft delete, {productId, status:"DELETED"} (§4.5, 정본 Notion I-12).
+
+    `HIDDEN`(숨김·판매정지)이 아니다 — 숨김은 판매자 목록에 남고 삭제는 목록에서도 빠진다.
+    """
 
     product_id: int
-    status: str = "HIDDEN"
+    status: str = "DELETED"
 
 
 # ── I-29/I-30/I-31 판매자 주문·리뷰 (§4.18~§4.20, 이슈 #297 — 🔶 초안, BE 협의 전) ──
@@ -1092,14 +1103,26 @@ class OrderItemStatusResult(SellerAggregateModel):
 
 
 class SellerReviewRow(SellerAggregateModel):
-    """I-31 rows[] 항목 — VISIBLE 리뷰만(P-3 와 동일한 진실). authorNickname 은 공개 정보."""
+    """I-31 rows[] 항목 — VISIBLE 리뷰만(P-3 와 동일한 진실). authorNickname 은 공개 정보.
+
+    [#518] content·authorNickname 은 **nullable**이다 — DDL 이 `content TEXT NULL` 이고
+    별점만 남기는 리뷰가 실제로 존재한다. 구 `str = ""` 기본값은 키 **결측**만 흡수하고
+    명시적 `null` 은 못 먹어서(pydantic 은 기본값과 무관하게 `str` 에 `None` 을 거부),
+    rows 한 행만 content 가 null 이어도 `_validate` → ValidationError →
+    SpringUnavailableError 로 **리뷰 조회 전체가** degrade 됐다. 부분 결측이 전량 실패로
+    번지는 것을 막는 게 요지이며, `SellerAggregateModel` 의 `extra="allow"` 는 여분 필드만
+    다루지 이 경로를 구제하지 못한다(#489 의 `extra="ignore"` 건과 층위가 다르다).
+
+    표시 폴백은 여기서 하지 않는다 — 스키마는 와이어 값을 보존하고, 결측 문구는 tools 가
+    정한다(#495 에서 churnRate 를 두고 세운 것과 같은 규약).
+    """
 
     review_id: int
     product_id: int | None = None
     product_name: str = ""
     rating: int = 0
-    content: str = ""
-    author_nickname: str = ""
+    content: str | None = None
+    author_nickname: str | None = None
     created_at: str = ""
 
 

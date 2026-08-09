@@ -574,6 +574,11 @@ class Settings(BaseSettings):
     # 서버 페이지 상한(limit≤100)과 별개인 "도구 응답 상세도" 상한이다.
     seller_summary_max_orders: int = 10  # I-29 주문 rows 상세 나열 상한(건)
     seller_summary_max_reviews: int = 10  # I-31 리뷰 rows 상세 나열 상한(건)
+    # [#518] get_reviews(bucket=) 팬아웃 상한 — 버킷 1개당 I-31 왕복 1회다. 상한이
+    # 없으면 731일(seller_period_max_days) × daily = 731 회가 판매자 스트림 상한
+    # 90s(§2.9 c) 안에서 동시에 나간다. 12 는 "주별 3개월"·"월별 1년"이 한 번에
+    # 들어오는 값이며, 초과 요청은 조회 전에 거절하고 더 넓은 단위를 안내한다.
+    seller_review_bucket_max: int = 12  # I-31 bucket 팬아웃 구간 수 상한
 
     # ── 판매자 분석 계산 층 (이슈 #290, app/agents/seller/analysis/ 주입) ──
     # 근거 논문·산식은 docs/worker-papers.md — 아래 기본값은 논문 권장값이다.
@@ -1662,27 +1667,28 @@ class Settings(BaseSettings):
     # **상한이 1인 이유(PR #235 리뷰)**: backoff 가 구현에 없다. 2·3 을 허용하면 "1 을 넘기려면
     # backoff 가 필요하다"고 적어 둔 위험을 설정 한 줄로 열어 주는 셈이라, **현재 구현이 감당하는
     # 값만** 받는다. 더 올리려면 backoff 를 먼저 만들고 이 상한을 함께 푼다.
-    # [#394 한시적 조치] 기본값을 1→0 으로 내린다. 운영 실측(2026-08-06): I-1 이 SEARCH_FAILED 로
-    # 떨어진 두 건 모두 Spring 은 200 을 줬다 — 실패가 아니라 3s 예산을 넘긴 지연이었다. 그 상태에서
-    # 재시도는 성공했을 쿼리를 backoff 없이 즉시 한 번 더 돌려 Spring 부하만 2배로 만들고, 사용자는
-    # 6초 뒤 실패를 받는다. **원복 조건**: BE 검색 쿼리 개선(리뷰 집계 비정규화, BE #395)이 배포되면
-    # 재검토한다. 구매자 progress 이벤트(#289)로 first-token 관문이 풀릴 때도 함께 재검토한다.
-    # `=1` 로 되돌리면 이 필드가 원래 규정하던 재시도 동작(위 주석)으로 완전히 복귀한다.
-    spring_max_retries: int = Field(default=0, ge=0, le=1)
+    # [#394 원복] 2026-08-06 운영 실측에서 I-1 이 SEARCH_FAILED 로 떨어진 두 건은 Spring 이 모두
+    # 200 을 준 3s 예산 초과 지연이었다. backoff 없는 재시도는 Spring 부하만 2배로 만들고 사용자는
+    # 6초 뒤 실패를 받아 기본값을 1→0 으로 내렸었다. 이제 **사람의 명시 지시**로 위 주석이 규정한
+    # 재시도 동작을 완전히 복귀한다. #394 의 원복 조건은 충족됐다: BE PR #133 커버링 인덱스와
+    # `attributes` 4키 축소가 모두 배포됐고, 후자는 2026-08-09 라이브 응답 실측에서 4키 부재 및
+    # 항목당 약 1,780B→1,052B로 확인됐다(크기·필드 구성만 근거; 로컬 소요시간은 인용하지 않음).
+    # `size` 상한은 폐지됐다. 최악 구제 체인이 꼬리 예약 창을 넘지 않게 DESIGN-SHARED-BUDGET-384 §4에 따라
+    # `rescue_budget_mode=narrow`도 함께 올린다. 다시 끄려면 `SPRING_MAX_RETRIES=0`을 설정한다.
+    spring_max_retries: int = Field(default=1, ge=0, le=1)
     # [#277] conditions 를 검색 뒤로 미룬 턴은 첫 이벤트 앞에 I-1 이 최대 2회 직렬이라,
     # 재시도까지 얹으면 first-token 상한을 넘어 이벤트 0건·504가 될 수 있다. 한 번의 일시
     # 지연을 살리는 대가가 턴 전체의 침묵이므로 기본값은 그 턴만 재시도를 끈다.
-    # 원복 전제(구매자 progress 계약 등재 + 플래그 on)는 #396 으로 충족됐다. 그래도 원복은
-    # 하지 않는다 — #394(커밋 2168e9b)가 이미 다른 이유(Spring 부하 실측)로 `spring_max_retries`
-    # 기본값을 1→0 으로 내렸고, 이 필드의 원복 여부는 그 조치와 함께 판단해야 하는 별도
-    # 결정이다. #396 이슈 본문도 이를 비범위로 못박았다.
+    # #394 는 원복됐지만 이 값은 False를 유지한다. 이제 이 스킵은 무동작이 아니라 미룬 턴의 실제
+    # 재시도를 끄는 유효한 가드이며 first-token 여유를 지킨다. #306의 원복은 별도 판단이다.
     search_retry_on_deferred_conditions: bool = False
     # [#427, DESIGN-SHARED-BUDGET-384 §3 D7] 구제 체인(F-1/#343/자동완화 probe) 예산 집행
-    # 강도 — observe: 판정만 계산·로그(반사실), 실제 집행 없음(기본, 오늘 동작 불변).
+    # 강도 — observe: 판정만 계산·로그(반사실), 실제 집행 없음.
     # narrow: 잔여 예산이 모자란 단의 타임아웃을 좁혀 시도한다(건너뛰지 않는다). narrow_skip:
     # narrow 로도 부족한(최소 하한 미만) 단은 건너뛴다. §4 Lv0~Lv2 등급의 런타임 스위치이며,
-    # #394(spring_max_retries) 원복은 이 값을 narrow 이상으로 함께 올려야 한다(§4 결론).
-    rescue_budget_mode: Literal["observe", "narrow", "narrow_skip"] = "observe"
+    # #394(spring_max_retries) 원복과 함께 narrow로 올렸다(§4 결론). narrow는 잔여 예산이 모자란
+    # 단의 타임아웃을 좁혀도 시도하며 건너뛰지 않고, narrow_skip은 채택하지 않았다.
+    rescue_budget_mode: Literal["observe", "narrow", "narrow_skip"] = "narrow"
     # 구제 체인 한 단에 줄 수 있는 최소 타임아웃 — 미만이면 시도해도 성공 가망이 없다고 보고
     # narrow_skip 모드에서 그 단을 건너뛴다(본검색 제외, 본검색은 항상 시도한다). 실측(#385)
     # 전 잠정값 — DESIGN-SHARED-BUDGET-384 §3 D7 "예: 0.5"를 그대로 채택한다.
@@ -1799,10 +1805,15 @@ class Settings(BaseSettings):
     personalization_eval_clean_noisy_drop_margin: float = 0.03
     # 현행 0.15를 중심으로 0~4배 범위를 대칭적이지 않은 실용 구간으로 탐색한다.
     personalization_eval_weight_sweep: tuple[float, ...] = (0.0, 0.075, 0.15, 0.30, 0.60)
+    # [#484] 케이스 파생 선호를 마크다운으로 렌더할 때의 (강, 중) 임계. 정규화 가중치는
+    # "정답 안에서 몇 번 나왔나"라 1회짜리 꼬리 브랜드가 최상위와 같은 줄에 나열되면 LLM이
+    # 둘을 동급으로 읽는다. 수치는 노출하지 않고 강도만 자연어로 구분한다(§5.1 결정 16).
+    personalization_eval_profile_strength_bands: tuple[float, float] = (0.7, 0.5)
 
     # ── 구매자 progress 이벤트 (이슈 #396, 계약 등재 완료 — 기본 on) ──
     # 정본(Notion CH-2)·api-spec §3.1 v0.21.0 등재와 FE 구현 완료(2026-08-06)로 전제가
-    # 충족돼 기본 on 으로 해제했다(#289 후속). 되돌리려면 PROGRESS_EVENTS_ENABLED=false.
+    # 충족돼 기본 on 으로 해제했다(#289 후속). 되돌리려면 PROGRESS_EVENTS_ENABLED=false와
+    # SPRING_MAX_RETRIES=0을 함께 설정한다. 그렇지 않으면 미룬 I-1 직렬 재시도가 first-token 상한을 넘어 거절된다.
     progress_events_enabled: bool = True
     # 빈 문자열이면 프레임 `data`에 `message` 키 자체를 싣지 않는다(app/agents/buyer/_frames.py).
     progress_analyzing_message: str = "요청을 확인하고 있어요"
@@ -1810,6 +1821,7 @@ class Settings(BaseSettings):
     progress_mapping_message: str = "카테고리를 찾고 있어요"
     progress_expanding_message: str = "어떤 상품이 필요한지 넓혀 보고 있어요"
     progress_searching_message: str = "상품을 검색하고 있어요"
+    progress_retrying_message: str = "검색이 지연돼 다시 시도하고 있어요"
     progress_relaxing_message: str = "조건을 조금 넓혀 다시 찾고 있어요"
     progress_reranking_message: str = "가장 잘 맞는 걸 고르고 있어요"
     progress_publishing_message: str = "추천 목록을 준비하고 있어요"
@@ -2008,6 +2020,9 @@ class Settings(BaseSettings):
             raise ValueError(
                 "개인화 평가 weight sweep은 [0,1]의 오름차순 고유 값이며 0.15를 포함해야 합니다"
             )
+        high, mid = self.personalization_eval_profile_strength_bands
+        if not (math.isfinite(high) and math.isfinite(mid)) or not 0 < mid < high <= 1:
+            raise ValueError("개인화 평가 강도 임계는 0 < 중 < 강 <= 1 이어야 합니다")
         return self
 
     @model_validator(mode="after")

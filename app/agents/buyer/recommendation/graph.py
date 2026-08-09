@@ -49,6 +49,7 @@ from app.agents.buyer.recommendation.state import (
     get_repurchase_store,
 )
 from app.core.config import _rescue_chain_stage_counts
+from app.core.logging import log_structured
 from app.core.llm import LLMClient, LLMError, resolve_model_id
 from app.core.text import _strip_unsafe
 from app.core.tracing import current_request_trace, trace_span
@@ -83,6 +84,8 @@ logger = logging.getLogger(__name__)
 _INACTIVE_STATUSES = frozenset(
     {"CANCELED", "CANCELLED", "RETURNED"}
 )  # 보유 아님(철자 양쪽 — spec §4.7 혼용) → dedup 제외 대상 아님
+_SEARCH_RETRY = object()
+_SEARCH_DONE = object()
 
 
 def _now() -> datetime:
@@ -1209,13 +1212,56 @@ async def stream_recommendation(
         if _main_narrow_budget is not None
         else nullcontext()
     )
-    with (
-        spring_client.suppress_search_retry() if suppress_deferred_search_retry else nullcontext(),
-        _main_narrow_cm,
-    ):
-        search_bundle, purchases = await asyncio.gather(
-            _run_candidate_source(), _fetch_purchases_once()
-        )
+
+    async def _collect_main_search():
+        """본검색과 구매 이력의 기존 병렬 수집을 한 곳에 고정한다 (#406 D1)."""
+        return await asyncio.gather(_run_candidate_source(), _fetch_purchases_once())
+
+    retry_progress_possible = (
+        settings.progress_events_enabled
+        and settings.spring_max_retries > 0
+        and not suppress_deferred_search_retry
+    )
+    # [#406 D1] 기본값은 재시도를 켜므로 이 경로가 기본이다. 재시도를 끈 배포와 미룬 턴 억제에서는
+    # 기존 인라인 경로를 유지해 취소·ContextVar·trace 의미를 불필요하게 바꾸지 않는다.
+    if not retry_progress_possible:
+        with (
+            spring_client.suppress_search_retry()
+            if suppress_deferred_search_retry
+            else nullcontext(),
+            _main_narrow_cm,
+        ):
+            search_bundle, purchases = await _collect_main_search()
+    else:
+        queue: asyncio.Queue[object] = asyncio.Queue()
+        # [#406 D3] create_task가 생성 시점 ContextVar를 복사하므로 with는 즉시 닫는다. yield를
+        # 안에 두면 observer·budget·suppression이 다음 턴으로 새며, 관측 콜백은 항목 sentinel을
+        # 넣어 queue.put_nowait의 인자 계약도 보존한다.
+        with (
+            spring_client.suppress_search_retry()
+            if suppress_deferred_search_retry
+            else nullcontext(),
+            _main_narrow_cm,
+            spring_client.observe_search_retry(lambda: queue.put_nowait(_SEARCH_RETRY)),
+        ):
+            search_task = asyncio.create_task(_collect_main_search())
+        search_task.add_done_callback(lambda _task: queue.put_nowait(_SEARCH_DONE))
+        retrying_progress_emitted = False
+        try:
+            while True:
+                item = await queue.get()
+                if item is _SEARCH_DONE:
+                    break
+                if not retrying_progress_emitted:
+                    retrying_progress_emitted = True
+                    yield progress_frame("retrying", settings.progress_retrying_message)
+            # [#406 D3] 예외·반환 위치는 기존 gather await와 같게 정상 회수에서만 유지한다.
+            search_bundle, purchases = await search_task
+        finally:
+            # [#406/#84] 값이 필요 없는 정리는 동기 cancel만 한다. 여기서 await하면 외부 취소를
+            # 삼켜 끊긴 스트림이 계속 진행할 수 있다.
+            if not search_task.done():
+                search_task.cancel()
     if search_bundle is None:  # 검색 실패 → SEARCH_FAILED(종료)
         if trace := current_request_trace():
             trace.mark_degraded("search_failed")
@@ -1329,9 +1375,10 @@ async def stream_recommendation(
                 # `decision.category_expanded` 자체는 건드리지 않는다(칩 억제는 그대로 유지해야
                 # 한다 — 실제로 안 쓴 확장 leg 8개를 카테고리 칩으로 보여주면 더 큰 거짓말이 된다).
                 category_expand_notice_suppressed = True
-                logger.info(
+                log_structured(
+                    logger,
                     "category_expand_zero_fallback",
-                    extra={
+                    **{
                         "legs": len(decision.category_legs),
                         "elapsed_ms": _f1_fallback_elapsed_ms,
                     },
@@ -1511,9 +1558,10 @@ async def stream_recommendation(
                         # (F-1 과 같은 원칙, 883행 참조). `decision.category_expanded` 자체는
                         # 건드리지 않는다.
                         category_expand_notice_suppressed = True
-                        logger.info(
+                        log_structured(
+                            logger,
                             "category_expand_post_suppress_fallback",
-                            extra={
+                            **{
                                 "legs": len(decision.category_legs),
                                 "elapsed_ms": _post_suppress_fallback_elapsed_ms,
                             },
@@ -1842,9 +1890,10 @@ async def stream_recommendation(
         # `recommend_pipeline` 구조화 로그(§)까지 못 간다 — 원인별 빈도(특히 검색은 히트가
         # 있었는데 하류 억제가 전량을 지운 케이스, #343 갭)를 잴 수단이 없어 여기 별도로 남긴다.
         # PII 금지: 카테고리 문자열·상품 id 는 싣지 않고 개수만 싣는다.
-        logger.info(
+        log_structured(
+            logger,
             "recommend_zero_result",
-            extra={
+            **{
                 # False = 검색 자체 0건 / True = 히트는 있었는데 하류 억제가 전량을 지움
                 "had_candidates": had_candidates,
                 "suppressed_categories": len(suppressed_by_cat),
@@ -2197,9 +2246,10 @@ async def stream_recommendation(
     # [#101 #8] 관측성 — 파이프라인 후보 깔때기를 한 줄 구조화 로그로 남긴다(recall 손실·자원 진단).
     # received(수신) → after_dedup(최근구매 제외 후) → compressed(embedding_rerank_limit 절단 후)
     # → final(노출). 임베딩 재정렬 degrade 사유는 backend(_log.warning), rerank degrade 는 여기서.
-    logger.info(
+    log_structured(
+        logger,
         "recommend_pipeline",
-        extra={
+        **{
             "received": received,
             "after_dedup": matched_after_dedup,
             "compressed": len(candidates),
