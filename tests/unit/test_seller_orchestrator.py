@@ -22,6 +22,8 @@ from app.agents.seller.schemas import (
     AnalysisPlan,
     AnalysisScore,
     AnalysisType,
+    ChartAxisPlan,
+    ChartPlanSet,
     ChartPoint,
     ChartSeries,
     ChartSet,
@@ -734,88 +736,178 @@ def test_run_recommend_failure_degrades_to_empty(monkeypatch: pytest.MonkeyPatch
     assert result.recommendations == []
 
 
-# ── graph (5단계, 이슈 #242) — 차트 생성 + G1, 오케스트레이션 미배선 상태 단독 검증 ──
+# ── graph (5단계, 이슈 #242 → #504 재설계) — 축 선언(LLM) + 좌표 조립(charts.py) ──
+#
+# 좌표 조립 자체(14조합 레지스트리·버킷·절단)는 tests/unit/test_seller_charts.py 소관 —
+# 여기서는 오케스트레이션 계약만 본다: LLM 실패 강등, 기간 오류 시 LLM 콜 0회,
+# build_charts 위임 인자, 예외 불전파(C2 대칭).
+
+
+def _axis_plan(x: str = "date", y: str = "sales") -> ChartPlanSet:
+    return ChartPlanSet(charts=[ChartAxisPlan(x_axis=x, y_axis=y)])  # type: ignore[arg-type]
+
+
+def _built_chart(title: str = "일별 매출 추이") -> ChartSpec:
+    return ChartSpec(
+        title=title,
+        chart_type="line",
+        unit="KRW",
+        aggregate="sum",
+        series=[ChartSeries(label="매출", points=[ChartPoint(x="06-12", y=180000)])],
+    )
+
+
+def _fake_build_charts(
+    monkeypatch: pytest.MonkeyPatch,
+    result: tuple[ChartSet, list[object]] | Exception,
+) -> list[dict]:
+    """charts.build_charts 대역 — 호출 인자를 수집하고 준비된 결과/예외를 돌려준다."""
+    calls: list[dict] = []
+
+    async def _fake(plans, *, brand_id, date_from, date_to):
+        calls.append(
+            {"plans": list(plans), "brand_id": brand_id, "date_from": date_from, "date_to": date_to}
+        )
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    monkeypatch.setattr(orchestrator.seller_charts, "build_charts", _fake)
+    return calls
 
 
 def test_run_graph_happy(monkeypatch: pytest.MonkeyPatch) -> None:
-    """정상 — 근거 있는 차트는 G1 통과, graph 진행 token 방출."""
-    chart = ChartSpec(
-        title="일별 매출",
-        chart_type="line",
-        unit="KRW",
-        series=[ChartSeries(label="매출", points=[ChartPoint(x="06-12", y=180000)])],
-    )
-    agent = _SeqAgent([{"structured_response": ChartSet(charts=[chart])}])
+    """정상 — LLM 축 선언 → build_charts 위임(브랜드·기간 전달), graph 진행 token 방출."""
+    agent = _SeqAgent([{"structured_response": _axis_plan()}])
     monkeypatch.setattr(orchestrator, "build_graph_agent", lambda: agent)
     monkeypatch.setattr(orchestrator, "get_settings", lambda: _settings())
+    calls = _fake_build_charts(monkeypatch, (ChartSet(charts=[_built_chart()]), []))
     tokens, emit = _collect_emit()
 
-    result = asyncio.run(
-        orchestrator.run_graph(_FINDINGS, _GROUNDED, "지난달 매출 추이 보여줘", _CTX, emit=emit)
+    charts, unavailable = asyncio.run(
+        orchestrator.run_graph(
+            _FINDINGS, _GROUNDED, "지난달 매출 추이 보여줘", _plan("sales_anomaly"), _CTX, emit=emit
+        )
     )
 
-    assert [c.title for c in result.charts] == ["일별 매출"]
+    assert [c.title for c in charts.charts] == ["일별 매출 추이"]
+    assert unavailable == []
     assert tokens == ["차트를 만들고 있습니다…"]
     assert "[판매자 질문]\n지난달 매출 추이 보여줘" in agent.received[0]
+    # 좌표 조립에 신원(brand_id)과 분석 기간이 그대로 위임된다.
+    assert calls == [
+        {
+            "plans": _axis_plan().charts,
+            "brand_id": _CTX.brand_id,
+            "date_from": dt.date(2026, 6, 1),
+            "date_to": dt.date(2026, 6, 30),
+        }
+    ]
 
 
-def test_run_graph_failure_degrades_to_empty(monkeypatch: pytest.MonkeyPatch) -> None:
-    """graph 실패(예외) → 빈 ChartSet 으로 계속(C2 대칭, 보고서를 죽이지 않는다)."""
+def test_run_graph_uses_chart_period_when_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    """[#504] 차트 전용 기간(chart_from/to)이 있으면 분석 기간 대신 그 기간으로 조립한다."""
+    agent = _SeqAgent([{"structured_response": _axis_plan()}])
+    monkeypatch.setattr(orchestrator, "build_graph_agent", lambda: agent)
+    monkeypatch.setattr(orchestrator, "get_settings", lambda: _settings())
+    calls = _fake_build_charts(monkeypatch, (ChartSet(charts=[_built_chart()]), []))
+    resolved = ResolvedPlan(
+        analyses=("sales_anomaly",),
+        date_from=dt.date(2026, 6, 1),
+        date_to=dt.date(2026, 6, 30),
+        wants_chart=True,
+        chart_period_expr="최근 7일",
+        chart_from=dt.date(2026, 7, 12),
+        chart_to=dt.date(2026, 7, 18),
+    )
+    _, emit = _collect_emit()
+
+    asyncio.run(orchestrator.run_graph(_FINDINGS, _GROUNDED, "질문", resolved, _CTX, emit=emit))
+
+    assert calls[0]["date_from"] == dt.date(2026, 7, 12)
+    assert calls[0]["date_to"] == dt.date(2026, 7, 18)
+
+
+def test_run_graph_chart_period_error_skips_llm(monkeypatch: pytest.MonkeyPatch) -> None:
+    """[#504] 차트 기간 해석 실패 → LLM·Spring 콜 0회, chart_period_unclear 사유만 반환
+    (보고서는 호출부에서 그대로 살아 나간다)."""
+
+    def _boom_agent() -> object:
+        raise AssertionError("chart_period_error 인데 build_graph_agent 가 호출됐다")
+
+    monkeypatch.setattr(orchestrator, "build_graph_agent", _boom_agent)
+    resolved = ResolvedPlan(
+        analyses=("sales_anomaly",),
+        date_from=dt.date(2026, 6, 1),
+        date_to=dt.date(2026, 6, 30),
+        wants_chart=True,
+        chart_period_expr="작년 여름",
+        chart_period_error="기간 표현을 해석하지 못했습니다.",
+    )
+    _, emit = _collect_emit()
+
+    charts, unavailable = asyncio.run(
+        orchestrator.run_graph(_FINDINGS, _GROUNDED, "질문", resolved, _CTX, emit=emit)
+    )
+
+    assert charts.charts == []
+    assert [u.reason for u in unavailable] == ["chart_period_unclear"]
+    assert "작년 여름" in unavailable[0].message
+
+
+def test_run_graph_failure_degrades_to_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """graph LLM 실패(예외) → 빈 ChartSet + agent_failed 사유(C2 대칭, 보고서 불사)."""
     agent = _SeqAgent([RuntimeError("boom")])
     monkeypatch.setattr(orchestrator, "build_graph_agent", lambda: agent)
     monkeypatch.setattr(orchestrator, "get_settings", lambda: _settings())
     _, emit = _collect_emit()
 
-    result = asyncio.run(orchestrator.run_graph(_FINDINGS, _GROUNDED, "질문", _CTX, emit=emit))
-
-    assert result.charts == []
-
-
-def test_run_graph_g1_exception_degrades_to_empty_instead_of_propagating(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """G1(run_chart_checks) 자체가 예외를 던져도 빈 ChartSet 으로 degrade 한다
-    (PR 리뷰 반영 — 기존엔 이 호출이 try 밖에 있어 예외가 run_graph 밖으로
-    전파되고, asyncio.gather(run_recommend, run_graph)에 return_exceptions 이
-    없어 이미 검증된 보고서·recommend 결과까지 통째로 사과 응답이 됐다).
-    """
-    chart = ChartSpec(
-        title="일별 매출",
-        chart_type="line",
-        unit="KRW",
-        series=[ChartSeries(label="매출", points=[ChartPoint(x="06-12", y=180000)])],
+    charts, unavailable = asyncio.run(
+        orchestrator.run_graph(
+            _FINDINGS, _GROUNDED, "질문", _plan("sales_anomaly"), _CTX, emit=emit
+        )
     )
-    agent = _SeqAgent([{"structured_response": ChartSet(charts=[chart])}])
+
+    assert charts.charts == []
+    assert [u.reason for u in unavailable] == ["agent_failed"]
+
+
+def test_run_graph_build_charts_exception_degrades(monkeypatch: pytest.MonkeyPatch) -> None:
+    """build_charts 자체가 예외를 던져도 run_graph 밖으로 새지 않는다 — source_failed 강등
+    (asyncio.gather(run_recommend, run_graph)에 return_exceptions 이 없어, 새면 이미
+    성공한 recommend·검증된 보고서까지 사과 응답이 된다)."""
+    agent = _SeqAgent([{"structured_response": _axis_plan()}])
     monkeypatch.setattr(orchestrator, "build_graph_agent", lambda: agent)
     monkeypatch.setattr(orchestrator, "get_settings", lambda: _settings())
-
-    def _boom_run_chart_checks(*args: object, **kwargs: object) -> object:
-        raise ValueError("G1 내부 버그(예: 비정상 float 값)")
-
-    monkeypatch.setattr(orchestrator, "run_chart_checks", _boom_run_chart_checks)
+    _fake_build_charts(monkeypatch, ValueError("조립기 결함"))
     _, emit = _collect_emit()
 
-    result = asyncio.run(orchestrator.run_graph(_FINDINGS, _GROUNDED, "질문", _CTX, emit=emit))
-
-    assert result.charts == []
-
-
-def test_run_graph_drops_ungrounded_chart_via_g1(monkeypatch: pytest.MonkeyPatch) -> None:
-    """G1 미달(근거 없는 수치) 차트는 드랍되고 빈 ChartSet 이 반환된다(재작성 루프 없음)."""
-    hallucinated = ChartSpec(
-        title="환각 차트",
-        chart_type="line",
-        unit="KRW",
-        series=[ChartSeries(label="매출", points=[ChartPoint(x="06-12", y=999999)])],
+    charts, unavailable = asyncio.run(
+        orchestrator.run_graph(
+            _FINDINGS, _GROUNDED, "질문", _plan("sales_anomaly"), _CTX, emit=emit
+        )
     )
-    agent = _SeqAgent([{"structured_response": ChartSet(charts=[hallucinated])}])
+
+    assert charts.charts == []
+    assert [u.reason for u in unavailable] == ["source_failed"]
+
+
+def test_run_graph_empty_plan_skips_assembly(monkeypatch: pytest.MonkeyPatch) -> None:
+    """축 선언이 비면(그릴 주제 없음) 조립을 건너뛰고 사유 없이 빈 결과 — 억지 차트 금지."""
+    agent = _SeqAgent([{"structured_response": ChartPlanSet(charts=[])}])
     monkeypatch.setattr(orchestrator, "build_graph_agent", lambda: agent)
     monkeypatch.setattr(orchestrator, "get_settings", lambda: _settings())
+    calls = _fake_build_charts(monkeypatch, (ChartSet(charts=[]), []))
     _, emit = _collect_emit()
 
-    result = asyncio.run(orchestrator.run_graph(_FINDINGS, _GROUNDED, "질문", _CTX, emit=emit))
+    charts, unavailable = asyncio.run(
+        orchestrator.run_graph(
+            _FINDINGS, _GROUNDED, "질문", _plan("sales_anomaly"), _CTX, emit=emit
+        )
+    )
 
-    assert result.charts == []
+    assert charts.charts == [] and unavailable == []
+    assert calls == []  # build_charts 미호출
 
 
 def _patch_pipeline(monkeypatch: pytest.MonkeyPatch, plan: AnalysisPlan) -> None:
@@ -993,17 +1085,12 @@ def test_pipeline_wants_chart_runs_graph_parallel_with_recommend(
         analyses=["sales_anomaly"], period_expr="지난달", reason="r", wants_chart=True
     )
     _patch_pipeline(monkeypatch, plan)
-    chart = ChartSpec(
-        title="일별 매출",
-        chart_type="line",
-        unit="KRW",
-        series=[ChartSeries(label="매출", points=[ChartPoint(x="06-12", y=180000)])],
-    )
     monkeypatch.setattr(
         orchestrator,
         "build_graph_agent",
-        lambda: _SeqAgent([{"structured_response": ChartSet(charts=[chart])}]),
+        lambda: _SeqAgent([{"structured_response": _axis_plan()}]),
     )
+    _fake_build_charts(monkeypatch, (ChartSet(charts=[_built_chart()]), []))
     tokens, emit = _collect_emit()
 
     result = asyncio.run(
@@ -1014,7 +1101,8 @@ def test_pipeline_wants_chart_runs_graph_parallel_with_recommend(
 
     assert result.kind == "report"
     assert result.charts is not None
-    assert [c.title for c in result.charts.charts] == ["일별 매출"]
+    assert [c.title for c in result.charts.charts] == ["일별 매출 추이"]
+    assert result.chart_unavailable == ()
     assert "차트를 만들고 있습니다…" in tokens
     assert "개선 방안을 정리하고 있습니다…" in tokens
 
@@ -1039,25 +1127,24 @@ def test_pipeline_wants_chart_false_skips_graph(monkeypatch: pytest.MonkeyPatch)
     assert result.charts is None
 
 
-def test_pipeline_wants_chart_requested_but_dropped_appends_notice(
+def test_pipeline_wants_chart_requested_but_unavailable_appends_notice(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """wants_chart=True 인데 G1 전건 드랍(근거 없는 수치) → 안내 문구가 본문에 붙는다(D-5)."""
+    """[#504] wants_chart=True 인데 전건 미생성(no_data 등) → 사유 문장이 본문에 붙고
+    chart_unavailable 로 report 이벤트 재료가 채워진다(부분/전건 실패 안내, D-5 승계)."""
     plan = AnalysisPlan(
         analyses=["sales_anomaly"], period_expr="지난달", reason="r", wants_chart=True
     )
     _patch_pipeline(monkeypatch, plan)
-    hallucinated = ChartSpec(
-        title="환각 차트",
-        chart_type="line",
-        unit="KRW",
-        series=[ChartSeries(label="매출", points=[ChartPoint(x="06-12", y=999999)])],
-    )
     monkeypatch.setattr(
         orchestrator,
         "build_graph_agent",
-        lambda: _SeqAgent([{"structured_response": ChartSet(charts=[hallucinated])}]),
+        lambda: _SeqAgent([{"structured_response": _axis_plan()}]),
     )
+    reason = orchestrator.ChartUnavailable(
+        reason="no_data", message="'일별 매출 추이': 해당 기간에 표시할 데이터가 없습니다."
+    )
+    _fake_build_charts(monkeypatch, (ChartSet(charts=[]), [reason]))
     _, emit = _collect_emit()
 
     result = asyncio.run(
@@ -1067,7 +1154,60 @@ def test_pipeline_wants_chart_requested_but_dropped_appends_notice(
     )
 
     assert result.charts is not None and result.charts.charts == []
+    assert result.chart_unavailable == (reason,)
     assert "[차트 안내]" in result.text
+    assert "해당 기간에 표시할 데이터가 없습니다" in result.text
+
+
+def test_pipeline_chart_only_skips_workers_report_recommend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#504] chart_only 턴 — 워커 팬아웃·보고서·추천을 생략하고 차트만 조립한다.
+    kind=report + chart_only=True 로 반환돼 SSE 가 제목("판매 분석 그래프")을 가른다."""
+    plan = AnalysisPlan(
+        analyses=[], period_expr="최근 7일", reason="차트만", chart_only=True, wants_chart=True
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "build_analysis_planner",
+        lambda: _SeqAgent([{"structured_response": plan}]),
+    )
+    monkeypatch.setattr(orchestrator, "get_settings", lambda: _settings())
+
+    async def _boom_branches(*args: object, **kwargs: object) -> object:
+        raise AssertionError("chart_only 인데 run_branches 가 호출됐다")
+
+    monkeypatch.setattr(orchestrator, "run_branches", _boom_branches)
+    monkeypatch.setattr(
+        orchestrator,
+        "build_report_agent",
+        lambda: (_ for _ in ()).throw(AssertionError("chart_only 인데 report 가 호출됐다")),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "build_recommend_agent",
+        lambda: (_ for _ in ()).throw(AssertionError("chart_only 인데 recommend 가 호출됐다")),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "build_graph_agent",
+        lambda: _SeqAgent([{"structured_response": _axis_plan()}]),
+    )
+    _fake_build_charts(monkeypatch, (ChartSet(charts=[_built_chart()]), []))
+    tokens, emit = _collect_emit()
+
+    result = asyncio.run(
+        orchestrator.run_analysis_pipeline(
+            "최근 7일 매출 그래프만 보여줘", _CTX, today=dt.date(2026, 7, 18), emit=emit
+        )
+    )
+
+    assert result.kind == "report"
+    assert result.chart_only is True
+    assert result.verified is None and result.findings is None
+    assert [c.title for c in result.charts.charts] == ["일별 매출 추이"]
+    assert "그래프를 준비했습니다" in result.text
+    assert "차트를 만들고 있습니다…" in tokens
 
 
 def test_pipeline_all_workers_failed_returns_apology(monkeypatch: pytest.MonkeyPatch) -> None:

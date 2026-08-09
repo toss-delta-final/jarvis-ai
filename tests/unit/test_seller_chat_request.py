@@ -70,7 +70,7 @@ def test_message_length_validator_inherited() -> None:
         SellerChatRequest(session_id="s", thread_id="t", message="x" * (cap + 1))
 
 
-# ── [#506] imageUrls (api-spec §3.2 v0.30.0) ────────────────────────────────────
+# ── [#506] imageUrls (api-spec §3.2 v0.31.0) ────────────────────────────────────
 
 
 def test_image_urls_camelcase_accepted() -> None:

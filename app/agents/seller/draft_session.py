@@ -1,4 +1,4 @@
-"""판매자 등록 초안 세션 저장소 (#506, api-spec §3.2 v0.30.0).
+"""판매자 등록 초안 세션 저장소 (#506, api-spec §3.2 v0.31.0).
 
 이미지 기반 create 초안의 **스레드별 대기 상태** — `period_confirm.py` 의 recorder
 그래프 패턴(no-op 1노드 + aget_state/aupdate_state)을 그대로 따른다.

@@ -1,4 +1,4 @@
-"""등록 초안 preview 빌더 (#506, api-spec §3.2 v0.30.0) — 11필드/null/포맷/sections 계약."""
+"""등록 초안 preview 빌더 (#506, api-spec §3.2 v0.31.0) — 11필드/null/포맷/sections 계약."""
 
 from __future__ import annotations
 
@@ -190,7 +190,7 @@ def test_draft_event_masks_preview_text_fields() -> None:
 
 
 def test_draft_event_carries_preview_for_create_only() -> None:
-    """[와이어] create draft 이벤트에만 preview 키가 실린다 — 추가 전용(§3.2 v0.30.0)."""
+    """[와이어] create draft 이벤트에만 preview 키가 실린다 — 추가 전용(§3.2 v0.31.0)."""
     record = _record(_full_changes())
     preview = build_create_preview(record, analysis=_ANALYSIS)
     frame = seller_api._draft_event(record, preview=preview)

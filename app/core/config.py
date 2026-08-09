@@ -559,8 +559,12 @@ class Settings(BaseSettings):
     seller_summary_max_events: int = 5  # I-14 이벤트 kv 나열 상한(건)
     # [#197 PR 리뷰] I-16 이탈 회원 나열 상한 — I-14 용 max_events(위)와 분리 신설.
     # 같은 값 공유 시 I-14 요약 상세도 조정이 이탈 회원 노출 건수까지 바꾸는 결합이
-    # 생긴다(#196 의 max_products 분리와 같은 취지). 서버 절단 상한은 별도로 50.
+    # 생긴다(#196 의 max_products 분리와 같은 취지). 서버 절단 상한은 아래 별도 키다.
     seller_churn_member_max: int = 5  # I-16 members 상세 나열 상한(명)
+    # [#495] I-16 members 서버 절단 상한(BE CHURN_LIST_CAP 실측, #197) — 판매자에게
+    # 보이는 고지 문구에 실린다. I-16 명세에 없는 구현 실측값이라 BE 가 바꾸면 고지가
+    # 거짓이 된다 — 문자열 하드코딩 대신 여기서 주입하고 BE 에 명세화를 요청한다(#495).
+    seller_churn_server_list_cap: int = 50  # I-16 members 서버 절단 상한(명)
     # [#196] I-13 상품별 rows 상세 상한 — I-14 용(위)과 분리. 구 공용 상한 5는
     # 시드 브랜드 상품 7종보다 작아 하위 2종이 상시 잘렸다. 상한 초과분은
     # _summarize_behavior 가 꼬리 합계로 남긴다(정보 소실 없음).
@@ -603,7 +607,7 @@ class Settings(BaseSettings):
     seller_report_score_threshold: int = 21  # 보고서 검증 통과 점수(21/30)
     seller_report_max_retries: int = 3  # 검증 루프 상한
     seller_draft_ttl_minutes: int = 10  # HITL 미승인 draft 만료
-    # ── 이미지 기반 상품 등록 초안 (#506, api-spec §3.2 v0.30.0) ─────────────────
+    # ── 이미지 기반 상품 등록 초안 (#506, api-spec §3.2 v0.31.0) ─────────────────
     # imageUrls 요청 필드 상한 — MVP 는 1장(2장째 첨부는 FE 가 교체로 처리).
     seller_image_max_count: int = 1
     # image_url 길이 2차 방어(FE 서버 라우트가 1차) — DB VARCHAR(500) 계약과 동일값.

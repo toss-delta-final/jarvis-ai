@@ -966,7 +966,7 @@ def _draft_event(record: DraftRecord, *, preview: dict | None = None) -> str:
     [#297] op="ship"(주문 발송, I-30)은 orderItemId 를 함께 싣는다(§3.2 추가 전용) —
     상품 op 3종의 와이어는 불변이다(orderItemId 키는 ship 에만 존재).
 
-    [#506] op="create" 는 preview{} 를 함께 싣는다(§3.2 추가 전용, v0.30.0) — FE 등록
+    [#506] op="create" 는 preview{} 를 함께 싣는다(§3.2 추가 전용, v0.31.0) — FE 등록
     미리보기 카드는 preview 만 보고 그린다(changes 는 실행 정본). image_url 값은
     mask_output 을 태우지 않는다 — 시크릿 패턴 정규식(sk-…)이 S3 경로 세그먼트를
     오탐 마스킹할 수 있고, 값 자체는 validate_draft 가 http(s)·길이를 이미 보장한다.
@@ -1022,15 +1022,26 @@ def _report_event(result: PipelineResult) -> str:
     findings = result.findings or []
     recommendations = result.recommendations.recommendations if result.recommendations else []
     charts = result.charts.charts if result.charts else []
+    # [#504] chartPeriod 는 차트 기간이 분석 기간과 **다를 때만** 싣는다 — 없으면
+    # period 와 같다는 뜻이라 FE 가 아무것도 그리지 않는다(계약). 가격·재고(스냅샷)
+    # 차트는 애초에 chart_period 가 설정되지 않는다(기간 개념 없음 — summary 가 안내).
+    chart_period = (
+        {"from": result.chart_period[0].isoformat(), "to": result.chart_period[1].isoformat()}
+        if result.chart_period and result.chart_period != result.period
+        else None
+    )
     return _sse(
         "report",
         {
-            "title": "판매 분석 보고서",
+            # [#504] chart_only 턴은 보고서가 아니라 그래프가 주인공 — 제목으로 구분한다
+            # (FE 는 report.title 을 그대로 쓰므로 FE 작업 0).
+            "title": "판매 분석 그래프" if result.chart_only else "판매 분석 보고서",
             "period": (
                 {"from": result.period[0].isoformat(), "to": result.period[1].isoformat()}
                 if result.period
                 else None
             ),
+            "chartPeriod": chart_period,
             "generatedAt": datetime.now(_KST).isoformat(timespec="seconds"),
             "summary": mask_output(_strip_unsafe_multiline(split_report_summary(report_text))),
             "body": mask_output(_strip_unsafe_multiline(report_text)),
@@ -1053,6 +1064,9 @@ def _report_event(result: PipelineResult) -> str:
                     "title": mask_output(_strip_unsafe(c.title)),
                     "chartType": c.chart_type,
                     "unit": c.unit,
+                    # [#504] 집계 방식 — 소스 레지스트리가 채운 값 그대로(FE 헤더 분기
+                    # 근거: sum=합계 / avg=평균 / none=스냅샷이라 헤더 숫자 숨김).
+                    "aggregate": c.aggregate,
                     "series": [
                         {
                             "label": mask_output(_strip_unsafe(s.label)),
@@ -1065,6 +1079,16 @@ def _report_event(result: PipelineResult) -> str:
                     "summary": mask_output(_strip_unsafe_multiline(c.summary)),
                 }
                 for c in charts
+            ],
+            # [#504] 차트를 못 만든 사유 — 부분 성공이면 charts 와 **동시에** 나간다.
+            # message 는 서버 완성 문장(charts.py 소유) — FE 는 그대로 렌더, reason 은
+            # 로깅·QA 용 개방형 어휘라 닫힌 유니온으로 계약하지 않는다.
+            "chartUnavailable": [
+                {
+                    "reason": item.reason,
+                    "message": mask_output(_strip_unsafe(item.message)),
+                }
+                for item in result.chart_unavailable
             ],
             "recommendations": [
                 {

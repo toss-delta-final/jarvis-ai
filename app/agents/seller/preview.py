@@ -1,4 +1,4 @@
-"""등록 초안 preview 빌더 (#506, api-spec §3.2 v0.30.0) — 순수 함수.
+"""등록 초안 preview 빌더 (#506, api-spec §3.2 v0.31.0) — 순수 함수.
 
 `draft` 이벤트의 `preview{}`(op=="create" 한정)를 **코드가** 만든다 — LLM 산물이
 아니다("계약값은 코드", hitl.DraftRecord docstring과 동일 원칙). FE 계약:

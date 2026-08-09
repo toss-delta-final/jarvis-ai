@@ -914,7 +914,12 @@ class ChurnResult(SellerAggregateModel):
     churnRate 는 소수(fraction, 0.6=60%, round3 — DTO 주석 명시) — % 변환은 표시
     계층(tools)만 한다(스키마는 와이어 값 보존). 응답의 brandId/from/to/inactiveDays
     에코는 extra="allow" 로 흡수한다. 코호트 0명이면 cohortSize=0·churnRate=0.0·
-    빈 signals·빈 members 로 온다(BE short-circuit)."""
+    빈 signals·빈 members 로 온다(BE short-circuit).
+
+    [#495 주의] 코호트 0명의 churnRate 는 정본(노션 I-16)이 null 인데 본 사본
+    api-spec §4.4(v0.19.1)는 0.0 으로 적어 어긋나 있다 — 런타임은 tools 의
+    cohort_size == 0 조기 반환이 먼저라 어느 값이 와도 무해하다. 사본 정정 자체는
+    전수 대조(#472) 소관이라 여기서는 표시만 남긴다."""
 
     # [#197 PR 리뷰] 기본값 0.0 금지 — churnRate 키 결측이 조용히 "이탈률 0.0%"로
     # 렌더링되는 silent-mismatch(이 PR 이 제거한 #194 패턴)를 이 필드만 재도입하지

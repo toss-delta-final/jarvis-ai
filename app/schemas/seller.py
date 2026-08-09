@@ -48,7 +48,7 @@ class SellerChatRequest(ChatRequest):
         default="",
         description="현재 턴 사용자 원문 질의. confirm 승인 시엔 비운다(발화≠동의), 그 외 필수.",
     )
-    # [#506, api-spec §3.2 v0.30.0] 이미지 기반 상품 등록 초안 — 이미지를 **새로 첨부한
+    # [#506, api-spec §3.2 v0.31.0] 이미지 기반 상품 등록 초안 — 이미지를 **새로 첨부한
     # 턴에만** 실린다(후속 턴 미전송은 FE 계약). alias 는 CamelModel 이 imageUrls 로 생성.
     image_urls: list[str] | None = Field(
         default=None,
