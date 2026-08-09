@@ -211,9 +211,11 @@ class FakeSpringClient:
         self._maybe_fail("get_reviews")
         return getattr(self, "reviews_result", SellerReviewList())
 
-    async def get_review_stats(self, brand_id, *, from_=None, to=None, product_id=None):
+    async def get_review_stats(
+        self, brand_id, *, from_=None, to=None, product_id=None, rating=None
+    ):
         self.recorded_brand_id = brand_id
-        self.recorded_review_stats_args = (from_, to, product_id)
+        self.recorded_review_stats_args = (from_, to, product_id, rating)
         self._maybe_fail("get_review_stats")
         return getattr(self, "review_stats_result", SellerReviewStats())
 
@@ -2125,9 +2127,11 @@ async def test_get_reviews_stats_mode_null_average() -> None:
 
     result = await _call_runtime_tool(get_reviews, {"stats": True}, fake)
 
-    assert fake.recorded_review_stats_args == (None, None, None)
+    assert fake.recorded_review_stats_args == (None, None, None, None)
     assert "리뷰가 없습니다" in result
     assert "0점" not in result
+    # [#494 회귀] rating 미지정 출력은 종전과 바이트 동일 — 스코프 문구가 끼지 않는다.
+    assert result == "조회 기간에 리뷰가 없습니다. (기준: 최근 7일 기본 적용)"
 
 
 async def test_get_reviews_stats_mode_formats_distribution() -> None:
@@ -2151,6 +2155,73 @@ async def test_get_reviews_stats_mode_formats_distribution() -> None:
     assert "1점 5건" in result
     assert "여행용 파우치" in result and "평균 3.1점" in result
     assert "2026-07-01~2026-07-31" in result
+    # [#494 회귀] rating 미지정이면 집계 헤더가 종전 그대로다(스코프 표기 없음).
+    assert result.startswith("리뷰 집계: 총 47건")
+    assert "한정" not in result
+
+
+async def test_get_reviews_stats_mode_forwards_rating_filter() -> None:
+    """[#494] stats=True + rating 이면 별점 필터가 집계 호출에 전달되고 스코프가 명시된다.
+
+    전달이 빠지면 전 별점 합산 byProduct 가 돌아오는데 에러가 없어, 워커가 그것을
+    '1–2점이 몰린 상품'으로 서술한다 — 명세(I-31)의 대표 사용례가 조용히 틀린다.
+    """
+    fake = FakeSpringClient()
+    fake.review_stats_result = SellerReviewStats(
+        total_count=18,
+        average_rating=1.4,
+        distribution={"5": 0, "4": 0, "3": 0, "2": 11, "1": 7},
+        by_product=[
+            SellerReviewProductStat(
+                product_id=3, product_name="여행용 파우치", count=12, average_rating=1.3
+            )
+        ],
+    )
+
+    result = await _call_runtime_tool(
+        get_reviews, {"stats": True, "rating": "1,2"}, fake, brand_id=12
+    )
+
+    assert fake.recorded_brand_id == 12
+    assert fake.recorded_review_stats_args == (None, None, None, "1,2")
+    assert "리뷰 집계(별점 1,2 한정)" in result
+    assert "총 18건" in result and "평균 1.4점" in result
+    assert "여행용 파우치" in result
+
+
+async def test_get_reviews_stats_mode_forwards_product_and_rating() -> None:
+    """[#494] product_id 와 rating 을 함께 주면 둘 다 집계 호출에 실린다."""
+    fake = FakeSpringClient()
+    fake.review_stats_result = SellerReviewStats(
+        total_count=5,
+        average_rating=1.2,
+        distribution={"5": 0, "4": 0, "3": 0, "2": 1, "1": 4},
+        by_product=[],
+    )
+
+    result = await _call_runtime_tool(
+        get_reviews,
+        {
+            "stats": True,
+            "rating": "1,2",
+            "product_id": 3,
+            "from_date": "2026-07-01",
+            "to_date": "2026-07-31",
+        },
+        fake,
+    )
+
+    assert fake.recorded_review_stats_args == ("2026-07-01", "2026-07-31", 3, "1,2")
+    assert "리뷰 집계(별점 1,2 한정)" in result
+
+
+async def test_get_reviews_stats_mode_empty_with_rating_states_scope() -> None:
+    """[#494] 별점을 걸고 0건인 것은 '리뷰가 없다'와 다르다 — 스코프를 밝힌다."""
+    fake = FakeSpringClient()
+
+    result = await _call_runtime_tool(get_reviews, {"stats": True, "rating": "1,2"}, fake)
+
+    assert "별점 1,2 리뷰가 없습니다" in result
 
 
 async def test_get_reviews_degrades_on_spring_failure() -> None:
