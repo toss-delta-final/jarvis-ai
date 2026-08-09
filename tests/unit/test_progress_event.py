@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 import json
 from types import SimpleNamespace
 
@@ -848,10 +849,16 @@ def test_seller_analysis_progress_unaffected_by_buyer_progress_flag(
     F-3 리뷰 반영: 종전에는 general 레인(`progress` 자체가 없는 레인)만 돌려
     `"progress" not in off_types`를 단언했는데, 이는 이 PR 과 무관하게 항상 참이라 회귀가
     나도 깨지지 않는 단언이었다. analysis 레인을 직접 돌려 판매자의 실제 `progress` 프레임을
-    검증한다.
+    검증한다. 초 경계의 `report.generatedAt` 차이로 바이트 동일성 검증이 흔들리지 않도록 시계를
+    고정한다.
     """
     from app.agents.seller.orchestrator import PipelineResult
     from app.agents.seller.schemas import RouteDecision
+
+    class _FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 8, 9, 12, 0, 0, tzinfo=tz)
 
     hitl.set_checkpointer(InMemorySaver())
     try:
@@ -867,6 +874,8 @@ def test_seller_analysis_progress_unaffected_by_buyer_progress_flag(
             await emit("매출 이상 분석 중…")
             return PipelineResult(kind="report", text="6월 매출 보고서 본문")
 
+        monkeypatch.setattr(seller_api, "datetime", _FixedDateTime)
+
         def _run() -> list[str]:
             monkeypatch.setattr(seller_api, "route_question", _route_stub)
             monkeypatch.setattr(seller_api, "run_analysis_pipeline", fake_pipeline)
@@ -876,6 +885,7 @@ def test_seller_analysis_progress_unaffected_by_buyer_progress_flag(
 
             return asyncio.run(_drive())
 
+        monkeypatch.setattr(get_settings(), "progress_events_enabled", False)
         off_lines = _run()
         monkeypatch.setattr(get_settings(), "progress_events_enabled", True)
         on_lines = _run()
