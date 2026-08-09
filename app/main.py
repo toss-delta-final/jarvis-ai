@@ -36,6 +36,7 @@ from fastapi.middleware.cors import CORSMiddleware
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
+from app.agents.profile.graph_journal import close_pool as close_graph_journal_pool
 from app.agents.profile.processed_events import close_pool as close_processed_events_pool
 from app.agents.profile.session_activity import close_pool as close_session_activity_pool
 from app.agents.profile.store import close_store as close_profile_store
@@ -93,6 +94,9 @@ async def _close_owned_resources() -> None:
         ("session_lifecycle", close_session_lifecycle),
         ("seller_history_store", close_seller_history_store),
         ("seller_checkpointer", close_seller_checkpointer),
+        # 그래프 저널(#358)은 profile_store 보다 **먼저** 닫는다 — 변경 조립이 store 를 부르므로
+        # 의존하는 쪽이 앞이다(이 목록은 의존성 역순).
+        ("graph_journal_pool", close_graph_journal_pool),
         ("profile_store", close_profile_store),
         ("session_activity_pool", close_session_activity_pool),
         ("processed_events_pool", close_processed_events_pool),

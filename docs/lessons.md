@@ -13,6 +13,23 @@
 
 ---
 
+## [2026-08-10] 새 pg 모듈의 정리 배선은 "테스트 하니스"와 "앱 종료" 두 곳이다
+- 증상: #358 의 `graph_journal` 을 `tests/conftest.py::close_pg_pools_on_loop` 에는 배선했는데
+  **`app/main.py::_close_owned_resources` 에는 빠뜨렸다.** 통합 테스트도 유닛도 초록이었다 —
+  테스트는 하니스 쪽만 쓰고, 앱 종료 경로를 재는 테스트는 자원 목록을 손으로 열거하고 있었기
+  때문이다. 그 상태로 배포하면 **재배포마다 pg 커넥션 풀이 새고**, `max_connections` 에 닿아서야
+  무관해 보이는 곳에서 연결 실패로 드러난다.
+- 원인: 같은 성격의 목록이 두 곳에 있는데 서로를 강제하지 않았다. 한쪽만 채워도 스위트가 통과한다.
+- 규칙: **pg 풀을 여는 모듈을 새로 만들면 배선은 세 곳이 한 단위다** —
+  ① `tests/conftest.py::close_pg_pools_on_loop`(빠지면 CI 무한 대기)
+  ② `tests/integration/test_pg_pool_loop_teardown.py`(①의 누락을 잡는 가드가 성립하려면 필요)
+  ③ **`app/main.py::_close_owned_resources`(빠지면 운영에서 커넥션 누수)**.
+- 규칙(추가): 목록을 **손으로 세는 대신 구조로 고정한다.** 이름을 하드코딩한 테스트는 "둘 다
+  잊는" 실패 모드를 그대로 남긴다 — 패키지를 훑어 `close_pool` 을 가진 모듈이 전부 배선돼
+  있는지 확인하는 테스트를 넣었고(`test_every_pg_pool_module_is_wired_into_lifespan_shutdown`),
+  그게 실제로 이 누락을 잡았다.
+- 관련: `app/main.py::_close_owned_resources` · `tests/unit/test_main_lifespan.py` · 이슈 #208·#358
+
 ## [2026-08-10] CHECK 제약의 어휘를 바꾸면 DROP → 행 이행 → ADD 셋이 한 세트다
 - 증상: 감사 `action` 어휘를 `edgeSuppress`→`edgeDelete` 로 개명(#499)하면서 **세 번 연속으로
   다른 실패**를 밟았고, 매번 **기존 데이터가 있는 볼륨에서만** 터졌다.
