@@ -515,11 +515,11 @@ async def stream_recommendation(
         남은 단 수로 균등 배분한다(D4) — 지금 단이 잔여를 통째로 쓰면 뒤에 남은 단이 곧바로
         굶는다. `remaining_stages` 는 이 단을 포함해 이 턴에 이론상 남아 있는 단 수다.
 
-        [PR #452 리뷰 R2] `attempts` 는 이 단이 실제로 밟을 시도 횟수 —
-        `spring_client.search_products` 의 `attempts = 1 if _search_retry_suppressed.get()
-        else spring_max_retries + 1` 산출식과 **글자 그대로 같은 규칙**이어야 한다(호출부가
-        넘긴다, D7 — `config.py::_rescue_chain_serial_budget_s` 가 같은 비대칭을 기동 검증
-        쪽에서 모델링한다). 단 상한(`stage_cap`)은 `spring_search_timeout_s * attempts` 다 —
+        [PR #452 리뷰 R2, #306] `attempts` 는 이 단이 실제로 밟을 시도 횟수 —
+        `spring_client.search_products` 의 `attempts = spring_max_retries + 1` 산출식과
+        **글자 그대로 같은 규칙**이어야 한다(호출부가 넘긴다, D7 —
+        `config.py::_rescue_chain_serial_budget_s` 가 같은 균일식을 기동 검증 쪽에서
+        모델링한다). 단 상한(`stage_cap`)은 `spring_search_timeout_s * attempts` 다 —
         `"full"` 판정을 1 회분 상한으로 고정하면, 재시도가 있는 단은 그 배만큼 벽시계를 실제로
         쓰는데도 좁히지 않고 통과시켜 `rescue_deadline` 을 과다 승인한다.
         """
@@ -692,18 +692,12 @@ async def stream_recommendation(
         # 조건 칩을 먼저 내보내도 표시-실제 불일치가 생기지 않는다.
         logger.warning("relaxation_gate_failed", extra={"reason": str(exc)})
         may_auto_relax = False
-    suppress_deferred_search_retry = (
-        may_auto_relax and not settings.search_retry_on_deferred_conditions
-    )
-    # [PR #452 리뷰 R2] `_apply_stage_budget` 의 `attempts` 산출 — `spring_client.search_
-    # products` 의 `attempts = 1 if _search_retry_suppressed.get() else spring_max_retries +
-    # 1` 과 글자 그대로 같은 규칙이어야 한다(D7). 본검색·자동완화 probe 는
-    # `suppress_deferred_search_retry` 아래서만(`spring_client.suppress_search_retry()` 로
-    # 감싼 두 곳) 재시도를 끈다 — `_suppressed_search_attempts`. F-1/#343 재검색은 그 블록
-    # **밖**이라 항상 재시도한다(`config.py::_rescue_chain_serial_budget_s` 의 비대칭 모델과
-    # 동일) — `_full_retry_attempts`.
-    _full_retry_attempts = settings.spring_max_retries + 1
-    _suppressed_search_attempts = 1 if suppress_deferred_search_retry else _full_retry_attempts
+    # [PR #452 리뷰 R2, #306] `_apply_stage_budget` 의 `attempts` 산출 — `spring_client.
+    # search_products` 의 `attempts = spring_max_retries + 1` 과 글자 그대로 같은 규칙이어야
+    # 한다(D7). #306 이 미룬 턴 억제를 제거하면서 이 값은 **모든 단에서 동일**해졌다 —
+    # 본검색·F-1/#343 재검색·자동완화 probe 가 턴 유형과 무관하게 같은 시도 수를 쓴다
+    # (`config.py::_rescue_chain_serial_budget_s` 의 균일식과 동일).
+    _search_attempts = settings.spring_max_retries + 1
     # [#393 A] 최종 payload 기준 최소 필터 가드 — **의도 판정이 아니라 payload 사실 판정**이다
     # ("이번 턴이 Spring 쿼리 파라미터 0개로 나가는가"만 본다). no_condition/underspecified 처럼
     # `prior is None`(첫 턴) 에 한정하지 않는다 — 그 둘은 "리파인/칩 제거/카테고리-무관 리셋"
@@ -1191,9 +1185,10 @@ async def stream_recommendation(
     # 기다리는 이유는 하나다.
     if settings.progress_events_enabled:
         yield progress_frame("searching", settings.progress_searching_message)
-    # 미룬 턴은 첫 이벤트 앞 본 검색·자동 완화 probe만 재시도를 끈다(#277). conditions 뒤의
-    # 완화 칩 probe는 첫 이벤트 예산 밖이라 제외하며, 이 with는 await 뒤 즉시 닫아 yield·다음
-    # 턴으로 ContextVar가 새지 않게 한다. progress 이벤트가 계약에 생기면 이 스킵은 원복 가능하다.
+    # [#306] 미룬 턴만 재시도를 끄던 #277 의 응급 처치는 제거됐다 — 그 근거였던 first-token
+    # 관문은 #396 이 `progress` 를 검색 앞으로 보내며 이 체인 밖으로 나갔다. 이제 이 단도 다른
+    # 단과 같은 `_search_attempts` 를 쓰고, 폭주 방지는 아래 `_apply_stage_budget`(#427 D4)의
+    # 런타임 좁히기가 맡는다.
     # [#427 D4] 본검색 — 절대 건너뛰지 않는다(allow_skip=False). 남은 단 수는 본검색 자신(1) +
     # 이 턴에 이론상 남은 구제 체인(rescue·auto_relax)이다.
     # [PR #452 리뷰 R3] `_rescue_stage_counts.main` 은 이제 물리적 사실이라 항상 1 이다(#427
@@ -1204,7 +1199,7 @@ async def stream_recommendation(
     _, _main_narrow_budget = _apply_stage_budget(
         _rescue_stage_counts.main + _rescue_stage_counts.rescue + _rescue_stage_counts.auto_relax,
         allow_skip=False,
-        attempts=_suppressed_search_attempts,
+        attempts=_search_attempts,
     )
     _main_narrow_cm = (
         spring_client.narrow_search_budget(_main_narrow_budget)
@@ -1216,30 +1211,20 @@ async def stream_recommendation(
         """본검색과 구매 이력의 기존 병렬 수집을 한 곳에 고정한다 (#406 D1)."""
         return await asyncio.gather(_run_candidate_source(), _fetch_purchases_once())
 
-    retry_progress_possible = (
-        settings.progress_events_enabled
-        and settings.spring_max_retries > 0
-        and not suppress_deferred_search_retry
-    )
-    # [#406 D1] 기본값은 재시도를 켜므로 이 경로가 기본이다. 재시도를 끈 배포와 미룬 턴 억제에서는
-    # 기존 인라인 경로를 유지해 취소·ContextVar·trace 의미를 불필요하게 바꾸지 않는다.
+    retry_progress_possible = settings.progress_events_enabled and settings.spring_max_retries > 0
+    # [#406 D1] 기본값은 재시도를 켜므로 이 경로가 기본이다. 재시도를 끈 배포(`SPRING_MAX_
+    # RETRIES=0`)에서는 기존 인라인 경로를 유지해 취소·ContextVar·trace 의미를 불필요하게
+    # 바꾸지 않는다. [#306] 종전에는 미룬 턴 억제도 이 게이트를 닫았으나 그 억제가 사라져
+    # 재시도 설정만 남았다 — 미룬 턴도 이제 드레인 경로를 타고 `retrying` 을 낸다.
     if not retry_progress_possible:
-        with (
-            spring_client.suppress_search_retry()
-            if suppress_deferred_search_retry
-            else nullcontext(),
-            _main_narrow_cm,
-        ):
+        with _main_narrow_cm:
             search_bundle, purchases = await _collect_main_search()
     else:
         queue: asyncio.Queue[object] = asyncio.Queue()
         # [#406 D3] create_task가 생성 시점 ContextVar를 복사하므로 with는 즉시 닫는다. yield를
-        # 안에 두면 observer·budget·suppression이 다음 턴으로 새며, 관측 콜백은 항목 sentinel을
+        # 안에 두면 observer·budget이 다음 턴으로 새며, 관측 콜백은 항목 sentinel을
         # 넣어 queue.put_nowait의 인자 계약도 보존한다.
         with (
-            spring_client.suppress_search_retry()
-            if suppress_deferred_search_retry
-            else nullcontext(),
             _main_narrow_cm,
             spring_client.observe_search_retry(lambda: queue.put_nowait(_SEARCH_RETRY)),
         ):
@@ -1349,10 +1334,9 @@ async def stream_recommendation(
     if decision.category_expanded and search_result.total_count == 0:
         # [#427 D4] F-1 구제 재검색 — 남은 단은 이 단(1) + 이 턴에 이론상 남은 자동완화 단.
         # narrow_skip 모드에서만 실제로 건너뛴다(allow_skip=True).
-        # [PR #452 리뷰 R2] `suppress_search_retry()` 블록 밖이라 항상 재시도한다(위 주석
-        # 참조) — attempts=_full_retry_attempts.
+        # [PR #452 리뷰 R2, #306] 다른 단과 같은 시도 수를 쓴다 — attempts=_search_attempts.
         _f1_skip, _f1_narrow_budget = _apply_stage_budget(
-            1 + _rescue_stage_counts.auto_relax, allow_skip=True, attempts=_full_retry_attempts
+            1 + _rescue_stage_counts.auto_relax, allow_skip=True, attempts=_search_attempts
         )
         if _f1_skip:
             logger.info("rescue_stage_skipped_budget", extra={"stage": "f1_fallback"})
@@ -1503,9 +1487,9 @@ async def stream_recommendation(
     ):
         # [#427 D4] #343 억제-후 재판정 — F-1 과 상호배타(위 가드)이므로 "남은 단"은 F-1 과
         # 같은 식(이 단(1) + 이 턴에 이론상 남은 자동완화 단)이다.
-        # [PR #452 리뷰 R2] F-1 과 같은 이유로 항상 재시도한다 — attempts=_full_retry_attempts.
+        # [PR #452 리뷰 R2, #306] F-1 과 같은 시도 수를 쓴다 — attempts=_search_attempts.
         _post_suppress_skip, _post_suppress_narrow_budget = _apply_stage_budget(
-            1 + _rescue_stage_counts.auto_relax, allow_skip=True, attempts=_full_retry_attempts
+            1 + _rescue_stage_counts.auto_relax, allow_skip=True, attempts=_search_attempts
         )
         if _post_suppress_skip:
             logger.info("rescue_stage_skipped_budget", extra={"stage": "post_suppress_fallback"})
@@ -1689,10 +1673,9 @@ async def stream_recommendation(
                 # 예산 부족으로 이 라운드를 건너뛰면 relaxing 을 emit 하지 않는다(거짓 신호
                 # 금지). 남은 단 수는 이 단을 포함해 아직 남은 자동완화 라운드 수다.
                 _auto_relax_stages_left = max(_rescue_stage_counts.auto_relax - rounds + 1, 1)
-                # [PR #452 리뷰 R2] 본검색과 같은 억제 스코프(아래 `with` 가 같은 조건으로
-                # 감싼다) — attempts=_suppressed_search_attempts.
+                # [PR #452 리뷰 R2, #306] 본검색과 같은 시도 수 — attempts=_search_attempts.
                 _relax_skip, _relax_narrow_budget = _apply_stage_budget(
-                    _auto_relax_stages_left, allow_skip=True, attempts=_suppressed_search_attempts
+                    _auto_relax_stages_left, allow_skip=True, attempts=_search_attempts
                 )
                 if _relax_skip:
                     logger.info(
@@ -1708,13 +1691,7 @@ async def stream_recommendation(
                     if _relax_narrow_budget is not None
                     else nullcontext()
                 )
-                # conditions 전 자동 완화 probe까지만 억제한다. 아래 완화 칩 probe는 감싸지 않는다.
-                with (
-                    spring_client.suppress_search_retry()
-                    if suppress_deferred_search_retry
-                    else nullcontext(),
-                    _relax_narrow_cm,
-                ):
+                with _relax_narrow_cm:
                     outcome = await _probe(cand)
                 if outcome is None:
                     continue
