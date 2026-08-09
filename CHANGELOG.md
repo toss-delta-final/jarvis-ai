@@ -44,6 +44,12 @@
   (canonical URL ≤500자·presigned 거부)은 요청 스키마+hitl 이중 방어.
 
 ### Changed
+- **#394 원복 — I-1 `spring_max_retries` 기본값을 1로 복구하고 `rescue_budget_mode`를
+  `narrow`로 함께 올렸다.** 사람의 명시 지시로 수행했으며, #394가 제시한 원복 조건인 BE #395
+  검색 쿼리 개선은 충족됐다: BE PR #133 커버링 인덱스와 `attributes` 4키 축소가 배포됐고,
+  2026-08-09 라이브 응답에서 4키 부재 및 항목당 약 1,780B→1,052B로 확인됐다(`size` 상한 폐지).
+  `narrow`는 꼬리 예약 예산이 부족한 구제 단의
+  타임아웃을 좁혀도 시도하며 건너뛰지 않고, 다시 끄려면 `SPRING_MAX_RETRIES=0`을 설정한다.
 - **#504 — 판매자 분석 차트 재설계: 좌표 생성 주체를 LLM → 코드로 전환** (api-spec §3.2,
   v0.30.0 · `docs/specs/DESIGN-SELLER-CHART-V2.md`). 구 구조는 `graph_agent`(도구 없음,
   결정 D-4)가 워커 요약에서 숫자를 베껴 좌표를 만들고 G1 이 근거 없는 수치를 드랍해
@@ -189,6 +195,7 @@
   와이어 계약 무변경.
 
 ### Added
+- **#406 — 구매자 `progress`에 `retrying` stage를 추가** (api-spec §3.1, v0.32.4). I-1 검색이 재시도 가능한 실패 뒤 실제 다음 시도에 들어갈 때만 즉시 내보내며, 기본 `spring_max_retries=0`(#394 한시 조치)에서는 기존 인라인 검색 경로를 그대로 유지한다.
 - **#476 — 스트림 레지스트리를 워커 간 공유로 올릴 수 있게 했다** (`STREAM_REGISTRY_BACKEND=shared`,
   기본값은 종전 `memory` — **출하 동작 무변경**, 계약 무변경). §2.9(a) 활성 슬롯·scope fence·
   scope idle 대기를 **셋 다** pg-profile 테이블 2종(`active_streams`·`stream_scope_fences`)으로
@@ -280,7 +287,7 @@
   세고 회귀 테스트가 그 값을 고정하는데 명세 사본만 2로 남아 있던 drift 정정이다. 2026-08-09 확인 결과 이
   수치는 사본에만 있다 — Notion 정본도 BE 레포도 콜백 `3s` 만 적어, 정정할 BE 기준이 있는 게 아니라 직렬
   3회·최대 9s 가 미고지였던 것이다. 그 고지는 2026-08-09 BE 에 완료했다(최초 고지, BE 조치 불필요).
-  (api-spec §2.9(c), v0.32.2)
+  (api-spec §2.9(c), v0.32.1)
 - **#476 — 워커 다중화 선행조건과 프로세스 로컬 상태 인벤토리를 문서화하고 증설 가드를 추가** —
   `ActiveStreamRegistry`가 프로세스 로컬인 동안 Dockerfile worker 설정을 테스트로 막고,
   `WEB_CONCURRENCY >= 2` 기동은 경고로 관측한다. 권고는 owner(JWT `sub`) sticky를 1단계로 하고,

@@ -245,13 +245,14 @@ def test_non_positive_buyer_stream_cap_is_rejected(buyer_cap: float) -> None:
 
 
 def test_buyer_stream_cap_cannot_be_shorter_than_first_token_cap() -> None:
-    """첫 이벤트 대기보다 전체 상한이 짧은 자기모순은 거절하되 같은 경계는 허용한다."""
+    """첫 이벤트 대기보다 전체 상한이 짧은 자기모순은 거절한다; 재시도 0회로 검색 예산과 분리한다."""
     with pytest.raises(ValidationError):
         Settings(
             _env_file=None,
             stream_total_timeout_buyer_s=5.0,
             stream_first_token_timeout_s=10.0,
             rescue_tail_reserve_s=0.0,
+            spring_max_retries=0,
         )
 
     # [#427] 기본 RESCUE_TAIL_RESERVE_S(15.0)는 STREAM_TOTAL_TIMEOUT_BUYER_S 보다 작아야
@@ -262,6 +263,7 @@ def test_buyer_stream_cap_cannot_be_shorter_than_first_token_cap() -> None:
         stream_total_timeout_buyer_s=10.0,
         stream_first_token_timeout_s=10.0,
         rescue_tail_reserve_s=0.0,
+        spring_max_retries=0,
     )
 
 

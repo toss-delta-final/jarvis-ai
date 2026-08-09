@@ -42,6 +42,16 @@
 - 규칙: 분위수·분모 분리 회귀 테스트는 의도한 잘못된 결합을 실제로 적용한 변이에서 적어도 하나의
   단언값이 달라지는 손계산 표본을 사용하고, 변이 실행으로 그 실패를 확인한다.
 - 관련: `tests/unit/test_aggregate_rescue_chain.py` · #385
+## [2026-08-09] 전체 `ruff format` 은 현재 변경 범위를 벗어난 포맷 churn을 만든다 (#406)
+- 증상: #406 검증에서 인자 없는 `uv run ruff format`을 실행해 이슈와 무관한 26개 파일이 순수
+  포맷 변경으로 워킹트리에 함께 남았다.
+- 원인: 저장소에는 CI가 강제하지 않는 기존 포맷 드리프트가 있고, 전체 format은 그 드리프트까지
+  현재 작업의 변경으로 흡수한다.
+- 규칙: format은 이번에 수정한 파일 목록만 인자로 넘기고, 전체 검증은 `uv run ruff check`로 한다.
+- 관련: #406 · `.github/workflows/ci.yml` · `docs/lessons.md`
+
+---
+
 ## [2026-08-09] `asyncio.run` 을 타는 유닛 테스트는 Windows 에서만 TCP 차단에 걸린다
 - 증상: `tests/unit/test_personalization_scope.py::test_live_wrapper_routes_profile_for_all_scopes`
   가 로컬(Windows)에서만 `ConnectionRefusedError: unit tests must not open live TCP connections`
