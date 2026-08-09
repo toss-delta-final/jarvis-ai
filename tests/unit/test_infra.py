@@ -61,7 +61,7 @@ class _FakeRequest:
 def test_concurrent_same_thread_returns_409() -> None:
     """sessionId가 달라도 동일 threadId 활성 스트림에는 409를 반환한다."""
     # dev 무토큰 게스트 → subject None → registry_key owner="anon" → "anon:busy-thread"
-    get_registry().acquire("anon:busy-thread")
+    asyncio.run(get_registry().acquire("anon:busy-thread"))
     try:
         r = _chat("new-session", thread_id="busy-thread")
         assert r.status_code == 409
@@ -69,27 +69,27 @@ def test_concurrent_same_thread_returns_409() -> None:
         assert env["code"] == "STREAM_IN_PROGRESS"
         assert env["requestId"]
     finally:
-        get_registry().release("anon:busy-thread")
+        asyncio.run(get_registry().release("anon:busy-thread"))
 
 
 def test_same_session_different_threads_are_not_blocked() -> None:
     """같은 sessionId라도 다른 threadId의 활성 스트림은 서로 막지 않는다."""
     registry = get_registry()
-    assert registry.acquire("anon:thread-a")
+    assert asyncio.run(registry.acquire("anon:thread-a"))
     try:
         r = _chat("shared-session", thread_id="thread-b")
         assert r.status_code == 200
         _ = r.text
     finally:
-        registry.release("anon:thread-a")
+        asyncio.run(registry.release("anon:thread-a"))
 
 
-def test_registry_fence_requires_issued_token_identity_and_preserves_legacy_slots() -> None:
+async def test_registry_fence_requires_issued_token_identity_and_preserves_legacy_slots() -> None:
     registry = get_registry()
-    token = registry.acquire_fence("guest-1", "session-1")
+    token = await registry.acquire_fence("guest-1", "session-1")
     assert token is not None
-    assert registry.acquire("legacy-thread")
-    assert not registry.acquire(
+    assert await registry.acquire("legacy-thread")
+    assert not await registry.acquire(
         "guest-1:new-thread",
         owner_id="guest-1",
         session_id="session-1",
@@ -97,13 +97,13 @@ def test_registry_fence_requires_issued_token_identity_and_preserves_legacy_slot
 
     forged = StreamScopeFence(owner_id="guest-1", session_id="session-1")
     with pytest.raises(ValueError, match="not active"):
-        registry.release_fence(forged)
+        await registry.release_fence(forged)
     assert registry.is_fenced("guest-1", "session-1")
 
-    registry.release_fence(token)
+    await registry.release_fence(token)
     assert not registry.is_fenced("guest-1", "session-1")
     with pytest.raises(ValueError, match="not active"):
-        registry.release_fence(token)
+        await registry.release_fence(token)
 
 
 def test_registry_released_after_stream() -> None:

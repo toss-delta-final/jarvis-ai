@@ -72,10 +72,23 @@
   와이어 계약 무변경.
 
 ### Added
+- **#476 — 스트림 레지스트리를 워커 간 공유로 올릴 수 있게 했다** (`STREAM_REGISTRY_BACKEND=shared`,
+  기본값은 종전 `memory` — **출하 동작 무변경**, 계약 무변경). §2.9(a) 활성 슬롯·scope fence·
+  scope idle 대기를 **셋 다** pg-profile 테이블 2종(`active_streams`·`stream_scope_fences`)으로
+  옮겨, 워커를 다중화해도 409 가드가 유효하고 세션 claim 경로가 워커 간에 어긋나지 않는다.
+  fence 원자성의 근거를 "`acquire_fence()`에 await 가 없다"(이벤트 루프)에서 **스코프 키에 건
+  `pg_advisory_xact_lock`**(트랜잭션)으로 갈아끼웠고, 모든 행에 lease/TTL 을 둬 죽은 워커가
+  방을 영구히 409 로 만드는 #48 성질의 누수를 막는다. 공유 저장소 장애는 fail-closed —
+  기존 계약 코드 `503 STATE_UNAVAILABLE` 로 나간다(새 오류 코드 없음). `active_count()` 는
+  프레임마다 호출되는 관측 경로라 여전히 프로세스 로컬 O(1) 이며, 그래서 `chat_request` 에
+  워커 지문 `workerFp` 를 추가해 워커별 값을 갈라 합산할 수 있게 했다.
+  `REGISTRY_IS_PROCESS_LOCAL` 하드코딩 상수는 설정 파생 `registry_is_process_local()` 로 바뀌었고,
+  Dockerfile 가드는 "워커를 켜려면 공유 백엔드도 함께 켜라"로 정확해졌다.
+  (`docs/specs/DESIGN-SHARED-STREAM-REGISTRY-476.md`)
 - **#476 — `chat_request`에 활성 스트림 도착 표본(`activeStreams`)과 턴 중 피크
   (`activeStreamsPeak`)를 추가** — 단일 이벤트 루프의 검색 파싱 부하가 동시 20에서 3초 예산을
   넘은 실측(#427)을 운영 로그로 판단할 수 있게 한다. 동일 방 409 거절도 선행 활성 수와 함께
-  남기며, 이 값은 외부 API 계약이 아닌 서버 내부 관측이다.
+  남기며, 이 값은 외부 API 계약이 아닌 서버 내부 관측이다(**워커별 값** — `workerFp` 로 가른다).
 - **#346 — 비교(기준) 기간 어휘 양 레인 지원** (`직전 동일 기간`·`지난달 대비`·`전월 동기간`·
   `작년 대비`·`전년 동기간`). `period.resolve_comparison(expr, base)` 가 본 기간을 받아 환산하고
   (`직전 동일 기간` 은 보충값이 없어 확인 불필요 — `tools._previous_period` 와 같은 정의,

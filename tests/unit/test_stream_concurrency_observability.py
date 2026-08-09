@@ -65,18 +65,18 @@ def _chat_records(caplog: pytest.LogCaptureFixture) -> list[dict]:
     ]
 
 
-def test_active_count_tracks_slots_without_counting_fences() -> None:
+async def test_active_count_tracks_slots_without_counting_fences() -> None:
     registry = ActiveStreamRegistry()
 
     assert registry.active_count() == 0
-    assert registry.acquire("stream-a")
+    assert await registry.acquire("stream-a")
     assert registry.active_count() == 1
-    assert registry.acquire("stream-b")
+    assert await registry.acquire("stream-b")
     assert registry.active_count() == 2
-    registry.release("stream-a")
-    registry.release("stream-a")
+    await registry.release("stream-a")
+    await registry.release("stream-a")
     assert registry.active_count() == 1
-    assert registry.acquire_fence("owner", "session") is not None
+    assert await registry.acquire_fence("owner", "session") is not None
     assert registry.active_count() == 1
 
 
@@ -118,7 +118,7 @@ async def test_rejected_turn_logs_preexisting_active_stream_count(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     registry = get_registry()
-    assert registry.acquire("member-476:busy")
+    assert await registry.acquire("member-476:busy")
     observer = await _observation("rejected-476")
 
     async def unused(_turn_started_at: float):
@@ -129,7 +129,7 @@ async def test_rejected_turn_logs_preexisting_active_stream_count(
             with pytest.raises(HTTPException) as exc_info:
                 await open_stream(_FakeRequest(), "member-476:busy", unused, observer=observer)
     finally:
-        registry.release("member-476:busy")
+        await registry.release("member-476:busy")
 
     assert exc_info.value.status_code == 409
     [record] = [record for record in _chat_records(caplog) if record["event"] == "chat_request"]
@@ -212,7 +212,9 @@ async def test_turn_peak_samples_first_token_wait_window(
 
 
 def _trace(request_id: str):
-    return TraceFactory(exporter=FakeTraceExporter(), enabled=True, sampling_rate=1.0).start_request(
+    return TraceFactory(
+        exporter=FakeTraceExporter(), enabled=True, sampling_rate=1.0
+    ).start_request(
         name="buyer_chat_turn",
         request_id=request_id,
         conversation_id=f"session-{request_id}",
@@ -248,7 +250,9 @@ async def test_chat_request_aggregates_search_result_maxima(
                 products=[SpringProduct(product_id=1, name="one", price=1)], total_count=3
             ),
             ProductSearchResult(
-                products=[SpringProduct(product_id=index, name=str(index), price=1) for index in range(4)],
+                products=[
+                    SpringProduct(product_id=index, name=str(index), price=1) for index in range(4)
+                ],
                 total_count=9,
             ),
         ]
@@ -297,7 +301,9 @@ async def test_search_observation_failure_does_not_fail_search(
     monkeypatch.setattr(search_service, "current_request_trace", lambda: BrokenTrace())
 
     with caplog.at_level(logging.WARNING, logger="app.services.search_service"):
-        result = await search_service.SpringSearchBackend().search(ProductSearchFilters(keyword="safe"))
+        result = await search_service.SpringSearchBackend().search(
+            ProductSearchFilters(keyword="safe")
+        )
 
     assert result is expected
     assert "SEARCH_RESULT_OBSERVATION_FAILED" in caplog.text

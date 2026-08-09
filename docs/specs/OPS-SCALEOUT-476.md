@@ -19,9 +19,9 @@
 | 10 | 2.022s | 2.313s | OK |
 | 20 | 4.229s | 5.238s | 초과 → `SEARCH_FAILED` |
 
-`app.core.stream::ActiveStreamRegistry.active_count`는 활성 슬롯만 O(1)로 읽는다. fence는 스코프 예약이지 열린 스트림이 아니므로 세지 않는다. `app.core.stream::open_stream`은 acquire 성공 직후와 409 거절 직전에 표본을 남긴다. 성공 표본은 자기 자신을 포함하고, 409 표본은 슬롯을 얻지 못했으므로 자기 자신을 제외한다. 그 뒤 매 `asyncio.wait` 반환 직후 `RequestObservation`에 다시 기록해 프레임 도착과 유휴 polling tick 양쪽에서 턴 피크를 갱신한다.
+`app.core.stream_registry::ActiveStreamRegistry.active_count`는 활성 슬롯만 O(1)로 읽는다. fence는 스코프 예약이지 열린 스트림이 아니므로 세지 않는다. `app.core.stream::open_stream`은 acquire 성공 직후와 409 거절 직전에 표본을 남긴다. 성공 표본은 자기 자신을 포함하고, 409 표본은 슬롯을 얻지 못했으므로 자기 자신을 제외한다. 그 뒤 매 `asyncio.wait` 반환 직후 `RequestObservation`에 다시 기록해 프레임 도착과 유휴 polling tick 양쪽에서 턴 피크를 갱신한다.
 
-`app.core.observability::RequestObservation`의 `activeStreams`는 최초 표본(요청 도착 시 부하), `activeStreamsPeak`는 그 턴의 최대 표본이다. 같은 `chat_request` 행의 `searchCalls`·`searchCandidatesMax`·`searchTotalCountMax`·`searchElapsedMsMax`는 검색 호출 수와 후보 수·I-1 전체 건수·종단 지연의 최대를 함께 남겨, 동시성 자체와 응답 크기 가설을 구분하는 근거가 된다. 이 값들은 와이어 계약을 바꾸지 않는다.
+`app.core.observability::RequestObservation`의 `activeStreams`는 최초 표본(요청 도착 시 부하), `activeStreamsPeak`는 그 턴의 최대 표본이다. **두 값 모두 워커별 값이다** — 공유 레지스트리를 켜도 `active_count`는 프레임마다 호출되는 관측 경로라 DB를 치지 않고 이 워커의 슬롯만 센다(의미도 "이 이벤트 루프가 얼마나 붐비는가"라서 단일 이벤트 루프 포화 판정이라는 원래 목적에 더 맞다). 그래서 같은 `chat_request` 행에 `workerFp`(`app.core.observability::worker_fingerprint`, 프로세스 시작 시 1회 생성한 인스턴스 id의 `identifier_fingerprint`)를 함께 남긴다 — 다중 워커 로그를 워커별로 갈라야 이 지표를 해석·합산할 수 있다. 랜덤 uuid라 PII가 아니다. 같은 행의 `searchCalls`·`searchCandidatesMax`·`searchTotalCountMax`·`searchElapsedMsMax`는 검색 호출 수와 후보 수·I-1 전체 건수·종단 지연의 최대를 함께 남겨, 동시성 자체와 응답 크기 가설을 구분하는 근거가 된다. 이 값들은 와이어 계약을 바꾸지 않는다.
 
 ## 2. 프로세스 로컬 상태 인벤토리
 
@@ -29,7 +29,7 @@
 
 | 상태 / 심볼 | 현재 범위 | 다중 워커 파손 모드 |
 |---|---|---|
-| `app.core.stream::ActiveStreamRegistry`의 `_registry` | 프로세스 전역 | 같은 `owner:threadId` 요청이 서로 다른 워커에 가면 §2.9(a) 409가 우회되어 동시 스트림과 후속 RMW가 겹친다. |
+| `app.core.stream_registry::ActiveStreamRegistry`의 `_registry` | 프로세스 전역 (**기본값**) | 같은 `owner:threadId` 요청이 서로 다른 워커에 가면 §2.9(a) 409가 우회되어 동시 스트림과 후속 RMW가 겹친다. **해소 가능**: `STREAM_REGISTRY_BACKEND=shared`로 pg-profile 공유 백엔드를 켜면 활성 슬롯·scope fence·scope idle이 워커 간에 공유된다(`docs/specs/DESIGN-SHARED-STREAM-REGISTRY-476.md`). 아래 나머지 항목은 그대로 남는다. |
 | `app.agents.buyer.cart.state::CartStateStore.set_last_reco` | 락 없는 저장소 RMW | 두 워커가 같은 누적 추천을 읽고 쓰면 한 턴의 추천이 통째로 사라져 담기 허용 목록에서 빠진다. |
 | `app.agents.seller.hitl::_confirm_locks` | 프로세스 내 `draftId` 락 | 같은 draft confirm이 워커별 락을 각각 얻어 도구 실행·확정이 중복 경합한다. |
 | `app.core.ratelimit::SlidingWindowLimiter`의 in-memory 카운터 | 프로세스 전역 | 워커마다 별도 버킷을 가지므로 실효 분당·시간당 상한이 워커 수만큼 늘어난다. `docs.api-spec.md` §2.8은 다중 인스턴스 시 Redis 이관을 이미 단서로 둔다. |
@@ -56,7 +56,7 @@ sticky key를 `threadId`로 하면 충분하지 않다. `app.core.stream::Active
 3. owner sticky를 LB에서 보장하거나, shared registry의 TTL/만료·장애 복구를 구현하고 위 로컬 상태의 정합성 대책을 검증한다.
 4. 그 뒤에만 `--workers` 또는 컨테이너/EC2 증설을 사람 승인으로 적용한다.
 
-`app.core.stream::REGISTRY_IS_PROCESS_LOCAL`이 `True`인 동안 가드 테스트는 Dockerfile `CMD`에 `--workers`와 `WEB_CONCURRENCY`가 없는지만 확인한다. 기동 시 `WEB_CONCURRENCY >= 2`면 경고만 남기며, 기존 배포를 거부하지 않는다. 공유 레지스트리 전환자가 상수를 `False`로 바꾸면 이 가드는 자동 완화되지만, 위 인벤토리의 나머지 조건을 검토했다는 뜻은 아니다.
+`app.core.stream_registry::registry_is_process_local`은 하드코딩 상수가 아니라 `STREAM_REGISTRY_BACKEND` 설정에서 파생된다(기본 `memory` → `True`). 가드 테스트(`tests/unit/test_scaleout_guard_476.py`)의 규칙은 **"Dockerfile이 `--workers`/`WEB_CONCURRENCY`로 워커 다중화를 켜려면 같은 파일에서 `STREAM_REGISTRY_BACKEND=shared`를 함께 설정해야 한다"**이다 — 백엔드가 무엇이든 스킵되지 않는다. 기동 시 `WEB_CONCURRENCY >= 2`이고 레지스트리가 프로세스 로컬이면 경고만 남기며, 기존 배포를 거부하지 않는다. 공유 백엔드를 켜면 이 경고와 가드는 자동으로 완화되지만, **위 인벤토리의 나머지 조건을 검토했다는 뜻은 아니다.**
 
 ## 5. 범위 밖
 

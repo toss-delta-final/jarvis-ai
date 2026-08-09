@@ -14,6 +14,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import uuid
 from dataclasses import dataclass, field
 
 from app.core.auth import Identity
@@ -62,6 +63,22 @@ def message_fingerprint(text: str) -> tuple[int, str]:
 def identifier_fingerprint(value: str | None) -> str | None:
     """로그 상관관계용 비가역 식별자 지문."""
     return safe_fingerprint(value)
+
+
+# 프로세스(=워커) 인스턴스 식별자. 기동 시 1회 생성한다. `activeStreams`/`activeStreamsPeak` 는
+# 워커별 값이므로(docs/specs/DESIGN-SHARED-STREAM-REGISTRY-476.md §2.1) 이 지문이 없으면 다중
+# 워커 로그를 워커별로 갈라 합산할 수 없다. 랜덤 uuid 라 PII 가 아니다.
+_WORKER_INSTANCE_ID = str(uuid.uuid4())
+
+
+def worker_instance_id() -> str:
+    """이 프로세스의 인스턴스 id (공유 레지스트리 행 소유자 표기용)."""
+    return _WORKER_INSTANCE_ID
+
+
+def worker_fingerprint() -> str | None:
+    """`chat_request` 로그의 워커 지문 — 워커별 관측값을 갈라 합산하기 위한 축."""
+    return identifier_fingerprint(_WORKER_INSTANCE_ID)
 
 
 class _LogFingerprint(str):
@@ -335,8 +352,10 @@ class RequestObservation:
             "threadFp": identifier_fingerprint(self.thread_id),
             "latencyFirstToken": self.server_first_text_token_ms,
             "latencyTotal": latency_total_ms,
+            # 워커별 값이다 — 합산은 workerFp 로 갈라서 한다(DESIGN-SHARED-STREAM-REGISTRY-476 §2.1).
             "activeStreams": self.active_streams,
             "activeStreamsPeak": self.active_streams_peak,
+            "workerFp": worker_fingerprint(),
             "model": [m.model for m in self.model_calls] or None,
             "promptTokens": sum(m.prompt_tokens for m in self.model_calls),
             "completionTokens": sum(m.completion_tokens for m in self.model_calls),
@@ -531,6 +550,7 @@ def emit_rejection(request_id: str, error_type: str, **fields: object) -> None:
         "degradeReason": None,
         "costUsd": 0.0,
         "toolCalls": 0,
+        "workerFp": worker_fingerprint(),
         "ownerFp": (
             identifier_fingerprint(str(raw_owner if raw_owner is not None else scope_owner))
             if raw_owner is not None or scope_owner is not None
