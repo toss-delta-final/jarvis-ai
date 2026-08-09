@@ -4,7 +4,8 @@
 - ResolvedPlan: AnalysisPlan(LLM 출력)의 기간을 코드가 환산한 내부 실행 계획.
 - resolve_plan: AnalysisPlan → ResolvedPlan. 모든 불성립(clarification·빈 워커·환산
   실패)은 ValueError 로 통일 — 호출부(3-3)는 이를 받아 되묻기 token 으로 전환한다.
-- format_worker_input: 워커 입력 메시지 포맷(기간 주입 규약, 장치 ④ 접속점).
+- format_worker_input / format_general_input: 입력 메시지 포맷(기간 주입 규약,
+  장치 ④ 접속점). 두 레인이 같은 규약으로 기간을 받는다(#346).
 - PROGRESS_TOKENS·WORKER_PROGRESS_TOKENS·ALL_WORKERS_FAILED_TOKEN: 진행 token 문구.
 
 오케스트레이션(asyncio.gather 팬아웃·검증 루프·SSE 배선)은 3-3 이후 소관.
@@ -13,11 +14,11 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from typing import get_args
 
-from app.agents.seller import calc
+from app.agents.seller import period as seller_period
 from app.agents.seller.schemas import (
     AnalysisFinding,
     AnalysisPlan,
@@ -39,12 +40,28 @@ class ResolvedPlan:
 
     analyses 는 tuple(불변) — AnalysisPlan validator 가 중복을 제거했고
     순서는 팬아웃에서 무의미하지만 진행 token 방출 순서로는 쓰인다.
+
+    [#345] period 3필드는 확인 흐름(DESIGN-SELLER-PERIOD §5)용 확장이다.
+    needs_confirmation 이 True 면 코드가 값을 보충한 해석이라 실행 전에 판매자
+    확인을 받는다 — 확인 대기에 이 ResolvedPlan 을 통째로 저장했다가 승인 시
+    그대로 재개하므로 planner 재호출이 0회가 된다(#269 완료 조건).
+    신규 필드는 전부 default 있는 keyword 로만 추가한다(frozen dataclass —
+    기존 생성부·픽스처의 positional 호환 유지, PipelineResult 와 같은 규약).
     """
 
     analyses: tuple[AnalysisType, ...]
     date_from: date
     date_to: date
     wants_chart: bool = False
+    needs_confirmation: bool = False
+    period_expr: str = ""
+    period_clipped: bool = False
+    # [#346] 비교(기준) 기간 — 판매자가 대조군을 함께 말했을 때만 채워진다.
+    # needs_confirmation 은 **본 기간과 비교 기간의 합집합**이다(어느 쪽이든 코드가 값을
+    # 보충했으면 확인을 받는다) — period.PeriodResolution.any_confirmation_needed 참조.
+    comparison_expr: str = ""
+    compare_from: date | None = None
+    compare_to: date | None = None
 
 
 def resolve_plan(
@@ -58,12 +75,15 @@ def resolve_plan(
     """AnalysisPlan(LLM) → ResolvedPlan(코드) — 불성립은 전부 ValueError.
 
     - plan.clarification 이 있으면 계획 불성립: 되묻기 질문을 그대로 ValueError
-      메시지로 올린다(호출부가 token 으로 전달).
+      메시지로 올린다(호출부가 token 으로 전달). [#345] planner 는 **기간을 이유로**
+      clarification 을 쓰지 않는다 — 기간 문구의 소유자는 period.py 하나다
+      (PLANNER_PROMPT `[기간]` 절 + AnalysisPlan.period_expr description).
+      여기 남는 clarification 은 "어떤 분석을 원하는지 모를 때" 뿐이다.
     - analyses 가 비면 planner 오류로 간주하고 되묻기 처리.
-    - 기간 환산은 calc.normalize_period 소관 — 미지원 표현("이번 달"·"최근 3개월" 등)의
+    - 기간 환산은 period.resolve_period 소관 — 해석 불가 표현("작년 여름" 등)의
       ValueError 도 그대로 전파된다. 그 메시지는 판매자에게 그대로 노출되므로
-      calc 쪽에서 안내문 형태로 쓴다(#269).
-    - max_days 미지정이면 calc 이 Settings 에서 읽는다 — 상한 초과는 되묻기다.
+      period 쪽에서 안내문 형태로 쓴다(#269 P0 계약 승계).
+    - max_days 미지정이면 period 가 Settings 에서 읽는다 — 상한 초과는 되묻기다.
     - wants_chart = plan.wants_chart OR _CHART_RE(question) — LLM 판정과 코드
       키워드 검사의 OR(이슈 #242). question 은 키워드 기본값(""라 매칭 안 됨)
       이라 기존 호출부(question 미전달)는 LLM 판정만 반영해 하위 호환된다.
@@ -74,18 +94,68 @@ def resolve_plan(
         raise ValueError(
             "어떤 분석을 원하시는지 파악하지 못했습니다. 조금 더 구체적으로 알려주세요."
         )
-    date_from, date_to = calc.normalize_period(
+    resolution = seller_period.resolve_period(
         plan.period_expr,
         today=today,
         recent_default_days=recent_default_days,
         max_days=max_days,
     )
+    if plan.comparison_expr:
+        # [#346] 비교 기간도 같은 모듈이 환산한다 — general 레인과 어휘·경계 규칙이 하나다.
+        resolution = replace(
+            resolution,
+            comparison=seller_period.resolve_comparison(
+                plan.comparison_expr, resolution, max_days=max_days
+            ),
+        )
     wants_chart = plan.wants_chart or bool(_CHART_RE.search(question))
+    comparison = resolution.comparison
     return ResolvedPlan(
         analyses=tuple(plan.analyses),
-        date_from=date_from,
-        date_to=date_to,
+        date_from=resolution.date_from,
+        date_to=resolution.date_to,
         wants_chart=wants_chart,
+        needs_confirmation=resolution.any_confirmation_needed,
+        period_expr=resolution.expr,
+        period_clipped=resolution.clipped,
+        comparison_expr=comparison.expr if comparison else "",
+        compare_from=comparison.date_from if comparison else None,
+        compare_to=comparison.date_to if comparison else None,
+    )
+
+
+def period_confirmation_text(plan: ResolvedPlan) -> str:
+    """확인 대기 문구 — 문구 생성은 period.py 소관이고 여기는 어댑터다(§4.2).
+
+    ResolvedPlan 은 확인 대기 저장·재개의 단위(DESIGN §6)라 PeriodResolution 을
+    따로 들고 다니지 않는다. 대신 필요한 3필드를 되돌려 문구를 만든다.
+    """
+    return seller_period.confirmation_text(
+        seller_period.PeriodResolution(
+            date_from=plan.date_from,
+            date_to=plan.date_to,
+            needs_confirmation=True,
+            expr=plan.period_expr,
+            clipped=plan.period_clipped,
+            comparison=_plan_comparison(plan),
+        )
+    )
+
+
+def _plan_comparison(plan: ResolvedPlan) -> seller_period.PeriodResolution | None:
+    """ResolvedPlan 의 비교 3필드 → PeriodResolution 되돌리기 (#346).
+
+    확인 문구·워커 입력이 둘 다 필요로 해 한 곳에 둔다. needs_confirmation 을 True 로
+    두는 것은 문구 생성용이다 — 저장·재개 단위인 ResolvedPlan 은 합집합 판정만 들고 있고
+    어느 쪽이 보충됐는지는 구분하지 않는다(문구가 양쪽 날짜를 다 밝히므로 필요 없다).
+    """
+    if plan.compare_from is None or plan.compare_to is None:
+        return None
+    return seller_period.PeriodResolution(
+        date_from=plan.compare_from,
+        date_to=plan.compare_to,
+        needs_confirmation=True,
+        expr=plan.comparison_expr,
     )
 
 
@@ -97,14 +167,59 @@ WORKER_INPUT_TEMPLATE = """\
 [분석 기간] from={date_from} to={date_to}
 [판매자 질문] {question}"""
 
+# [#346] 비교 기간 줄 — 있을 때만 [분석 기간] 뒤에 끼운다. 도구 시그니처는 바꾸지 않는다:
+# 워커는 두 기간으로 같은 도구를 **각각** 호출한다(CONVERSION_PROMPT 가 이미 그렇게 지시).
+COMPARISON_INPUT_LINE = "[비교 기간] from={date_from} to={date_to}"
+
+
+def _comparison_line(plan: ResolvedPlan) -> str:
+    if plan.compare_from is None or plan.compare_to is None:
+        return ""
+    return "\n" + COMPARISON_INPUT_LINE.format(
+        date_from=plan.compare_from.isoformat(), date_to=plan.compare_to.isoformat()
+    )
+
 
 def format_worker_input(question: str, plan: ResolvedPlan) -> str:
     """워커에 넣을 HumanMessage 본문을 만든다 — 전 워커 공통 1건."""
-    return WORKER_INPUT_TEMPLATE.format(
+    body = WORKER_INPUT_TEMPLATE.format(
         date_from=plan.date_from.isoformat(),
         date_to=plan.date_to.isoformat(),
         question=question,
     )
+    head, _, tail = body.partition("\n")
+    return f"{head}{_comparison_line(plan)}\n{tail}"
+
+
+# general 레인 입력 포맷 (#346) — 워커 포맷과 **나란히** 둔다.
+# 두 레인이 같은 모양으로 기간을 받는 것이 "같은 기간 표현 → 같은 (from, to)" 를
+# 눈으로 확인할 수 있게 하는 지점이다. 라벨만 다르다(분석 기간 / 조회 기간) —
+# general 은 분석이 아니라 조회 레인이라 판매자 대면 어휘를 맞춘다.
+GENERAL_INPUT_TEMPLATE = """\
+[조회 기간] from={date_from} to={date_to}
+[판매자 질문] {question}"""
+
+
+def format_general_input(question: str, resolution: seller_period.PeriodResolution) -> str:
+    """general_agent 에 넣을 HumanMessage 본문 — 코드가 환산한 기간을 주입한다.
+
+    ResolvedPlan 이 아니라 PeriodResolution 을 받는 이유: general 레인에는 planner 도
+    분석 계획도 없고 필요한 것은 기간뿐이다. 굳이 ResolvedPlan 을 만들면 analyses 가
+    빈 가짜 계획이 생겨 "계획이 있는데 워커가 없다"는 없는 상태가 하나 늘어난다.
+    """
+    body = GENERAL_INPUT_TEMPLATE.format(
+        date_from=resolution.date_from.isoformat(),
+        date_to=resolution.date_to.isoformat(),
+        question=question,
+    )
+    if resolution.comparison is None:
+        return body
+    head, _, tail = body.partition("\n")
+    comparison = COMPARISON_INPUT_LINE.format(
+        date_from=resolution.comparison.date_from.isoformat(),
+        date_to=resolution.comparison.date_to.isoformat(),
+    )
+    return f"{head}\n{comparison}\n{tail}"
 
 
 # ── report·judge 입력 포맷 (3-4 검증 루프 — REPORT/JUDGE_PROMPT 의 "입력" 계약) ──

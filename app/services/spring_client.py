@@ -1474,7 +1474,13 @@ class SpringClient:
     async def get_sales(
         self, brand_id: int, from_: str, to: str, granularity: str = "daily"
     ) -> SalesResult:
-        """I-6 매출 시계열 조회 (§4.4). granularity: daily/weekly/monthly/summary."""
+        """I-6 매출 시계열 조회 (§4.4). granularity: daily/weekly/monthly/summary.
+
+        [#489] series[].salesCount(판매 **수량**, SUM(oi.quantity) · CANCELLED/
+        RETURNED 제외)를 수신한다 — 구현에는 처음부터 있었으나 스키마에 필드가
+        없어 파싱되지 않고 버려지던 드리프트 정정(2026-08-06). granularity=summary
+        응답에는 수량 필드가 없어 nullable 이다.
+        """
         data = await self._request(
             "GET",
             f"/internal/seller/{brand_id}/sales",
@@ -1504,8 +1510,13 @@ class SpringClient:
     ) -> BehaviorEventsResult:
         """I-13 행동 이벤트 집계 조회 (§4.4 — 07/17 BE 확정, REALIGN ②-3).
 
-        eventType 은 상품 연계 4종 복수 선택(미지정 = 4종 전체), groupBy 는
-        product(기본)/eventType/date. 실패 코드: INVALID_PERIOD/INVALID_GROUP_BY(400).
+        eventType 은 상품 연계 **5종** 복수 선택(미지정 = 5종 전체) — product_view /
+        add_to_cart / **remove_from_cart** / checkout_start / purchase_complete.
+        [2026-08-06 개정, #489] remove_from_cart 편입으로 4종 → 5종이며, 5종 밖의
+        값은 400 INVALID_GROUP_BY 다(session_start/login/search/page_view 는 상품
+        귀속 경로가 없어 이 엔드포인트 스코프 밖).
+        groupBy 는 product(기본)/eventType/date. 실패 코드:
+        INVALID_PERIOD/INVALID_GROUP_BY(400).
         """
         params: dict = {"from": from_, "to": to}
         if event_type:
@@ -1601,12 +1612,20 @@ class SpringClient:
 
     async def get_account_events(
         self,
+        brand_id: int,
         from_: str,
         to: str,
         event_type: str | None = None,
         group_by: str | None = None,
     ) -> AccountEventsResult:
-        """I-8 계정/보안 이벤트 집계 조회 (§4.4). ⚠️ brandId path 없음 — 전역·admin 소유 🔴.
+        """I-8 계정 이벤트 집계 조회 (§4.4) — 자사 코호트 스코프.
+
+        [#481, 노션 2026-08-06 개정] 전역 `/internal/account-events` →
+        `/internal/seller/{brandId}/account-events` 전환. admin 부재로 판매자
+        워커가 자사와 무관한 플랫폼 전체 신호를 소비하던 문제를 자사 코호트
+        (I-16 churn 과 동일 조인)로 해소했다 — 전역 구경로는 admin 용으로 BE 존치.
+        미존재 brandId 는 404 BRAND_NOT_FOUND(다른 판매자 집계 API 와 동일) —
+        전용 매핑 없이 SpringUnavailableError 로 degrade 한다(I-6·I-16 과 동일 취급).
 
         [#197] from/to 는 필수다(AnalysisPeriod.of — 누락 시 400 INVALID_PERIOD).
         groupBy 는 BE 화이트리스트 eventType(기본)|hour|ip 만 허용 — 그 외 400
@@ -1619,7 +1638,7 @@ class SpringClient:
             params["groupBy"] = group_by
         data = await self._request(
             "GET",
-            "/internal/account-events",
+            f"/internal/seller/{brand_id}/account-events",
             operation="get_account_events",
             params=params,
         )
