@@ -25,6 +25,7 @@ _log = logging.getLogger(__name__)
 # [이슈 #416] FailureStreakTable.bump() 의 kind 인자 — 오타 방지용 상수 2종.
 FAILURE_STREAK_KIND_ITEM = "item"  # key = str(product_id), artifacts_batch 2선
 FAILURE_STREAK_KIND_PAGE = "page"  # key = cursor, artifacts_batch 3선
+EXTRAS_NAME_PRESENT_KEY = "name_present"
 
 # 방어적 메모리 상한(튜너블 아님) — 구 _ITEM_FAILURE_STREAK_MAX_ENTRIES/_PAGE_FAILURE_STREAK_MAX_ENTRIES
 # (artifacts_batch.py, #325)와 동일 값(10,000)을 kind 별로 독립 적용한다(item 10,000 · page
