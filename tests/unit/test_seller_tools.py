@@ -2171,7 +2171,7 @@ async def test_get_reviews_stats_mode_ignores_sort() -> None:
     result = await _call_runtime_tool(get_reviews, {"stats": True, "sort": "rating"}, fake)
 
     assert not result.startswith("Error:")
-    assert fake.recorded_review_stats_args == (None, None, None)
+    assert fake.recorded_review_stats_args == (None, None, None, None)
 
 
 async def test_get_reviews_stats_mode_null_average() -> None:
