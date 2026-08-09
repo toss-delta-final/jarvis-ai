@@ -236,18 +236,39 @@ def test_seller_product_row_serializes_camel() -> None:
 
 
 def test_product_create_by_alias() -> None:
-    """ProductCreate(I-10) 요청 바디는 camelCase 로 직렬화된다."""
-    payload = ProductCreate(name="여행용 파우치", price=10000, stock_quantity=5)
+    """ProductCreate(I-10) 요청 바디는 camelCase 로 직렬화된다.
+
+    [2026-08-09] `category`(자유 문자열) → `categoryId`(Long). BE 는 categoryId 만
+    받으므로 구 키를 보내면 조용히 버려진 뒤 필수 필드 누락으로 등록이 거부된다 —
+    이 단언이 그 회귀를 잡는 자리다.
+    """
+    payload = ProductCreate(
+        name="여행용 파우치", price=10000, stock_quantity=5, category_id=1499526220614373
+    )
     d = payload.model_dump(by_alias=True)
     assert d == {
         "name": "여행용 파우치",
         "price": 10000,
         "originalPrice": None,
         "stockQuantity": 5,
-        "category": None,
+        "stocks": None,  # [#524] 듀얼모드 — quantity 모드에서는 None(전송 시 exclude_none 으로 탈락)
+        "categoryId": 1499526220614373,
         "description": None,
         "imageUrl": None,
     }
+
+
+def test_stock_entry_by_alias() -> None:
+    """[#524] stocks[] 한 줄 — optionId camelCase, null 은 exclude_none 시 키 누락."""
+    from app.schemas.spring import StockEntry
+
+    assert StockEntry(option_id=10, quantity=3).model_dump(by_alias=True) == {
+        "optionId": 10,
+        "quantity": 3,
+    }
+    assert StockEntry(option_id=None, quantity=3).model_dump(
+        by_alias=True, exclude_none=True
+    ) == {"quantity": 3}
 
 
 def test_recommendation_push_rejects_negative_total_budget() -> None:

@@ -56,6 +56,9 @@ def test_role_tier_matches_provider_neutral_spec() -> None:
         "graph": "smart",
         "vision": "smart",
         "draft_gate": "smart",
+        # [#506 후속] category — 카테고리 오배정은 등록 후 되돌릴 수 없다(BE I-11 에
+        # category 필드가 없다). 폴백 1회 호출이라 비용도 작아 강등 이유가 없다.
+        "category": "smart",
     }
 
 

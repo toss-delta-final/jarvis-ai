@@ -44,7 +44,7 @@ from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessageChunk, HumanMessage, SystemMessage
 from pydantic.alias_generators import to_camel
 
-from app.agents.seller import category_catalog, draft_session
+from app.agents.seller import category_catalog, category_resolver, draft_session
 from app.agents.seller import period_confirm as seller_period_confirm
 from app.agents.seller import thread as seller_thread
 from app.agents.seller.checkpoint import get_checkpointer
@@ -671,6 +671,55 @@ def _category_candidates(
     return list(merged.values())[:k]
 
 
+async def _ensure_draft_category(
+    proposal: DraftProposal,
+    *,
+    message: str,
+    analysis: ProductImageAnalysis | None,
+    pending: draft_session.PendingCreate | None,
+) -> DraftProposal:
+    """[#506 후속] create 초안의 카테고리를 코드가 책임지고 채운다.
+
+    BE `categoryId` 는 필수라 카테고리 없는 create 초안은 승인해도 등록되지 않는다.
+    에이전트가 못 골랐거나(후보가 애매) 목록 밖 값을 적었으면 여기서 세 단계로 복구한다:
+
+      ① 수정 턴이면 **기존 초안의 카테고리**를 되살린다("가격만 바꿔줘" 턴에서
+         확정해 둔 카테고리가 조용히 사라지는 사고를 막는다).
+      ② 넓힌 후보로 LLM 택1(category_resolver) — 판매자가 대충 말한 상품군을 실제
+         카테고리 id 로 확정하는 지점이다.
+      ③ 그래도 못 고르면 그대로 둔다 — validate_draft 가 카테고리를 되묻는다.
+
+    잘못 배정하느니 되묻는다: 카테고리는 등록 후 변경할 수 없다(preview 경고와 동일,
+    BE I-11 에는 category 필드 자체가 없다).
+    """
+    if proposal.op != "create":
+        return proposal
+    current = next((c.after for c in proposal.changes if c.field == "category"), None)
+    if current is not None and category_catalog.get(current) is not None:
+        return proposal
+
+    resolved: str | None = None
+    if pending is not None and (kept := pending.changes.get("category")):
+        if category_catalog.get(kept) is not None:
+            resolved = kept
+    if resolved is None:
+        hint = analysis.category_hint if analysis is not None else None
+        entry = await category_resolver.resolve_category(message, hint=hint)
+        resolved = entry.id if entry is not None else None
+    if resolved is None:
+        # 목록 밖 값이 남아 있으면 걷어낸다 — validate_draft 의 "누락" 안내가
+        # "잘못된 값" 안내보다 판매자에게 할 일을 정확히 알려준다.
+        if current is not None:
+            return proposal.model_copy(
+                update={"changes": [c for c in proposal.changes if c.field != "category"]}
+            )
+        return proposal
+
+    changes = [c for c in proposal.changes if c.field != "category"]
+    changes.append(DraftChange(field="category", before="", after=resolved))
+    return proposal.model_copy(update={"changes": changes})
+
+
 def _product_agent_input(
     request: SellerChatRequest,
     *,
@@ -817,6 +866,13 @@ async def _product_stream(
         yield _token(proposal.clarification)
         yield _done("keep")
         return
+
+    # [#506 후속] 카테고리 복구 — 선검증 **전**에 돈다. validate_draft 는 카테고리
+    # 누락을 되묻기로 바꾸므로, 복구 기회를 그 앞에 두지 않으면 판매자가 이미 충분히
+    # 말한 상품군인데도 한 번 더 묻게 된다(LLM 호출은 실패한 턴에만 1회 추가).
+    proposal = await _ensure_draft_category(
+        proposal, message=request.message, analysis=analysis, pending=pending
+    )
 
     # 코드 선검증(4-2) — 실행 불가능한 draft 는 FE 에 보여주기 전에 되묻는다.
     record, problem = validate_draft(
@@ -990,6 +1046,13 @@ def _draft_event(record: DraftRecord, *, preview: dict | None = None) -> str:
             "changes": [
                 {
                     "field": to_camel(c.field),
+                    # [#524] 옵션별 재고 change 에만 실리는 추가 전용 키 — FE 는 모르는
+                    # 키를 무시한다(§3.2 확장 규칙). 값은 표시용 옵션명이다.
+                    **(
+                        {"optionName": mask_output(_strip_unsafe(c.option_name))}
+                        if c.option_name
+                        else {}
+                    ),
                     "before": _wire_value(c.field, c.before),
                     "after": _wire_value(c.field, c.after),
                 }
