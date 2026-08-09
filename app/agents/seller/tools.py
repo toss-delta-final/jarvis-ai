@@ -1378,6 +1378,12 @@ async def get_orders(
     return f"주문 {result.total}건{tab_note}: " + "; ".join(lines) + omitted_note + period_note
 
 
+# I-31 sort 화이트리스트(api-spec §4.20) — `rating` 은 2026-08-06 협의로 `ratingAsc` 로
+# 개명되며 폐기됐다(P-3 의 `rating` 은 높은 순이라 같은 이름·반대 방향을 갈랐다). 그 외
+# 값은 BE 400 VALIDATION_ERROR. 도구가 호출 전 선검증한다(#496, _ACCOUNT_EVENTS_GROUP_BY 패턴).
+_REVIEW_SORT = ("latest", "ratingAsc")
+
+
 @tool
 @_traced_tool("tool.get_reviews")
 @_guard_period_args
@@ -1403,7 +1409,8 @@ async def get_reviews(
         to_date: 조회 종료일 YYYY-MM-DD(선택).
         product_id: 특정 상품으로 한정(선택, 자사 상품만).
         rating: 별점 필터, 1~5 콤마 나열(선택, 예: "1,2" — 낮은 별점만).
-        sort: latest(기본)/rating — rating 은 낮은 별점부터 고정(선택).
+        sort: latest(기본)/ratingAsc — ratingAsc 는 낮은 별점부터(문제 파악용, 선택).
+            ratingDesc 는 존재하지 않는다 — 높은 별점은 rating="4,5" 필터로 얻는다.
         stats: True 면 집계 모드(총건수/평균/분포/상품별) — 목록 대신 통계만.
         limit: 반환 상한(선택, 서버 기본 20·최대 100).
         offset: 페이지 오프셋(선택).
@@ -1440,6 +1447,15 @@ async def get_reviews(
         return (
             f"리뷰 집계: 총 {agg.total_count}건, {avg_note}. 분포: {dist_note}."
             f"{by_product_note} {period_note}"
+        )
+    # [#496] sort 화이트리스트 선검증 — BE 도 400 VALIDATION_ERROR 로 거부하지만(api-spec
+    # §4.20), 폐기된 구 어휘 `rating` 은 LLM 이 여전히 낼 수 있고 왕복 1회(3s 타임아웃
+    # 예산)를 쓰고 나서야 실패한다. stats 모드는 sort 를 서버에 싣지 않아 검증 대상이 아니다.
+    if sort is not None and sort not in _REVIEW_SORT:
+        return (
+            f"Error: sort '{sort}' 는 지원되지 않습니다 — "
+            f"{'/'.join(_REVIEW_SORT)} 중 하나를 사용하세요"
+            '(높은 별점은 rating="4,5" 필터로 얻습니다).'
         )
     try:
         result = await get_spring_client().get_reviews(

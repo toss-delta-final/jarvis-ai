@@ -29,6 +29,16 @@
   I-16 경로로만 열려 있던 셈이다.
 
 ### Fixed
+- **#496 — I-31 `sort` 어휘 개명(`rating` → `ratingAsc`) 미반영으로 대표 질문이 400 으로 깨지던 문제**
+  (api-spec §4.20, v0.29.3). 2026-08-06 BE 협의가 구 안을 폐기했는데 `docs/api-spec.md` 사본이
+  갱신되지 않았고, 그 문구가 `get_reviews` 도구 docstring 과 `SpringClient.get_reviews`
+  docstring 으로 전파돼 워커가 폐기된 값을 그대로 호출했다 — "평점 낮은 리뷰 뭐가 문제야?" 가
+  `sort="rating"` → `400 VALIDATION_ERROR` → `SpringUnavailableError` 로 새면서 **정상 질문에
+  시스템 장애를 보고**하고 있었다. 정본 사본·docstring 2곳을 `ratingAsc` 로 갱신하고
+  (`ratingDesc` 는 없다 — 높은 별점은 `rating="4,5"` 필터), `_REVIEW_SORT` 화이트리스트로
+  어휘 밖 값을 Spring 왕복(3s 타임아웃 예산) 전에 거른다(`_ACCOUNT_EVENTS_GROUP_BY` 와 같은
+  패턴, 오류 문구에 유효 어휘를 실어 재시도 유도). stats 모드는 `sort` 를 서버에 싣지 않아
+  검증 대상에서 제외했다. 와이어 계약 불변.
 - **#488 — I-13 `purchaseComplete` 폐기 규정이 판매자 워커에 주입하던 오정보 제거** (api-spec
   §4.4, v0.29.2). 2026-07-31 개정(jarvis-backend#62 근본 수정 배포 / #196)으로 `purchaseComplete`
   는 **주문 기준 집계**(`order_item × product × brand`, PAID·`paid_at`, `COUNT(DISTINCT order_id)`

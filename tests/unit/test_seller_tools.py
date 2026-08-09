@@ -1975,15 +1975,36 @@ async def test_get_reviews_list_formats_rows() -> None:
     )
 
     result = await _call_runtime_tool(
-        get_reviews, {"rating": "1,2", "sort": "rating"}, fake, brand_id=12
+        get_reviews, {"rating": "1,2", "sort": "ratingAsc"}, fake, brand_id=12
     )
 
     assert fake.recorded_brand_id == 12
-    assert fake.recorded_reviews_args == (None, None, None, "1,2", "rating", None, None)
+    assert fake.recorded_reviews_args == (None, None, None, "1,2", "ratingAsc", None, None)
     assert "★2" in result and "여행용 파우치" in result
     assert "지퍼가 일주일 만에 고장났어요" in result
     assert "리뷰 47건" in result
     assert "최근 7일 기본 적용" in result  # 기간 생략 시 기본 고지
+
+
+async def test_get_reviews_rejects_retired_sort_vocabulary() -> None:
+    """[#496] 폐기된 구 어휘 sort="rating" 은 Spring 왕복 없이 로컬에서 거른다."""
+    fake = FakeSpringClient()
+
+    result = await _call_runtime_tool(get_reviews, {"sort": "rating"}, fake, brand_id=12)
+
+    assert result.startswith("Error:")
+    assert "ratingAsc" in result  # 유효 어휘를 실어 재시도를 유도한다
+    assert not hasattr(fake, "recorded_reviews_args")  # Spring 호출 자체가 없다
+
+
+async def test_get_reviews_stats_mode_ignores_sort() -> None:
+    """stats 모드는 sort 를 서버에 싣지 않으므로 화이트리스트 검증 대상이 아니다."""
+    fake = FakeSpringClient()
+
+    result = await _call_runtime_tool(get_reviews, {"stats": True, "sort": "rating"}, fake)
+
+    assert not result.startswith("Error:")
+    assert fake.recorded_review_stats_args == (None, None, None)
 
 
 async def test_get_reviews_stats_mode_null_average() -> None:

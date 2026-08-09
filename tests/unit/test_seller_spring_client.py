@@ -975,12 +975,12 @@ async def test_get_reviews_url_params_and_parsing() -> None:
 
     client = _client(handler)
     result = await client.get_reviews(
-        12, from_="2026-07-01", to="2026-07-31", rating="1,2", sort="rating"
+        12, from_="2026-07-01", to="2026-07-31", rating="1,2", sort="ratingAsc"
     )
 
     assert "/internal/seller/12/reviews" in captured["url"]
     assert "rating=1%2C2" in captured["url"] or "rating=1,2" in captured["url"]
-    assert "sort=rating" in captured["url"]
+    assert "sort=ratingAsc" in captured["url"]
     assert result.total == 47
     assert result.rows[0].rating == 2
     assert result.rows[0].product_name == "여행용 파우치"
