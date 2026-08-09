@@ -9,6 +9,8 @@
 -- docker-entrypoint-initdb.d 는 컨테이너가 "완전히 새로" 뜰 때(빈 볼륨) 1회만 실행한다 —
 -- 이미 만들어진 컨테이너의 볼륨에는 자동 반영되지 않는다. 기존 DB 에는 이렇게 수동 적용한다:
 -- docker exec -i jarvis-ai-pg-catalog-1 psql -U jarvis -d catalog < db/catalog/init/05_color_synonyms_seed.sql
+-- 재적재 시에는 검수로 승격된 status/canonical 등이 기존 행에도 반영돼야 하므로 충돌 행을
+-- 정본 값으로 갱신한다. embedding/embedding_model 은 2단계 배치 소유이므로 절대 갱신하지 않는다.
 
 INSERT INTO color_synonyms (term, canonical, status, provenance, doc_count) VALUES
     ('001 코랄스튜디오', NULL, 'rejected', 'human', 1),
@@ -211,7 +213,11 @@ INSERT INTO color_synonyms (term, canonical, status, provenance, doc_count) VALU
     ('도형옐로우', '옐로우', 'pending_review', 'seed_llm_assignment', 1),
     ('듄카키', '카키', 'pending_review', 'seed_llm_assignment', 1),
     ('딥그레이', '다크그레이', 'pending_review', 'seed_llm_assignment', 2)
-ON CONFLICT (term) DO NOTHING;
+ON CONFLICT (term) DO UPDATE SET
+    canonical = EXCLUDED.canonical,
+    status = EXCLUDED.status,
+    provenance = EXCLUDED.provenance,
+    doc_count = EXCLUDED.doc_count;
 
 INSERT INTO color_synonyms (term, canonical, status, provenance, doc_count) VALUES
     ('딥그린', '그린', 'pending_review', 'seed_llm_assignment', 9),
@@ -414,7 +420,11 @@ INSERT INTO color_synonyms (term, canonical, status, provenance, doc_count) VALU
     ('빈티지블루', '블루', 'pending_review', 'seed_llm_assignment', 7),
     ('빛나는 라이트 블루', '라이트블루', 'pending_review', 'seed_llm_assignment', 1),
     ('빛나는 붉은색', '레드', 'pending_review', 'seed_llm_assignment', 1)
-ON CONFLICT (term) DO NOTHING;
+ON CONFLICT (term) DO UPDATE SET
+    canonical = EXCLUDED.canonical,
+    status = EXCLUDED.status,
+    provenance = EXCLUDED.provenance,
+    doc_count = EXCLUDED.doc_count;
 
 INSERT INTO color_synonyms (term, canonical, status, provenance, doc_count) VALUES
     ('빨강', '레드', 'approved', 'human', 7),
@@ -617,7 +627,11 @@ INSERT INTO color_synonyms (term, canonical, status, provenance, doc_count) VALU
     ('체리로즈', '핑크', 'pending_review', 'seed_llm_assignment', 1),
     ('체리블랙', '블랙', 'pending_review', 'seed_llm_assignment', 1),
     ('체크', NULL, 'pending_review', 'seed_llm_assignment', 1)
-ON CONFLICT (term) DO NOTHING;
+ON CONFLICT (term) DO UPDATE SET
+    canonical = EXCLUDED.canonical,
+    status = EXCLUDED.status,
+    provenance = EXCLUDED.provenance,
+    doc_count = EXCLUDED.doc_count;
 
 INSERT INTO color_synonyms (term, canonical, status, provenance, doc_count) VALUES
     ('체크그린', '그린', 'pending_review', 'seed_llm_assignment', 1),
@@ -809,4 +823,8 @@ INSERT INTO color_synonyms (term, canonical, status, provenance, doc_count) VALU
     ('흰둥이옐로우', '옐로우', 'pending_review', 'seed_llm_assignment', 1),
     ('흰둥이핑크', '핑크', 'pending_review', 'seed_llm_assignment', 1),
     ('흰색', '화이트', 'approved', 'human', 5)
-ON CONFLICT (term) DO NOTHING;
+ON CONFLICT (term) DO UPDATE SET
+    canonical = EXCLUDED.canonical,
+    status = EXCLUDED.status,
+    provenance = EXCLUDED.provenance,
+    doc_count = EXCLUDED.doc_count;

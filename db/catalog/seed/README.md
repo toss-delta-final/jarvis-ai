@@ -175,6 +175,10 @@ uv run python scripts/derive_color_synonym_seed.py --check
 docker exec -i jarvis-ai-pg-catalog-1 psql -U jarvis -d catalog < db/catalog/init/05_color_synonyms_seed.sql
 ```
 
+이 재적재는 기존 행도 정본의 `status`/`canonical`/`provenance`/`doc_count`로 갱신하므로,
+새 검수 회차에서 승인·반려로 승격된 결과가 기존 볼륨에도 반영된다. 임베딩과 임베딩 모델은
+갱신하지 않아 이미 구축된 벡터는 보존된다.
+
 ③ **임베딩** — 행 생성과 임베딩 구축은 2단계로 분리돼 있다(`②` 직후엔 embedding 전부 NULL).
 `app.pipelines.color_synonym_seed.seed_from_file` 배치가 Gemini API 키로 각 표기를 임베딩해
 채운다. **`NON_COLOR_TERMS`(sentinel, 예: `혼합색상`·`기타`·`투명`) 는 임베딩하지 않는다.**

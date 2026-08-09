@@ -219,9 +219,23 @@ def test_bootstrap_sql_contains_every_row_once() -> None:
     rows = _load_rows()
     committed = SQL_PATH.read_bytes().decode("utf-8")
     assert committed.count("INSERT INTO color_synonyms") >= 1
-    assert committed.count("ON CONFLICT (term) DO NOTHING;") >= 1
+    assert committed.count("ON CONFLICT (term) DO UPDATE SET") >= 1
     value_lines = [line for line in committed.splitlines() if line.strip().startswith("('")]
     assert len(value_lines) == len(rows)
+
+
+def test_bootstrap_sql_upsert_refreshes_seed_fields_without_embedding() -> None:
+    committed = SQL_PATH.read_bytes().decode("utf-8")
+    update_clause = (
+        "ON CONFLICT (term) DO UPDATE SET\n"
+        "    canonical = EXCLUDED.canonical,\n"
+        "    status = EXCLUDED.status,\n"
+        "    provenance = EXCLUDED.provenance,\n"
+        "    doc_count = EXCLUDED.doc_count;"
+    )
+    assert committed.count(update_clause) >= 1
+    assert "embedding = EXCLUDED.embedding" not in committed
+    assert "embedding_model = EXCLUDED.embedding_model" not in committed
 
 
 # --- 8. 대표 묶음 실측 검증 (expand_color) ------------------------------------------------
