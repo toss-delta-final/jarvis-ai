@@ -53,6 +53,9 @@ _SESSION_KEY = "buffer"
 # 연결 풀에서 잡혀 store 트랜잭션과 결합되지 않아 다중 항목 원자성이 없고, N개로 쪼개면 전부
 # 찢어진 쓰기 상태를 만든다. 키를 "v1" 로 고정하는 것이 그 단일성의 표현이다.
 _GRAPH_KEY = "v1"
+# 전체 초기화가 훑는 fact 상한. `profile_max_facts`(200) 보다 넉넉히 잡아, cap 이 커진 뒤에도
+# "일부만 지워졌다"가 조용히 생기지 않게 한다 — 초기화는 남기면 안 되는 동작이다.
+_PURGE_SCAN_LIMIT = 10_000
 
 
 def _as_iso(value: object) -> str:
@@ -394,6 +397,51 @@ class ProfileStore:
                     )
 
     # ── 개인화 그래프 문서 (#356, SPEC-PROFILE-GRAPH-149 §5.3·§7.1) ──
+    async def purge_personal_data(self, user_id: str) -> dict[str, int]:
+        """전체 초기화 — fact·요약·세션버퍼를 물리 삭제한다 (#358, REQ-PGRAPH-061).
+
+        **그래프 문서와 전사록은 여기서 지우지 않는다.** 그래프는 호출부가 `revision` 을 이어받아
+        **교체**해야 하고(빈 문서로 지우면 revision 이 0 으로 되돌아간다 — REQ-PGRAPH-042),
+        전사록은 다른 저장소(pg-profile `conversation_turns`)라 소유자가 다르다.
+
+        세션 버퍼는 `("session_ctx", "{user_id}:{session_id}")` 라 사용자로 열거해야 찾을 수
+        있다 — 네임스페이스를 훑어 접두어가 맞는 것만 지운다. 다른 사용자의 버퍼를 건드리지
+        않도록 접두어는 `:` 까지 포함해 비교한다("35" 가 "358:..." 에 걸리지 않게).
+        """
+        counts = {"facts": 0, "summary": 0, "buffers": 0}
+
+        async with mutation_lock(self._store, f"profile:facts:{user_id}", _fact_lock(user_id)):
+            items = await run_with_query_timeout(
+                self._store.asearch((_FACTS_NS_ROOT, user_id), limit=_PURGE_SCAN_LIMIT)
+            )
+            for item in items:
+                await run_with_query_timeout(
+                    self._store.adelete((_FACTS_NS_ROOT, user_id), item.key)
+                )
+                counts["facts"] += 1
+
+        async with mutation_lock(self._store, f"profile:summary:{user_id}", _summary_lock(user_id)):
+            if await self.get_summary(user_id) is not None:
+                await run_with_query_timeout(
+                    self._store.adelete((_PROFILE_NS_ROOT, user_id), _SUMMARY_KEY)
+                )
+                counts["summary"] = 1
+
+        prefix = f"{user_id}:"
+        namespaces = await run_with_query_timeout(
+            self._store.alist_namespaces(prefix=(_SESSION_NS_ROOT,), max_depth=2)
+        )
+        for namespace in namespaces:
+            if len(namespace) < 2 or not namespace[1].startswith(prefix):
+                continue
+            async with mutation_lock(
+                self._store, f"profile:session:{namespace[1]}", _session_lock(namespace[1])
+            ):
+                await run_with_query_timeout(self._store.adelete(namespace, _SESSION_KEY))
+            counts["buffers"] += 1
+
+        return counts
+
     def graph_lock(self, user_id: str) -> AbstractAsyncContextManager[None]:
         """그래프 문서 RMW 직렬화 잠금.
 

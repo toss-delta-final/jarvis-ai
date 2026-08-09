@@ -844,6 +844,174 @@ async def apply_edge_mutation(
             raise
 
 
+async def next_revision(*, user_id: int, existing: GraphDocument | None) -> int:
+    """다음 `revision` — 문서와 **감사 하한** 중 큰 쪽에서 하나 더 (REQ-PGRAPH-042).
+
+    `store.get_graph` 는 스키마가 깨진 문서를 조용히 `None` 으로 돌려준다(배치를 죽이지 않으려고).
+    그때 `empty_document()` 로 새로 시작하면 revision 이 0 이 되고, 이미 발급된 `If-Match: "g43"`
+    이 **다른 상태를 가리키게 된다** — 낙관적 동시성 전체가 무너지는 지점이다.
+
+    감사는 전체 초기화로도 보존되므로(REQ-PGRAPH-062) 거기 남은 `graph_version_after` 최댓값이
+    **항상 존재하는 하한**이다. 그래서 손상·초기화 어느 쪽으로도 되돌아가지 않는다.
+    """
+    floor = 0
+    for row in await list_audit(user_id=user_id):
+        for version in (row.graph_version_before, row.graph_version_after):
+            if version.startswith("g") and version[1:].isdigit():
+                floor = max(floor, int(version[1:]))
+    current = existing.revision if existing is not None else 0
+    return max(current, floor) + 1
+
+
+async def get_personalization_flag(*, user_id: int) -> bool:
+    """개인화 중지 플래그 — 없으면 켜짐(기본값). REQ-PGRAPH-050 의 전용 저장 위치."""
+    pool = await _get_pool()
+    if pool is None:
+        row = _fallback_table("personalization").get(int(user_id))
+        return True if row is None else bool(row["enabled"])
+
+    async def _run() -> bool:
+        async with pool.connection() as conn:
+            cur = await conn.execute(
+                "SELECT enabled FROM profile_personalization_state WHERE user_id = %s",
+                (int(user_id),),
+            )
+            found = await cur.fetchone()
+            return True if found is None else bool(found[0])
+
+    return await run_with_query_timeout(_run())
+
+
+async def set_personalization_flag(
+    *, user_id: int, enabled: bool, now: str, graph_version_token: str | None = None
+) -> bool:
+    """중지 플래그를 upsert 한다 — **락이 필요 없다**(사용자당 단일 행이라 그 자체로 원자적).
+
+    바뀌었으면 `True`. 같은 값이면 `False` 를 돌려주어 호출부가 no-op 으로 처리하게 한다
+    (감사 행도 남기지 않는다 — REQ-PGRAPH-080, api-spec §3.9.5).
+
+    **그래프 락과 요약 락을 동시에 쥐지 않기 위해** 여기서 요약 표식은 건드리지 않는다. 그쪽은
+    호출부가 요약 락 아래에서 따로 처리한다(`store.py` 의 advisory 풀 이중 점유 주석).
+    """
+    previous = await get_personalization_flag(user_id=user_id)
+    if previous == enabled:
+        return False
+
+    disabled_at = None if enabled else now
+    pool = await _get_pool()
+    if pool is None:
+        _fallback_table("personalization")[int(user_id)] = {
+            "enabled": enabled,
+            "disabled_at": disabled_at,
+            "graph_version": graph_version_token,
+        }
+        return True
+
+    async def _run() -> None:
+        async with pool.connection() as conn:
+            await conn.execute(
+                """
+                INSERT INTO profile_personalization_state
+                    (user_id, enabled, disabled_at, graph_version, updated_at)
+                VALUES (%s, %s, %s, %s, now())
+                ON CONFLICT (user_id) DO UPDATE
+                SET enabled = EXCLUDED.enabled,
+                    disabled_at = EXCLUDED.disabled_at,
+                    graph_version = EXCLUDED.graph_version,
+                    updated_at = now()
+                """,
+                (int(user_id), enabled, disabled_at, graph_version_token),
+            )
+
+    await run_with_query_timeout(_run())
+    return True
+
+
+async def reset_graph(
+    *, user_id: int, if_match: str, request_id: str, now: str, lease_s: float | None = None
+) -> GraphMutationResult:
+    """전체 초기화 — 개인화 데이터를 물리 삭제한다 (§7.2, REQ-PGRAPH-061).
+
+    지우는 것: 그래프(노드·edge·tombstone) · fact · 요약 · 세션버퍼 · 전사록.
+    **남기는 것: 감사 로그**(REQ-PGRAPH-062)와 **개인화 중지 상태**(REQ-PGRAPH-063). 감사가
+    사라지면 파괴 동작이 추적 불가가 되고, 중지가 풀리면 사용자가 끈 적 없는 개인화가 조용히
+    다시 켜진다.
+
+    문서는 **삭제가 아니라 교체**다 — 지우면 다음 읽기가 `None` 을 받아 revision 이 0 으로
+    되돌아간다(REQ-PGRAPH-042). `next_revision` 이 감사 하한까지 보고 값을 정한다.
+
+    각 삭제는 멱등이라 크래시 뒤 재개가 안전하다 — 이미 없는 것을 지워도 문제되지 않는다.
+    """
+    # 지연 임포트로 순환을 끊는다 — `graph_merge` 는 `store` 를 거쳐 이 모듈로 돌아온다
+    # (`apply_edge_mutation` 의 같은 주석 참조).
+    from app.agents.profile.graph_merge import empty_document
+    from app.agents.profile.store import get_profile_store
+
+    store = await get_profile_store()
+    settings = get_settings()
+    key = derived_key("graphReset", user_id, "ALL", if_match)
+    ttl = settings.session_end_claim_ttl_s if lease_s is None else lease_s
+
+    async with store.graph_lock(str(user_id)):
+        try:
+            document = await store.get_graph(str(user_id))
+            replayed = await _replay_if_completed(key, document)
+            if replayed is not None:
+                return replayed
+
+            before = graph_version(document.revision) if document else "g0"
+            if normalize_if_match(if_match) != before:
+                raise GraphVersionConflict(before)
+
+            token = await claim(key, user_id=user_id, scope_id="ALL", lease_s=ttl)
+            if token is None:
+                raise GraphVersionConflict(before)
+
+            revision = await next_revision(user_id=user_id, existing=document)
+            purged = await store.purge_personal_data(str(user_id))
+            turns = await _delete_transcripts(user_id)
+            await store.set_graph(
+                str(user_id),
+                empty_document(now).model_copy(update={"revision": revision, "purged_at": now}),
+            )
+
+            after = graph_version(revision)
+            await record_audit(
+                user_id=user_id,
+                request_id=request_id,
+                action="graphReset",
+                graph_version_before=before,
+                graph_version_after=after,
+            )
+            payload = {"graphVersion": after, "purged": {**purged, "conversationTurns": turns}}
+            await complete(key, token, payload)
+            return GraphMutationResult(graph_version=after, replayed=False)
+        except GraphMutationError:
+            raise
+        except Exception as exc:
+            if is_state_store_unavailable(exc):
+                raise GraphStoreUnavailable(str(exc)) from exc
+            raise
+
+
+async def _delete_transcripts(user_id: int) -> int:
+    """전사록 삭제 — 다른 저장소라 실패해도 초기화 전체를 되돌리지 않는다.
+
+    #322 로 전체 초기화 범위에 들어왔지만(api-spec §3.9.4), `conversation_turns` 는 pg-profile
+    의 별도 테이블이고 그래프 문서와 한 트랜잭션에 묶이지 않는다(§7.1 — 다중 항목 원자성 없음).
+    여기서 예외를 올리면 이미 지운 fact·요약이 되살아나지 않은 채 초기화만 실패로 보고된다.
+    남은 전사록은 다음 초기화가 다시 지운다(삭제는 멱등이다).
+    """
+    from app.core.conversation import get_conversation_store
+
+    try:
+        store = await get_conversation_store()
+        return await store.delete_turns_for_user(str(user_id))
+    except Exception:
+        logger.warning("profile_graph_reset_transcript_delete_failed", exc_info=True)
+        return 0
+
+
 def _request_fingerprint(action: str, predicate: str | None, node: GraphNode | None) -> str | None:
     """요청 본문의 지문 — 같은 파생 키·다른 본문을 가르는 재료.
 

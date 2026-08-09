@@ -199,7 +199,7 @@ async def consolidate(user_id: str, *, llm, settings) -> ConsolidationResult:
         facts = await store.get_fact_records(user_id)
         if not facts:
             return ConsolidationResult.NO_WORK
-        existing = await store.get_graph(user_id) or empty_document(now)
+        existing = await store.get_graph(user_id) or await _bootstrap_document(user_id, now)
         document = build_graph_document(facts, existing=existing, settings=settings, now=now)
         await store.set_graph(user_id, document)
         summary_input = _summary_input(document, facts)
@@ -226,6 +226,30 @@ async def consolidate(user_id: str, *, llm, settings) -> ConsolidationResult:
         return ConsolidationResult.FAILED
     await store.set_summary(user_id, markdown, now)
     return ConsolidationResult.UPDATED
+
+
+async def _bootstrap_document(user_id: str, now: str) -> GraphDocument:
+    """문서가 없을 때 시작점 — **`revision` 을 되돌리지 않는다** (REQ-PGRAPH-042).
+
+    `get_graph` 는 스키마가 깨진 문서를 조용히 `None` 으로 돌려준다(배치를 죽이지 않으려고).
+    그때 `empty_document()` 를 그대로 쓰면 revision 이 0 이 되고, 이미 발급된 `If-Match: "g43"`
+    이 다른 상태를 가리키게 된다 — 같은 토큰이 서로 다른 문서를 뜻하는 순간 낙관적 동시성이
+    무너진다. 감사 하한(#358)은 초기화·손상 어느 쪽으로도 사라지지 않으므로 거기서 이어받는다.
+
+    감사 조회가 실패해도 배치를 죽이지 않는다 — 개인화가 멈추는 것보다 낫다. 그 경우에만
+    revision 0 으로 시작하며, 사용자 편집 경로는 CAS 로 자기 방어한다.
+    """
+    from app.agents.profile import graph_journal
+
+    document = empty_document(now)
+    try:
+        floor = await graph_journal.next_revision(user_id=int(user_id), existing=None)
+    except (ValueError, TypeError):
+        return document  # 게스트 등 숫자가 아닌 신원 — 감사 대상이 아니다
+    except Exception:
+        logger.warning("profile_graph_revision_floor_unavailable")
+        return document
+    return document.model_copy(update={"revision": max(0, floor - 1)})
 
 
 def _summary_input(document: GraphDocument, facts: list[FactRecord]) -> list[str]:
