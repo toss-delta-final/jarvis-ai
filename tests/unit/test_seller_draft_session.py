@@ -182,6 +182,44 @@ def test_gate_offtopic_blocks_with_escape_hatch(monkeypatch) -> None:
     assert asyncio.run(draft_session.load_pending(_CONTEXT, _THREAD)) is not None
 
 
+def test_gate_intercepts_apply_shortcut_while_pending(monkeypatch) -> None:
+    """[리뷰 M-1a] 초안 대기 중 "N번 적용해줘"는 ①.5 apply 가 아니라 게이트가 먼저
+    받는다 — 우회 시 두 번째 draft 가 발급돼 이전 create draft 와 동시 생존한다."""
+
+    async def classify(message):
+        return "offtopic"
+
+    monkeypatch.setattr(seller_api, "_classify_pending_utterance", classify)
+
+    def _no_apply(message):
+        raise AssertionError("초안 대기 중에는 apply 선판정에 도달하면 안 된다")
+
+    monkeypatch.setattr(seller_api, "parse_apply_message", _no_apply)
+    asyncio.run(draft_session.save_pending(_CONTEXT, _THREAD, _pending()))
+
+    events = _collect_seller(_request("2번 적용해줘"))
+    assert events[-1]["data"]["panel"] == "keep"
+    assert asyncio.run(draft_session.load_pending(_CONTEXT, _THREAD)) is not None
+
+
+def test_gate_llm_not_configured_falls_through(monkeypatch) -> None:
+    """[리뷰 H-2] 게이트 LLM 미구성은 INTERNAL 로 죽지 않고 일반 흐름으로 낙하해
+    route_question 이 LLM_UNAVAILABLE 계약 이벤트로 응답한다(여기서는 낙하만 검증)."""
+    from app.core.llm import LLMNotConfigured
+
+    class _Boom:
+        def with_structured_output(self, schema):
+            raise LLMNotConfigured("no provider")
+
+    monkeypatch.setattr(seller_api, "init_seller_model", lambda role: _Boom())
+    asyncio.run(draft_session.save_pending(_CONTEXT, _THREAD, _pending()))
+
+    # scope 차단 발화 — 낙하가 성립하면 refused 레인으로 끝난다(예외 전파 없음).
+    events = _collect_seller(_request("경쟁사 매출 알려줘"))
+    assert events[0]["data"]["lane"] == "refused"
+    assert asyncio.run(draft_session.load_pending(_CONTEXT, _THREAD)) is not None
+
+
 def test_gate_failure_falls_through_to_normal_flow(monkeypatch) -> None:
     """게이트 판정 실패 — 초안을 유지한 채 일반 흐름(scope 등)으로 낙하한다(비파괴)."""
 

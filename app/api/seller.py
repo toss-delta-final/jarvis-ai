@@ -59,7 +59,7 @@ from app.agents.seller.hitl import (
 )
 from app.agents.seller.middleware import StreamingOutputGuard, check_scope, mask_output
 from app.agents.seller.models import SellerRole, init_seller_model, seller_trace_model_metadata
-from app.agents.seller.preview import build_create_preview, diff_notes
+from app.agents.seller.preview import build_create_preview, diff_notes, parse_int_or_none
 from app.agents.seller.vision import ProductImageAnalysis, analyze_product_images
 from app.agents.seller.orchestrator import (
     PipelineResult,
@@ -75,7 +75,7 @@ from app.agents.seller.pipeline import (
     split_report_summary,
 )
 from app.agents.seller.prompts import PENDING_DRAFT_GATE_PROMPT
-from app.agents.seller.schemas import DraftProposal, PendingDraftAction
+from app.agents.seller.schemas import DraftChange, DraftProposal, PendingDraftAction
 from app.agents.seller.workers import build_general_agent, build_product_agent
 from app.api.deps import require_seller
 from app.core.auth import Identity
@@ -643,16 +643,26 @@ def _deserialize_analysis(data: dict | None) -> ProductImageAnalysis | None:
 
 
 def _category_candidates(
-    analysis: ProductImageAnalysis | None, message: str
+    analysis: ProductImageAnalysis | None,
+    message: str,
+    pending: draft_session.PendingCreate | None = None,
 ) -> list[category_catalog.CategoryEntry]:
-    """[#506] 카테고리 후보 — vision 힌트 우선 + 발화 매칭 보강, k 상한(중복 제거).
+    """[#506] 카테고리 후보 — 기존 초안 확정값 > vision 힌트 > 발화 매칭, k 상한(중복 제거).
 
     발화 검색을 함께 도는 이유: 수정 턴("남방 말고 셔츠야")은 새 카테고리 어휘가
     발화에만 있다. LLM 이 임의 카테고리를 만들 경로는 없다 — 후보 밖 값은
     validate_draft 가 되묻기로 전환한다(이중 방어).
+
+    [리뷰 M-3] 수정 턴에는 기존 초안의 카테고리 id 를 **항상 후보에 포함**한다 —
+    안 그러면 "가격만 바꿔줘" 턴에서 확정해 둔 카테고리가 후보 목록에 없어
+    프롬프트의 "기존 값 유지"와 "목록 밖 값 금지"가 충돌하고, 카테고리가 vision
+    힌트로 되돌아가거나 조용히 탈락한다(등록 후 변경 불가 필드라 비용이 크다).
     """
     k = get_settings().seller_category_candidates_k
     merged: dict[str, category_catalog.CategoryEntry] = {}
+    if pending is not None and (current_id := pending.changes.get("category")):
+        if (current := category_catalog.get(current_id)) is not None:
+            merged.setdefault(current.id, current)
     if analysis is not None and analysis.category_hint.strip():
         for entry in category_catalog.search(analysis.category_hint, k):
             merged.setdefault(entry.id, entry)
@@ -743,7 +753,7 @@ async def _product_stream(
         )
         return
 
-    candidates = _category_candidates(analysis, request.message)
+    candidates = _category_candidates(analysis, request.message, pending)
     agent_input = _product_agent_input(
         request,
         analysis=analysis,
@@ -819,6 +829,21 @@ async def _product_stream(
         yield _done("keep")
         return
 
+    # [#506] 대표사진 URL 은 **코드가 강제**한다 — LLM 이 [이미지 URL] 블록을 옮겨적다
+    # 변형하면 "보여준 것 ≠ 실행하는 것"이 된다(계약값은 코드). 새 첨부가 있으면 그 값,
+    # 없으면 pending 의 기존 값이 정본이다. 반드시 start_draft(checkpoint 저장) **전**에
+    # 정규화한다 — 저장 뒤에 바꾸면 실행 정본과 표시가 갈라진다.
+    if record.op == "create":
+        expected_image = image_urls[0] if image_urls else None
+        if expected_image is not None:
+            replaced = [
+                c.model_copy(update={"after": expected_image}) if c.field == "image_url" else c
+                for c in record.changes
+            ]
+            if not any(c.field == "image_url" for c in replaced):
+                replaced.append(DraftChange(field="image_url", before="", after=expected_image))
+            record = record.model_copy(update={"changes": replaced})
+
     try:
         await start_draft(record)  # checkpoint 저장 + interrupt 대기(안전장치 ①)
     except Exception:
@@ -873,15 +898,19 @@ async def _product_stream(
 
 
 def _seller_input_summary(record: DraftRecord) -> str | None:
-    """preview sections `source` 의 "판매자 입력" 항목 — 발화에서만 오는 값(가격·재고)."""
+    """preview sections `source` 의 "판매자 입력" 항목 — 발화에서만 오는 값(가격·재고).
+
+    파싱은 실행 계층과 동일 관용(preview.parse_int_or_none → hitl._parse_int) —
+    "29,900원" 같은 접미사 값도 실행과 같은 숫자로 표기된다(H-1, 리뷰 반영).
+    """
     values = {c.field: c.after for c in record.changes}
     parts: list[str] = []
-    price = values.get("price")
-    if price and price.replace(",", "").isdigit():
-        parts.append(f"{int(price.replace(',', '')):,}원")
-    stock = values.get("stock_quantity")
-    if stock and stock.replace(",", "").isdigit():
-        parts.append(f"{int(stock.replace(',', '')):,}개")
+    price = parse_int_or_none(values.get("price"))
+    if price is not None:
+        parts.append(f"{price:,}원")
+    stock = parse_int_or_none(values.get("stock_quantity"))
+    if stock is not None:
+        parts.append(f"{stock:,}개")
     return " / ".join(parts) if parts else None
 
 
@@ -896,6 +925,33 @@ def _draft_recorded_text(record: DraftRecord) -> str:
     if record.summary:
         return f"{base}을 생성했습니다: {record.summary}"
     return f"{base}을 생성했습니다 (op={record.op})."
+
+
+def _masked_preview(preview: dict) -> dict:
+    """[리뷰 M-4] preview 표시 사본에도 changes[] 와 같은 시크릿 마스킹을 적용한다.
+
+    changes 는 마스킹되는데 FE 가 실제로 그리는 preview 만 원문이면 표시 계층 마스킹
+    정책이 create 카드에서 무력화된다. imageUrl 만 면제(정규식이 S3 경로 세그먼트를
+    오탐할 수 있고 값은 hitl 이 URL 검증 완료 — _wire_value 의 image_url 면제와 동일).
+    위험 문자 제거(_strip_unsafe)는 validate_draft 가 이미 수행했으므로 마스킹만 더한다.
+    """
+    masked = dict(preview)
+    for key in (
+        "title",
+        "priceText",
+        "originalPriceText",
+        "stockText",
+        "categoryPath",
+        "summary",
+        "description",
+    ):
+        if isinstance(masked.get(key), str):
+            masked[key] = mask_output(masked[key])
+    masked["sections"] = [
+        {**section, "items": [mask_output(item) for item in section.get("items", [])]}
+        for section in preview.get("sections", [])
+    ]
+    return masked
 
 
 def _draft_event(record: DraftRecord, *, preview: dict | None = None) -> str:
@@ -941,7 +997,7 @@ def _draft_event(record: DraftRecord, *, preview: dict | None = None) -> str:
             ],
             "summary": mask_output(_strip_unsafe(record.summary)),
             # create 전용 키 — 추가 전용(기존 op 와이어 불변). 표시 사본은 코드 산물.
-            **({"preview": preview} if preview is not None else {}),
+            **({"preview": _masked_preview(preview)} if preview is not None else {}),
         },
     )
 
@@ -1142,7 +1198,11 @@ async def _classify_pending_utterance(message: str) -> str | None:
                 timeout=settings.seller_pending_gate_timeout_s,
             )
     except LLMNotConfigured:
-        raise
+        # [리뷰 H-2] raise 하면 generator 밖으로 전파돼 open_stream 이 일반 INTERNAL 로
+        # 오분류한다. None 폴백이면 일반 흐름의 route_question 이 같은 예외를 잡아
+        # 계약 이벤트(LLM_UNAVAILABLE)로 정확히 응답한다 — 초안은 유지된다.
+        logger.warning("pending draft gate LLM 미구성 — 일반 흐름 폴백(LLM_UNAVAILABLE 경로)")
+        return None
     except Exception:
         logger.warning("pending draft gate 판정 실패 — 일반 흐름 폴백", exc_info=True)
         return None
@@ -1271,45 +1331,12 @@ async def _seller_stream(
             yield line
         return
 
-    # ①.5 추천 적용 코드 선판정 ("N번 적용해줘" 정형 발화, LLM 0회) — 4-3 §6.3.
-    apply_n = parse_apply_message(request.message)
-    if apply_n is not None:
-        async for line in _apply_stream(
-            apply_n,
-            request,
-            context,
-            request_id=request_id,
-        ):
-            yield line
-        return
-
-    # ①.7 기간 확인 대기 선판정 (코드 판정, LLM 0회) — #345, DESIGN-SELLER-PERIOD §5.5.
-    # ②(scope)보다 **앞**이어야 한다: "응" 은 판매 도메인 어휘가 아니라 scope 필터에
-    # 걸릴 수 있다. ①·①.5 보다는 뒤다 — 그 둘이 더 명시적인 신호(구조화 필드·정형
-    # 발화)라 기간 확인이 가로채면 안 된다.
-    # 대기가 있을 때만 승인 판정을 돌린다 — 대기 없는 상태의 "응" 을 승인으로 오인할
-    # 여지를 구조적으로 없앤다. 승인이 아니면(수정·새 질문 전부) 대기를 폐기하고
-    # 아래 일반 흐름으로 흘린다(3경로 — 수정 전용 파서를 두지 않는 이유는 DESIGN §5.1).
-    pending_period = await seller_period_confirm.load_pending(context, request.thread_id)
-    if pending_period is not None:
-        if parse_period_approval(request.message):
-            # 승인은 1회성이다 — 실행 전에 폐기해 실패하더라도 재승인으로 두 번 돌지 않는다.
-            await seller_period_confirm.clear_pending(context, request.thread_id)
-            recent_turns = await seller_thread.load_recent_turns(context, request.thread_id)
-            async for line in _analysis_stream(
-                request,
-                context,
-                recent_turns,
-                request_id=request_id,
-                pending=pending_period,
-            ):
-                yield line
-            return
-        await seller_period_confirm.clear_pending(context, request.thread_id)
-
-    # ①.8 등록 초안 대기 게이트 (#506, FE 계약 §5.7) — ②(scope)보다 앞이어야 한다:
-    # "취소"·"상품명 짧게" 같은 초안 문맥 발화가 scope 필터에 걸릴 수 있다.
-    # 대기가 있을 때만 돌린다 — 대기 없는 발화를 게이트가 오인할 여지를 구조적으로 없앤다.
+    # ①.3 등록 초안 대기 게이트 (#506, FE 계약 §5.7) — ①(confirm 버튼) 다음, 나머지
+    # 전부보다 앞이다. [리뷰 M-1a] ①.5(apply)보다 앞인 이유: 초안 대기 중 "N번
+    # 적용해줘"가 게이트를 우회해 **두 번째 draft** 를 발급하면 이전 create draft 와
+    # 동시 생존한다 — 대기 중 딴 작업은 게이트가 차단(offtopic 안내)해야 한다.
+    # ②(scope)보다 앞인 이유: "취소"·"상품명 짧게" 같은 초안 문맥 발화가 scope 필터에
+    # 걸릴 수 있다. 대기가 있을 때만 돌린다 — 대기 없는 발화 오인을 구조적으로 없앤다.
     pending_create = await draft_session.load_pending(context, request.thread_id)
     if pending_create is not None:
         # 새 사진 첨부는 판정 없이 수정 턴(대표사진 교체 + 재분석)이다 — FE 계약 §3.4.
@@ -1360,6 +1387,44 @@ async def _seller_stream(
             yield _done("keep")
             return
         # 판정 실패(None) — 초안은 유지한 채 일반 흐름으로 낙하한다(비파괴 폴백).
+        # 낙하 경로가 product 레인에 닿으면 ③이 pending 을 넘겨 이전 draftId 무효화가
+        # 이어진다(리뷰 M-1b — 동시 생존 draft 차단).
+
+    # ①.5 추천 적용 코드 선판정 ("N번 적용해줘" 정형 발화, LLM 0회) — 4-3 §6.3.
+    apply_n = parse_apply_message(request.message)
+    if apply_n is not None:
+        async for line in _apply_stream(
+            apply_n,
+            request,
+            context,
+            request_id=request_id,
+        ):
+            yield line
+        return
+
+    # ①.7 기간 확인 대기 선판정 (코드 판정, LLM 0회) — #345, DESIGN-SELLER-PERIOD §5.5.
+    # ②(scope)보다 **앞**이어야 한다: "응" 은 판매 도메인 어휘가 아니라 scope 필터에
+    # 걸릴 수 있다. ①·①.5 보다는 뒤다 — 그 둘이 더 명시적인 신호(구조화 필드·정형
+    # 발화)라 기간 확인이 가로채면 안 된다.
+    # 대기가 있을 때만 승인 판정을 돌린다 — 대기 없는 상태의 "응" 을 승인으로 오인할
+    # 여지를 구조적으로 없앤다. 승인이 아니면(수정·새 질문 전부) 대기를 폐기하고
+    # 아래 일반 흐름으로 흘린다(3경로 — 수정 전용 파서를 두지 않는 이유는 DESIGN §5.1).
+    pending_period = await seller_period_confirm.load_pending(context, request.thread_id)
+    if pending_period is not None:
+        if parse_period_approval(request.message):
+            # 승인은 1회성이다 — 실행 전에 폐기해 실패하더라도 재승인으로 두 번 돌지 않는다.
+            await seller_period_confirm.clear_pending(context, request.thread_id)
+            recent_turns = await seller_thread.load_recent_turns(context, request.thread_id)
+            async for line in _analysis_stream(
+                request,
+                context,
+                recent_turns,
+                request_id=request_id,
+                pending=pending_period,
+            ):
+                yield line
+            return
+        await seller_period_confirm.clear_pending(context, request.thread_id)
 
     # [#506] 이미지 첨부 턴은 supervisor 를 거치지 않고 product 레인 직행 — 사진을 실은
     # 발화의 목적지는 등록 초안뿐이고, 라우팅 LLM 은 이미지를 볼 수 없어 판정 근거도 없다.
@@ -1415,7 +1480,11 @@ async def _seller_stream(
         ):
             yield line
     elif decision.category == "product":
-        async for line in _product_stream(request, context, request_id=request_id):
+        # [리뷰 M-1b] 게이트 판정 실패 낙하로 온 경우에도 pending 을 전달한다 —
+        # 새 create draft 발급 시 이전 draftId 무효화가 누락되지 않게(동시 생존 차단).
+        async for line in _product_stream(
+            request, context, request_id=request_id, pending=pending_create
+        ):
             yield line
     else:
         async for line in _general_stream(request, context, request_id=request_id):

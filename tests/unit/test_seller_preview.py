@@ -161,6 +161,34 @@ def test_diff_notes_empty_when_unchanged() -> None:
     assert diff_notes(previous, _record(_full_changes())) == []
 
 
+def test_preview_parses_suffixed_numbers_like_execution_layer() -> None:
+    """[리뷰 H-1] "29,900원"·"50개" 같은 접미사 값은 실행 계층(hitl._parse_int)이 정상
+    허용하는 입력이다 — preview 가 더 좁게 파싱하면 실행되는 값이 카드에 빈 값·거짓
+    '정가 미입력' 경고로 보인다(보여준 것 ≠ 실행하는 것). 같은 파서를 재사용해야 한다."""
+    preview = build_create_preview(
+        _record(_full_changes(price="29,900원", original_price="35,000원", stock_quantity="50개")),
+        analysis=_ANALYSIS,
+    )
+    assert preview["priceText"] == "29,900원"
+    assert preview["originalPriceText"] == "35,000원"
+    assert preview["discountRate"] == 14
+    assert preview["stockText"] == "50개"
+    warning = next(s for s in preview["sections"] if s["kind"] == "warning")
+    assert not any("정가 미입력" in item for item in warning["items"])
+
+
+def test_draft_event_masks_preview_text_fields() -> None:
+    """[리뷰 M-4] preview 도 changes[] 와 같은 표시 계층 마스킹을 탄다(imageUrl 면제)."""
+    secret = "sk-abcdefghijklmnop1234"
+    record = _record(_full_changes(description=f"비밀키 {secret} 포함 설명"))
+    preview = build_create_preview(record, analysis=_ANALYSIS)
+    frame = seller_api._draft_event(record, preview=preview)
+    payload = json.loads(frame.removeprefix("data: ").strip())
+    assert secret not in payload["data"]["preview"]["description"]
+    # imageUrl 은 면제 — URL 원형 보존(마스킹 오탐 방지).
+    assert payload["data"]["preview"]["imageUrl"] == "https://cdn.example.com/seller/7/ab12.jpg"
+
+
 def test_draft_event_carries_preview_for_create_only() -> None:
     """[와이어] create draft 이벤트에만 preview 키가 실린다 — 추가 전용(§3.2 v0.30.0)."""
     record = _record(_full_changes())

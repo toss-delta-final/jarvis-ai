@@ -14,15 +14,26 @@
 from __future__ import annotations
 
 from app.agents.seller import category_catalog
-from app.agents.seller.hitl import DraftRecord
+from app.agents.seller.hitl import DraftRecord, _parse_int
 from app.agents.seller.vision import ProductImageAnalysis
 
 
-def _int_or_none(raw: str | None) -> int | None:
+def parse_int_or_none(raw: str | None) -> int | None:
+    """실행 계층 파서(hitl._parse_int)와 **동일 관용**의 표시용 래퍼.
+
+    실행은 "29,900원" 같은 단위 접미사 값을 정상 입력으로 허용한다(_parse_int 주석).
+    표시가 더 좁게 파싱하면 실행되는 값이 카드에 빈 값/거짓 경고("정가 미입력")로
+    보이는 "보여준 것 ≠ 실행하는 것" 사고가 난다 — 반드시 같은 파서를 재사용한다.
+    """
     if raw is None:
         return None
-    text = raw.strip().replace(",", "")
-    return int(text) if text.isdigit() else None
+    try:
+        return _parse_int(raw)
+    except ValueError:
+        return None
+
+
+_int_or_none = parse_int_or_none  # 내부 별칭 — 기존 호출부 유지
 
 
 def _price_text(value: int) -> str:
@@ -87,7 +98,8 @@ def build_create_preview(
         "discountRate": discount_rate,
         "stockText": f"{stock:,}개" if stock is not None else "",
         "categoryPath": category_path or "",
-        "summary": values.get("summary") or (analysis.summary if analysis else None),
+        # summary 는 ProductField 가 아니라 changes 에 실리지 않는다 — vision 분석이 원천.
+        "summary": analysis.summary if analysis else None,
         "description": values.get("description") or None,
         "sections": sections,
     }

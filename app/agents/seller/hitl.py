@@ -526,10 +526,16 @@ async def invalidate_draft(draft_id: str) -> None:
     — 안 그러면 브라우저에 남은 옛 카드의 등록 버튼으로 수정 전 값이 등록된다.
     무효화된 draft 의 confirm 은 not_found(존재 비노출 문구)로 거절된다.
     실패는 warning 후 계속 — 이전 draft 는 TTL(⑤)이 최종 방어선이다.
+
+    [리뷰 M-2] confirm 과 같은 draftId 락으로 직렬화한다 — 락 없이는 confirm 의
+    cancelled 검사(snapshot 시점 1회)와 이 쓰기가 경합해 "무효화됐는데 실행"이
+    가능하다. 락·스트림 레지스트리 모두 **프로세스 로컬**이라 다중 워커 배포에서는
+    이 보장이 약하다(체크포인트 단일화가 별도 방어) — 한계를 여기 명시해 둔다.
     """
     try:
         graph = await _get_graph()
-        await graph.aupdate_state(_thread_config(draft_id), {"cancelled": True}, as_node="hitl")
+        async with _confirm_lock(draft_id):
+            await graph.aupdate_state(_thread_config(draft_id), {"cancelled": True}, as_node="hitl")
     except Exception:
         logger.warning(
             "draft 무효화 실패 — TTL 만료가 최종 방어 (draftId=%s)", draft_id, exc_info=True
@@ -591,7 +597,9 @@ async def confirm_draft(draft_id: str, *, seller_id: int, brand_id: int) -> Conf
 
         settings = get_settings()
         created = datetime.fromisoformat(record.created_at)
-        if datetime.now(UTC) - created > timedelta(minutes=settings.seller_draft_ttl_minutes):
+        # 경계 포함(>=) — draft_session·period_confirm(#346)과 같은 판정: ttl=0 은
+        # "즉시 만료"이고, 엄격 부등호는 시계 분해능(Windows ~15.6ms 틱)에 걸린다.
+        if datetime.now(UTC) - created >= timedelta(minutes=settings.seller_draft_ttl_minutes):
             return ConfirmOutcome(
                 "expired",
                 f"초안이 만료됐습니다(유효 {settings.seller_draft_ttl_minutes}분). "
