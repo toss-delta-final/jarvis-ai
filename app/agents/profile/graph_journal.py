@@ -22,16 +22,77 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
+import uuid
+from dataclasses import dataclass, field
 
+from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
 from app.core.config import get_settings
-from app.core.pg_resilience import hardened_pg_conninfo
+from app.core.pg_resilience import hardened_pg_conninfo, run_with_query_timeout
 
 logger = logging.getLogger(__name__)
 
 # DDL 직렬화 키 — 세 테이블을 한 트랜잭션에서 만들므로 잠금도 하나다.
 SCHEMA_LOCK_KEY = "schema:profile_graph:lifecycle"
+
+
+class LedgerRequestMismatch(Exception):
+    """같은 파생 키인데 요청 본문이 다르다 — 재생하면 안 되는 상황.
+
+    파생 키는 `{action}:{userId}:{scopeId}:{ifMatch}` 라 **본문이 들어가지 않는다**. 스테일한
+    `If-Match` 를 든 다른 요청이 같은 키를 만들 수 있고, 그때 최초 응답을 재생하면 호출자가
+    보내지도 않은 변경의 결과를 성공으로 받는다. 호출부는 이걸 `409` 로 옮긴다.
+    """
+
+
+@dataclass(frozen=True)
+class LedgerEntry:
+    """원장 조회 결과 — 재전송 판정에 필요한 것만."""
+
+    status: str
+    response_payload: dict | None
+    request_fp: str | None = None
+
+
+@dataclass
+class _FallbackEntry:
+    """dev 폴백의 원장 행 미러. 시각은 단조 시계로 잰다(벽시계 되감김에 안 흔들리게)."""
+
+    user_id: int
+    scope_id: str | None
+    status: str
+    claim_token: str | None = None
+    lease_deadline: float | None = None
+    response_payload: dict | None = None
+    request_fp: str | None = None
+    created_at: float = field(default_factory=time.monotonic)
+
+
+_monotonic = time.monotonic  # 테스트가 만료 경계를 sleep 없이 고정할 수 있게 훅으로 둔다
+
+
+def derived_key(action: str, user_id: int | str, scope_id: str, if_match: str) -> str:
+    """재전송 판정용 파생 키 (REQ-PGRAPH-043, api-spec §3.9).
+
+    `{userId}` 는 **원문**이다 — 지문화하면 pepper 회전 시 TTL 내 모든 원장 히트가 증발해
+    재전송이 중복 부작용을 낸다. raw userId 금지는 감사 레코드(`actor_fp`)에만 걸린 조항이다.
+
+    `{scopeId}`: edge 2종 = `edgeId`, `graphReset` = `"ALL"`, `personalizationToggle` = 빈 값.
+    `If-Match` 는 `"g42"` 와 `g42` 가 동등하므로(api-spec §3.9) 따옴표를 벗겨 정규화한다 —
+    안 그러면 같은 선행조건이 두 개의 키가 되어 멱등이 성립하지 않는다.
+    """
+    return f"profile-graph-{action}:{user_id}:{scope_id}:{normalize_if_match(if_match)}"
+
+
+def normalize_if_match(value: str) -> str:
+    """`If-Match` 의 따옴표를 벗긴다 — `"g42"` 와 `g42` 는 동등하다(api-spec §3.9).
+
+    `*`·약한 태그·누락·빈 값은 Spring 이 선-400 으로 막으므로(#499) 여기서 다루지 않는다.
+    """
+    return value.strip().strip('"')
+
 
 _pool: AsyncConnectionPool | None = None
 _fallback: dict[str, dict] | None = None  # dev 폴백 — 테이블별 InMemory 상태
@@ -303,3 +364,210 @@ async def _ensure_schema(pool: AsyncConnectionPool) -> None:
                 )
 
     await asyncio.wait_for(_run(), timeout=settings.state_store_migration_timeout_s)
+
+
+# ── 멱등 원장 (REQ-PGRAPH-043) ────────────────────────────────────────────────
+#
+# `processed_events` 의 claim/lease 와 같은 상태 기계다: 신규 선점과 **만료 lease 재선점**을
+# 한 문장으로 처리하고, `completed` 행은 절대 재선점되지 않는다(재선점되면 부작용이 2회).
+# 다른 점은 완료 시 **응답 payload 를 함께 적는다**는 것 — 재전송이 최초 응답을 그대로 받아야
+# 하기 때문이다. payload 에는 라벨을 담지 않는다(모듈 docstring 참조).
+
+
+async def claim(
+    key: str,
+    *,
+    user_id: int,
+    scope_id: str | None,
+    lease_s: float,
+    request_fp: str | None = None,
+) -> str | None:
+    """이 요청의 실행권을 선점한다 — 이미 진행 중이거나 완료됐으면 `None`.
+
+    `None` 은 "실패"가 아니라 **분기 신호**다. 호출부는 `lookup()` 으로 `completed` 면 최초
+    응답을 재생하고, `processing` 이면 다른 워커가 진행 중이라고 판정한다.
+    """
+    if lease_s < 0:
+        raise ValueError("lease_s must be non-negative")
+    token = uuid.uuid4().hex
+    pool = await _get_pool()
+    if pool is None:
+        return _fallback_claim(
+            key,
+            user_id=user_id,
+            scope_id=scope_id,
+            lease_s=lease_s,
+            token=token,
+            request_fp=request_fp,
+        )
+
+    async def _run() -> str | None:
+        async with pool.connection() as conn:
+            cur = await conn.execute(
+                """
+                INSERT INTO profile_graph_idempotency
+                    (derived_key, user_id, scope_id, request_fp,
+                     status, claim_token, lease_expires_at, updated_at)
+                VALUES (%s, %s, %s, %s, 'processing', %s,
+                        now() + make_interval(secs => %s), now())
+                ON CONFLICT (derived_key) DO UPDATE
+                SET status = 'processing',
+                    claim_token = EXCLUDED.claim_token,
+                    lease_expires_at = EXCLUDED.lease_expires_at,
+                    request_fp = EXCLUDED.request_fp,
+                    updated_at = now()
+                WHERE profile_graph_idempotency.status = 'processing'
+                  AND (profile_graph_idempotency.lease_expires_at IS NULL
+                       OR profile_graph_idempotency.lease_expires_at <= now())
+                RETURNING claim_token
+                """,
+                (key, int(user_id), scope_id, request_fp, token, float(lease_s)),
+            )
+            row = await cur.fetchone()
+            return row[0] if row else None
+
+    return await run_with_query_timeout(_run())
+
+
+def _fallback_claim(
+    key: str,
+    *,
+    user_id: int,
+    scope_id: str | None,
+    lease_s: float,
+    token: str,
+    request_fp: str | None,
+) -> str | None:
+    entries = _fallback_table("idempotency")
+    entry = entries.get(key)
+    if entry is not None:
+        if entry.status == "completed":
+            return None
+        if entry.lease_deadline is not None and entry.lease_deadline > _monotonic():
+            return None  # 진행 중이고 lease 가 살아 있다
+    entries[key] = _FallbackEntry(
+        user_id=int(user_id),
+        scope_id=scope_id,
+        status="processing",
+        claim_token=token,
+        lease_deadline=_monotonic() + lease_s,
+        request_fp=request_fp,
+        created_at=entry.created_at if entry is not None else _monotonic(),
+    )
+    return token
+
+
+async def complete(key: str, token: str, response_payload: dict) -> bool:
+    """실행권을 완료로 바꾸고 최초 응답을 적는다 — 토큰이 낡았으면 `False`.
+
+    재선점된 뒤 늦게 깨어난 원래 주인이 남의 작업을 완료 처리하면, 그 워커가 실제로 만든
+    상태와 원장에 적힌 응답이 어긋난다. 그래서 토큰 일치를 조건에 건다.
+    """
+    pool = await _get_pool()
+    if pool is None:
+        entries = _fallback_table("idempotency")
+        entry = entries.get(key)
+        if entry is None or entry.status != "processing" or entry.claim_token != token:
+            return False
+        entry.status = "completed"
+        entry.claim_token = None
+        entry.lease_deadline = None
+        entry.response_payload = dict(response_payload)
+        return True
+
+    async def _run() -> bool:
+        async with pool.connection() as conn:
+            cur = await conn.execute(
+                """
+                UPDATE profile_graph_idempotency
+                SET status = 'completed',
+                    claim_token = NULL,
+                    lease_expires_at = NULL,
+                    response_payload = %s,
+                    updated_at = now()
+                WHERE derived_key = %s AND status = 'processing' AND claim_token = %s
+                RETURNING derived_key
+                """,
+                (Jsonb(response_payload), key, token),
+            )
+            return await cur.fetchone() is not None
+
+    return await run_with_query_timeout(_run())
+
+
+async def release(key: str, token: str) -> bool:
+    """선점을 **흔적 없이** 되돌린다 — 상태를 바꾸지 않은 요청의 롤백.
+
+    저널을 선행 기록하는 설계라 `404`·`409`·no-op 판정이 claim 뒤에 온다. 그때 행을 남겨두면
+    (a) REQ-PGRAPH-080("상태를 바꾸지 않는 요청은 감사 행을 남기지 않는다")을 어기고
+    (b) 조건이 바뀐 뒤의 정당한 재시도가 "진행 중"으로 막힌다. 토큰 일치를 조건에 걸어
+    재선점된 남의 작업을 지우지 않는다.
+    """
+    pool = await _get_pool()
+    if pool is None:
+        entries = _fallback_table("idempotency")
+        entry = entries.get(key)
+        if entry is None or entry.status != "processing" or entry.claim_token != token:
+            return False
+        del entries[key]
+        return True
+
+    async def _run() -> bool:
+        async with pool.connection() as conn:
+            cur = await conn.execute(
+                "DELETE FROM profile_graph_idempotency "
+                "WHERE derived_key = %s AND status = 'processing' AND claim_token = %s "
+                "RETURNING derived_key",
+                (key, token),
+            )
+            return await cur.fetchone() is not None
+
+    return await run_with_query_timeout(_run())
+
+
+async def lookup(
+    key: str, *, request_fp: str | None = None, ttl_h: float | None = None
+) -> LedgerEntry | None:
+    """원장을 조회한다 — TTL 이 지났으면 미스다.
+
+    TTL 경과분을 미스로 돌리면 그 뒤 재전송은 `revision` CAS 로 판정되어 최악 `409` 다.
+    정확성은 CAS 가 담보하므로 안전한 방향의 degrade 다.
+
+    `request_fp` 를 주면 같은 키의 **다른 본문**을 걸러 `LedgerRequestMismatch` 를 던진다.
+    """
+    ttl = get_settings().graph_idempotency_ttl_h if ttl_h is None else ttl_h
+    pool = await _get_pool()
+    if pool is None:
+        entry = _fallback_table("idempotency").get(key)
+        if entry is None or _monotonic() - entry.created_at >= ttl * 3600:
+            return None
+        found = LedgerEntry(entry.status, entry.response_payload, entry.request_fp)
+    else:
+
+        async def _run() -> LedgerEntry | None:
+            async with pool.connection() as conn:
+                cur = await conn.execute(
+                    "SELECT status, response_payload, request_fp "
+                    "FROM profile_graph_idempotency "
+                    "WHERE derived_key = %s "
+                    "  AND created_at > now() - make_interval(secs => %s)",
+                    (key, float(ttl) * 3600.0),
+                )
+                row = await cur.fetchone()
+                return LedgerEntry(row[0], row[1], row[2]) if row else None
+
+        found = await run_with_query_timeout(_run())
+        if found is None:
+            return None
+
+    if request_fp is not None and found.request_fp is not None and found.request_fp != request_fp:
+        raise LedgerRequestMismatch(key)
+    return found
+
+
+def _fallback_table(name: str) -> dict:
+    """폴백 상태 접근 — `_get_pool()` 이 이미 폴백을 꽂아 둔 뒤에만 부른다."""
+    global _fallback
+    if _fallback is None:
+        _fallback = _blank_fallback()
+    return _fallback[name]
