@@ -627,7 +627,7 @@ def test_committed_dev_dataset_passes_validate_cases() -> None:
     전체를 검증한다 — 이 테스트가 없으면 위반 태그 검증 로직이 리팩터로 깨져도 잡히지 않는다.
     """
     dev_cases = load_cases("dev")
-    assert len(dev_cases) == 103
+    assert len(dev_cases) == 109
     catalog = json.loads((ROOT / "fixtures" / "catalog_snapshot.json").read_text())
     search_responses = json.loads((ROOT / "fixtures" / "search_responses.json").read_text())
     purchase_history = json.loads((ROOT / "fixtures" / "purchase_history.json").read_text())

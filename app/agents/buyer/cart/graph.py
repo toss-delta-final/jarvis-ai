@@ -266,6 +266,7 @@ _UNRESOLVED_DEFAULT = "어떤 상품을 담을까요? 추천을 먼저 받아보
 _UNRESOLVED_WITH_RECO = (
     "어떤 상품을 담을까요? 추천해 드린 상품 중에서 이름을 말씀해 주시면 담아드릴게요."
 )
+_UNRESOLVED_AFTER_PUSH_FAILURE = "어떤 상품을 담을까요? 추천 목록 전달에 문제가 있었어요. 다시 추천을 요청해 주시면 도와드릴게요."
 # 화면을 가리켰지만 **어느 것인지** 특정되지 않은 경우. 후보 다건(`ambiguous_screen_candidates`)과
 # 순번·좌표가 화면 범위를 벗어난 경우(`*_out_of_range`), 좌표를 풀 `columns` 가 없는 경우를 **한
 # 문구로 묶는다** — 사유는 다르지만 사용자가 취해야 할 다음 행동이 "위치를 다시 말한다"로 같기
@@ -289,7 +290,9 @@ _SCREEN_POSITION_REASONS = frozenset(
 )
 
 
-def _unresolved_notice(screen_reason: str | None, has_last_reco: bool) -> str:
+def _unresolved_notice(
+    screen_reason: str | None, has_last_reco: bool, *, has_push_failed: bool = False
+) -> str:
     """되물음 문구를 화면 해소 사유 → `last_reco` 유무 순으로 가른다.
 
     `screen_reason` 이 있으면 화면 문구가 **우선**한다(위 `_UNRESOLVED_WITH_RECO` 정의 참조).
@@ -301,6 +304,8 @@ def _unresolved_notice(screen_reason: str | None, has_last_reco: bool) -> str:
         return _UNRESOLVED_SCREEN_NOT_FOUND
     if has_last_reco:
         return _UNRESOLVED_WITH_RECO
+    if has_push_failed:
+        return _UNRESOLVED_AFTER_PUSH_FAILURE
     return _UNRESOLVED_DEFAULT
 
 
@@ -316,6 +321,7 @@ async def stream_cart_add(
     screen_reason: str | None = None,
     condition_terms: Sequence[str] = (),
     has_last_reco: bool = False,
+    has_push_failed: bool = False,
     add_fn=None,
     get_cart_fn=None,
     delete_fn=None,
@@ -343,9 +349,10 @@ async def stream_cart_add(
     찜 해소는 "추천 목록·문맥에서 productId 해소"까지)이며, **[라운드 23]** 플래그 제거로 이제
     이 흐름은 항상 사용자에게 도달한다 — 통합은 여전히 후속 항목이다.
 
-    **`has_last_reco`(#435) 는 위 세 위임 중 `stream_wishlist_add` 로 위임할 때만 전달한다** —
-    나머지 둘(`stream_wishlist_remove`·`stream_cart_remove`)은 누락이 아니라 **불필요**다. 그
-    두 흐름의 미해소 문구는 `last_reco` 를 보지 않고 **실제 찜/장바구니 목록**에서 만들어진다
+    **`has_last_reco`(#435)·`has_push_failed`(#468)는 위 세 위임 중 `stream_wishlist_add`로
+    위임할 때만 전달한다** — 나머지 둘(`stream_wishlist_remove`·`stream_cart_remove`)은 누락이
+    아니라 **불필요**다. 그 두 흐름의 미해소 문구는 `last_reco`·push 실패 마커를 보지 않고
+    **실제 찜/장바구니 목록**에서 만들어진다
     (`wishlist.py::_wishlist_unresolved_notice`·`remove.py`) — 이미 목록을 손에 쥐고 있어
     "추천을 받았는지"와 무관하게 구체적인 문구가 나가므로, `last_reco` 유무가 그 문구를 가를
     이유가 없다.
@@ -364,6 +371,7 @@ async def stream_cart_add(
             settings=settings,
             allowed_product_ids=allowed_product_ids,
             has_last_reco=has_last_reco,
+            has_push_failed=has_push_failed,
             add_wishlist_fn=add_wishlist_fn,
             observer=observer,
         ):
@@ -456,9 +464,11 @@ async def stream_cart_add(
     if unresolved:
         yield sse(
             "token",
-            TokenData(text=_unresolved_notice(screen_reason, has_last_reco)).model_dump(
-                by_alias=True
-            ),
+            TokenData(
+                text=_unresolved_notice(
+                    screen_reason, has_last_reco, has_push_failed=has_push_failed
+                )
+            ).model_dump(by_alias=True),
         )
         yield _done()
         return

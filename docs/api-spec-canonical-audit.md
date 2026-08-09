@@ -19,17 +19,17 @@
 | 2 | I-2 POST /internal/cart/items | §4.1 | 2026-08-06 | 드리프트 | chatSessionId 및 quantity 응답, add_to_cart server-side 적재 미소비 | ① 사본이 낡음(동기화) + ② 코드 변경까지 필요 | §4.1 반영, 요청/응답 스키마 후속 |
 | 3 | I-3 GET /internal/products/popular | §4.17 | 2026-07-31 | 드리프트 | I-1 DTO를 참조하지만 정본 I-3 예시가 구형 | ② 코드 변경까지 필요 | Notion I-3 예시를 I-1 DTO와 통일 |
 | 4 | I-4 GET /internal/members/{id}/orders/status | §4.10 | 2026-07-31 | 드리프트 | representativeStatus 한국어 문자열이 I-19 enum과 충돌 | ① 사본이 낡음(동기화) + ② 코드 변경까지 필요 | 경로/계약 정본 반영, enum 후속 |
-| 5 | I-6 GET /internal/seller/{brandId}/sales | §4.4 | 2026-08-06 | 드리프트 | salesCount(판매 수량, SUM(oi.quantity)) 응답 누락 | ① 사본이 낡음(동기화) + ② 코드 변경까지 필요 | §4.4 반영, SalesSeriesPoint 후속 |
+| 5 | I-6 GET /internal/seller/{brandId}/sales | §4.4 | 2026-08-06 | 드리프트 | salesCount(판매 수량, SUM(oi.quantity)) 응답 누락 | ① 사본이 낡음(동기화) + ② 코드 변경까지 필요 | dev가 v0.29.0~v0.29.3(#481·#487·#488·#489)에서 이미 동기화 — 본 PR 범위 밖 |
 | 6 | I-7 GET /internal/seller/funnel | §4.4 | 2026-08-06 | 정합 | API 형상은 사본과 정합 | — | 유지 |
-| 7 | I-8 GET /internal/seller/{brandId}/account-events | §4.4 | 2026-08-06 | 드리프트 | brand scope·suspiciousMemberCount·scope=brand 신설, 구 필드 제거 | ① 사본이 낡음(동기화) + ② 코드 변경까지 필요 | §4.4 반영, 클라이언트·스키마 후속 |
+| 7 | I-8 GET /internal/seller/{brandId}/account-events | §4.4 | 2026-08-06 | 드리프트 | brand scope·suspiciousMemberCount·scope=brand 신설, 구 필드 제거 | ① 사본이 낡음(동기화) + ② 코드 변경까지 필요 | dev가 v0.29.0~v0.29.3(#481·#487·#488·#489)에서 이미 동기화 — 본 PR 범위 밖 |
 | 8 | I-9 GET /internal/seller/{brandId}/products | §4.5 | 2026-08-05 | 드리프트 | 목록 endpoint와 DELETED 상태가 사본과 다름 | ① 사본이 낡음(동기화) + ② 코드 변경까지 필요 | §4.5 반영, 상태 enum 후속 |
 | 9 | I-10 POST /internal/seller/{brandId}/products | §4.5 | 2026-08-05 | 드리프트 | 등록 endpoint와 DELETED 상태가 사본과 다름 | ① 사본이 낡음(동기화) + ② 코드 변경까지 필요 | §4.5 반영, 상태 enum 후속 |
 | 10 | I-11 PATCH /internal/seller/{brandId}/products/{productId} | §4.5 | 2026-08-05 | 드리프트 | 수정 endpoint와 DELETED 전환/409가 사본과 다름 | ① 사본이 낡음(동기화) + ② 코드 변경까지 필요 | §4.5 반영, 상태 enum 후속 |
 | 11 | I-12 DELETE /internal/seller/{brandId}/products/{productId} | §4.5 | 2026-08-05 | 드리프트 | 삭제 endpoint와 HIDDEN→DELETED 전환이 사본과 다름 | ① 사본이 낡음(동기화) + ② 코드 변경까지 필요 | §4.5 반영, 상태 enum 후속 |
-| 12 | I-13 GET /internal/seller/{brandId}/events | §4.4 | 2026-08-06 | 드리프트 | remove_from_cart·salesQuantity·dwell 4필드 누락 | ① 사본이 낡음(동기화) + ② 코드 변경까지 필요 | §4.4 반영, 스키마 후속 |
-| 13 | I-14 GET /internal/seller/{brandId}/order-events | §4.4 | 2026-08-06 | 드리프트 | customerLabel HMAC·orderItemId·brand scope 미반영 | ① 사본이 낡음(동기화) + ② 코드 변경까지 필요 | §4.4 반영, 소비 후속 |
+| 12 | I-13 GET /internal/seller/{brandId}/events | §4.4 | 2026-08-06 | 드리프트 | remove_from_cart·salesQuantity·dwell 4필드 누락 | ① 사본이 낡음(동기화) + ② 코드 변경까지 필요 | dev가 v0.29.0~v0.29.3(#481·#487·#488·#489)에서 이미 동기화 — 본 PR 범위 밖 |
+| 13 | I-14 GET /internal/seller/{brandId}/order-events | §4.4 | 2026-08-06 | 드리프트 | customerLabel HMAC·orderItemId·brand scope 미반영 | ① 사본이 낡음(동기화) + ② 코드 변경까지 필요 | dev가 v0.29.0~v0.29.3(#481·#487·#488·#489)에서 이미 동기화 — 본 PR 범위 밖 |
 | 14 | I-15 GET /internal/seller/{brandId}/product-changes | §4.4 | 2026-07-31 | 정합 | 변경 이력 계약 정합 | — | 유지 |
-| 15 | I-16 GET /internal/seller/{brandId}/churn | §4.4 | 2026-08-06 | 드리프트 | customerLabel, lastLoginAt 제거, 빈 cohort churnRate=null | ① 사본이 낡음(동기화) + ② 코드 변경까지 필요 | §4.4 반영, ChurnMember 후속 |
+| 15 | I-16 GET /internal/seller/{brandId}/churn | §4.4 | 2026-08-06 | 드리프트 | customerLabel, lastLoginAt 제거, 빈 cohort churnRate=null | ① 사본이 낡음(동기화) + ② 코드 변경까지 필요 | dev가 v0.29.0~v0.29.3(#481·#487·#488·#489)에서 이미 동기화 — 본 PR 범위 밖 |
 | 16 | I-17 GET /internal/products/changes | §4.8 | 2026-08-08 | 드리프트 | description은 정합, 숫자 brandId 추가가 미반영 | ① 사본이 낡음(동기화) + ② 코드 변경까지 필요 | §4.8 반영, ProductChange 후속 |
 | 17 | I-18 GET /internal/cart | §4.9 | 2026-08-05 | 정합 | purchaseState 정합 | — | 유지 |
 | 18 | I-19 GET /internal/orders | §4.7 | 2026-07-31 | 정합 | 주문 조회 형상 정합 | — | 유지 |
@@ -69,11 +69,11 @@
 | I-21: 400 필수 필드는 sessionId, recommendationRequestId, listId, listType, productIds | §4.2가 sessionId/listId/productIds만 열거 | 누락 두 필드를 §4.2 표에 추가 |
 | I-1: 리뷰 0건은 `rating: 0.0`, `reviewCount: 0`; 실패 응답과 실패가 아닌 경우를 구분 | §4.6에 리뷰 0건 규약·실패 응답표·실패 아님 표가 없음 | §4.6 응답/실패 표와 규약을 정본대로 보완 |
 | I-1: `brandName` 다중 값은 하나라도 일치하면 후보에 포함; 부분일치만 정본의 질문 | §4.6에 다중 `brandName`의 확정 의미와 부분일치 질문의 경계가 불명확 | §4.6에 BE `WHERE brand IN (...)` OR 매칭을 반영하고, 부분일치만 ③ 답변으로 분리 |
-| I-6: `salesCount`는 판매 수량(`SUM(oi.quantity)`) | §4.4 응답에 `salesCount`가 없음 | §4.4 응답표에 필드를 추가 |
-| I-8: 브랜드 스코프 경로, `suspiciousMemberCount`·`scope=brand` 신설; `isSuspicious`·`failCount`·`nullMemberRatio` 제거 | §4.4가 전역 경로와 구 필드를 노출 | 브랜드 스코프/신규 필드를 반영하고 구 필드 3종을 제거 |
-| I-13: `remove_from_cart`, `salesQuantity`, dwell 4필드와 rows 합산 규칙 | §4.4에 eventType 1종·판매 수량·체류시간 필드가 없음 | 5종 eventType, `salesQuantity`, dwell 4필드와 합산 규칙을 추가 |
-| I-14: `customerLabel` HMAC 문자열, `orderItemId`, 브랜드 스코프 | §4.4가 구 식별자와 스코프를 유지 | `customerLabel`·`orderItemId`를 반영하고 브랜드 스코프로 축소 |
-| I-16: `customerLabel`, `lastLoginAt` 제거, 빈 cohort의 `churnRate=null` | §4.4가 제거된 로그인 필드와 구 cohort 의미를 노출 | 제거·null 의미를 정본대로 정리 |
+| I-6: `salesCount`는 판매 수량(`SUM(oi.quantity)`) | §4.4 응답에 `salesCount`가 없음 | dev가 v0.29.0~v0.29.3(#481·#487·#488·#489)에서 이미 동기화 — 본 PR 범위 밖 |
+| I-8: 브랜드 스코프 경로, `suspiciousMemberCount`·`scope=brand` 신설; `isSuspicious`·`failCount`·`nullMemberRatio` 제거 | §4.4가 전역 경로와 구 필드를 노출 | dev가 v0.29.0~v0.29.3(#481·#487·#488·#489)에서 이미 동기화 — 본 PR 범위 밖 |
+| I-13: `remove_from_cart`, `salesQuantity`, dwell 4필드와 rows 합산 규칙 | §4.4에 eventType 1종·판매 수량·체류시간 필드가 없음 | dev가 v0.29.0~v0.29.3(#481·#487·#488·#489)에서 이미 동기화 — 본 PR 범위 밖 |
+| I-14: `customerLabel` HMAC 문자열, `orderItemId`, 브랜드 스코프 | §4.4가 구 식별자와 스코프를 유지 | dev가 v0.29.0~v0.29.3(#481·#487·#488·#489)에서 이미 동기화 — 본 PR 범위 밖 |
+| I-16: `customerLabel`, `lastLoginAt` 제거, 빈 cohort의 `churnRate=null` | §4.4가 제거된 로그인 필드와 구 cohort 의미를 노출 | dev가 v0.29.0~v0.29.3(#481·#487·#488·#489)에서 이미 동기화 — 본 PR 범위 밖 |
 | I-17: 숫자 `brandId` 추가 | §4.8 응답에 `brandId`가 없음 | §4.8 응답표에 `brandId`를 추가 |
 | I-20: `reason`의 알려진 값은 `logout`·`inactivityTimeout` | §3.5가 `newConversation`을 API 사유로 서술 | §3.5 어휘를 정본 값으로 교체 |
 | I-9~I-12: 삭제 상태는 `DELETED`, 삭제는 HIDDEN→DELETED 전환 | §4.5가 구 HIDDEN 삭제 상태를 사용 | 목록·등록·수정·삭제 규약을 `DELETED`로 정렬 |

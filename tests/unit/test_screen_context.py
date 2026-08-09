@@ -1354,6 +1354,16 @@ def test_unresolved_notice_has_last_reco_changes_the_default_only() -> None:
         assert _unresolved_notice(screen_reason, False) == _unresolved_notice(screen_reason, True)
 
 
+def test_unresolved_notice_screen_reason_precedes_push_failed_marker() -> None:
+    """[#468 I-21] #118 화면 해소 사유는 push 실패 마커가 있어도 가장 구체적인 안내로 남는다."""
+    from app.agents.buyer.cart.graph import _unresolved_notice
+
+    for screen_reason in ("ambiguous_screen_candidates", "unknown_product_id_spoken"):
+        assert _unresolved_notice(screen_reason, False, has_push_failed=True) == _unresolved_notice(
+            screen_reason, False
+        )
+
+
 # ─────────── PR 2차 리뷰 — 좌표 축 반전 (열 = column) ───────────
 
 
