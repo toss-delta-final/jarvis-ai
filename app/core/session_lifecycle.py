@@ -152,9 +152,14 @@ class SessionLifecycleCoordinator:
                         outcome_name = "claim_conflict"
                         raise SessionClaimConflict
 
-                    # acquire_fence() has no await: active scope check and fence install
-                    # are one event-loop atomic operation, independent of DB thread rows.
-                    fence = registry.acquire_fence(event.guest_id, event.session_id)
+                    # Fence atomicity: the in-memory backend keeps the original guarantee
+                    # (acquire_fence() awaits nothing, so the active-scope check and the
+                    # fence install cannot be preempted).  The shared backend cannot rely
+                    # on the event loop, so it takes a pg_advisory_xact_lock on the scope
+                    # key for the whole check-and-install transaction instead — see
+                    # docs/specs/DESIGN-SHARED-STREAM-REGISTRY-476.md §3.  Either way the
+                    # guarantee is independent of the DB rows this transaction holds.
+                    fence = await registry.acquire_fence(event.guest_id, event.session_id)
                     if fence is None:
                         raise SessionActive
                     outcome = await _transition_claim(repository, uow.conn, event)
@@ -166,7 +171,7 @@ class SessionLifecycleCoordinator:
             raise
         finally:
             if fence is not None:
-                registry.release_fence(fence)
+                await registry.release_fence(fence)
             _log_claim(event, snapshot.context, outcome_name)
 
     async def process_transient_claim(
@@ -272,7 +277,7 @@ class SessionLifecycleCoordinator:
         """Phase A: validate/fence, durably gate, and capture the real profile watermark."""
         repository = self._repository or session_context._default_repository
         registry = self._registry or get_registry()
-        fence = registry.acquire_fence(claim.owner_id, claim.session_id)
+        fence = await registry.acquire_fence(claim.owner_id, claim.session_id)
         if fence is None:
             if idle:
                 await self._abandon_idle_prephase(claim)
@@ -316,7 +321,7 @@ class SessionLifecycleCoordinator:
             )
             return FinalizationOutcome("retryable")
         finally:
-            registry.release_fence(fence)
+            await registry.release_fence(fence)
 
     async def _read_profile_watermark(self, context: SessionContext) -> int | None:
         if context.owner_type == "guest":
@@ -373,7 +378,7 @@ class SessionLifecycleCoordinator:
         """Phase B: re-lock, revalidate, delete idempotently, then record completion."""
         repository = self._repository or session_context._default_repository
         registry = self._registry or get_registry()
-        fence = registry.acquire_fence(claim.owner_id, claim.session_id)
+        fence = await registry.acquire_fence(claim.owner_id, claim.session_id)
         if fence is None:
             return FinalizationOutcome("skipped", skip_reason="active")
         try:
@@ -403,7 +408,7 @@ class SessionLifecycleCoordinator:
             )
             return FinalizationOutcome("retryable")
         finally:
-            registry.release_fence(fence)
+            await registry.release_fence(fence)
 
     async def run_session_context_sweep(
         self,
