@@ -44,6 +44,29 @@
     미합의라 잠정이다.
   - **비범위**: API 엔드포인트(I-32~I-37)와 `app/core/errors.py` 상태 코드 매핑은 #360.
 
+- **#518 — 리뷰 분석에 기간별 추이(`bucket`)와 긍부정 감성 집계 추가** (api-spec 계약 무변경).
+  `get_reviews(stats=True, bucket="daily|weekly|monthly")` 가 기간을 구간으로 나눠 I-31 집계를
+  한 번의 도구 호출로 모아 온다 — 워커가 구간마다 호출하면 추이 하나가 도구 호출 한도(8)를
+  넘긴다. 실패한 구간은 `조회 실패` 로 남기고 **0건으로 뭉개지 않는다**(못 본 구간을 급락으로
+  서술하는 것을 막는다). 집계 출력에는 긍정(4-5점)·중립(3점)·부정(1-2점) 건수와 **비율**을
+  함께 싣는다 — 비율을 워커가 암산하면 verifier F2(근거 대조)가 근거 없는 수치로 강등한다.
+  리뷰 워커 프롬프트는 5단계로 늘려 만족 요인(`rating="4,5"`)까지 읽는다.
+- **#385 — 구제 체인 JSONL 재실행 집계기와 실측 불가 판정 근거**. `recommend_zero_result`·
+  `recommend_pipeline` 합집합의 first-token 기여분과 0건 종결 진입 하한, `UPSTREAM_TIMEOUT` 상한을
+  Markdown·CSV로 남긴다.
+
+### Fixed
+- **#518 — 내용 없는 리뷰 한 행이 리뷰 조회 전체를 죽이던 문제** (api-spec §4.20, 계약 무변경).
+  DDL 이 `content TEXT NULL` 이라 별점만 남긴 리뷰가 실재하는데 `SellerReviewRow.content` 가
+  `str = ""` 였다. 기본값은 키 **결측**만 흡수하고 명시적 `null` 은 거부하므로, rows 한 행만
+  content 가 null 이어도 ValidationError → SpringUnavailableError 로 그 페이지 전체가 degrade
+  됐다 — 판매자에게는 "리뷰 조회에 실패했습니다" 로만 보였다. `content`·`authorNickname` 을
+  nullable 로 열고 표시 폴백(`(내용 없음)`·`익명`)을 도구에 둔다. `extra="allow"` 는 여분 필드만
+  다루지 이 경로를 구제하지 못한다(#489 와 층위가 다르다).
+- **#385 — 구제 체인 4개 구조화 이벤트가 평문 logging sink에서 계측 필드를 잃던 문제**. JSON message와
+  기존 `extra`를 함께 기록해 `aggregate_rescue_chain.py`가 운영 stdout 줄을 그대로 파싱하면서도 기존
+  `LogRecord` 속성 기반 검증을 보존한다. 전역 formatter는 `chat_request` 이중 인코딩과 카테고리 문자열
+  노출 위험 때문에 바꾸지 않았다.
 - **#484 — Tier L 이 케이스별 프로필을 받는다. 그전까지는 dev 전 케이스에 고정 프로필 하나를
   먹이고 있었다** (평가 하네스 한정, api-spec 무개정). Tier D 는 케이스별 구조화 선호를
   파생하지만 Tier L 은 서빙과 같은 마크다운을 소비하는데 그 변환기가 없어, `profiles.json` 의
@@ -74,12 +97,49 @@
   않도록 이 브랜치의 중복분은 back-merge에서 제거했다.
 
 ### Changed
+- **#306 — 미룬 턴만 I-1 검색 재시도를 끄던 #277 응급 처치를 제거했다. 이제 턴 유형과 무관하게
+  `SPRING_MAX_RETRIES` 하나가 재시도를 정한다** (api-spec §2.9(c)·§3.1, v0.32.5).
+  #277 의 스킵은 `conditions` 를 검색 뒤로 미룬 턴의 첫 SSE 가 검색 뒤에 있어 재시도가
+  first-token 10s 를 넘기던 시절의 것인데(실측 이벤트 0건·504 가 8/8), #396 이 `progress` 를
+  decompose 앞으로 보내며 그 전제가 사라졌다. #394 가 재시도를 0으로 내린 동안은 무동작이었고
+  #406 이 1로 원복하며 다시 유효한 가드가 되어, 이번에 제거 여부를 판단했다. 제거 대상은
+  `SEARCH_RETRY_ON_DEFERRED_CONDITIONS`(config)·`suppress_search_retry`(ContextVar+CM)·
+  미룬 턴 판정 셋이다. **동작 변화**: 미룬 턴 본검색·자동완화 probe 가 실제로 재시도하고,
+  #406 의 `retrying` progress 도 그 턴에서 나간다(그 턴에선 `conditions` 앞). 직렬 이론 상한은
+  12s → **18s**(`3 × 3.0 × 2`)지만 `RESCUE_BUDGET_MODE=narrow`(#406 기본)의 런타임 좁히기가
+  미룬 턴 본검색을 `(30−15−경과)/3 ≈ 4.8s` 로 묶어 **#277 이 재현한 「1차 3.0s 타임아웃 + 2차
+  2.9s 성공」조합은 성립하지 않는다** — 되살아나는 것은 2차가 빠르게 응답하는 경우뿐이고,
+  대가는 확정 실패 감지가 3.0s→≈4.8s 로 늦어지는 것이다. 실측(`evals/first_event_budget`,
+  변경 전/후 2벌)으로 첫 이벤트가 여전히 `progress`(수 ms)임을 함께 고정했다.
+  **롤백 규약이 하나 늘었다** — `RESCUE_BUDGET_MODE=observe` 로 되돌릴 때는
+  `SPRING_MAX_RETRIES=0` 을 함께 지정해야 기동한다(18.0 ≥ 30−15). `PROGRESS_EVENTS_ENABLED=false`
+  는 #406 이 만든 같은 짝 규칙을 그대로 따른다. 곁들여 #406 이 기본값을 0→1 로 올리며 갱신하지
+  않은 사본 drift 2건(api-spec §2.9(c) 의 `9s` 수치, `.env.example` 의 `SPRING_MAX_RETRIES=0`·
+  `RESCUE_BUDGET_MODE=observe`)도 함께 정정했다. **와이어 계약 불변.**
 - **#394 원복 — I-1 `spring_max_retries` 기본값을 1로 복구하고 `rescue_budget_mode`를
   `narrow`로 함께 올렸다.** 사람의 명시 지시로 수행했으며, #394가 제시한 원복 조건인 BE #395
   검색 쿼리 개선은 충족됐다: BE PR #133 커버링 인덱스와 `attributes` 4키 축소가 배포됐고,
   2026-08-09 라이브 응답에서 4키 부재 및 항목당 약 1,780B→1,052B로 확인됐다(`size` 상한 폐지).
   `narrow`는 꼬리 예약 예산이 부족한 구제 단의
   타임아웃을 좁혀도 시도하며 건너뛰지 않고, 다시 끄려면 `SPRING_MAX_RETRIES=0`을 설정한다.
+- **#483 — Tier L 의 주 비교를 `회원 vs 게스트` 에서 `회원 vs 프로필 없는 회원` 으로 바꿨다**
+  (평가 하네스 한정, 프로덕션 코드·api-spec 무개정). 기준선 `guest` 는 비교 arm 과 프로필만
+  다른 게 아니라 **identity 까지 달라**(persona_id 가 없어 I-19 구매이력 조회·재구매 dedup 이
+  통째로 빠진다) 헤드라인이 "프로필 효과 + identity 효과"의 합이었다 — `live-v1` 산출물을
+  라벨로 가르면 guest 라벨 +0.0135 / member 라벨 −0.1258 이고 하락은 `repurchase` 3건이
+  만든 것이라, 그 3건을 빼면 전체 평균이 −0.0340 → −0.0106 으로 0 에 수렴한다. Tier D 가 쓰던
+  `member_no_profile` arm(identity=member, 프로필 없음)을 Tier L 에 추가해 주 비교를
+  `clean_rerank_only vs member_no_profile`(`pairedVsMemberNoProfile`)로 옮기고, `pairedVsGuest`
+  는 cold-start 보조 비교로 남겼다(identity 가 섞이므로 프로필 효과로 해석하지 않는다 —
+  dev-v2 README 와 같은 규약). `rankingChange`·`axisLeakage` 도 같은 주 기준선을 따라가며,
+  `axisLeakage["guest"]` 는 자기 비교(항상 0)에서 **지터 바닥**으로 바뀌어 유출이 신호인지
+  잡음인지 가르는 기준이 된다. `--arms` 검증은 위치 규칙(`arms[0]=="guest"`)에서 두 기준선
+  포함 여부로 바뀌었고, `comparison.json` 에 `secondaryBaselineArm`·`primaryComparison`·
+  `axisLeakageUnmeasured` 가 추가됐다. 마지막 것은 기준선 짝이 없어 **유출을 재지 못한** 행을
+  따로 싣는다 — `[]`(유출 없음)와 `None`(측정 못 함)이 같은 목록에서 똑같이 빠지면 예산 소진이
+  안전 신호로 둔갑한다. 예산 상한은 그대로 두고 실행 시 `MODEL_EVAL_MAX_CALLS_PER_RUN=4000` override 를
+  쓴다(4-arm × dev109 × repeats3 = 3,924호출, 비용 상한 $20 은 무관). **실측은 병합 후 별도
+  live 실행이 필요하다.**
 - **#504 — 판매자 분석 차트 재설계: 좌표 생성 주체를 LLM → 코드로 전환** (api-spec §3.2,
   v0.30.0 · `docs/specs/DESIGN-SELLER-CHART-V2.md`). 구 구조는 `graph_agent`(도구 없음,
   결정 D-4)가 워커 요약에서 숫자를 베껴 좌표를 만들고 G1 이 근거 없는 수치를 드랍해
@@ -93,6 +153,9 @@
   구 G1(`verifier.run_chart_checks`)과 결정 D-4 는 폐기.
 
 ### Docs
+- **#518 — api-spec §3.2 `findings[].analysisType` 표에 `"review"` 등재** (v0.32.5, 사본
+  드리프트 정정). v0.25.0(#297)이 리뷰 워커를 6종째로 붙일 때 이 열거 표만 5종에 멈춰 있었다
+  — 코드·실 와이어는 처음부터 6종이라 신설 협의가 아니라 문서 정정이다.
 - **#357 — 개인화 그래프 협의 항목 표기를 정리해 BE 협의 트랙을 닫았다** (api-spec §3.8·§5,
   v0.32.2 / `SPEC-PROFILE-GRAPH-149` v0.3.1). `C-20`(4)·`C-21`(3)·`C-22`(1)(2)·`C-28` 을 🔴 → 🟢 로
   내렸다. **계약 내용은 한 글자도 바뀌지 않았고 상태 표기만 바뀌었다** — 네 항목 모두 **답이 이미
@@ -146,6 +209,18 @@
   `connect` 를 통째로 막는 가드가 **루프 생성 자체를 실패시켜 async 테스트가 전멸**했다(실측
   556 failed). 리눅스는 커널 AF_UNIX 라 이 경로가 없어 CI(ubuntu-latest)로는 영영 안 잡힌다.
   socketpair 구간만 스레드 로컬로 예외 처리했다(가드의 본래 목적은 그대로).
+- **#512 — 매출 시계열 도구가 오류 없이 내던 "정상값처럼 보이는 틀린 답" 3종 차단** (와이어 계약
+  불변 — AI 소비측 게이트). (1) `granularity=summary` 는 응답 shape 이 달라 `SalesResult`
+  (`extra="allow"`)가 `series=[]` 로 삼켜 **언제나 "총매출 0원"** 이 나가던 것을 도구 입구에서
+  `Error:` 로 거절한다(summary shape 수신은 §4.4 I-6 개정 후 별도 주제). (2) 파싱은 되지만
+  정규형이 아닌 ISO(`"20260801"`·`"2026W311"`)가 window 필터의 경계값이 돼 전 포인트를 탈락시켜
+  또 0원을 만들던 경로를, 공유 기간 가드(`_period_arg_error`)에서 **정규형 일치**로 막는다
+  (`@_guard_period_args` 를 쓰는 조회 도구 9종 공통, `to_date` 는 종전에 본문 검증 자체가 없었다).
+  (3) 표본 3개 미만이라 검정 불능인 경우를 "이상 감지 없음"으로 단언하던 것을,
+  `detect_seasonal_anomalies` 가 `SeasonalAnomalyDetection(decided, sample_size, ...)` 을 돌려
+  **판정 보류**로 갈라 표기한다(워커 프롬프트의 "판정 보류 ≠ 이상 없음" 규칙 정합, Tukey 경로와
+  같은 어휘). `n>=3` 이고 이상 0건인 경우의 문구·`salesCount` 표기(#489)는 불변.
+
 - **#511 — 상품 "삭제"를 여전히 숨김(`HIDDEN`)으로 다루던 문제** (api-spec §3.2·§4.5·§4.8, v0.29.7).
   BE 가 2026-08-05 에 `ProductStatus.DELETED` 를 신설해(02 D41 · 정본 Notion I-12) 숨김과 삭제를
   갈랐는데, 사본은 v0.29.4(#472)가 §4.5 표만 맞추고 §3.2 HITL 서술을 놓쳤으며 **코드는 전혀

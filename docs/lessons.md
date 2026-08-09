@@ -88,6 +88,117 @@
   "환경 탓"으로 넘기기 전에 원인을 한 번은 분류한다 — 여기서는 그 분류가 실제 버그를 찾아냈다.
 - 관련: `tests/unit/conftest.py::_guarded_socketpair` · `tests/unit/test_unit_tcp_guard.py` ·
   `.github/workflows/ci.yml:10`(ubuntu-latest) · #474 회귀, #358 작업 중 발견
+
+## [2026-08-10] 반복 실행 지표에서 기준선만 repeat 0 으로 고정하면 지터가 신호로 둔갑한다
+- 증상: Tier L 축 유출(`filterAxisLeakage`)이 기준선을 `repeat == 0` 한 벌로 뽑아 놓고 비교
+  대상은 전 repeat 을 돌았다. `--repeats 1` 에서는 무해했지만 `--repeats 3` 을 켜는 순간
+  arm 의 repeat 1·2 가 **기준선의 다른 샘플**과 비교돼, 같은 프롬프트라도 반복마다 흔들리는
+  LLM 지터가 "프로필이 새로 만든 필터 축"으로 계상된다.
+- 원인: 같은 파일의 활성화 지표(`activation.ranking_change`)는 `(caseId, repeat)` 로 짝짓는
+  규약을 docstring 에까지 명시해 뒀는데, 유출 지표만 그 규약 밖에 있었다. 두 지표가 같은
+  산출물을 읽으면서 짝짓기 키가 서로 달랐고, repeats=1 에서는 두 규약이 우연히 일치해
+  어긋남이 드러나지 않았다.
+- 규칙: 반복 실행 산출물을 짝지어 비교하는 지표는 **예외 없이 `(caseId, repeat)`** 를 키로
+  쓴다. `caseId` 만 쓰는 코드를 보면 "repeats>1 에서도 맞는가"를 먼저 묻는다. 그리고 짝이
+  없는 행은 `[]`(=이상 없음)로 채우지 말고 `None`(=계산 못 함)으로 남긴다 — 빈 리스트는
+  측정 중단을 안전 신호로 둔갑시킨다(아래 #512 교훈과 같은 취지다). 이때 "측정됐는가" 판정은
+  **양쪽 모두**에 걸어야 한다: 기준선만 거르면 비교 대상 자신이 스텁일 때 빈 입력이 "이상 없음"
+  으로 계산돼 같은 둔갑이 방향만 바꿔 되살아난다(PR #536 리뷰에서 두 번 지적받았다).
+- 관련: `evals/personalization/cli.py::annotate_axis_metrics`,
+  `evals/personalization/activation.py::_by_pair_key` (#483)
+
+---
+
+## [2026-08-10] 이슈 착수 전에 **열린 PR**을 확인한다 — 이슈 본문은 작성일에 멈춰 있다 (#306)
+- 증상: #306(미룬 턴 재시도 스킵 원복) 계획을 "오늘 기본값에서 무동작(no-op)인 죽은 코드 정리"로
+  세워 검증까지 마쳤는데, 착수 직전 발견한 **열린 PR #532**(#406 + #394 원복)가 그 전제를
+  뒤집었다. 그 PR 은 `spring_max_retries` 를 0→1, `rescue_budget_mode` 를 observe→narrow 로
+  올리고 **우리가 고칠 `with` 블록을 통째로 재작성**해 놓은 상태였다(겹치는 파일 6개). 계획을
+  처음부터 다시 세우고 검증도 다시 돌렸다.
+- 원인: 착수 판별을 **이슈 본문과 병합된 `dev`** 만으로 했다. 이슈는 작성일(08-04) 스냅샷이고
+  `dev` 는 아직 머지되지 않은 작업을 모른다 — 그 사이의 진실은 **열린 PR·원격 브랜치**에 있다.
+  #306 은 심지어 관련 이슈(#427·#394)를 본문에 다 적어 두었는데, 그 이슈들이 **닫힌 뒤** 후속
+  PR 이 또 열려 있었다.
+- 규칙: 이슈에 착수하기 전에 **`gh pr list --state open` 으로 열린 PR 을 훑고, 손댈 파일과
+  겹치는 PR 이 있으면 그 diff 를 먼저 읽는다.** 특히 (1) 이슈 본문이 지목한 심볼을 grep 으로
+  열린 브랜치들에서 찾고, (2) `git log --all --grep=<이슈번호>` 로 다른 브랜치가 이미 그 이슈를
+  언급하는지 본다. 겹치면 **머지 순서를 먼저 정한다** — 선후가 뒤집히면 한쪽이 다른 쪽 전제를
+  깨고, 계획의 "동작이 바뀌는가" 판정 자체가 반대가 된다.
+- 관련: #306, PR #532(#406), `git log --all --grep`, `gh pr list --state open`
+
+---
+
+## [2026-08-09] 실패를 기본값(0·빈 리스트)으로 환원하지 않는다 — 기본값은 정상값과 구별되지 않는다
+- 증상: 판매자 매출 도구가 오류 없이 HTTP 200 으로 **틀린 답**을 내는 경로가 3개 있었다.
+  (1) `granularity=summary` 는 응답 shape 이 달라 `SalesResult(extra="allow")` 가 `series=[]`
+  로 삼켜 **언제나 "총매출 0원"**, (2) 파싱은 되지만 정규형이 아닌 ISO(`"20260801"`)가
+  문자열 비교 필터(`p.date >= from_date`)의 경계값이 돼 전 포인트 탈락 → 또 0원,
+  (3) 표본 3개 미만이라 검정 불능인데 빈 리스트가 "이상 감지 없음"으로 번역돼 확정적
+  all-clear 가 나갔다.
+- 원인: 세 경로 모두 실패를 **그 도메인의 기본값**(0원·빈 목록)으로 환원했다. 기본값은
+  정상값과 형태가 같아 로그에도, 판매자 눈에도 이상으로 보이지 않는다. 특히 "형식 오류는
+  Spring 검증 경로에 맡긴다"(`except ValueError: pass`)는 사실상 **상대 파서의 관대함에
+  안전을 건 것**이었다.
+- 규칙: 판정 불능·미지원·형식 위반은 기본값이 아니라 **타입이나 문자열로 드러낸다** —
+  판정 함수는 "결과"와 "판정 가능 여부"를 함께 반환하고(`decided`), 도구는 지원하지 않는
+  입력을 `Error:` 로 즉시 거절한다. 문자열이 비교 연산의 경계값이 될 자리라면 파싱 성공이
+  아니라 **정규형 일치**(`parsed.isoformat() == 원문`)까지 확인한다.
+- 관련: `app/agents/seller/tools.py` · `app/agents/seller/analysis/timeseries.py` ·
+  `app/agents/seller/analysis/types.py` · `docs/specs/STATUS-seller-analysis-2026-08-09.md` §3 · #512
+
+---
+
+## [2026-08-09] pydantic 의 `str = ""` 기본값은 **키 결측**만 흡수한다 — nullable 컬럼에는 `| None` 이 필요하다
+- 증상: I-31 리뷰 조회에서 `rows[]` 중 **한 행만** `content: null` 이어도 그 페이지 전체가
+  `ValidationError` → `SpringUnavailableError` → 도구 degrade 로 죽었다. 판매자에게는
+  "리뷰 조회에 실패했습니다" 로만 보여서, 부분 결측이 원인이라는 단서가 표면에 없었다.
+- 원인: `SellerReviewRow.content: str = ""` 였다. 기본값은 **키가 아예 없을 때** 쓰이는 값이지
+  타입 허용 범위가 아니다 — 명시적 `null` 이 오면 pydantic 은 기본값과 무관하게 `str` 에
+  `None` 을 넣기를 거부한다. 베이스의 `extra="allow"` 도 여분 필드만 다루므로 이 경로를
+  구제하지 못한다(#489 가 고친 `extra="ignore"` 필드 소실과는 층위가 다르다). DDL 은
+  `content TEXT NULL` 이었고 별점만 남기는 리뷰는 흔한 입력이었다.
+- 규칙: 스키마 필드를 쓸 때 **DDL/명세의 NULL 허용 여부를 기본값이 아니라 타입으로** 옮긴다.
+  `X = ""`·`X = 0` 은 "이 필드는 절대 null 이 아니다" 는 선언이며, 확신이 없으면 `| None` 이
+  기본이다(#197 의 "기본값 0 금지" 와 같은 취지 — 그쪽은 오독, 이쪽은 전량 실패). 그리고
+  **행 단위 결측이 페이지 전체를 죽이는지**를 스키마 리뷰의 상시 질문으로 둔다: 한 행짜리
+  정상 픽스처만 있으면 이 실패 모드는 테스트에 잡히지 않는다 — null 행과 정상 행을 **섞은**
+  응답으로 고정한다.
+- 관련: `app/schemas/spring.py`(SellerReviewRow) · `app/agents/seller/tools.py`(표시 폴백) ·
+  `tests/unit/test_seller_spring_client.py::test_get_reviews_parses_null_content_without_failing_the_page` ·
+  이슈 #518 · api-spec §4.20
+
+---
+
+## [2026-08-10] 구조화 로그의 message 형식을 바꾸면 선택자도 전수 이관한다
+- 증상: #385가 구조화 이벤트의 message를 JSON으로 바꾼 뒤, 예산 테스트 4건이 옛
+  `record.message == "recommend_pipeline"` 선택자를 써 `StopIteration` 또는 `None`으로 실패했다.
+- 원인: 첫 수정에서 일부 caplog 선택자만 JSON 파싱으로 바꾸고, 저장소 전체의 message/msg/getMessage
+  기반 이벤트 선택을 전수 검색하지 않았다.
+- 규칙: 구조화 로그의 message 표현을 바꿀 때는 안정적인 LogRecord extra 선택자(여기서는 `event`)를
+  함께 제공하고, 이벤트명으로 message/msg/getMessage를 고르는 모든 호출부를 grep으로 0건 확인한다.
+- 관련: `app/core/logging.py::log_structured` · `tests/unit/test_rescue_budget_427.py` · #385
+
+---
+
+## [2026-08-10] `extra=` 검증은 렌더된 sink 문자열까지 확인한다
+- 증상: 구제 체인 이벤트가 `extra`에 계측 필드를 넣었고 caplog의 `record.rescue_elapsed_ms` 단언도
+  통과했지만, 표준 formatter가 `%(message)s`만 출력해 운영 stdout에서는 필드가 전부 사라졌다.
+- 원인: LogRecord 속성 보존과 formatter 렌더는 별도 단계인데, 테스트가 전자만 확인했다.
+- 규칙: stdout/file sink로 소비되는 구조화 로그는 실제 formatter로 레코드를 렌더한 뒤 파서·집계기까지
+  왕복하는 회귀 테스트를 둔다. `extra=` 속성 단언은 호환성 검증으로만 남긴다.
+- 관련: `app/core/logging.py::log_structured` · `tests/unit/test_aggregate_rescue_chain.py` · #385
+
+---
+
+## [2026-08-09] 분포 분리 테스트는 변이 뒤 순위가 실제로 바뀌는 표본을 써야 한다
+- 증상: #385의 `may_auto_relax=False` 분리 테스트가 False 표본 하나(1ms)와 True 표본 둘
+  (100/200ms)을 썼더니, False를 True 분포에 잘못 섞는 변이가 통과했다.
+- 원인: 최근접 순위 p50은 `[100, 200]`과 `[1, 100, 200]`에서 모두 100이라, "작은 False 값을
+  넣었다"는 사실만으로 분리 결함을 검출하지 못했다.
+- 규칙: 분위수·분모 분리 회귀 테스트는 의도한 잘못된 결합을 실제로 적용한 변이에서 적어도 하나의
+  단언값이 달라지는 손계산 표본을 사용하고, 변이 실행으로 그 실패를 확인한다.
+- 관련: `tests/unit/test_aggregate_rescue_chain.py` · #385
+
 ## [2026-08-10] 동시 레인의 완료 조건은 이슈가 아니라 최신 dev에서 다시 실측한다
 - 증상: 이슈 완료 조건에 "미구현"으로 표시된 항목을 그대로 믿고 승인 0건 가드를 구현했는데,
   같은 조건을 다른 레인(PR #502)이 이미 dev 에 넣어 둔 상태였다. back-merge 때 같은 판정이 두
@@ -2191,7 +2302,12 @@
   - 순서를 근거로 쓴 서술은 **그 순서를 바꾼 PR이 함께 갱신한다.**
   - 예산 검증은 첫 이벤트 앞에 호출이 **몇 번** 놓이는지까지 센다. 인프로세스 `TestClient`는
     SSE 본문을 버퍼링하므로 첫 이벤트 측정에 쓰지 않고 실 HTTP 경계에서 잰다.
-- 관련: #277, #113/PR #248, `app/core/config.py`
+- **[2026-08-10 갱신] 이 응급 처치는 #306으로 제거됐다.** 근거였던 관문(첫 이벤트가 검색 뒤)이
+  #396의 `progress` 상시화로 사라졌고, 그 조합을 지금 막는 것은 억제가 아니라
+  `RESCUE_BUDGET_MODE=narrow`의 런타임 좁히기다(미룬 턴 본검색을 ≈4.8s로 묶어 "1차 3.0s
+  타임아웃 + 2차 2.9s 성공"이 성립하지 않게 한다). `SEARCH_RETRY_ON_DEFERRED_CONDITIONS`도
+  함께 폐지됐다 — 재시도는 `SPRING_MAX_RETRIES` 하나가 정한다.
+- 관련: #277, #113/PR #248, #306, `app/core/config.py`
   `_require_search_retry_within_stream_budget`, `evals/first_event_budget/`, api-spec §2.9(c)
 
 ---
