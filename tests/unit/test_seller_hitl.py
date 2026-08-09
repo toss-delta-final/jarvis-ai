@@ -27,6 +27,8 @@ from app.services.spring_client import (
     OrderAlreadyShipped,
     OrderInvalidTransition,
     OrderItemNotFound,
+    ProductAlreadyDeleted,
+    ProductDeletedNotEditable,
     SpringUnavailableError,
     set_spring_client,
 )
@@ -71,13 +73,21 @@ class _StubSpring:
         self.calls.append(("create", brand_id, payload))
         return ProductCreateResult(productId=999, status="ON_SALE")
 
+    # [#511] I-11/I-12 409 전용 예외 주입 — "안 되는 일"이 장애로 뭉개지지 않는지 검증한다.
+    update_error: Exception | None = None
+    delete_error: Exception | None = None
+
     async def update_product(self, brand_id, product_id, patch):
         self.calls.append(("update", brand_id, product_id, patch))
+        if self.update_error is not None:
+            raise self.update_error
         return ProductUpdateResult(productId=product_id)
 
     async def delete_product(self, brand_id, product_id):
         self.calls.append(("delete", brand_id, product_id))
-        return ProductDeleteResult(productId=product_id, status="HIDDEN")
+        if self.delete_error is not None:
+            raise self.delete_error
+        return ProductDeleteResult(productId=product_id, status="DELETED")
 
     # [#297] I-30 발송 — ship_error 로 코드별 실패(409/400/404)를 주입한다.
     ship_error: Exception | None = None
@@ -482,13 +492,13 @@ def test_confirm_missing_product_is_stale() -> None:
 
 
 def test_confirm_delete_maps_to_i12() -> None:
-    """delete draft → I-12 soft delete — 결과에 HIDDEN 명시(물리 삭제 아님)."""
+    """delete draft → I-12 soft delete — 결과는 DELETED 이고 "숨김"이라 말하지 않는다(§4.5)."""
     spring = _StubSpring()
     set_spring_client(spring)
     record = _record(
         op="delete",
-        changes=[DraftChange(field="status", before="ON_SALE", after="HIDDEN")],
-        summary="상품 숨김",
+        changes=[DraftChange(field="status", before="ON_SALE", after="DELETED")],
+        summary="상품 삭제",
     )
 
     async def run():
@@ -498,8 +508,103 @@ def test_confirm_delete_maps_to_i12() -> None:
     outcome = asyncio.run(run())
 
     assert outcome.status == "executed"
-    assert "HIDDEN" in outcome.text
+    assert "DELETED" in outcome.text
+    # 삭제를 숨김으로 안내하면 판매자가 되돌릴 수 있는 조작으로 오인한 채 승인한다.
+    assert "숨김(판매정지)과 달리" in outcome.text
     assert spring.write_calls() == [("delete", 3, 101)]
+
+
+# ── [#511] 삭제 상태 분리(BE 02 D41 · Notion I-12 2026-08-05) ────────────────────
+
+
+def test_delete_draft_rejects_hidden_as_after() -> None:
+    """delete 초안의 after 는 DELETED 뿐 — HIDDEN 은 되돌릴 수 있는 다른 상태다."""
+    record, problem = hitl.validate_draft(
+        _proposal(
+            op="delete",
+            changes=[DraftChange(field="status", before="ON_SALE", after="HIDDEN")],
+        ),
+        seller_id=7,
+        brand_id=3,
+    )
+    assert record is None and problem is not None
+
+
+def test_update_draft_rejects_deleted_status() -> None:
+    """삭제는 I-12 전용 전이 — DELETED 가 I-11 본문으로 새어나가면 BE 가 400 이다."""
+    record, problem = hitl.validate_draft(
+        _proposal(
+            op="update",
+            changes=[DraftChange(field="status", before="ON_SALE", after="DELETED")],
+        ),
+        seller_id=7,
+        brand_id=3,
+    )
+    assert record is None and problem is not None
+
+
+def test_confirm_delete_of_hidden_product_is_not_stale() -> None:
+    """숨겨둔 상품도 삭제된다 — HIDDEN→DELETED 는 정상 전이라 status 를 stale 비교하지 않는다.
+
+    초안 작성 시점 ON_SALE 이던 상품을 판매자가 숨긴 뒤 승인해도 삭제가 막히면 안 된다
+    (구 계약의 409 `ALREADY_HIDDEN` 이 만들던 것과 같은 증상).
+    """
+    hidden_row = _ROW.model_copy(update={"status": "HIDDEN"})
+    spring = _StubSpring(rows=[hidden_row])
+    set_spring_client(spring)
+    record = _record(
+        op="delete",
+        changes=[DraftChange(field="status", before="ON_SALE", after="DELETED")],
+        summary="상품 삭제",
+    )
+
+    async def run():
+        await hitl.start_draft(record)
+        return await hitl.confirm_draft(record.draft_id, seller_id=7, brand_id=3)
+
+    outcome = asyncio.run(run())
+
+    assert outcome.status == "executed"
+    assert spring.write_calls() == [("delete", 3, 101)]
+
+
+def test_confirm_delete_already_deleted_reports_already_done() -> None:
+    """I-12 409 ALREADY_DELETED — 거짓 성공도, "재시도하세요"도 아니다(멱등 200 금지)."""
+    spring = _StubSpring()
+    spring.delete_error = ProductAlreadyDeleted("ALREADY_DELETED")
+    set_spring_client(spring)
+    record = _record(
+        op="delete",
+        changes=[DraftChange(field="status", before="HIDDEN", after="DELETED")],
+        summary="상품 삭제",
+    )
+
+    async def run():
+        await hitl.start_draft(record)
+        return await hitl.confirm_draft(record.draft_id, seller_id=7, brand_id=3)
+
+    outcome = asyncio.run(run())
+
+    assert outcome.status == "already_done"
+    assert "이미 삭제된 상품" in outcome.text
+    assert "다시 시도해도 결과가 같습니다" in outcome.text
+
+
+def test_confirm_update_on_deleted_product_reports_already_done() -> None:
+    """I-11 409 PRODUCT_DELETED — 삭제 상품은 챗봇이 되살릴 수 없다."""
+    spring = _StubSpring()
+    spring.update_error = ProductDeletedNotEditable("PRODUCT_DELETED")
+    set_spring_client(spring)
+    record = _record()
+
+    async def run():
+        await hitl.start_draft(record)
+        return await hitl.confirm_draft(record.draft_id, seller_id=7, brand_id=3)
+
+    outcome = asyncio.run(run())
+
+    assert outcome.status == "already_done"
+    assert "이미 삭제된 상품이라 수정할 수 없습니다" in outcome.text
 
 
 def test_confirm_create_maps_to_i10_without_image() -> None:
