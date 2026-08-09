@@ -202,6 +202,35 @@ def test_live_wrapper_without_resolver_keeps_constructor_markdown(monkeypatch) -
     assert seen == ["생성자-고정", "생성자-고정"]
 
 
+def test_four_arm_three_repeat_run_needs_an_explicit_budget_override() -> None:
+    """[#483] `--repeats 3` 은 기본 상한(800)으로는 못 돈다 — env override 가 **의도된 절차**다.
+
+    예산 상한은 튜너블이 아니라 운영 안전장치라 기본값을 올리지 않는다(`evals/model_eval/README`).
+    이 테스트는 그 절차가 필요하다는 사실 자체를 고정한다 — 기본값이 조용히 올라가면 같은
+    상한을 공유하는 model_eval·ablation 하네스의 방어선까지 함께 풀린다.
+
+    실지출은 상한과 무관하게 작다: 실측 단가(≈$0.000478/call)로 3,924호출 ≈ $1.9 (비용 상한 $20).
+    """
+    from evals.goldenset.loader import load_cases
+
+    case_count = len(list(load_cases("dev")))
+
+    def table(max_calls: int) -> dict:
+        return estimate_live_matrix(
+            case_count=case_count,
+            arm_count=4,
+            repeats=3,
+            model="gpt-5.6-luna",
+            # `_env_file=None` 필수 — 로컬 .env 의 override 가 새면 결과가 환경마다 달라진다.
+            settings=Settings(_env_file=None, model_eval_max_calls_per_run=max_calls),
+        )
+
+    default_cap = Settings(_env_file=None).model_eval_max_calls_per_run
+    assert table(default_cap)["expectedCalls"] == case_count * 4 * 3 * 3
+    assert table(default_cap)["allowed"] is False
+    assert table(4000)["allowed"] is True
+
+
 def test_filter_axis_leakage_reuses_app_axes_and_includes_attr_conditions() -> None:
     assert filter_axis_leakage(
         {"keyword": "이어폰"}, {"keyword": "이어폰", "attrConditions": {"color": "black"}}

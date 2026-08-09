@@ -81,6 +81,14 @@
 - **원복 순서에 대한 답(이슈가 요구한 것)**: #395 배포 → #394 원복(`retries=1`) → 그 시점에
   비로소 #306 스킵이 "의미를 갖는 결정"(원복하면 재시도가 실제로 켜진다)이 된다. 이 문서 §2의
   수치표가 그 시점의 예산 여유를 낸다 — **결론은 "그때 공유 예산이 선행돼야 한다"**(§2 결론).
+- **[2026-08-10 갱신 — 이 절이 예고한 순서대로 종결됐다]** #406(PR #532)이 #394를 원복하며
+  `rescue_budget_mode=narrow`를 **함께** 올렸고(이 문서 §4가 요구한 결속), 그 위에서 **#306이
+  억제 기구를 제거**했다. 결과는 §2 수치표 3행(`#394+#306 원복 → 18.0s`)과 정확히 일치한다.
+  다만 그 18.0s는 **이론 상한이고 실집행값이 아니다** — narrow가 미룬 턴 본검색을
+  `(30 − 꼬리 예약 15 − 경과) ÷ 3 ≈ 4.8s`로 좁히므로, #277이 504를 8/8 재현한 「1차 3.0s
+  타임아웃 + 2차 2.9s 성공」 조합은 되살아나지 않는다. 즉 **이 설계의 D4(좁히기)가 #306을
+  안전하게 만든 기제**이며, 그것이 §4가 "#394 원복은 최소 Lv1을 강제한다"고 결속해 둔 이유다.
+  §1(d) 각주①의 억제 스코프 비대칭도 함께 소멸했다(§6 후속 (v) 종결 — 아래 참조).
 
 ### (d) #393(PR #411, 머지됨) — `not may_auto_relax` 턴의 추가 I-3 왕복
 
@@ -170,6 +178,13 @@ deferred_calls * spring_timeout_s`)는 이 비대칭을 모델링하지 않고 �
 가정해 `3×3.0=9.0s`를 검증한다 — **실제(12.0s)와
 검증기가 믿는 값(9.0s) 사이에 3.0s 갭이 생긴다.** #394 원복 단독으로도(#306 미원복인 채) 30s
 대비 여유가 조용히 줄어든다는 뜻이다. 이 갭은 D7(§3)이 신설 함수 설계에 반드시 반영해야 한다.
+
+> **[2026-08-10 종결] 이 각주가 예고한 비대칭은 #306으로 소멸했다.** #406(PR #532)이 #394를
+> 원복(`spring_max_retries=1`)한 직후 #306이 억제 기구(`suppress_search_retry`·
+> `search_retry_on_deferred_conditions`)를 제거해, 세 단이 모두 `attempts=2`로 균일해졌다.
+> D7의 `_rescue_chain_serial_budget_s`가 이 각주 때문에 갖고 있던 A/B `max`(PR #452 R4)도 함께
+> 걷혀 `단 수 × 검색예산 × (재시도+1)` 곱셈 하나가 됐다(기본값 18.0s = §2 표 3행). §6 후속 (v)
+> 종결. 아래 본문은 그 시점의 관찰 기록으로 남긴다.
 
 **꼬리(rerank·I-21 push·답변 생성) — 확인 결과는 별도 절로.** 이 셋은 첫 `conditions` 앞 직렬
 Spring 구간 **뒤**(products 확정 이후)라 위 표의 해당 열에는 들지 않지만, 같은 30s 예산을
@@ -536,7 +551,7 @@ def _rescue_chain_serial_budget_s(
 | # | 파일::심볼 | 현재 서술 | 왜 낡았는지 |
 |---|---|---|---|
 | 1 | `graph.py::_run_candidate_source`의 `[#393 B]` 절 | "미루지 않는 턴은 conditions가 이미 나가 관문을 통과한 뒤라 안전하다"(first-token 10s 근거) | (a)로 B가 도는 시점 자체가 이미 first-token 관문 밖. 게이트는 **존치**하되 근거를 "첫 `conditions` 앞 직렬 Spring 구간 총 왕복 유계"(D1, §2 용어 정의)로 교체해야 한다(§1(d)) |
-| 2 | `graph.py::stream_recommendation`의 `suppress_search_retry` `with` 문 바로 위 주석 | "progress 이벤트가 계약에 생기면 이 스킵은 원복 가능하다" | (PR #407 병합으로도 이 주석 문구는 바뀌지 않았다, 내용은 그대로 낡아 있다) (a)로 이미 계약에 생겼는데(#396) 스킵은 아직 미원복(#306 미착수, #394가 막고 있음) — "원복 가능"이 아니라 "원복의 필요조건(progress 등재) 중 하나는 충족, #394 원복이 남음"으로 정정 필요 |
+| 2 | `graph.py::stream_recommendation`의 `suppress_search_retry` `with` 문 바로 위 주석 | ~~"progress 이벤트가 계약에 생기면 이 스킵은 원복 가능하다"~~ | **해소됨(#306, 2026-08-10)** — #406(PR #532)이 #394를 원복해 스킵이 다시 유효해진 직후 #306이 억제 기구를 통째로 제거했고, 그 주석·`with` 문·`suppress_search_retry` 자체가 함께 사라졌다. 6행과 같은 형식으로 종결 표시만 남긴다 |
 | 3 | `config.py::Settings._require_search_retry_within_stream_budget` docstring | "구매자 progress 이벤트(#289)가 계약에 등재되면 미룸 자체가 사라져 이 검증기는 보험 계층이 된다" | **틀렸다** — `conditions` 지연(미룸)은 사라지지 않는다(api-spec §3.1 정상 흐름 서술, "conditions는 여전히 검색·자동 완화 뒤다"). 사라지는 것은 이 미룸이 **first-token 관문에 걸리는 것**뿐이다. "보험 계층"이 되는 결론은 맞되 이유가 다르다 — 이제는 first-token 초과·504 방지가 아니라 첫 `conditions` 앞 직렬 Spring 구간의 벽시계 초과·체감 지연 폭주 방지 보험(본 설계 D1~D5가 그 새 역할을 규정) |
 | 4 | `MEASURE-FIRST-TOKEN-363.md` §4.1·§7 | "12.0s > 10.0s이므로 최악 경로는 오늘 설정에서 이미 first-token 데드라인을 넘어 504가 된다" | (a)로 무효. 그 파일은 이 PR 범위 밖이라 고치지 않는다(#383 레인이 같은 파일 §5를 동시 작업 중) — 이 설계 §1(a)가 정정 근거를 대신 남긴다 |
 | 5 | `docs/api-spec.md` §2.9(c) I-1 재시도 행 | "미룬 턴은 첫 이벤트 앞 본 검색 1회 + probe 1회를 각각 재시도 없이... 직렬 `2×3s=6s`" | (a)와 무관하게 #383이 지적한 낡음 — 실측 단 수는 3인데 서술은 2를 센다. §5 개정안에서 diff 제시(적용 안 함) |
@@ -703,7 +718,10 @@ BE 관측 포인트 외에도 재시도 대상 4xx 분류·`Retry-After` 미존�
   first-token 아래로 낮춘다.
 - 근거: §1(a) 잔여 ②.
 
-**(v) 재시도 억제 스코프 비대칭 수정(§1(d) 각주①, 이 설계가 새로 발견)**
+**(v) 재시도 억제 스코프 비대칭 수정(§1(d) 각주①, 이 설계가 새로 발견) — ✅ 종결(#306, 2026-08-10)**
+- **결말**: 두 대안(감싸기 / 계상만 정확히) 중 어느 쪽도 아닌 **세 번째 길로 해소됐다** —
+  #306이 억제 자체를 제거해 "감쌀 대상"이 사라졌다. `_rescue_chain_serial_budget_s`의 A/B
+  `max`(PR #452 R4)도 함께 걷혀 `단 수 × 단가` 곱셈 하나가 됐다. 아래 원문은 이력으로 남긴다.
 - 목적: `suppress_search_retry()`가 F-1/#343 무필터 재검색을 감싸지 않아 #394 원복 시 그 단만
   비대칭으로 재시도되는 갭을 해소한다.
 - 범위: `app/agents/buyer/recommendation/graph.py::stream_recommendation`의 F-1(`[#222 F-1]`
@@ -741,17 +759,17 @@ BE 관측 포인트 외에도 재시도 대상 4xx 분류·`Retry-After` 미존�
 | `relaxation_chip_fields = ["priceMax","ratingMin","brand","color"]` | `config.py::Settings.relaxation_chip_fields` |
 | `category_expand_enabled = True` | `config.py::Settings.category_expand_enabled` |
 | `category_expand_post_suppress_fallback_enabled = True` | `config.py::Settings.category_expand_post_suppress_fallback_enabled` |
-| `search_retry_on_deferred_conditions = False`(기본) | `config.py::Settings.search_retry_on_deferred_conditions` |
+| ~~`search_retry_on_deferred_conditions = False`(기본)~~ → **필드 폐지(#306, 2026-08-10)** | 억제 기구 제거로 config 에서 삭제됐다 — 재시도는 `spring_max_retries` 하나가 정한다 |
 | `progress_events_enabled = True`(기본, #396) | `config.py::Settings.progress_events_enabled` |
 | `llm_timeout_s = 30.0` / `llm_max_retries = 1` | `config.py::Settings.llm_timeout_s` / `config.py::Settings.llm_max_retries` |
 | 첫 `conditions` 앞 직렬 Spring 구간 단 수 = 3(본검색+구제 체인, first SSE 이전 — (a) 이전 기준, §2 용어 정의) | `docs/specs/MEASURE-FIRST-TOKEN-363.md` §4, 회귀 `tests/unit/test_fanout.py::test_worst_case_rescue_chain_sequential_stages_before_first_sse` |
 | decompose LLM head p95 ≈ 3.0s(#151 baseline) | `config.py::Settings._require_search_retry_within_stream_budget` docstring의 "커버하지 않는 것" 절 인용 |
 | `progress` 첫 프레임 실측 p50 ≈ 12ms | `app/agents/buyer/graph.py::run_buyer_turn`의 `[#289]` 주석, `evals/first_event_budget/` |
-| 재시도 억제 스코프(`suppress_search_retry`가 F-1/#343을 감싸지 않음) | `graph.py::stream_recommendation`의 `suppress_search_retry` `with` 블록 vs F-1(`[#222 F-1]` 절)·#343(`[#343]` 절)의 `_run_search_unfiltered()` 호출(블록 밖) · `spring_client.py::suppress_search_retry`(정의)·`spring_client.py::search_products`의 `attempts` 계산 |
+| ~~재시도 억제 스코프(`suppress_search_retry`가 F-1/#343을 감싸지 않음)~~ → **소멸(#306, 2026-08-10)** | 억제 기구가 제거돼 세 단 모두 `spring_client.py::search_products`의 `attempts = spring_max_retries + 1` 을 균일하게 쓴다(§1(d) 각주① 종결 표시 참조) |
 | I-21 push 재시도 없음, 단일 시도 3.0s | `spring_client.py::_client`(공용 클라이언트 타임아웃)·`spring_client.py::push_recommendations`(재시도 루프 없음) |
 | `search_products`(I-1)의 기존 총시간 벽시계 가드(`budget_s`/`wait_for`, F5) — F-1/#343/자동완화 probe/칩 probe 전부 이 경유 | `spring_client.py::search_products`(`budget_s` 계산·`wait_for`/`SearchBudgetExceeded`) · 경유 경로 `search_service.py::SpringSearchBackend.search`·`search_service.py::EmbeddingRerankBackend.search`(둘 다 내부에서 `search_products` 호출) |
 | `get_popular_products`(I-3)·`push_recommendations`(I-21)는 위 가드가 **없음**(F5) | `spring_client.py::get_popular_products`(`_client()`만 사용)·`spring_client.py::push_recommendations`(동일) |
-| 칩 probe(`_probe`)는 `suppress_search_retry()` 밖 — 자동완화 루프의 `_probe(cand)` 호출과 달리 억제 없음(F4) | `graph.py::stream_recommendation`의 자동완화 루프 `with` 블록(자동완화만 감쌈, 주석 "아래 완화 칩 probe는 감싸지 않는다")·칩 probe의 `outcomes = await asyncio.gather(*(_probe(c) for c in pending))` 호출(감싸지 않음) |
+| ~~칩 probe(`_probe`)는 `suppress_search_retry()` 밖 — 자동완화 루프의 `_probe(cand)` 호출과 달리 억제 없음(F4)~~ → **구분 소멸(#306, 2026-08-10)** | 억제가 사라져 자동완화 probe·칩 probe가 같은 재시도 규칙을 쓴다. 둘의 차이는 이제 `conditions` 전/후라는 위치와 예산 배분(D5)뿐이다 |
 | rerank LLM 호출 상한 60.0s(`llm_timeout_s×(retries+1)`), 실 p95 미확인 | `app/core/llm.py::get_llm`(`timeout`/`max_retries` 주입부), 정의부 `app/agents/buyer/recommendation/rerank.py::rerank`·호출부 `graph.py::stream_recommendation`의 `rr = await rerank(...)` |
 | api-spec §2.9(c) 타임아웃 기준표 | `docs/api-spec.md` §2.9 "(c) 타임아웃 기준표" 절 |
 | api-spec §3.1 `progress` 이벤트 절 (v0.27.0) | `docs/api-spec.md` §3.1 "(1) `progress`" 절 |

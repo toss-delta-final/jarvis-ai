@@ -63,12 +63,49 @@
   않도록 이 브랜치의 중복분은 back-merge에서 제거했다.
 
 ### Changed
+- **#306 — 미룬 턴만 I-1 검색 재시도를 끄던 #277 응급 처치를 제거했다. 이제 턴 유형과 무관하게
+  `SPRING_MAX_RETRIES` 하나가 재시도를 정한다** (api-spec §2.9(c)·§3.1, v0.32.5).
+  #277 의 스킵은 `conditions` 를 검색 뒤로 미룬 턴의 첫 SSE 가 검색 뒤에 있어 재시도가
+  first-token 10s 를 넘기던 시절의 것인데(실측 이벤트 0건·504 가 8/8), #396 이 `progress` 를
+  decompose 앞으로 보내며 그 전제가 사라졌다. #394 가 재시도를 0으로 내린 동안은 무동작이었고
+  #406 이 1로 원복하며 다시 유효한 가드가 되어, 이번에 제거 여부를 판단했다. 제거 대상은
+  `SEARCH_RETRY_ON_DEFERRED_CONDITIONS`(config)·`suppress_search_retry`(ContextVar+CM)·
+  미룬 턴 판정 셋이다. **동작 변화**: 미룬 턴 본검색·자동완화 probe 가 실제로 재시도하고,
+  #406 의 `retrying` progress 도 그 턴에서 나간다(그 턴에선 `conditions` 앞). 직렬 이론 상한은
+  12s → **18s**(`3 × 3.0 × 2`)지만 `RESCUE_BUDGET_MODE=narrow`(#406 기본)의 런타임 좁히기가
+  미룬 턴 본검색을 `(30−15−경과)/3 ≈ 4.8s` 로 묶어 **#277 이 재현한 「1차 3.0s 타임아웃 + 2차
+  2.9s 성공」조합은 성립하지 않는다** — 되살아나는 것은 2차가 빠르게 응답하는 경우뿐이고,
+  대가는 확정 실패 감지가 3.0s→≈4.8s 로 늦어지는 것이다. 실측(`evals/first_event_budget`,
+  변경 전/후 2벌)으로 첫 이벤트가 여전히 `progress`(수 ms)임을 함께 고정했다.
+  **롤백 규약이 하나 늘었다** — `RESCUE_BUDGET_MODE=observe` 로 되돌릴 때는
+  `SPRING_MAX_RETRIES=0` 을 함께 지정해야 기동한다(18.0 ≥ 30−15). `PROGRESS_EVENTS_ENABLED=false`
+  는 #406 이 만든 같은 짝 규칙을 그대로 따른다. 곁들여 #406 이 기본값을 0→1 로 올리며 갱신하지
+  않은 사본 drift 2건(api-spec §2.9(c) 의 `9s` 수치, `.env.example` 의 `SPRING_MAX_RETRIES=0`·
+  `RESCUE_BUDGET_MODE=observe`)도 함께 정정했다. **와이어 계약 불변.**
 - **#394 원복 — I-1 `spring_max_retries` 기본값을 1로 복구하고 `rescue_budget_mode`를
   `narrow`로 함께 올렸다.** 사람의 명시 지시로 수행했으며, #394가 제시한 원복 조건인 BE #395
   검색 쿼리 개선은 충족됐다: BE PR #133 커버링 인덱스와 `attributes` 4키 축소가 배포됐고,
   2026-08-09 라이브 응답에서 4키 부재 및 항목당 약 1,780B→1,052B로 확인됐다(`size` 상한 폐지).
   `narrow`는 꼬리 예약 예산이 부족한 구제 단의
   타임아웃을 좁혀도 시도하며 건너뛰지 않고, 다시 끄려면 `SPRING_MAX_RETRIES=0`을 설정한다.
+- **#483 — Tier L 의 주 비교를 `회원 vs 게스트` 에서 `회원 vs 프로필 없는 회원` 으로 바꿨다**
+  (평가 하네스 한정, 프로덕션 코드·api-spec 무개정). 기준선 `guest` 는 비교 arm 과 프로필만
+  다른 게 아니라 **identity 까지 달라**(persona_id 가 없어 I-19 구매이력 조회·재구매 dedup 이
+  통째로 빠진다) 헤드라인이 "프로필 효과 + identity 효과"의 합이었다 — `live-v1` 산출물을
+  라벨로 가르면 guest 라벨 +0.0135 / member 라벨 −0.1258 이고 하락은 `repurchase` 3건이
+  만든 것이라, 그 3건을 빼면 전체 평균이 −0.0340 → −0.0106 으로 0 에 수렴한다. Tier D 가 쓰던
+  `member_no_profile` arm(identity=member, 프로필 없음)을 Tier L 에 추가해 주 비교를
+  `clean_rerank_only vs member_no_profile`(`pairedVsMemberNoProfile`)로 옮기고, `pairedVsGuest`
+  는 cold-start 보조 비교로 남겼다(identity 가 섞이므로 프로필 효과로 해석하지 않는다 —
+  dev-v2 README 와 같은 규약). `rankingChange`·`axisLeakage` 도 같은 주 기준선을 따라가며,
+  `axisLeakage["guest"]` 는 자기 비교(항상 0)에서 **지터 바닥**으로 바뀌어 유출이 신호인지
+  잡음인지 가르는 기준이 된다. `--arms` 검증은 위치 규칙(`arms[0]=="guest"`)에서 두 기준선
+  포함 여부로 바뀌었고, `comparison.json` 에 `secondaryBaselineArm`·`primaryComparison`·
+  `axisLeakageUnmeasured` 가 추가됐다. 마지막 것은 기준선 짝이 없어 **유출을 재지 못한** 행을
+  따로 싣는다 — `[]`(유출 없음)와 `None`(측정 못 함)이 같은 목록에서 똑같이 빠지면 예산 소진이
+  안전 신호로 둔갑한다. 예산 상한은 그대로 두고 실행 시 `MODEL_EVAL_MAX_CALLS_PER_RUN=4000` override 를
+  쓴다(4-arm × dev109 × repeats3 = 3,924호출, 비용 상한 $20 은 무관). **실측은 병합 후 별도
+  live 실행이 필요하다.**
 - **#504 — 판매자 분석 차트 재설계: 좌표 생성 주체를 LLM → 코드로 전환** (api-spec §3.2,
   v0.30.0 · `docs/specs/DESIGN-SELLER-CHART-V2.md`). 구 구조는 `graph_agent`(도구 없음,
   결정 D-4)가 워커 요약에서 숫자를 베껴 좌표를 만들고 G1 이 근거 없는 수치를 드랍해
