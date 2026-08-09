@@ -21,6 +21,7 @@ opt-in 하면 사전 상태를 확인 못하는 모든 경우(도달 불가 포�
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -50,6 +51,11 @@ from app.core.pg_store import close_store as close_pg_store
 from app.core.pg_resilience import close_advisory_pool
 from app.core.session_context import close_session_lifecycle, initialize_session_lifecycle
 from app.core.ratelimit import rate_limit_middleware
+from app.core.stream import (
+    close_stream_registry,
+    initialize_stream_registry,
+    registry_is_process_local,
+)
 from app.pipelines.category_seed import (
     CategoryDictionaryError,
     check_category_dictionary,
@@ -60,9 +66,30 @@ from app.pipelines.scheduler import start_scheduler, stop_scheduler
 logger = get_logger(__name__)
 
 
+def _warn_process_local_registry_workers() -> None:
+    """프로세스 로컬 레지스트리와 uvicorn worker 설정의 위험한 조합을 관측만 한다.
+
+    프로세스 로컬 여부는 이제 `STREAM_REGISTRY_BACKEND` 에서 파생된다 (#476,
+    docs/specs/DESIGN-SHARED-STREAM-REGISTRY-476.md §1).
+    """
+    if not registry_is_process_local():
+        return
+    try:
+        workers = int(os.environ.get("WEB_CONCURRENCY", "1"))
+    except ValueError:
+        return
+    if workers >= 2:
+        logger.warning(
+            "WEB_CONCURRENCY=%s with process-local stream registry can bypass the §2.9(a) "
+            "concurrency guard; see docs/specs/OPS-SCALEOUT-476.md",
+            workers,
+        )
+
+
 async def _close_owned_resources() -> None:
     """소유한 리소스를 의존성 역순으로 닫고 개별 실패를 격리한다."""
     resources = (
+        ("stream_registry", close_stream_registry),
         ("session_lifecycle", close_session_lifecycle),
         ("seller_history_store", close_seller_history_store),
         ("seller_checkpointer", close_seller_checkpointer),
@@ -200,8 +227,11 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Lifecycle migration 뒤 scheduler를 시작하고 owned resources를 역순 종료한다."""
     scheduler_started = False
     try:
+        _warn_process_local_registry_workers()
         await _check_category_dictionary_startup()
         await initialize_session_lifecycle()
+        # 공유 레지스트리 백엔드일 때만 스키마·풀을 준비한다(기본 memory 는 no-op).
+        await initialize_stream_registry()
         start_scheduler()
         scheduler_started = True
         yield

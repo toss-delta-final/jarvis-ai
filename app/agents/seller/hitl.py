@@ -464,8 +464,10 @@ set_checkpointer = seller_checkpoint.set_checkpointer
 
 _graph = None
 
-# confirm 동시성 직렬화용 draftId→Lock 레지스트리(프로세스 내). draft 는 1회성이라
-# 항목 수는 프로세스 수명 동안의 draft 수로 유계 — 명시 정리는 생략한다.
+# confirm 동시성 직렬화용 draftId→Lock 레지스트리(프로세스 내)다. 지금은 프로세스 로컬
+# ActiveStreamRegistry 때문에 워커 다중화가 금지돼 있다. 다중화 허용 조건과 이 락이 워커 간에
+# 무력화되는 위험은 docs/specs/OPS-SCALEOUT-476.md를 따른다. draft 는 1회성이라 항목 수는
+# 프로세스 수명 동안의 draft 수로 유계 — 명시 정리는 생략한다.
 _confirm_locks: dict[str, asyncio.Lock] = {}
 
 
