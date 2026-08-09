@@ -192,8 +192,12 @@ def test_validate_draft_create_requires_mandatory_fields() -> None:
     assert "price" in problem and "stock_quantity" in problem
 
 
-def test_validate_draft_create_forbids_image_and_status() -> None:
-    """C4/D3 — create 는 image_url/status 지정 불가."""
+def test_validate_draft_create_allows_image_url() -> None:
+    """[#506 계약 변경] create 의 image_url 은 허용 — 이미지 기반 등록 초안이 싣는다.
+
+    구 C4/D3 금지(record is None + '이미지' 안내)는 폐기됐다 — canonical http(s) URL
+    (≤ seller_image_url_max_len)은 통과하고 changes 에 그대로 남는다.
+    """
     record, problem = hitl.validate_draft(
         _proposal(
             op="create",
@@ -203,6 +207,47 @@ def test_validate_draft_create_forbids_image_and_status() -> None:
                 DraftChange(field="price", before="", after="20000"),
                 DraftChange(field="stock_quantity", before="", after="50"),
                 DraftChange(field="image_url", before="", after="http://x/img.png"),
+            ],
+        ),
+        seller_id=7,
+        brand_id=3,
+    )
+    assert problem is None
+    assert record is not None
+    assert {c.field: c.after for c in record.changes}["image_url"] == "http://x/img.png"
+
+
+def test_validate_draft_create_forbids_status() -> None:
+    """create 의 status 지정은 여전히 금지 — I-10 이 ON_SALE 로 발급한다."""
+    record, problem = hitl.validate_draft(
+        _proposal(
+            op="create",
+            product_id=None,
+            changes=[
+                DraftChange(field="name", before="", after="한라봉청"),
+                DraftChange(field="price", before="", after="20000"),
+                DraftChange(field="stock_quantity", before="", after="50"),
+                DraftChange(field="status", before="", after="HIDDEN"),
+            ],
+        ),
+        seller_id=7,
+        brand_id=3,
+    )
+    assert record is None and "status" in problem
+
+
+def test_validate_draft_create_rejects_presigned_or_long_image_url() -> None:
+    """[#506] presigned·초과 길이 image_url 은 되묻기 — 저장되면 만료 시점에 이미지가 죽는다."""
+    presigned = "https://bucket.s3.amazonaws.com/x.jpg?X-Amz-Signature=abc123"
+    record, problem = hitl.validate_draft(
+        _proposal(
+            op="create",
+            product_id=None,
+            changes=[
+                DraftChange(field="name", before="", after="한라봉청"),
+                DraftChange(field="price", before="", after="20000"),
+                DraftChange(field="stock_quantity", before="", after="50"),
+                DraftChange(field="image_url", before="", after=presigned),
             ],
         ),
         seller_id=7,
