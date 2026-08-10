@@ -20,6 +20,7 @@ from app.agents.buyer.recommendation.state import (
     RouteDecision,
     extract_json,
 )
+from app.agents.buyer.recommendation.leg_head import suppress_generic_single_leg
 from app.agents.buyer.screen_reference import grid_position
 from app.core.llm import LLMClient, LLMError
 from app.schemas.spring import ProductSearchFilters
@@ -591,6 +592,9 @@ async def decompose(
     screen: ScreenPrompt | None = None,
     category_fanout_max: int = 5,
     repurchase_max: int = 5,
+    leg_head_suppression: bool = False,
+    leg_generic_heads: frozenset[str] = frozenset(),
+    leg_condition_terms: frozenset[str] = frozenset(),
 ) -> RouteDecision:
     """Haiku 1회 호출로 intent(추천/담기/장바구니조회/주문상태/일반)와 필터를 산출한다.
 
@@ -668,7 +672,18 @@ async def decompose(
         repurchase_products = _parse_repurchase_products(
             data.get("repurchaseProducts"), repurchase_max
         )
+        parsed_attr = _parse_attr_conditions(data.get("attrConditions"))
+        # attrConditions 는 ProductSearchFilters 모델 필드가 아니므로, leg 훅보다 먼저 파싱해
+        # what-축 게이트에 명시적으로 준다. 훅은 cat_signal 전이어야 폴백 플래그도 함께 뒤집힌다.
+        filters.attr_conditions = parsed_attr or None
         category_queries = _parse_category_queries(data.get("categoryQueries"), category_fanout_max)
+        category_queries = suppress_generic_single_leg(
+            category_queries,
+            filters,
+            enabled=leg_head_suppression,
+            generic_heads=leg_generic_heads,
+            condition_terms=leg_condition_terms,
+        )
         # semanticQuery 는 filters 밖(최상위)에 오는 의미검색 입력 — 검색 백엔드까지 흐르도록
         # filters 에 실어준다(#101). 폴백 순서(PR#166 리뷰):
         #   LLM 값 → (단일 카테고리면) 그 leg query → 직전 턴 값 → 이번 턴 원문(query).
@@ -699,7 +714,6 @@ async def decompose(
         # 이전 축을 일부/전부 빠뜨려도(fast tier 실수) 조용히 유실되지 않고(merge 로 유지), '실수
         # 누락'과 '의도적 제거'를 dict 모양 추측이 아니라 명시 신호로 구분한다. attrRemovals 는 이번
         # 턴 지시라 저장하지 않고(결과 attr_conditions 만 영속), 적용 후 버린다.
-        parsed_attr = _parse_attr_conditions(data.get("attrConditions"))
         prior_attr = prior_filters.attr_conditions if prior_filters else None
         merged = {**(prior_attr or {}), **(parsed_attr or {})}
         for axis in _parse_attr_removals(data.get("attrRemovals")):

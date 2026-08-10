@@ -1,5 +1,7 @@
 # Changelog
 
+- **#465 category leg head 억제 기본 활성화** — 조건 전용 총칭 leg만 후처리로 제거한다(LLM 호출 0). 보호 대상 오발동 0건·조건 누출 런당 2건 제거를 근거로 기본 on 했으며, primary missRate는 병합 후 표적이 작아 개선되지 않았다.
+
 이 프로젝트의 주요 변경을 기록한다. 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/),
 버전은 [Semantic Versioning](https://semver.org/lang/ko/)을 따른다.
 

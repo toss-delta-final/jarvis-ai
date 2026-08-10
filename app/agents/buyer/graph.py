@@ -896,6 +896,9 @@ async def run_buyer_turn(
                         screen=prompt_screen,
                         category_fanout_max=settings.category_fanout_max,
                         repurchase_max=settings.dedup_repurchase_max,
+                        leg_head_suppression=settings.category_leg_head_suppression_enabled,
+                        leg_generic_heads=frozenset(settings.category_leg_generic_heads),
+                        leg_condition_terms=frozenset(settings.category_leg_condition_terms),
                     )
         except LLMError as exc:
             # [#84] 이 경로에서 나가기 전에 병렬 태스크를 반드시 정리한다 — 안 하면 취소되지 않은

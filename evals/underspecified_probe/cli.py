@@ -78,6 +78,7 @@ def _parser() -> argparse.ArgumentParser:
     prompt_source.add_argument("--prompt", type=Path, help="후보 decompose 프롬프트 파일")
     prompt_source.add_argument("--prompt-rev", help="과거 판 _SYSTEM 을 읽을 git 리비전")
     parser.add_argument("--n", type=int, default=8, help="셀당 성공 표본 수")
+    parser.add_argument("--arm", choices=("before", "postprocess", "dedicated", "tri"), default="before")
     parser.add_argument("--rpm", type=int, default=PacerLimits.max_rpm)
     parser.add_argument("--tpm", type=int, default=PacerLimits.max_tpm)
     parser.add_argument("--concurrency", type=int, default=4)
@@ -232,6 +233,7 @@ def main(argv: list[str] | None = None) -> int:
     # [#432, §2-4] union 단계 전용 LLM — decompose 프롬프트 오버라이드가 없는 PacedLLM(같은
     # delegate·같은 pacer). --dry-run 이면 None 으로 둬 runner 가 표본마다 "건너뜀"을 기록한다.
     union_llm: Any | None = None
+    dedicated_llm: Any | None = None
     union_tunables: dict[str, Any] | None = None
     if args.union and not args.dry_run:
         assert live_settings is not None
@@ -244,6 +246,8 @@ def main(argv: list[str] | None = None) -> int:
                 ".env 가 측정 대상을 조용히 바꿨을 수 있습니다",
                 file=sys.stderr,
             )
+    if args.arm in ("dedicated", "tri") and not args.dry_run:
+        dedicated_llm = PacedLLM(delegate, pacer=pacer)
 
     exit_code = EXIT_OK
     # [R2-1, legs_probe 승계] `run_cell` 은 BudgetExceeded 를 밖으로 던지지 않는다 — 예산이
@@ -259,6 +263,12 @@ def main(argv: list[str] | None = None) -> int:
             concurrency=args.concurrency,
             category_fanout_max=category_fanout_max,
             repurchase_max=repurchase_max,
+            leg_head_suppression=args.arm in ("postprocess", "dedicated"),
+            leg_generic_heads=frozenset(live_settings.category_leg_generic_heads) if live_settings else frozenset(),
+            leg_condition_terms=frozenset(live_settings.category_leg_condition_terms) if live_settings else frozenset(),
+            dedicated_llm=dedicated_llm,
+            tri_generic_heads=frozenset(live_settings.category_leg_generic_heads) if live_settings else frozenset(),
+            tri_condition_terms=frozenset(live_settings.category_leg_condition_terms) if live_settings else frozenset(),
             sleep=sleep,
             union_enabled=args.union,
             union_llm=union_llm,

@@ -1,0 +1,6 @@
+tri-1 exit=0
+tri-2 exit=0
+TRI_COMPLETEpostmerge-1 exit=0
+postmerge-1 prompt=5d5a71b0ab09
+postmerge-2 exit=0
+postmerge-2 prompt=5d5a71b0ab09

@@ -48,6 +48,20 @@ async def test_semantic_query_lands_on_filters() -> None:
     assert d.filters.semantic_query == "시원한 여름 셔츠"
 
 
+async def test_leg_suppression_keeps_attr_condition_turn_in_real_parse_flow() -> None:
+    decision = await _run(
+        _raw(
+            semanticQuery="",
+            categoryQueries=[{"category": None, "query": "가성비 좋은 거"}],
+            attrConditions={"소재": "린넨"},
+        ),
+        leg_head_suppression=True,
+        leg_generic_heads=frozenset({"거"}),
+        leg_condition_terms=frozenset({"가성비"}),
+    )
+    assert decision.category_queries[0].query == "가성비 좋은 거"
+
+
 async def test_semantic_query_falls_back_to_user_query_when_missing() -> None:
     """semanticQuery 누락/빈값 시 사용자 발화(query)로 폴백한다(재정렬이 항상 입력을 갖도록)."""
     d = await _run(_raw(semanticQuery=""))

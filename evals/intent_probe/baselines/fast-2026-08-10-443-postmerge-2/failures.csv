@@ -1,0 +1,2 @@
+cellId,attempt,errorType,message
+category-carry-001|categoryPrior,5,LLMError,decompose 필터/케이스/장바구니 파싱 실패

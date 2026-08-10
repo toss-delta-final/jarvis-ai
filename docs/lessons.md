@@ -4182,3 +4182,6 @@
 - 해소: 2026-07-22부터 외부 사본 의존을 폐기하고 **repo-local `docs/api-spec.md`를 정본으로 승격**했다.
 - 규칙: 계약 변경은 `docs/api-spec.md`를 먼저 개정하고 코드를 같은/후속 커밋에서 맞춘다. SPEC의 낡은 외부 계약 명명도 repo-local api-spec이 우선한다.
 - 관련: `docs/api-spec.md`, `docs/specs/`
+# #465: 사후 ablation의 한계와 파생식 결합
+
+- categoryQueries만 사후로 비우는 ablation은 `semantic_query_is_fallback` 파생식 결합을 보지 못해 "단독 차단 0건"이라는 오결론을 냈다. 하네스가 보는 형상과 코드가 실제로 재파생하는 상태를 구분하고, 억제형 변경은 발동률·보호 대상·해로운 발동을 산출물에 함께 남긴다.
