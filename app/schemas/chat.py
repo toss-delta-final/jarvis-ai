@@ -364,6 +364,22 @@ class ConditionAction(CamelModel):
 
     op: Literal["remove"]
     field: Literal["category", "priceMax", "priceMin", "brand", "ratingMin", "keyword"]
+    # [이슈 #434] 선택 — 스칼라(문자열/숫자). 없으면 그 field 전체 제거(하위호환, §3.1).
+    # 있으면 멀티 값 축(category·brand)만 값 범위 제거를 시도하고, 나머지 4축은 값을 무시하고
+    # 축 전체를 제거한다(app/agents/buyer/graph.py::_remove_condition_actions).
+    value: str | int | float | None = None
+
+    @field_validator("value")
+    @classmethod
+    def _limit_value_length(cls, v: str | int | float | None) -> str | int | float | None:
+        """value 길이 상한을 config 에서 주입(하드코딩 금지). 초과 시 400(api-spec §3.1)."""
+        if isinstance(v, str):
+            from app.core.config import get_settings
+
+            cap = get_settings().condition_action_value_max_chars
+            if len(v) > cap:
+                raise ValueError(f"value exceeds {cap} characters")
+        return v
 
 
 CONDITION_FIELD_TO_FILTER: dict[str, str] = {
@@ -390,15 +406,27 @@ class BuyerChatRequest(ChatRequest):
 
     @model_validator(mode="after")
     def _validate_message_and_actions(self) -> "BuyerChatRequest":
-        """중복 제거 액션을 정규화하고 빈 발화·빈 액션 요청은 400으로 거절한다."""
-        seen: set[str] = set()
+        """중복 제거 액션을 정규화하고 빈 발화·빈 액션 요청은 400으로 거절한다.
+
+        [이슈 #434] dedup 키는 (field, value) — 같은 축의 서로 다른 값 지정 제거는 둘 다
+        남는다(§3.1 「값 지정 제거」). 단, 같은 축에 value 없는(전체 제거) 액션이 하나라도
+        있으면 전체 제거가 상위집합이므로 그 축의 값 지정 액션은 흡수되고 전체 제거 1건만
+        남는다(하위호환 — value 미전송 FE 는 종전과 100% 동일 동작).
+        """
+        seen: set[tuple[str, str | int | float | None]] = set()
         unique_actions: list[ConditionAction] = []
         for action in self.condition_actions:
-            if action.field in seen:
+            key = (action.field, action.value)
+            if key in seen:
                 continue
-            seen.add(action.field)
+            seen.add(key)
             unique_actions.append(action)
-        self.condition_actions = unique_actions
+        full_remove_fields = {action.field for action in unique_actions if action.value is None}
+        self.condition_actions = [
+            action
+            for action in unique_actions
+            if action.value is None or action.field not in full_remove_fields
+        ]
         if not self.message.strip() and not self.condition_actions:
             raise ValueError("message 또는 conditionActions 가 필요합니다")
         return self

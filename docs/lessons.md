@@ -13,6 +13,38 @@
 
 ---
 
+## [2026-08-10] `uv run ruff format`(경로 없이)은 저장소 전체를 재포맷한다 — 바꾼 파일만 지정할 것
+- 증상: #434 라운드1 마무리에 `uv run ruff check --fix && uv run ruff format`(경로 없음)을
+  돌렸더니 32개 파일이 재포맷됐다 — 내가 손댄 건 8개뿐이었는데 `.github/scripts/`·
+  `data-analysis/`·`evals/`·`docs/research/` 등 전혀 무관한 파일까지 낡은 포맷 드리프트가
+  전부 정리돼 `git status`가 40개 파일 변경으로 부풀었다.
+- 원인: `ruff format`을 인자 없이 부르면 **프로젝트 전체**를 대상으로 잡는다. CLAUDE.md 의
+  커밋 워크플로 문구(`uv run ruff check --fix && uv run ruff format`)는 "커밋 전 린트
+  정리"라는 일반 규칙이라 경로를 명시하지 않는데, 이번처럼 다른 레인들이 아직 커밋하지 않은
+  포맷 드리프트가 저장소 여기저기 쌓여 있으면 그 명령이 전부 건드려 diff 를 오염시킨다.
+- 규칙: 작업 중간 점검이든 최종 검증이든 `ruff format`/`ruff check`는 **내가 이번 작업에서
+  실제로 바꾼 파일 경로를 지정해서** 돌린다(`uv run ruff format <path> <path> ...`). 돌린
+  뒤에는 `git status --porcelain`으로 의도한 파일 목록과 실제 변경 목록이 일치하는지 반드시
+  대조하고, 무관한 파일이 섞였으면 `git checkout -- <path>`로 되돌린 뒤 다시 확인한다.
+- 관련: #434 라운드1 최종 diff 정리(11개 파일로 스코프), `CLAUDE.md` 커밋 워크플로 2번 항목
+
+## [2026-08-10] 계약 값 표현을 바꾸면 그 값을 검증하는 **다른 파일의 테스트**부터 grep 한다
+- 증상: #434(칩 값당 분리, brand `value` 리스트→스칼라 정정)를 구현하며 `state.py`·
+  `test_condition_actions.py`·`test_fanout.py` 3파일을 계획대로 갱신했는데, 전체 스위트를
+  돌리자 `test_recommendation.py::test_general_reply_and_condition_chips_strip_unsafe_text`
+  가 `chips[1]["value"] == ["정상 브랜드"]`(구 리스트 계약)로 실패했다 — 이 파일은 "정제
+  (strip_unsafe)"를 검증하는 별도 관심사라 브랜드 칩 관련 파일 목록에서 빠져 있었다.
+- 원인: 표적 파일 3개(패킷이 명시한 `build_condition_chips`·요청 스키마·회귀 테스트 파일)만
+  갱신하고, "이 계약을 참조하는 모든 테스트"를 저장소 전체에서 grep 하지 않았다. 패킷이 짚어준
+  파일 목록은 **주 관심사** 기준이지, 그 계약 값을 부차적으로 검증하는 다른 파일까지 보장하지
+  않는다.
+- 규칙: 응답 필드의 **표현(shape)**을 바꾸는 작업(리스트→스칼라, 조인→분리 등)은 편집 전에
+  `grep -rn '"value"\] ==' tests/`처럼 그 필드의 assert 패턴으로 저장소 전체를 훑고, 편집 후
+  전체 스위트(`uv run pytest`, 표적 파일만 아님)로 마무리 확인한다. "패킷이 지목한 파일"과
+  "실제로 그 계약에 의존하는 파일"은 다를 수 있다.
+- 관련: `tests/unit/test_recommendation.py::test_general_reply_and_condition_chips_strip_unsafe_text`
+  · `app/agents/buyer/recommendation/state.py::build_condition_chips` · 이슈 #434
+
 ## [2026-08-10] LLM 이 "안 뽑는" 결함은 프롬프트에 **그 규칙이 있는지부터** 본다
 - 증상: #430 이 드러낸 과소지정 오탐의 근원을 파보니, `decompose` 가 브랜드-only 발화에서
   `filters.brand` 를 60표본 중 17~19건만 채우고 있었다. 원인 가설을 모델 능력·발화 난이도 쪽으로
