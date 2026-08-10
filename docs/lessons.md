@@ -117,6 +117,43 @@
 
 ---
 
+## [2026-08-10] baseline 계보를 timestamp 로 고르면 대조팔을 출고 수치로 인용한다
+- 증상: #139 문서 초안이 `intent_probe` 최신 baseline 을 `run.timestamp` 로 골라
+  `fast-2026-08-07-430-v6-merged-2`(2026-08-07T14:26:32Z)를 발표 인용 대상으로 삼았다. 그런데
+  출고판은 `…-v6-adopted-1`(13:28:00Z)·`…-v6-adopted-2`(13:46:06Z)로 **더 이른 시각**이었다.
+  수치도 다르다(`mainIntent` merged-2 238/240=0.9917 vs adopted-2 235/240=0.9792).
+- 원인: 같은 fixture(`intent-probe-anchors-b-v6`)·모델·앵커·N 으로 **두 팔을 나란히 돌린 대조
+  실험**이라 최신 timestamp 가 출고판을 뜻하지 않는다. `evals/intent_probe/README.md`의 "기준선"
+  절은 `merged-*`가 `#386`(PR #441) 병합 직후 판, `adopted-*`가 **출고판**이며 `_SYSTEM`이
+  10자만 다르다고 적어 두었지만, 초안은 디렉터리 목록의 시각만 보고 골랐다.
+- 규칙: **baseline 을 "최신 timestamp"로 고르지 마라. 하네스 README 에서 어느 계보가 출고판인지
+  먼저 확인하라.** 발표·리포트가 인용하는 수치는 출고판 계보여야 하고, 대조팔을 출고 수치로
+  쓰지 않는다. baseline 지정표를 만든다면 `계보(출고판/대조팔)` 열을 둔다.
+- 관련: `evals/intent_probe/README.md`(기준선 절) · `docs/specs/RELEASE-CLAIMS-139.md` §4
+  "최신 timestamp ≠ 출고판" 규칙·§2 C2 · 이슈 #139·#430·#386
+
+## [2026-08-10] before/after 를 한 파일에 담은 baseline 은 arm 이 어느 시점 동작인지부터 확인한다
+- 증상: #139 문서 초안이 `evals/personalization/baselines/live-v1` 의 `pairedVsGuest.clean_both`
+  nDCG@10 meanDelta **−0.2879316720443962**(CI95 [−0.4813819808647765, −0.11845955082203671],
+  0 을 배제)을 보고 "라이브에서 개인화가 품질을 **떨어뜨린다**"고 판단해, 개인화 관련 주장을
+  "반증됨"으로 분류할 뻔했다.
+- 원인: 그 baseline 은 **#119 수정 전후를 한 실행 안에 담은 회귀 자료**다. `clean_both`는
+  프로필이 decompose 하드 필터로 새던 **수정 전** 동작이고, 출고 설정은 `clean_rerank_only`
+  (`profile_injection_scope` 기본값)다. 출고 arm 수치는 meanDelta **−0.05644463392740816**로
+  CI95 **[−0.2021440745401869, 0.04957802400457049]** — **0 을 포함**(inconclusive)하고,
+  필터 유출(`axisLeakage`)은 29/31 → 1/31 로 줄어 있다. arm 이름을 동작 시점과 연결하지 않고
+  "가장 나쁜 숫자"를 대표값으로 읽은 것이 원인이다.
+- 규칙: **arm 이 여러 개인 baseline 은 각 arm 이 어느 시점·어느 설정의 동작인지부터 확정하고
+  인용하라.** `CHANGELOG`나 하네스 README 에 그 대응이 적혀 있는 경우가 많다. 특히 arm 이름에
+  `both`/`only`처럼 설정 스코프가 들어 있으면 현행 기본값이 무엇인지 `config`에서 확인한다.
+- 규칙(추가): **부호가 강한 수치를 근거로 주장을 뒤집기 전에 교차검증을 붙여라.** 이 건은
+  읽기 전용 검증자를 별도로 붙여 "반박해 보라"고 시켜서 잡았다. 혼자 읽고 결론냈으면 발표
+  자료에 정반대 주장이 들어갔을 것이다.
+- 관련: `evals/personalization/baselines/live-v1/comparison.json` · `CHANGELOG.md` #147 항목 ·
+  `docs/specs/RELEASE-CLAIMS-139.md` §2 C3·§3-2 · 이슈 #139·#119·#147
+
+---
+
 ## [2026-08-10] 검증되지 않은 값을 "실측"이라고 적으면 다음 사람이 그것을 근거로 삼는다
 - 증상: #134 조사 중, `deploy.yml` 이 `TRUST_FORWARDED_FOR=true`·`FORWARDED_FOR_TRUSTED_HOPS=2`
   를 무조건 주입하는 근거가 커밋 `44d74cef`(2026-08-06)의 "2026-08-06 실측: AI 는 nginx 를
