@@ -3818,6 +3818,50 @@ async def test_missing_turn_count_degrades_to_todays_behaviour() -> None:
     assert state.turn_count == 3  # 경계 불명 → 전량을 이번 턴으로
 
 
+async def test_ordinal_span_round_trips_and_degrades_defensively() -> None:
+    """[#571] `ordinal_span` 저장·조회 왕복 / 키 없음·`bool`·범위 밖 값이면 `0` 으로 degrade /
+    기존 호출부(인자 미전달)는 `0`.
+
+    degrade 방향이 `turn_count` 와 **반대**다 — 여기서는 "모르면 순번을 쓰지 않는다"(0)가
+    안전한 쪽이다(순번을 켜는 신호를 못 믿는 값으로 그대로 쓰면 오담기로 이어진다, §2 결정 2).
+    """
+    from app.agents.buyer.cart import state as cart_state
+    from app.agents.buyer.cart.state import CartStateStore
+
+    cart_state.reset_cart_store()
+    store = CartStateStore()
+
+    # 왕복 — 넘긴 값이 그대로 읽힌다.
+    await store.set_last_reco("k1", [(1, "a"), (2, "b")], ordinal_span=2)
+    assert (await store.get_last_reco_state("k1")).ordinal_span == 2
+
+    # 기존 호출부(인자 미전달)는 0 — `option_hints` 와 같은 어조(키워드 인자 추가만).
+    await store.set_last_reco("k2", [(1, "a")])
+    assert (await store.get_last_reco_state("k2")).ordinal_span == 0
+
+    # 키 자체가 없으면(구버전 인스턴스가 쓴 행) 0 으로 degrade.
+    await store._store.aput(
+        ("buyer_cart_v2", "k3"), "last_reco", {"product_ids": [1], "turn_count": 1}
+    )
+    assert (await store.get_last_reco_state("k3")).ordinal_span == 0
+
+    # bool 은 int 의 서브클래스라 명시적으로 배제 — 0 으로 degrade.
+    await store._store.aput(
+        ("buyer_cart_v2", "k4"),
+        "last_reco",
+        {"product_ids": [1], "turn_count": 1, "ordinal_span": True},
+    )
+    assert (await store.get_last_reco_state("k4")).ordinal_span == 0
+
+    # 범위 밖 값(len(items) 초과)도 못 믿을 값이므로 0 으로 degrade.
+    await store._store.aput(
+        ("buyer_cart_v2", "k5"),
+        "last_reco",
+        {"product_ids": [1], "turn_count": 1, "ordinal_span": 99},
+    )
+    assert (await store.get_last_reco_state("k5")).ordinal_span == 0
+
+
 def _screen_request(message: str, thread_id: str):
     """screen 이 실린 실제 요청 — 관대 정규화를 그대로 태운다."""
     from app.schemas.chat import BuyerChatRequest

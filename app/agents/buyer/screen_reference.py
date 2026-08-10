@@ -31,13 +31,17 @@
 않는다**(테스트로 고정). 옵션 되물음(`PENDING_CART`) 중에도 돌지 않는다 — 그 턴의 "2번"은 화면
 순번이 아니라 옵션 번호이기 때문이다(호출부 `graph.py` 가 그 조건을 건다).
 
-**[#435] 추천 카드(CH-5) 턴에는 이 해소기가 붙지 않는다** — FE 는 그 카드를 `screen` 에서
-**의도적으로 제외**한다(서버가 `listId` 로 이미 아는 목록을 되돌려주면 위조 경로가 된다, api-spec
-§3.1 지시어 해소 표). 그래서 추천 카드를 이름으로 지목한 발화("무선 이어폰 찜해줘")는 이
-결정적 해소기가 아니라 decompose 프롬프트의 `LAST_RECOMMENDATIONS`(=위 실측표가 이름 매칭을
-8/8 로 양보하는 신호)로 LLM 이 해석한다. 운영 로그에서 `screen_reference_resolved` 가 추천 카드
-턴에 0건인 것은 **결함이 아니라 이 설계의 귀결**이다 — 그 턴에 이름 지목이 실패했다면 원인은
-`LAST_RECOMMENDATIONS` 에 이름이 실렸는지(`no_condition.rank_by_profile` 참조) 쪽을 봐야 한다.
+**[#435] 추천 카드(CH-5) 턴에는 이 해소기가 붙지 않았다 — #571 이 그 제약을 좁혔다.** FE 는 그
+카드를 `screen` 에서 **의도적으로 제외**한다(서버가 `listId` 로 이미 아는 목록을 되돌려주면
+위조 경로가 된다, api-spec §3.1 지시어 해소 표) — 그 사실 자체는 변하지 않는다. 하지만 서버는
+`last_reco`(§4.2 push 순서)로 이번 턴 카드 목록을 **노출 순서대로** 이미 쥐고 있어, `screen`
+이 없어도 결정적으로 풀리는 입력(순번·"이거"·이름 전체 지목)까지 LLM 에 맡길 이유가 없었다
+(#571, 아래 F-17~F-19). 그래서 이 해소기는 이제 `screen.products` **또는** 이번 턴 추천 카드
+(`last_reco[:turn_count]`)가 있는 턴에 돈다 — `resolve_screen_reference` 의 `products` 인자가
+호출부에서 어느 표면이든(화면·추천) 그 표면의 배열을 받는다. 좌표(`columns`)는 추천 표면에
+없으므로 여전히 되물음으로 떨어진다(결정 6) — "좌표는 범위 밖"이라는 이슈 원문의 처분과 같다.
+운영 로그에서 `screen_reference_resolved` 의 `extra.surface` 가 `"reco"` 로 남는 사례가 이제
+정상 동작이다(§4.2 관측 확장).
 
 [라운드 3] 그런데 **"좁다"는 조건이 실제로는 충분히 좁지 않았다.** 읽기 전용 리뷰가 낸 3건을
 전부 재현했고, 그중 둘은 **오담기**(사용자가 말하지 않은 상품이 담김)였다 — 원인은 하나다:
@@ -57,6 +61,23 @@
     | F-12 | `"얘기했던 걸로 담아줘"`(화면 1건) | `deictic_markers` 의 `"얘"`(1글자)가 "얘기"에 부분일치 → 되물음 없이 확정 | config `screen_deictic_markers` 에서 `"얘"` 제거 |
     | F-14 | `"3번째 줄 5000원 넘는거 담아줘"`·`"3번째 줄에 5개 담아줘"`(columns=3) | `_ROW_ONLY` 가 "뒤에 숫자가 있으면" 무조건 무효화돼 순번이 "3"을 잡음 → **오담기**(F-11 재발) | `_ROW_ONLY` — 첫 숫자 `번째` 필수 + "뒤에 좌표 접미사 동반 숫자"만 배제 |
     | F-16 | `"302번 담아줘"`(두 목록 밖 id, `번` 접미) | `_BARE_NUMBER` 가 `번` 접미를 못 봐서 공집합 → 가드 미발동, LLM 오추출이 그대로 담김(F-3 재발) | 담기 동사 화이트리스트 앞에 `번(?!째)` 선택 허용 |
+    | F-17 | `"이거 담아줘"`(추천 카드 다건, `screen` 없음) | 게이트가 `screen.products` 를 요구해 추천 카드 턴에 다건 되물음이 통째로 LLM 에 맡겨져 실측 8/8 오확정 | 게이트를 추천 표면(이번 턴 카드)으로 확대 |
+    | F-18 | `"3번째 거 담아줘"`(다목록 턴, 또는 승계분까지 포함해 세면 순번이 밀림) | 추천 표면의 순번을 누적 `last_reco` 전체나 dedup 된 `ranked_ids` 로 세면 승계분·BUY_ALL 중복 붕괴로 화면과 다른 카드가 확정 | `turn_count` 경계로 배열을 자르고, `ordinal_span`(표시 순서=저장 순서 증명)이 없으면 순번을 되물음으로 강제 |
+    | F-19 | `"무선 블루투스 이어폰 담아줘"`(카드 이름이 발화에 통째로 있음, 추천 카드 표면) | 추천 표면에서 (B) 를 그대로 두면 이름 지목이 영원히 LLM 산출에만 맡겨짐 | 배열=이름 출처인 표면에서만 좁은 이름 확정 규칙(N) 신설 — 부정·다건·빈 이름이면 종전대로 (B) 양보 |
+
+    **전제와 잔여 위험(F-17~F-19 공통)**: 위 세 규칙은 "`last_reco` 순서 = I-21 push 순서 =
+    사용자가 본 순서"를 전제한다. 그 전제의 근거는 두 갈래다 — (1) 정본 §4.2 규약이 명시하는
+    "`listIds` 의 순서·개수는 `lists` 와 같다"(api-spec §4.2), (2) `recommendation/graph.py`
+    의 PICK_ONE 경로가 `lists`(_entry(leg, group))와 `ranked_ids`(같은 leg·group 순회)를
+    **같은 `exposed_groups` 에서** 파생한다는 사실 — 이건 정본 인용이 아니라 코드 확인
+    항목이다. "FE 가 그 순서로 렌더한다"는 부분은 §4.2 가 직접 약속하지 않는다 — CH-5(§4.3)가
+    `listId` 로 그 목록을 조회해 push 순서 그대로 렌더한다는 것은 이 모듈이 아니라 FE·CH-5
+    계약의 영역이라, 여기서는 "코드가 그렇게 짜여 있다"는 확인 이상을 주장하지 않는다.
+    **잔여 위험**: CH-5 조회 시점에 품절·HIDDEN 항목이 드롭될 수 있어(api-spec §4.2
+    `itemsDropped`) 사용자가 화면에서 실제로 보는 개수가 push 시점보다 줄어들 수 있다. I-1
+    검색이 이미 품절·비활성 상품을 후보에서 제거하므로(`app/services/search_service.py` 의
+    "Spring이 가격·카테고리·브랜드를 적용하고 품절·비활성을 제거한다" 계약 문장 참조) 이 위험은
+    push~조회 사이에 새로 품절/숨김 처리된 좁은 경우에 한정된다.
 """
 
 from __future__ import annotations
@@ -64,6 +85,8 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+
+from app.agents.buyer.cart.negation import has_any_negation
 
 
 def grid_position(index: int, columns: int | None) -> tuple[int, int] | None:
@@ -235,18 +258,29 @@ def resolve_screen_reference(
     # 보고, 직전 추천에만 있는 이름을 지목한 발화에서 오담기가 재발한다(§ 아래 (B) 주석). 필수로
     # 두면 빠뜨린 호출부가 `TypeError` 로 즉시 드러난다.
     last_recommendation_products: Sequence[tuple[int, str]],
+    # [#571] 아래 네 인자도 기본값을 두지 않는다 — 위 두 인자와 같은 이유(F-5)다. 이 넷을
+    # 빠뜨리면 순번 규칙(2)이 증명 없이 켜지거나(오담기 재발) 이름 확정(N)이 화면 표면에서도
+    # 조용히 켜져(F-8 재발) 이 모듈이 지킨 안전 경계가 소리 없이 무너진다.
+    positional_order_verified: bool,
+    name_confirmation_enabled: bool,
+    negation_markers: Sequence[str],
+    prefix_negation_markers: Sequence[str],
 ) -> ScreenResolution | None:
     """발화의 화면 지시어를 해소한다. None = 해당 규칙 없음(LLM 산출을 그대로 둔다).
 
-    `products` 는 **정제 후 남은 배열**이고 그 순서가 화면 순서라는 전제로 센다
-    (`decompose.build_screen_prompt` 주석의 전제와 같다). `last_recommendation_products` 는
-    담기 허용 목록(`allowed_product_ids`)을 이루는 두 출처 중 하나인 직전 추천 목록이다 —
-    호출부(`graph.py`)가 `allowed` 를 만들 때 이미 손에 쥔 값을 그대로 넘긴다. 이 함수는 그 안의
-    상품을 화면에 확정하지 않는다(순번·좌표는 어디까지나 `products`=화면 배열 기준) — 아래 양보
-    (B) 의 이름 검사에만 쓴다.
+    `products` 는 **정제 후 남은 배열**이고 그 순서가 표시 순서라는 전제로 센다 — 호출부
+    (`graph.py`)가 화면 표면(`screen.products`)과 추천 표면(`last_reco[:turn_count]`) 중 그
+    턴에 있는 쪽을 넘긴다(#571, `decompose.build_screen_prompt` 주석의 화면 표면 전제와 같은
+    개념을 추천 표면으로 넓혔다). `last_recommendation_products` 는 담기 허용 목록
+    (`allowed_product_ids`)을 이루는 두 출처 중 하나인 **누적** 직전 추천 목록이다(`products` 가
+    추천 표면일 때도 이번 턴 경계 이전 승계분까지 포함한 전체) — 호출부가 `allowed` 를 만들 때
+    이미 손에 쥔 값을 그대로 넘긴다. 이 함수는 그 안의 상품을 화면 표면에 확정하지 않는다(순번·
+    좌표는 어디까지나 `products` 기준) — 화면 표면에서는 아래 양보 (B) 의 이름 검사에만 쓰고,
+    추천 표면에서는 (N) 이 `products` 자체를 이름 출처로 쓴다(`name_confirmation_enabled`).
 
-    **개입은 규칙이 확실할 때만 한다.** 아래 두 양보(A)(B)가 그 경계다 — 리뷰가 재현한 오담기
-    2건이 전부 "결정적이지 않은 입력까지 삼킨" 사례였다. 애매하면 LLM 산출을 존중한다.
+    **개입은 규칙이 확실할 때만 한다.** 아래 양보(A)(B)와 순번 게이트(`positional_order_verified`)
+    가 그 경계다 — 리뷰가 재현한 오담기 사례가 전부 "결정적이지 않은 입력까지 삼킨" 경우였다.
+    애매하면 LLM 산출을 존중한다.
     """
     if not products:
         return None
@@ -260,6 +294,21 @@ def resolve_screen_reference(
     #     #234 프로브가 그 경로를 측정했다. 그쪽은 LLM 이 LAST_RECOMMENDATIONS 로 푸는 것이 맞다.
     if any(marker in message for marker in context_reference_markers):
         return None
+
+    # (N) [#571] 이름 확정 — **추천 카드 표면에서만**. 배열이 곧 이름 출처라 확정이 배열 밖으로
+    #     나가지 않는다(화면 표면에서 이 규칙을 켜면 F-8 이 되살아난다 — 그쪽은 이름이
+    #     last_recommendation_products 출신일 수 있고, 그 상품은 화면 배열에 없다).
+    #     좁게 건다: 부정·대조 표지가 발화 전체에 없고, 비어 있지 않은 이름(2자 이상)이 발화에
+    #     통째로 포함되는 카드가 **정확히 1건**일 때만 확정한다. 그 외(0건·2건 이상·부정 표지
+    #     있음)는 아무것도 하지 않고 아래 (B)로 내려간다 — (B)는 이름이 있으면 순번·좌표·id
+    #     규칙을 막기만 할 뿐 스스로 확정하지 않으므로, 여기서 확정하지 못한 이름 지목은 결국
+    #     종전대로 LLM 산출(decompose 의 LAST_RECOMMENDATIONS 해석)로 남는다.
+    if name_confirmation_enabled and not has_any_negation(
+        message, list(negation_markers), list(prefix_negation_markers)
+    ):
+        matches = {pid for pid, name in products if len(name) >= 2 and name in message}
+        if len(matches) == 1:
+            return ScreenResolution(next(iter(matches)), "screen_name_match")
 
     # (B) [양보] 발화가 화면 상품 **이름**을 지목했으면 순번·좌표·id 규칙을 적용하지 않는다.
     #     `"무선 이어폰 2번째 옵션으로 담아줘"` 에서 `"2번째"` 는 **옵션**을 수식하는데 화면
@@ -315,6 +364,16 @@ def resolve_screen_reference(
 
     # (2) 순번 — "3번째 거". 배열 순서만 있으면 풀린다.
     if ordinal := _ORDINAL.search(message):
+        # [#571] 표시 순서 = 배열 순서가 증명되지 않으면(추천 표면의 다목록·BUY_ALL 턴) 인덱싱
+        # 하지 않고 되물음을 강제한다 — §2 결정 2. 이 사유(`reco_order_unverifiable`)는
+        # `cart/graph.py` 의 `_SCREEN_POSITION_REASONS` 에 넣지 않는다: 넣으면 "화면 위치를
+        # 다시 말해 달라"는 문구가 나가는데, 사용자가 다시 몇 번째인지 말해도 증명 불가 상태는
+        # 그대로라 같은 되물음이 반복된다. 넣지 않으면 `_unresolved_notice` 가 `has_last_reco`
+        # 경로로 떨어져 기존 문구(`_UNRESOLVED_WITH_RECO`, "추천해 드린 상품 중에서 이름을
+        # 말씀해 주시면…")를 낸다 — 사용자에게 다음 행동(이름으로 말하기)을 정확히 알려주고,
+        # 새 문구를 0개 추가한다는 이 이슈의 제약(§0)도 지킨다.
+        if not positional_order_verified:
+            return ScreenResolution(None, "reco_order_unverifiable")
         index = int(ordinal.group(1)) - 1
         if 0 <= index < len(products):
             return ScreenResolution(products[index][0], "ordinal")

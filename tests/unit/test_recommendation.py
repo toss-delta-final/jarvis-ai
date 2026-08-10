@@ -7325,3 +7325,88 @@ async def test_push_failure_does_not_load_option_hints() -> None:
 
     assert await cart_store.get_option_hint(key, 101) is None
     assert await cart_store.get_option_hint(key, 102) is None
+
+
+# ─────── #571 ordinal_span ───────
+
+
+async def test_ordinal_span_matches_list_length_for_a_single_list_push() -> None:
+    """[#571-19] 목록 1개 push → `ordinal_span` == 그 목록 길이(표시 순서 = 저장 순서 증명)."""
+    from app.agents.buyer.cart.state import get_cart_store
+
+    push = _RecordingPush()
+    request = _req(thread_id="t-571-single-list")
+    await _collect(
+        run_buyer_turn(
+            request, _member(), llm=FakeLLM(), search=_make_search(DEFAULT_PRODUCTS), push_fn=push
+        )
+    )
+    entry = _only_list(push.pushes[0])
+    key = await _thread_key(request, _member())
+    state = await (await get_cart_store()).get_last_reco_state(key)
+    assert state.ordinal_span == len(entry.product_ids)
+    assert state.ordinal_span > 0
+
+
+async def test_ordinal_span_is_zero_for_a_multi_list_push(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#571-19] 목록 2개 이상 push → `ordinal_span` == 0(전역 순번이 정의되지 않는다,
+    §2 결정 2 — 다목록 PICK_ONE 은 화면이 섹션으로 쪼개져 "3번째"가 전역 순번인지 섹션 내
+    순번인지 정의되지 않는다)."""
+    from app.agents.buyer.cart.state import get_cart_store
+    from app.agents.buyer.recommendation.category_mapping import CategoryMapping
+
+    monkeypatch.setattr(get_settings(), "expose_min", 1)
+    monkeypatch.setattr(get_settings(), "expose_max", 2)
+
+    async def _map(**kwargs):
+        return CategoryMapping(legs=[("여행용품", "여행용 파우치"), ("전자기기", "여행용 어댑터")])
+
+    async def _search(filters, exclude_product_ids=None):
+        products = (
+            [_prod(102, "여행용품", "여행용 파우치"), _prod(103, "여행용품", "압축 파우치")]
+            if filters.category == "여행용품"
+            else [_prod(201, "전자기기", "멀티 어댑터"), _prod(101, "전자기기", "여행용 어댑터")]
+        )
+        return ProductSearchResult(products=products, total_count=len(products))
+
+    push = _RecordingPush()
+    request = _req(message="여행용 파우치랑 어댑터 추천해줘", thread_id="t-571-multi-list")
+    llm = FakeLLM(
+        decompose={
+            "intent": "recommend",
+            "categoryQueries": [
+                {"category": "여행용품", "query": "여행용 파우치"},
+                {"category": "전자기기", "query": "여행용 어댑터"},
+            ],
+            "filters": {},
+            "case": 3,
+        }
+    )
+    await _collect(
+        run_buyer_turn(
+            request, _member_num(), llm=llm, search=_search, push_fn=push, map_categories=_map
+        )
+    )
+    assert len(push.pushes[0].lists) >= 2
+    key = await _thread_key(request, _member_num())
+    state = await (await get_cart_store()).get_last_reco_state(key)
+    assert state.ordinal_span == 0
+
+
+async def test_ordinal_span_matches_exposed_count_for_profile_vector_push(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#571-19] 프로필 벡터 경로도 목록 1개(PICK_ONE)라 `ordinal_span` == exposed 개수."""
+    from app.agents.buyer.cart.state import get_cart_store
+
+    thread_id = "t-571-profile-vector"
+    await _recommend_via_profile_and_get_named_reco(
+        monkeypatch, thread_id=thread_id, pids=[301, 302, 303]
+    )
+    request = _req(thread_id=thread_id)
+    key = await _thread_key(request, _member_num())
+    state = await (await get_cart_store()).get_last_reco_state(key)
+    assert state.ordinal_span == len(state.items)
+    assert state.ordinal_span > 0

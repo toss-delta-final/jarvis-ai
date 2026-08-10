@@ -219,6 +219,14 @@ def _resolve_screen(
     분기 안에서만 일어난다, `graph.py:906` 참조), `screen` 이 있고 `screen.products` 가 비지 않고
     `pending_cart is None` 일 때만. 조건 미성립이면 `(decompose_product_id, False, None)` —
     resolved == 원본, 발동 안 함.
+
+    **[#571 이후 측정 범위 축소, 의도적]** 배포 경로(`app/agents/buyer/graph.py`)는 #571 부터
+    `screen.products` 뿐 아니라 **추천 카드 표면**(`last_reco[:turn_count]`, `screen` 없어도
+    돈다)에서도 이 해소기를 부른다 — 위 "발동 조건은 `graph.py` 와 같다"는 이제 **화면 표면에
+    한해서만** 참이다. 이 하네스는 그 확장을 재지 않는다: 픽스처(`Cell`/`build_context_kwargs`)
+    에 `ordinal_span`(표시 순서=저장 순서 증명, §571) 개념이 없어 추천 표면 재현이 불가능하고,
+    설령 넣더라도 기존 `screen` 계열 baseline(`evals/intent_probe/baselines/`)과의 산출
+    비교 가능성이 깨진다 — 축소는 조용히 둔 것이 아니라 이 트레이드오프를 택한 결과다.
     """
     screen = context_kwargs.get("screen")
     pending_cart = context_kwargs.get("pending_cart")
@@ -234,6 +242,13 @@ def _resolve_screen(
         deictic_markers=settings.screen_deictic_markers,
         context_reference_markers=settings.screen_context_reference_markers,
         last_recommendation_products=last_recommendations,
+        # [#571] 이 하네스는 `screen.products` 표면만 잰다(위 게이트가 그것만 통과시킨다) —
+        # 화면 표면은 순번 게이트가 항상 참이고 이름 확정(N)은 꺼져 있다(`graph.py` 의
+        # `screen_products` 분기와 같은 값, 오늘과 바이트 동일한 동작).
+        positional_order_verified=True,
+        name_confirmation_enabled=False,
+        negation_markers=settings.utterance_negation_markers,
+        prefix_negation_markers=settings.utterance_prefix_negation_markers,
     )
     if resolved is None:
         return decompose_product_id, False, None

@@ -1641,6 +1641,7 @@ async def test_screen_reference_never_fires_without_screen_products() -> None:
     """
     from app.agents.buyer.screen_reference import resolve_screen_reference
 
+    settings = get_settings()
     for message in ("이거 담아줘", "3번째 거 담아줘", "3번째 줄 2번째 담아줘", "301 담아줘"):
         assert (
             resolve_screen_reference(
@@ -1648,9 +1649,13 @@ async def test_screen_reference_never_fires_without_screen_products() -> None:
                 products=[],
                 columns=3,
                 allowed_product_ids={101},
-                deictic_markers=get_settings().screen_deictic_markers,
-                context_reference_markers=get_settings().screen_context_reference_markers,
+                deictic_markers=settings.screen_deictic_markers,
+                context_reference_markers=settings.screen_context_reference_markers,
                 last_recommendation_products=[],
+                positional_order_verified=True,
+                name_confirmation_enabled=False,
+                negation_markers=settings.utterance_negation_markers,
+                prefix_negation_markers=settings.utterance_prefix_negation_markers,
             )
             is None
         )
@@ -1660,14 +1665,19 @@ def test_screen_reference_leaves_name_and_unmatched_utterances_to_the_llm() -> N
     """이름 매칭은 LLM 이 8/8 로 잘한다 — 코드가 가로채지 않는다."""
     from app.agents.buyer.screen_reference import resolve_screen_reference
 
+    settings = get_settings()
     products = [(501, "코튼 러그"), (502, "라탄 바구니")]
     kwargs = {
         "products": products,
         "columns": 2,
         "allowed_product_ids": {501, 502},
-        "deictic_markers": get_settings().screen_deictic_markers,
-        "context_reference_markers": get_settings().screen_context_reference_markers,
+        "deictic_markers": settings.screen_deictic_markers,
+        "context_reference_markers": settings.screen_context_reference_markers,
         "last_recommendation_products": [],
+        "positional_order_verified": True,
+        "name_confirmation_enabled": False,
+        "negation_markers": settings.utterance_negation_markers,
+        "prefix_negation_markers": settings.utterance_prefix_negation_markers,
     }
     assert resolve_screen_reference("라탄 바구니 담아줘", **kwargs) is None
     assert resolve_screen_reference("이 라탄 바구니 담아줘", **kwargs) is None  # 이름이 있으면 양보
@@ -1690,6 +1700,10 @@ def test_out_of_range_positions_reask_instead_of_guessing() -> None:
         deictic_markers=markers,
         context_reference_markers=context_markers,
         last_recommendation_products=[],
+        positional_order_verified=True,
+        name_confirmation_enabled=False,
+        negation_markers=settings.utterance_negation_markers,
+        prefix_negation_markers=settings.utterance_prefix_negation_markers,
     )
     assert out_of_range is not None and out_of_range.product_id is None
     no_columns = resolve_screen_reference(
@@ -1700,6 +1714,10 @@ def test_out_of_range_positions_reask_instead_of_guessing() -> None:
         deictic_markers=markers,
         context_reference_markers=context_markers,
         last_recommendation_products=[],
+        positional_order_verified=True,
+        name_confirmation_enabled=False,
+        negation_markers=settings.utterance_negation_markers,
+        prefix_negation_markers=settings.utterance_prefix_negation_markers,
     )
     assert no_columns is not None and no_columns.product_id is None
 
@@ -1707,8 +1725,21 @@ def test_out_of_range_positions_reask_instead_of_guessing() -> None:
 # ─────────── 라운드 3 — 리뷰 지적 회귀 가드 ───────────
 
 
-def _resolve(message: str, products, columns=3, allowed=None, last_reco=()):
-    """프로덕션 해소기를 config 기본값 그대로 호출한다(기본값 자체가 이번 수정의 일부다)."""
+def _resolve(
+    message: str,
+    products,
+    columns=3,
+    allowed=None,
+    last_reco=(),
+    *,
+    positional_order_verified=True,
+    name_confirmation_enabled=False,
+):
+    """프로덕션 해소기를 config 기본값 그대로 호출한다(기본값 자체가 이번 수정의 일부다).
+
+    [#571] 새 키워드 인자 둘의 기본값은 **화면 표면과 같은 동작**이다(순번 항상 켜짐·이름
+    확정 꺼짐) — 이 파일의 기존(화면 표면) 호출부가 전부 무회귀로 남는다.
+    """
     from app.agents.buyer.screen_reference import resolve_screen_reference
 
     settings = get_settings()
@@ -1720,6 +1751,10 @@ def _resolve(message: str, products, columns=3, allowed=None, last_reco=()):
         deictic_markers=settings.screen_deictic_markers,
         context_reference_markers=settings.screen_context_reference_markers,
         last_recommendation_products=last_reco,
+        positional_order_verified=positional_order_verified,
+        name_confirmation_enabled=name_confirmation_enabled,
+        negation_markers=settings.utterance_negation_markers,
+        prefix_negation_markers=settings.utterance_prefix_negation_markers,
     )
 
 
@@ -2241,14 +2276,19 @@ def test_a_single_character_deictic_marker_would_false_positive_on_unrelated_wor
     def _resolve_with_markers(message: str, markers: list[str]):
         from app.agents.buyer.screen_reference import resolve_screen_reference
 
+        settings = get_settings()
         return resolve_screen_reference(
             message,
             products=products,
             columns=1,
             allowed_product_ids={555},
             deictic_markers=markers,
-            context_reference_markers=get_settings().screen_context_reference_markers,
+            context_reference_markers=settings.screen_context_reference_markers,
             last_recommendation_products=[],
+            positional_order_verified=True,
+            name_confirmation_enabled=False,
+            negation_markers=settings.utterance_negation_markers,
+            prefix_negation_markers=settings.utterance_prefix_negation_markers,
         )
 
     # 옛 표지 목록(`"얘"` 포함)으로는 대화 맥락 참조 발화가 화면 상품으로 **오확정**됐다(재현).
@@ -2434,3 +2474,672 @@ async def test_pending_turn_still_allows_a_previously_recommended_product(
     action = next(e for e in events if e["type"] == "action")["data"]
     assert action["type"] == "CART_ADDED"
     assert added["product_id"] == 202  # 직전 추천 경유 전환은 그대로 동작한다
+
+
+# ─────── #571 추천 카드 표면 ───────
+#
+# 추천 카드(CH-5)만 뜬 턴 — `screen` 없이 `last_reco[:turn_count]` 만 있다. 이슈 #571 전에는
+# `screen_reference.resolve_screen_reference` 가 아예 호출되지 않아, 순번·"이거"·이름 지목 같은
+# 결정적으로 풀리는 입력이 LLM 산출에 그대로 맡겨져 오담기가 났다(screen_reference.py 상단 F-17
+# ~F-19 참조). 아래는 그 게이트 확대·`ordinal_span` 증명 게이트·이름 확정 규칙(N)을 고정한다.
+
+
+async def test_reco_card_sole_candidate_is_confirmed_by_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#571-1] 추천 카드 1건 + "이거 담아줘" → 코드가 그 카드로 확정한다(화면 표면과 같은 규칙)."""
+    import app.services.spring_client as sc
+
+    added: dict = {}
+
+    async def fake_add(req):  # noqa: ANN001
+        added["product_id"] = req.product_id
+        return AddToCartResult(success=True, cart_item_id=201)
+
+    monkeypatch.setattr(sc, "add_to_cart", fake_add)
+    monkeypatch.setattr(sc, "get_cart", _empty_cart_view())
+
+    request = BuyerChatRequest.model_validate(
+        _buyer_payload(message="이거 담아줘", threadId="t-reco-sole")
+    )
+    cart_store = await get_cart_store()
+    await cart_store.set_last_reco(await _thread_key(request, _member()), [(555, "신상품")])
+    # LLM 은 추천 카드에 없는 다른 id 를 골랐다고 둔다(할루시네이션 흉내).
+    llm = FakeLLM(decompose={"intent": "cart_add", "cart": {"productId": 999, "quantity": 1}})
+    events = await _collect(_run_buyer_turn(request, _member(), llm=llm))
+    action = next(e for e in events if e["type"] == "action")["data"]
+    assert action["type"] == "CART_ADDED"
+    assert added["product_id"] == 555  # LLM 산출(999) 이 아니라 추천 카드의 유일 후보
+
+
+async def test_reco_cards_multiple_candidates_force_a_reask(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#571-2] 추천 카드 3건 + "이거 담아줘" → action 없음(되물음), 문구는 "화면에 보이는 상품 중"."""
+    import app.services.spring_client as sc
+
+    async def fake_add(req):  # noqa: ANN001
+        raise AssertionError(f"후보 다건에서 임의 확정이 담기까지 도달하면 안 됨: {req}")
+
+    monkeypatch.setattr(sc, "add_to_cart", fake_add)
+
+    request = BuyerChatRequest.model_validate(
+        _buyer_payload(message="이거 담아줘", threadId="t-reco-ambiguous")
+    )
+    cart_store = await get_cart_store()
+    await cart_store.set_last_reco(
+        await _thread_key(request, _member()),
+        [(501, "러그"), (502, "바구니"), (503, "가습기")],
+    )
+    llm = FakeLLM(decompose={"intent": "cart_add", "cart": {"productId": 501, "quantity": 1}})
+    events = await _collect(_run_buyer_turn(request, _member(), llm=llm))
+    assert "action" not in [e["type"] for e in events]
+    token_text = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert "화면에 보이는 상품 중" in token_text
+
+
+async def test_reco_card_ordinal_resolves_when_span_matches_turn_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#571-3] 추천 카드 5건(단일 목록, ordinal_span=5) + "3번째 거 담아줘" → 3번째 카드가 담긴다."""
+    import app.services.spring_client as sc
+
+    added: dict = {}
+
+    async def fake_add(req):  # noqa: ANN001
+        added["product_id"] = req.product_id
+        return AddToCartResult(success=True, cart_item_id=301)
+
+    monkeypatch.setattr(sc, "add_to_cart", fake_add)
+    monkeypatch.setattr(sc, "get_cart", _empty_cart_view())
+
+    request = BuyerChatRequest.model_validate(
+        _buyer_payload(message="3번째 거 담아줘", threadId="t-reco-ordinal")
+    )
+    cart_store = await get_cart_store()
+    items = [(600 + i, f"상품{i}") for i in range(5)]
+    await cart_store.set_last_reco(await _thread_key(request, _member()), items, ordinal_span=5)
+    llm = FakeLLM(decompose={"intent": "cart_add", "cart": {"productId": 999, "quantity": 1}})
+    events = await _collect(_run_buyer_turn(request, _member(), llm=llm))
+    action = next(e for e in events if e["type"] == "action")["data"]
+    assert action["type"] == "CART_ADDED"
+    assert added["product_id"] == items[2][0]
+
+
+async def test_reco_card_ordinal_out_of_range_reasks(monkeypatch: pytest.MonkeyPatch) -> None:
+    """[#571-4] 같은 조건 + "9번째 거 담아줘" → 되물음(ordinal_out_of_range 문구)."""
+    import app.services.spring_client as sc
+
+    async def fake_add(req):  # noqa: ANN001
+        raise AssertionError(f"범위 밖 순번이 담기까지 도달하면 안 됨: {req}")
+
+    monkeypatch.setattr(sc, "add_to_cart", fake_add)
+
+    request = BuyerChatRequest.model_validate(
+        _buyer_payload(message="9번째 거 담아줘", threadId="t-reco-ordinal-oor")
+    )
+    cart_store = await get_cart_store()
+    items = [(600 + i, f"상품{i}") for i in range(5)]
+    await cart_store.set_last_reco(await _thread_key(request, _member()), items, ordinal_span=5)
+    llm = FakeLLM(
+        decompose={"intent": "cart_add", "cart": {"productId": items[0][0], "quantity": 1}}
+    )
+    events = await _collect(_run_buyer_turn(request, _member(), llm=llm))
+    assert "action" not in [e["type"] for e in events]
+    token_text = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert "화면에 보이는 상품 중" in token_text
+
+
+async def test_reco_card_ordinal_unverifiable_without_matching_span_reasks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#571-5] 다목록 턴(ordinal_span=0) + "3번째 거 담아줘" → 담기 없음, 문구는 이름 지목 유도
+    (`_UNRESOLVED_WITH_RECO` 계열). LLM 이 낸 productId(허용 목록 안)도 담기지 않는다."""
+    import app.services.spring_client as sc
+
+    async def fake_add(req):  # noqa: ANN001
+        raise AssertionError(f"증명되지 않은 순번이 담기까지 도달하면 안 됨: {req}")
+
+    monkeypatch.setattr(sc, "add_to_cart", fake_add)
+
+    request = BuyerChatRequest.model_validate(
+        _buyer_payload(message="3번째 거 담아줘", threadId="t-reco-ordinal-unverified")
+    )
+    cart_store = await get_cart_store()
+    items = [(700 + i, f"상품{i}") for i in range(5)]
+    # ordinal_span 을 넘기지 않으면 0(다목록·BUY_ALL 과 같은 모양)으로 저장된다.
+    await cart_store.set_last_reco(await _thread_key(request, _member()), items)
+    llm = FakeLLM(
+        decompose={"intent": "cart_add", "cart": {"productId": items[2][0], "quantity": 1}}
+    )
+    events = await _collect(_run_buyer_turn(request, _member(), llm=llm))
+    assert "action" not in [e["type"] for e in events]
+    token_text = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert "이름을 말씀해 주시면" in token_text
+
+
+async def test_reco_card_full_name_mention_is_confirmed_by_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#571-6] 카드 이름 전체가 발화에 있고 1건만 매칭 → 코드가 그 카드로 확정한다."""
+    import app.services.spring_client as sc
+
+    added: dict = {}
+
+    async def fake_add(req):  # noqa: ANN001
+        added["product_id"] = req.product_id
+        return AddToCartResult(success=True, cart_item_id=601)
+
+    monkeypatch.setattr(sc, "add_to_cart", fake_add)
+    monkeypatch.setattr(sc, "get_cart", _empty_cart_view())
+
+    request = BuyerChatRequest.model_validate(
+        _buyer_payload(message="무선 블루투스 이어폰 담아줘", threadId="t-reco-name")
+    )
+    cart_store = await get_cart_store()
+    await cart_store.set_last_reco(
+        await _thread_key(request, _member()),
+        [(801, "무선 블루투스 이어폰"), (802, "파우치")],
+    )
+    llm = FakeLLM(decompose={"intent": "cart_add", "cart": {"productId": 802, "quantity": 1}})
+    events = await _collect(_run_buyer_turn(request, _member(), llm=llm))
+    action = next(e for e in events if e["type"] == "action")["data"]
+    assert action["type"] == "CART_ADDED"
+    assert added["product_id"] == 801  # LLM 산출(802) 이 아니라 이름이 지목한 카드
+
+
+async def test_reco_card_name_mention_with_negation_defers_to_llm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#571-7] 이름 + 부정("… 말고 다른 거 담아줘") → 해소기 None(LLM 산출 그대로)."""
+    import app.services.spring_client as sc
+
+    added: dict = {}
+
+    async def fake_add(req):  # noqa: ANN001
+        added["product_id"] = req.product_id
+        return AddToCartResult(success=True, cart_item_id=701)
+
+    monkeypatch.setattr(sc, "add_to_cart", fake_add)
+    monkeypatch.setattr(sc, "get_cart", _empty_cart_view())
+
+    request = BuyerChatRequest.model_validate(
+        _buyer_payload(
+            message="무선 블루투스 이어폰 말고 다른 거 담아줘", threadId="t-reco-name-negated"
+        )
+    )
+    cart_store = await get_cart_store()
+    await cart_store.set_last_reco(
+        await _thread_key(request, _member()),
+        [(801, "무선 블루투스 이어폰"), (802, "파우치")],
+    )
+    # 부정 표지가 있으므로 코드는 개입하지 않는다 — LLM 이 고른 802(파우치)가 그대로 담긴다.
+    llm = FakeLLM(decompose={"intent": "cart_add", "cart": {"productId": 802, "quantity": 1}})
+    events = await _collect(_run_buyer_turn(request, _member(), llm=llm))
+    action = next(e for e in events if e["type"] == "action")["data"]
+    assert action["type"] == "CART_ADDED"
+    assert added["product_id"] == 802
+
+
+async def test_reco_card_ambiguous_name_match_defers_to_llm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#571-8] 이름이 2건 매칭(한 이름이 다른 이름의 부분문자열인 카드 2장) → None(LLM 산출 그대로)."""
+    import app.services.spring_client as sc
+
+    added: dict = {}
+
+    async def fake_add(req):  # noqa: ANN001
+        added["product_id"] = req.product_id
+        return AddToCartResult(success=True, cart_item_id=801)
+
+    monkeypatch.setattr(sc, "add_to_cart", fake_add)
+    monkeypatch.setattr(sc, "get_cart", _empty_cart_view())
+
+    request = BuyerChatRequest.model_validate(
+        _buyer_payload(message="이어폰케이스 담아줘", threadId="t-reco-name-ambiguous")
+    )
+    cart_store = await get_cart_store()
+    await cart_store.set_last_reco(
+        await _thread_key(request, _member()),
+        [(901, "이어폰"), (902, "이어폰케이스")],
+    )
+    # 두 이름 모두 발화에 부분 문자열로 포함돼 매칭 2건 — 코드는 개입하지 않고 LLM 산출(902)을 세운다.
+    llm = FakeLLM(decompose={"intent": "cart_add", "cart": {"productId": 902, "quantity": 1}})
+    events = await _collect(_run_buyer_turn(request, _member(), llm=llm))
+    action = next(e for e in events if e["type"] == "action")["data"]
+    assert action["type"] == "CART_ADDED"
+    assert added["product_id"] == 902
+
+
+async def test_reco_card_blank_name_is_never_confirmed_by_name_match(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#571-9] 이름이 비어 있는 카드(이름 캐시 degrade)는 이름 매칭으로 확정되지 않는다.
+
+    `len(name) >= 2` 가드가 없으면 빈 이름("")도 `"" in message"`가 항상 참이라 매칭에 섞여
+    2건 매칭(555·556)이 되고, 그러면 (N)이 개입을 포기해 LLM 산출(555, 빈 이름 카드)이 그대로
+    샌다 — 이 테스트는 그 회귀를 잡는다: 코드는 항상 이름이 실제로 있는 556 을 확정해야 한다.
+    """
+    import app.services.spring_client as sc
+
+    added: dict = {}
+
+    async def fake_add(req):  # noqa: ANN001
+        added["product_id"] = req.product_id
+        return AddToCartResult(success=True, cart_item_id=901)
+
+    monkeypatch.setattr(sc, "add_to_cart", fake_add)
+    monkeypatch.setattr(sc, "get_cart", _empty_cart_view())
+
+    request = BuyerChatRequest.model_validate(
+        _buyer_payload(message="가방 담아줘", threadId="t-reco-name-blank")
+    )
+    cart_store = await get_cart_store()
+    await cart_store.set_last_reco(
+        await _thread_key(request, _member()),
+        [(555, ""), (556, "가방")],
+    )
+    llm = FakeLLM(decompose={"intent": "cart_add", "cart": {"productId": 555, "quantity": 1}})
+    events = await _collect(_run_buyer_turn(request, _member(), llm=llm))
+    action = next(e for e in events if e["type"] == "action")["data"]
+    assert action["type"] == "CART_ADDED"
+    assert added["product_id"] == 556
+
+
+async def test_reco_surface_conversation_reference_is_not_forced_onto_a_card(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#571-10] (A) 회귀, 추천 표면: 카드 1건 + "아까 추천해준 이거 담아줘" → None(카드 확정 금지)."""
+    import app.services.spring_client as sc
+
+    added: dict = {}
+
+    async def fake_add(req):  # noqa: ANN001
+        added["product_id"] = req.product_id
+        return AddToCartResult(success=True, cart_item_id=1001)
+
+    monkeypatch.setattr(sc, "add_to_cart", fake_add)
+    monkeypatch.setattr(sc, "get_cart", _empty_cart_view())
+
+    request = BuyerChatRequest.model_validate(
+        _buyer_payload(message="아까 추천해준 이거 담아줘", threadId="t-reco-context-ref")
+    )
+    cart_store = await get_cart_store()
+    key = await _thread_key(request, _member())
+    # 승계분(직전 턴) — 이번 턴 카드가 아니다.
+    await cart_store.set_last_reco(key, [(999, "기존상품")])
+    # 이번 턴 카드 1건 — turn_count=1, 승계분(999)이 뒤에 남는다.
+    await cart_store.set_last_reco(key, [(555, "러그")])
+    # LLM 은 승계분(999, allowed 안이지만 이번 턴 카드는 아니다)을 골랐다고 둔다. (A) 가 화면
+    # 확정을 막았다면 이 값이 그대로 담긴다 — 러그(555)가 담기면 대화 참조가 카드로 확정된 것이다.
+    llm = FakeLLM(decompose={"intent": "cart_add", "cart": {"productId": 999, "quantity": 1}})
+    events = await _collect(_run_buyer_turn(request, _member(), llm=llm))
+    action = next(e for e in events if e["type"] == "action")["data"]
+    assert action["type"] == "CART_ADDED"
+    assert added["product_id"] == 999
+
+
+async def test_reco_surface_name_known_only_from_carried_over_reco_beats_positional(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#571-11] (B) 회귀, 추천 표면: 이름이 승계분(last_reco 뒤쪽)에만 있고 이번 턴 카드엔
+    없음 + "<그 이름> 2번째 옵션으로 담아줘" → None(순번이 이기지 않는다)."""
+    import app.services.spring_client as sc
+
+    added: dict = {}
+
+    async def fake_add(req):  # noqa: ANN001
+        added["product_id"] = req.product_id
+        return AddToCartResult(success=True, cart_item_id=1101)
+
+    monkeypatch.setattr(sc, "add_to_cart", fake_add)
+    monkeypatch.setattr(sc, "get_cart", _empty_cart_view())
+
+    request = BuyerChatRequest.model_validate(
+        _buyer_payload(message="무선 이어폰 2번째 옵션으로 담아줘", threadId="t-reco-name-in-carry")
+    )
+    cart_store = await get_cart_store()
+    key = await _thread_key(request, _member())
+    await cart_store.set_last_reco(key, [(9001, "무선 이어폰")])
+    await cart_store.set_last_reco(key, [(501, "러그"), (502, "바구니")], ordinal_span=2)
+    # 순번이 이겼다면 화면 2번째(바구니, 502)가 확정된다 — (B) 가 이겨야 승계분 9001 이 그대로 산다.
+    llm = FakeLLM(decompose={"intent": "cart_add", "cart": {"productId": 9001, "quantity": 1}})
+    events = await _collect(_run_buyer_turn(request, _member(), llm=llm))
+    action = next(e for e in events if e["type"] == "action")["data"]
+    assert action["type"] == "CART_ADDED"
+    assert added["product_id"] == 9001
+
+
+async def test_pending_turn_reco_cards_do_not_invoke_the_resolver(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#571-12] 되물음 턴 예외: pending + 추천 카드 다건 + "이거 담아줘" → 해소기가 돌지 않는다
+    (`screen_context_active` 가 pending 중 거짓이라 화면 표면과 동일하게 구조적으로 막힌다).
+    옵션 되물음 흐름이 end-to-end 로 그대로 유지되는지까지 확인한다.
+    """
+    import app.agents.buyer.graph as buyer_graph
+    import app.services.spring_client as sc
+    from app.agents.buyer.cart.state import PendingAdd, get_cart_store
+    from app.schemas.spring import CartOption
+    from app.services.spring_client import CartOptionRequired
+
+    call_count = 0
+    real_resolve = buyer_graph.resolve_screen_reference
+
+    def spy(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        return real_resolve(*args, **kwargs)
+
+    monkeypatch.setattr(buyer_graph, "resolve_screen_reference", spy)
+
+    async def fake_add(req):  # noqa: ANN001
+        if req.option_id is None:
+            raise CartOptionRequired(
+                [
+                    CartOption(option_id=1001, name="일반형"),
+                    CartOption(option_id=1002, name="드럼형"),
+                ]
+            )
+        return AddToCartResult(success=True, cart_item_id=1201)
+
+    monkeypatch.setattr(sc, "add_to_cart", fake_add)
+
+    request = BuyerChatRequest.model_validate(
+        _buyer_payload(message="이거 담아줘", threadId="t-reco-pending-noresolve")
+    )
+    key = await _thread_key(request, _member())
+    store = await get_cart_store()
+    await store.set_last_reco(key, [(501, "러그"), (502, "바구니"), (503, "가습기")])
+    await store.set_pending(
+        key,
+        PendingAdd(
+            product_id=9001,
+            quantity=1,
+            options=[
+                CartOption(option_id=1001, name="일반형"),
+                CartOption(option_id=1002, name="드럼형"),
+            ],
+        ),
+    )
+    llm = FakeLLM(decompose={"intent": "cart_add", "cart": {"productId": 9001, "optionId": 1002}})
+    events = await _collect(_run_buyer_turn(request, _member(), llm=llm))
+
+    assert call_count == 0
+    action = next(e for e in events if e["type"] == "action")["data"]
+    assert action["type"] == "CART_ADDED"
+
+
+async def test_reco_card_turn_boundary_excludes_carried_over_items(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#571-13] `turn_count` 경계: 이번 턴 3건 + 승계 2건일 때 "4번째 거 담아줘" → 승계분이
+    아니라 범위 밖 되물음."""
+    import app.services.spring_client as sc
+
+    async def fake_add(req):  # noqa: ANN001
+        raise AssertionError(f"승계분을 순번으로 확정하면 안 됨: {req}")
+
+    monkeypatch.setattr(sc, "add_to_cart", fake_add)
+
+    request = BuyerChatRequest.model_validate(
+        _buyer_payload(message="4번째 거 담아줘", threadId="t-reco-turn-boundary")
+    )
+    cart_store = await get_cart_store()
+    key = await _thread_key(request, _member())
+    await cart_store.set_last_reco(key, [(1001, "승계1"), (1002, "승계2")])
+    await cart_store.set_last_reco(
+        key, [(2001, "이번1"), (2002, "이번2"), (2003, "이번3")], ordinal_span=3
+    )
+    llm = FakeLLM(decompose={"intent": "cart_add", "cart": {"productId": 1001, "quantity": 1}})
+    events = await _collect(_run_buyer_turn(request, _member(), llm=llm))
+    assert "action" not in [e["type"] for e in events]
+    token_text = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert "화면에 보이는 상품 중" in token_text
+
+
+def test_reco_resolution_is_always_within_allowed_and_products() -> None:
+    """[#571-14, F-d] 오담기 최종 방벽 — 해소 결과 productId 는 항상 allowed 안이고 products
+    안이다.
+
+    [F-d] 발화별 **기대 결과를 표로 고정**한다 — 예전 버전은 단언이
+    `if resolved is not None and resolved.product_id is not None:` **안**에만 있어, 해소기가
+    6개 발화 전부에 `None` 을 돌려줘도(=규칙이 통째로 죽어도) 통과했다(공허한 통과,
+    docs/lessons.md 2026-08-11 「판정 라벨만 비교하는 회귀 테스트는 드리프트를 통과시킨다」와
+    같은 형태). 이제 각 발화를 confirm(확정, 기대 productId까지 고정)·reask(되물음,
+    product_id=None)·defer(양보, resolved 자체가 None) 세 갈래로 명시하고, confirm 케이스가
+    **최소 2건**임을 단언한다 — 규칙이 죽어 전부 defer 로 떨어지면 이 최소 건수 단언이 깨진다.
+    """
+    from app.agents.buyer.screen_reference import resolve_screen_reference
+
+    settings = get_settings()
+    products = [(2001, "이번1"), (2002, "이번2"), (2003, "이번3")]
+    allowed = {pid for pid, _ in products} | {9001}
+    # (발화, 기대 갈래, confirm 이면 기대 productId)
+    cases = [
+        ("이거 담아줘", "reask", None),  # (4) 맨 지시대명사, 후보 3건 → 되물음
+        ("3번째 거 담아줘", "confirm", 2003),  # (2) 순번 — positional_order_verified=True
+        ("9번째 거 담아줘", "reask", None),  # (2) 순번, 범위 밖 → 되물음
+        ("이번2 담아줘", "confirm", 2002),  # (N) 이름 확정 — 정확히 1건 매칭
+        ("9001 담아줘", "defer", None),  # allowed 안이지만 products 밖 id — 확정할 근거가 없어 양보
+        ("아까 추천해준 그거 담아줘", "defer", None),  # (A) 대화 맥락 참조 양보
+    ]
+    confirmed = 0
+    for message, expected, expected_pid in cases:
+        resolved = resolve_screen_reference(
+            message,
+            products=products,
+            columns=None,
+            allowed_product_ids=allowed,
+            deictic_markers=settings.screen_deictic_markers,
+            context_reference_markers=settings.screen_context_reference_markers,
+            last_recommendation_products=(),
+            positional_order_verified=True,
+            name_confirmation_enabled=True,
+            negation_markers=settings.utterance_negation_markers,
+            prefix_negation_markers=settings.utterance_prefix_negation_markers,
+        )
+        if expected == "defer":
+            assert resolved is None, f"{message!r}: 양보(None)를 기대했는데 {resolved!r}"
+            continue
+        assert resolved is not None, f"{message!r}: 규칙이 발동해야 하는데 아무 것도 안 함(None)"
+        if expected == "reask":
+            assert resolved.product_id is None, (
+                f"{message!r}: 되물음을 기대했는데 확정됨: {resolved!r}"
+            )
+            continue
+        assert resolved.product_id == expected_pid, (
+            f"{message!r}: productId {expected_pid} 를 기대했는데 {resolved!r}"
+        )
+        assert resolved.product_id in allowed
+        assert resolved.product_id in {pid for pid, _ in products}
+        confirmed += 1
+    assert confirmed >= 2, "confirm 케이스가 최소 2건은 있어야 이 표가 살아있다는 증거다"
+
+
+async def test_reco_cards_widen_screen_reference_attempted_blocks_wishlist_auto_delete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#571-15] 찜 해제 회귀(결정 5): 추천 카드 3건 + 찜 1건 + "이거 찜에서 빼줘" → 그 찜
+    항목이 삭제되지 않는다(규칙 3 자동 삭제 차단) — #440 라운드 10·11 리뷰(F27·F29)가 화면
+    표면에서 막은 것과 같은 클래스의 파괴적 동작을 추천 표면에서도 막는다."""
+    import app.services.spring_client as sc
+    from app.schemas.spring import WishlistItem, WishlistView
+
+    async def fake_get_wishlist(user_id):  # noqa: ANN001
+        return WishlistView(
+            items=[WishlistItem(product_id=77, name="마우스", purchase_state="AVAILABLE")]
+        )
+
+    async def fake_remove_wishlist(product_id, *, user_id=None):  # noqa: ANN001
+        raise AssertionError("추천 카드 참조 시도인데 무관한 찜 항목을 지우면 안 된다")
+
+    monkeypatch.setattr(sc, "get_wishlist", fake_get_wishlist)
+    monkeypatch.setattr(sc, "remove_wishlist", fake_remove_wishlist)
+
+    request = BuyerChatRequest.model_validate(
+        _buyer_payload(message="이거 찜에서 빼줘", threadId="t-reco-wishlist-guard")
+    )
+    cart_store = await get_cart_store()
+    await cart_store.set_last_reco(
+        await _thread_key(request, _member()),
+        [(501, "러그"), (502, "바구니"), (503, "가습기")],
+    )
+    llm = FakeLLM(decompose={"intent": "wishlist_remove", "cart": {}})
+    events = await _collect(_run_buyer_turn(request, _member(), llm=llm))
+    assert [e["type"] for e in events][-2:] == ["token", "done"]
+    assert not any(e["type"] == "action" for e in events)
+
+
+async def test_control_group_without_reco_or_screen_still_auto_deletes_the_only_wishlist_item(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#571-15 대조군] 추천 카드도 screen 도 없는 같은 발화는 오늘처럼 삭제된다(#440 의 양성
+    경로를 죽이지 않았음을 증명)."""
+    import app.services.spring_client as sc
+    from app.schemas.spring import WishlistItem, WishlistView
+
+    removed: list[int] = []
+
+    async def fake_get_wishlist(user_id):  # noqa: ANN001
+        return WishlistView(
+            items=[WishlistItem(product_id=77, name="마우스", purchase_state="AVAILABLE")]
+        )
+
+    async def fake_remove_wishlist(product_id, *, user_id=None):  # noqa: ANN001
+        removed.append(product_id)
+        return None
+
+    monkeypatch.setattr(sc, "get_wishlist", fake_get_wishlist)
+    monkeypatch.setattr(sc, "remove_wishlist", fake_remove_wishlist)
+
+    request = BuyerChatRequest.model_validate(
+        _buyer_payload(message="이거 찜에서 빼줘", threadId="t-no-reco-wishlist-control")
+    )
+    llm = FakeLLM(decompose={"intent": "wishlist_remove", "cart": {}})
+    events = await _collect(_run_buyer_turn(request, _member(), llm=llm))
+    assert removed == [77]
+    action = next(e for e in events if e["type"] == "action")["data"]
+    assert action["type"] == "WISHLIST_REMOVED"
+
+
+async def test_pending_turn_reco_cards_still_block_wishlist_auto_delete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[F-g] 되물음 턴 + 추천 카드: `surface` 는 `screen_context_active`(옵션 되물음 여부)와
+    무관하게 계산되므로, 되물음 진행 중이라 해소기 자체는 돌지 않아도(`screen_context_active`
+    가 거짓) `screen_reference_attempted` 는 여전히 참이 된다(추천 카드 3건 + "이거" 지시대명사).
+    그래서 pending 턴 + 추천 카드 3건 + `"이거 찜에서 빼줘"` 에서도 규칙 3(목록 1건 자동 삭제)이
+    차단되고, 그 찜 항목은 삭제되지 않는다 — 화면 표면(`screen is not None`)이 오늘 이미 같은
+    방식으로 동작하는 것과 대칭이라 새 비대칭이 생기지 않는다(findings-draft.md F-g)."""
+    import app.services.spring_client as sc
+    from app.agents.buyer.cart.state import PendingAdd, get_cart_store
+    from app.schemas.spring import CartOption, WishlistItem, WishlistView
+
+    async def fake_get_wishlist(user_id):  # noqa: ANN001
+        return WishlistView(
+            items=[WishlistItem(product_id=77, name="마우스", purchase_state="AVAILABLE")]
+        )
+
+    async def fake_remove_wishlist(product_id, *, user_id=None):  # noqa: ANN001
+        raise AssertionError(
+            "되물음 턴이라도 추천 카드 참조 시도가 있으면 무관한 찜 항목을 지우면 안 된다"
+        )
+
+    monkeypatch.setattr(sc, "get_wishlist", fake_get_wishlist)
+    monkeypatch.setattr(sc, "remove_wishlist", fake_remove_wishlist)
+
+    request = BuyerChatRequest.model_validate(
+        _buyer_payload(message="이거 찜에서 빼줘", threadId="t-reco-pending-wishlist-guard")
+    )
+    key = await _thread_key(request, _member())
+    cart_store = await get_cart_store()
+    await cart_store.set_last_reco(key, [(501, "러그"), (502, "바구니"), (503, "가습기")])
+    # 옵션 되물음(pending) 진행 중 — 무관한 상품(9001)의 옵션 답변을 기다리는 상태다.
+    await cart_store.set_pending(
+        key,
+        PendingAdd(
+            product_id=9001,
+            quantity=1,
+            options=[CartOption(option_id=1001, name="일반형")],
+        ),
+    )
+    llm = FakeLLM(decompose={"intent": "wishlist_remove", "cart": {}})
+    events = await _collect(_run_buyer_turn(request, _member(), llm=llm))
+    assert [e["type"] for e in events][-2:] == ["token", "done"]
+    assert not any(e["type"] == "action" for e in events)
+
+
+async def test_no_screen_and_no_reco_never_invokes_the_resolver(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#571-16] #240 구조적 격리: screen 없음 + last_reco 없음 → 해소기가 아예 호출되지 않는다
+    (모듈 patch 로 호출 0회 확인)."""
+    import app.agents.buyer.graph as buyer_graph
+    import app.services.spring_client as sc
+
+    call_count = 0
+
+    def spy(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        return None
+
+    monkeypatch.setattr(buyer_graph, "resolve_screen_reference", spy)
+
+    async def fake_add(req):  # noqa: ANN001
+        raise AssertionError("표면이 없는데 담기가 진행되면 안 됨")
+
+    monkeypatch.setattr(sc, "add_to_cart", fake_add)
+
+    request = BuyerChatRequest.model_validate(
+        _buyer_payload(message="이거 담아줘", threadId="t-no-surface")
+    )
+    llm = FakeLLM(decompose={"intent": "cart_add", "cart": {"productId": 999, "quantity": 1}})
+    events = await _collect(_run_buyer_turn(request, _member(), llm=llm))
+    assert call_count == 0
+    assert "action" not in [e["type"] for e in events]
+
+
+async def test_screen_products_take_priority_over_reco_cards_for_ordinal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#571-17] 화면 표면 우선: `screen.products` 와 추천 카드가 동시에 있으면 순번은
+    `screen.products` 기준으로 풀린다(추천 카드가 끼어들지 않는다)."""
+    import app.services.spring_client as sc
+
+    added: dict = {}
+
+    async def fake_add(req):  # noqa: ANN001
+        added["product_id"] = req.product_id
+        return AddToCartResult(success=True, cart_item_id=1701)
+
+    monkeypatch.setattr(sc, "add_to_cart", fake_add)
+    monkeypatch.setattr(sc, "get_cart", _empty_cart_view())
+
+    request = BuyerChatRequest.model_validate(
+        _buyer_payload(
+            message="2번째 거 담아줘",
+            threadId="t-screen-priority",
+            screen={
+                "pageType": "chat",
+                "columns": 2,
+                "products": [
+                    {"productId": 501, "name": "러그"},
+                    {"productId": 502, "name": "바구니"},
+                ],
+            },
+        )
+    )
+    cart_store = await get_cart_store()
+    await cart_store.set_last_reco(
+        await _thread_key(request, _member()),
+        [(601, "상품A"), (602, "상품B"), (603, "상품C")],
+        ordinal_span=3,
+    )
+    llm = FakeLLM(decompose={"intent": "cart_add", "cart": {"productId": 999, "quantity": 1}})
+    events = await _collect(_run_buyer_turn(request, _member(), llm=llm))
+    action = next(e for e in events if e["type"] == "action")["data"]
+    assert action["type"] == "CART_ADDED"
+    assert added["product_id"] == 502  # 화면 2번째(추천 카드 2번째 602 가 아니다)
