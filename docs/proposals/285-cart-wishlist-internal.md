@@ -7,7 +7,10 @@
 정본에 I-24~I-28 로 확정·등재됐다(2026-08-05). 이 PR(#285 마무리 레인)은 **계약을 고치지
 않는다** — ① BE `jarvis-backend` 실측으로 계약·AI 코드·BE 3자가 실제로 일치하는지 검증하고,
 ② 코드에 남아 있던 낡은 상태 표기(주석·docstring)를 스윕하고, ③ 계약 실패표 커버리지 빈칸을
-채운 것이 산출물이다.
+채운 것이 산출물이다. **[2026-08-10 갱신]** 이후 사람의 지시로 이 레인이 **I-25(수량 변경)
+AI 구현까지** 함께 진행했다 — 애초 이슈 #285 본문·초기 검증 범위 밖이었던 항목이지만, 계약이
+이미 확정돼 있었고(§4.13) Spring·FE 도 준비돼 있어 이 레인에서 마저 구현했다(§1 A 아래·§5
+"I-25 수량 변경" 절 참조).
 
 ## 1. A·B·C·D 계약 요약 — 확정값
 
@@ -25,7 +28,9 @@
 | 실패 | 400 `VALIDATION_ERROR`(path 비숫자 / 신원 0·2개) · 403 `AUTH_FORBIDDEN`(소유자 불일치, BE 재검증) · 404 `CART_ITEM_NOT_FOUND`(**비멱등** → `action` `CART_REMOVED` 로 성공 안내) · 500 `INTERNAL_ERROR` |
 | 비고 | 재고·상품 상태 무관(HIDDEN·품절도 삭제 성공), 복수 삭제는 항목별 반복 호출(bulk 없음) |
 
-I-25(수량 변경, §4.13)는 **AI 미구현이자 이 이슈 범위 밖**이다 — 대응 이슈 없음.
+I-25(수량 변경, §4.13)는 애초 이 이슈 범위 밖이었으나, **사람의 지시로 이 레인이 마저
+구현했다**(2026-08-10 — 결정론적 대상 해소·치환(I-25)/합산(I-2) 판정 라우팅 2경로, api-spec
+§3.1·§4.13 v0.32.8). 요청/응답/실패 요약과 커버리지는 §5 "I-25 수량 변경" 절 참조.
 
 ### B. 찜 추가 (I-26, api-spec §4.14)
 
@@ -77,7 +82,7 @@ BE 실측 근거: `/home/uuser/inte-final/jarvis-backend` **`origin/main` `39b1b
 | 검증 code | I-24~I-28 공통 **`VALIDATION_ERROR` 재사용** | 동일 | BE 주석: "2026-08-05에 '자원별 query 검증 code 신설' 안이 **채택되지 않았다**(노션 I-27·I-28)" |
 | 찜 403 | §4.14~4.16 "403은 이 API에 존재하지 않는다" | — | `InternalWishlistController` 에 역할 검사 **없음** |
 | 200+false | (계약에 없음) | fail-closed 방어 | `ApiResponse` + `GlobalExceptionHandler` 가 `success:false` 를 **항상 non-200** 으로 냄 |
-| §3.1 `action` | 10종 중 AI 는 8종 emit(I-25 2종 미구현) | `app/schemas/chat.py::ActionData.type` Literal 8종 | FE 10종 수신(FE PR #79) |
+| §3.1 `action` | 10종 전부 emit(I-25 2종 포함, 2026-08-10 구현 완료) | `app/schemas/chat.py::ActionData.type` Literal 10종 | FE 10종 수신(FE PR #79) |
 
 ## 3. Q항목 처분표
 
@@ -120,8 +125,9 @@ BE 실측 근거: `/home/uuser/inte-final/jarvis-backend` **`origin/main` `39b1b
 
 ## 5. T4 커버리지 매트릭스
 
-`docs/api-spec.md` §4.12·§4.14·§4.15·§4.16 실패표 각 행 + 성공 응답 대 `tests/unit/test_cart.py`
-/ `tests/unit/test_wishlist.py` 대조.
+`docs/api-spec.md` §4.12·§4.13·§4.14·§4.15·§4.16 실패표 각 행 + 성공 응답 대 `tests/unit/test_cart.py`
+/ `tests/unit/test_wishlist.py` / `tests/unit/test_cart_quantity.py` / `tests/unit/test_cart_intent_guard.py`
+대조.
 
 ### I-24 삭제 (`test_cart.py` "spring_client 배선 (I-24 삭제…)")
 
@@ -187,6 +193,69 @@ I-24 는 빈 칸 없음 — 새 테스트 추가하지 않았다.
 **새로 채운 행은 1건**: I-27 500 매핑. 나머지 "의심 빈칸" ②·③은 이미 기존 단정이 정확한
 배선 값(`client.calls` 의 dict 리터럴)까지 검증하고 있어 빈칸이 아니었다.
 
+### I-25 수량 변경 — 2026-08-10 사람 지시로 이 레인이 구현
+
+애초 이 이슈 범위 밖이었으나(§1 A 아래 참조) 사람의 지시로 함께 구현했다. 1단계는 어댑터
+(`spring_client.py::change_cart_quantity`), 2단계는 대상 해소·라우팅까지 포함한 전체 스트림
+(`app/agents/buyer/cart/quantity.py::stream_cart_quantity_change` + `classify_cart_utterance`
+사다리 4-a + `decompose` 직접 산출)이다 — I-24/26/27/28 과 달리 이 계약은 어댑터뿐 아니라
+발화 판정부터 대상 해소까지 이 레인에서 전부 새로 만들었다.
+
+**1단계 — 어댑터**(`test_cart.py` "spring_client 배선 (I-25 수량 변경…)", §4.13 실패표 대응):
+
+| 행 | 테스트 |
+|---|---|
+| 성공(userId, 최종 quantity 반환) | `test_change_cart_quantity_success_returns_final_quantity` |
+| 성공(guestId) | `test_change_cart_quantity_success_guest_id_only` |
+| 400 `CART_STOCK_INSUFFICIENT`(availableStock 있음) | `test_change_cart_quantity_stock_insufficient_carries_available_stock` |
+| 400 `CART_STOCK_INSUFFICIENT`(availableStock 없음) | `test_change_cart_quantity_stock_insufficient_without_available_stock_is_none` |
+| 400 `VALIDATION_ERROR`(재고 부족과 구분) | `test_change_cart_quantity_validation_error_is_not_stock_insufficient` |
+| 404 `CART_ITEM_NOT_FOUND` | `test_change_cart_quantity_not_found_raises` |
+| 404 code 불일치 | `test_change_cart_quantity_404_with_wrong_code_raises_cart_error_not_not_found` |
+| 404 본문 없음 | `test_change_cart_quantity_404_empty_body_raises_cart_error_not_not_found` |
+| 403(계약엔 없음, 미상 코드 낙성 확인) | `test_change_cart_quantity_forbidden_maps_to_cart_error` |
+| 500 `INTERNAL_ERROR` | `test_change_cart_quantity_500_maps_to_cart_error` |
+| 200 success:false(방어) | `test_change_cart_quantity_200_success_false_raises_cart_error` |
+| 신원 query 0개 | `test_change_cart_quantity_rejects_zero_identity_queries` |
+| 신원 query 2개 | `test_change_cart_quantity_rejects_two_identity_queries` |
+
+**2단계 — 스트림**(`test_cart_quantity.py`, `stream_cart_quantity_change` 대상 해소·함정 회귀):
+
+| 행 | 테스트 |
+|---|---|
+| 성공(최종 quantity 실림) | `test_quantity_change_success_reports_final_quantity` |
+| 응답에 quantity 없음 → 요청값 폴백 | `test_quantity_change_response_missing_quantity_falls_back_to_requested_value` |
+| 게스트 신원 | `test_quantity_change_guest_identity_also_works` |
+| 익명 신원(호출 0회) | `test_quantity_change_anon_identity_asks_login_without_any_call` |
+| **함정 1**(404 → 실패, I-24 와 정반대) | `test_quantity_change_item_not_found_is_a_failure_not_success` |
+| **함정 3**(목표 수량 미상 → 어댑터 미호출, 되물음) | `test_quantity_change_unresolved_target_quantity_asks_without_calling_adapter` |
+| 재고 부족 3분기(None/0/N 문구) | `test_quantity_change_stock_insufficient_unknown_amount` 외 2건 |
+| `CartError` → 실패 | `test_quantity_change_cart_error_maps_to_failed` |
+| 장바구니 조회 실패 → 실패 | `test_quantity_change_get_cart_failure_maps_to_failed` |
+| 빈 장바구니 | `test_quantity_change_empty_cart_says_empty` |
+| 대상 2건 이상 → 되물음(임의 선택 금지) | `test_quantity_change_ambiguous_name_match_asks_instead_of_picking_one` |
+| 단건 자동 해소 | `test_quantity_change_single_item_auto_resolves_without_name` |
+| 다건 무신호 → 되물음 | `test_quantity_change_multiple_items_no_name_or_signal_asks` |
+| 이름 매칭(동적 수량 표지 보강 — 이름·표지 사이 숫자 처리) | `test_resolve_quantity_target_name_match_picks_named_item` |
+| "전체 삭제"류 규칙 미이식 확인 | `test_resolve_quantity_target_no_all_or_recent_rule_exists` |
+| 부정 표지로 대상 배제 | `test_quantity_change_negation_suppresses_target_resolution` |
+
+**2단계 — 판별·라우팅**(`classify_cart_utterance` 사다리 4-a·`decompose`·`buyer/graph.py`):
+
+| 행 | 테스트 |
+|---|---|
+| **함정 2**(치환 vs 합산 사다리 판정, "하나 더 담아줘" 대조 포함) | `test_classify_cart_utterance_quantity_ladder` |
+| 부정 표지로 표지 매칭 무효화 | `test_classify_cart_utterance_quantity_negation_suppresses_marker` |
+| "수량 바꾸지 마" 리터럴 회귀 | `test_classify_cart_utterance_quantity_literal_negation_phrase_stays_cart_add` |
+| 2선 방어 위임(`stream_cart_add` → `stream_cart_quantity_change`) | `test_stream_cart_add_quantity_intent_delegates_to_quantity_change` |
+| **함정 3**(decompose 파싱 — target_quantity 기본값 미부여) | `test_parse_cart_target_quantity_does_not_default_to_one` |
+| 범위(1~99) 밖 값 → 클램프 대신 되물음 | `test_parse_cart_target_quantity_out_of_range_asks_instead_of_clamping` |
+| float/문자열 숫자 강제 변환 | `test_parse_cart_target_quantity_coerces_float_and_string` |
+| 1차 라우팅(decompose 직접 산출 → `stream_cart_quantity_change`) | `test_route_cart_quantity` |
+
+총 39건(1단계 13 + 2단계 26) — §4.13 실패표(성공·400 재고부족·400 검증오류·404·신원 방어)를
+전부 덮고, 함정 1·2·3 을 각각 전용 회귀 테스트로 고정했다.
+
 ## 6. 이슈 완료 조건(Acceptance) 충족 근거
 
 이슈 #285 본문 「진행 순서 (Acceptance)」의 실제 5개 항목(`gh issue view 285`, 확인일
@@ -210,5 +279,3 @@ I-24 는 빈 칸 없음 — 새 테스트 추가하지 않았다.
   `spring_client.py::get_wishlist` 는 상한이 없다는 전제로 클라 측 절단을 두지 않는다.
 - **Q17 범위 밖** — `X-Internal-Token` 발급·교환 절차는 I-2 때부터 남은 잔여 안건이며 #285
   범위가 아니다(api-spec §4.1 C-3·§5 C-1).
-- **I-25(수량 변경) AI 미구현** — api-spec §4.13 이 명시적으로 이 이슈 범위 밖이라고 못박았다.
-  대응 이슈 없음.

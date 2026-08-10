@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -67,6 +68,13 @@ def test_fresh_profile_schema_declares_thread_id_and_lookup_index() -> None:
     assert "idx_conversation_turns_thread" in sql
 
 
+def test_fresh_profile_schema_declares_created_at_retention_index() -> None:
+    """보존 스윕(이슈 #321)의 `WHERE created_at < ...` 이 풀스캔이 안 되려면 필요하다."""
+    sql = _INIT_SQL.read_text(encoding="utf-8")
+
+    assert "idx_conversation_turns_created_at" in sql
+
+
 async def test_runtime_setup_adds_thread_id_for_existing_volumes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -81,6 +89,8 @@ async def test_runtime_setup_adds_thread_id_for_existing_volumes(
     sql = "\n".join(statement for statement, _params in conn.calls)
     assert "ADD COLUMN IF NOT EXISTS thread_id text" in sql
     assert "idx_conversation_turns_thread" in sql
+    assert "idx_conversation_turns_created_at" in sql
+    assert "CONCURRENTLY" not in sql  # setup() 은 트랜잭션 안이라 못 쓴다
 
 
 async def test_pg_store_inserts_thread_id() -> None:
@@ -105,6 +115,7 @@ async def test_pg_store_inserts_thread_id() -> None:
 
 
 async def test_pg_store_reads_thread_id_into_turn() -> None:
+    inserted_at = datetime(2026, 1, 1, tzinfo=UTC)
     conn = _Connection(
         row=(
             "turn-1",
@@ -115,6 +126,7 @@ async def test_pg_store_reads_thread_id_into_turn() -> None:
             "질문",
             "",
             "PENDING",
+            inserted_at,
         )
     )
 
@@ -125,3 +137,23 @@ async def test_pg_store_reads_thread_id_into_turn() -> None:
 
     assert turn is not None
     assert getattr(turn, "thread_id", None) == "room-a"
+    # [F1, #321 리뷰 2라운드] created_at 이 default_factory("읽은 시각")로 새지 않고
+    # 실제 삽입 시각(서버 컬럼 값)을 그대로 실어야 한다.
+    assert turn.created_at == inserted_at
+
+
+async def test_purge_expired_turns_issues_bounded_batch_delete_with_skip_locked() -> None:
+    """이슈 #321 — 유계 배치 + 동시 finalize_assistant 를 건너뛰는 `FOR UPDATE SKIP LOCKED`."""
+    conn = _Connection()
+    store = PgConversationStore(_Pool(conn))
+
+    deleted = await store.purge_expired_turns(retention_days=90.0)
+
+    assert deleted == 1  # _Cursor 기본 rowcount
+    sql, params = conn.calls[-1]
+    assert "DELETE FROM conversation_turns" in sql
+    assert "FOR UPDATE SKIP LOCKED" in sql
+    assert "interval '1 day' * %s" in sql
+    assert "ORDER BY created_at" in sql
+    assert "LIMIT %s" in sql
+    assert params[0] == 90.0

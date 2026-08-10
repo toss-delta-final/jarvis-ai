@@ -65,6 +65,13 @@ class CartIntent:
     product_id: int | None = None
     option_id: int | None = None
     quantity: int = 1
+    # [#285, I-25 §4.13] 수량 **치환** 목표값 — 담기(I-2)의 `quantity`(합산, 기본값 1)와 의미가
+    # 다르다. `quantity` 는 "추출 실패"에도 기본값 1이 그대로 실려 "명시적으로 1개"와 구별이
+    # 안 되지만(담기는 그래도 안전 — 최소 1개를 담는 게 무해한 기본이라서다), 수량 변경은
+    # 그 기본값을 그대로 쓰면 "수량 바꿔줘"(목표 미상)가 조용히 1개로 치환돼 장바구니를
+    # 망가뜨린다. 그래서 **`None` = 미해소 = 되물음**을 표현할 수 있는 별도 필드를 둔다 —
+    # `quantity` 필드 자체는 담기 경로가 계속 쓰므로 건드리지 않는다.
+    target_quantity: int | None = None
 
 
 @dataclass
@@ -96,6 +103,11 @@ class RouteDecision:
         "cart_remove",
         "wishlist_add",
         "wishlist_remove",
+        # [#285, I-25 §4.13] 수량 변경(치환). cart_remove 와 같은 성격 — decompose 가 직접
+        # 산출하는 경로와 classify_cart_utterance(cart_add 로 들어온 발화의 2선 방어, §4.13)가
+        # 값 집합을 공유한다(buyer/graph.py 라우팅 docstring 참조). `cart_add`(합산, I-2)와는
+        # 반대 동작이라 오분류하면 재고 판정이 조용히 달라진다(패킷 함정 2).
+        "cart_quantity",
         # [#386] 찜 목록 조회. cart_view 와 같은 성격(상태를 바꾸지 않는 조회)이라
         # classify_cart_utterance 의 값 집합에는 들어가지 않는다 — 그 판별기는 cart_add 로
         # 라우팅된 발화만 보고, 조회 발화는 애초에 거기 도달하지 않는다(intent_guard.py 참조).

@@ -68,10 +68,15 @@ CREATE INDEX IF NOT EXISTS idx_profile_graph_idem_created
 
 -- 개인화 중지 — 전용 저장 위치여야 한다(REQ-PGRAPH-050). 요약 항목에 두면 전체 초기화가
 -- 지워 중지가 조용히 풀리고, 그래프 문서에 두면 reader 가 조회를 두 번 해야 한다.
+-- disabled_spans: 중지 구간 목록 [{"from": iso, "to": iso}, …] (REQ-PGRAPH-055, #359).
+-- 배치가 감쇠에서 그만큼을 빼려면 "언제부터 언제까지 시간이 흐르지 않았나"를 알아야 하는데,
+-- 그 값을 그래프 문서에 두면 중지·재개가 문서를 고치게 되어 §3.9.5 응답의 graphVersion·
+-- 감사·멱등 원장이 전부 거짓이 되고 그래프 잠금까지 잡아야 한다(§7.1·§7.2).
 CREATE TABLE IF NOT EXISTS profile_personalization_state (
     user_id bigint PRIMARY KEY,
     enabled boolean NOT NULL DEFAULT true,
     disabled_at timestamptz,
+    disabled_spans jsonb NOT NULL DEFAULT '[]'::jsonb,
     graph_version text,
     updated_at timestamptz NOT NULL DEFAULT now()
 );

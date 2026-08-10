@@ -54,6 +54,8 @@ from app.schemas.spring import (
     AddToCartResult,
     BehaviorEventsResult,
     CartView,
+    ChangeCartQuantityRequest,
+    ChangeCartQuantityResult,
     ChurnResult,
     FunnelResult,
     OrderEventsResult,
@@ -92,6 +94,7 @@ _SpringOperation = Literal[
     "add_to_cart",
     "get_cart",
     "delete_cart_item",
+    "change_cart_quantity",
     "add_wishlist",
     "remove_wishlist",
     "get_wishlist",
@@ -1214,6 +1217,94 @@ async def delete_cart_item(
         raise CartError(f"delete_cart_item 실패: 404 {code}")
     code = _parse_error_code(resp)
     raise CartError(f"delete_cart_item 실패: {resp.status_code} {code}")
+
+
+async def change_cart_quantity(
+    cart_item_id: int, quantity: int, *, user_id: int | None = None, guest_id: str | None = None
+) -> ChangeCartQuantityResult:
+    """장바구니 수량 변경 — I-25(확정 2026-08-05, §4.13) PATCH /internal/cart/items/{cartItemId}.
+
+    `delete_cart_item`(I-24)과 대칭 시그니처 — 신원 query 는 userId 또는 guestId 정확히 하나만
+    싣는다(방어는 동일 규약). **I-24 와의 차이**: 삭제는 재고·상품 상태를 안 보지만 **수량
+    변경은 재고를 본다**(치환값 > 재고면 400 CART_STOCK_INSUFFICIENT). 그리고 **합산이 아니라
+    치환**이라 "하나 더 담아줘"류는 이 계약이 아니라 I-2(§4.1) 재호출이다 — 어댑터가 그 구분을
+    하지 않으니 호출부가 올바른 함수를 골라야 한다.
+
+    실패 매핑(§4.13): 400 이고 `error.code == "CART_STOCK_INSUFFICIENT"` 면 →
+    CartStockInsufficient(available_stock)(I-2 담기와 같은 예외·같은 파서 `_parse_cart_error`
+    재사용). 404 이고 code 가 정확히 `CART_ITEM_NOT_FOUND` 일 때만 → CartItemNotFound(I-24 와
+    같은 예외). **[라운드 23 규약 계승]** code 가 다르거나 본문을 못 읽는 400/404(엔드포인트
+    미배포 포함)는 typed 예외가 아니라 CartError 다 — status 만 보고 낙성하면 라우트 부재
+    404 를 "그 항목이 없다"로, 임의의 400 을 "재고 부족"으로 오인한다.
+    400 VALIDATION_ERROR(신원 query 이상·quantity 범위 밖)·403 AUTH_FORBIDDEN(소유자 불일치,
+    전용 예외 없음 — BE `CartService#findOwnedItem` 실측, I-24 와 동일 규약)·500·도달 불가·
+    미상 코드 → CartError(형제 어댑터와 같은 낙성처).
+    """
+    if (user_id is None) == (guest_id is None):
+        # [확정 2026-08-05] delete_cart_item 과 같은 방어 — 신원 query 는 정확히 하나.
+        raise CartError("change_cart_quantity 신원 query 는 정확히 하나여야 함")
+
+    params: dict[str, object] = {}
+    if user_id is not None:
+        params["userId"] = user_id
+    if guest_id is not None:
+        params["guestId"] = guest_id
+    try:
+        # 스키마(`ChangeCartQuantityRequest.quantity: Field(ge=1, le=99)`)가 범위를 강제한다 —
+        # `decompose` 가 이미 클램프하지만 이 어댑터에 들어오는 값이 그 경로만은 아니라서다.
+        # 호출부가 typed 예외 하나만 캐치하면 되도록 `ValidationError` 를 그대로 새게 두지
+        # 않는다(delete_cart_item 의 신원 XOR 방어와 같은 이유).
+        body = ChangeCartQuantityRequest(quantity=quantity)
+    except ValidationError as exc:
+        raise CartError(f"change_cart_quantity quantity 범위 밖: {exc}") from exc
+
+    try:
+        with _spring_span("change_cart_quantity", "PATCH") as span:
+            async with _client() as client:
+                resp = await client.patch(
+                    f"/internal/cart/items/{cart_item_id}",
+                    params=params,
+                    json=body.model_dump(by_alias=True),
+                )
+                _record_spring_status(span, resp)
+    except httpx.HTTPError as exc:
+        raise CartError(f"change_cart_quantity 도달 실패: {exc}") from exc
+
+    if resp.status_code == 200:
+        if _envelope_success_false(resp):
+            # [#285] 형제 어댑터(delete_cart_item 등)와 같은 fail-closed 근거 — BE `ApiResponse`
+            # 는 success:false 를 error{code,...} 와 함께만 만들고 GlobalExceptionHandler 가
+            # 전부 상태 코드로 낸다. 200 + success:false 경로 자체가 없다. 계약상 오지 않는
+            # 조합이라 방어적으로 실패 처리한다(fail-closed). 이 방어 분기는 지우지 않는다.
+            raise CartError("change_cart_quantity 실패: 200 success=false")
+        try:
+            data = resp.json()
+        except ValueError as exc:
+            raise CartError(f"change_cart_quantity 응답 파싱 실패: {exc}") from exc
+        payload = data.get("data") if isinstance(data, dict) else None
+        try:
+            return ChangeCartQuantityResult(
+                success=True,
+                cart_item_id=(payload or {}).get("cartItemId"),
+                quantity=(payload or {}).get("quantity"),
+            )
+        except ValidationError as exc:
+            raise CartError(f"change_cart_quantity 응답 스키마 이상: {exc}") from exc
+    if resp.status_code == 400:
+        code, _options, available_stock = _parse_cart_error(resp)
+        if code == "CART_STOCK_INSUFFICIENT":
+            raise CartStockInsufficient(available_stock)
+        # VALIDATION_ERROR(신원 query 이상·quantity 범위 밖) 및 그 밖의 code 는 CartError.
+        raise CartError(f"change_cart_quantity 실패: 400 {code}")
+    if resp.status_code == 404:
+        code = _parse_error_code(resp)
+        if code == "CART_ITEM_NOT_FOUND":
+            raise CartItemNotFound()
+        # [라운드 23 규약 계승] 엔드포인트 미배포로 오는 다른/없는 code 의 404 를 "그 항목이
+        # 없다"로 오인하면 상위가 거짓 성공/거짓 실패 안내를 낸다 — code 정확 일치일 때만 낙성.
+        raise CartError(f"change_cart_quantity 실패: 404 {code}")
+    code = _parse_error_code(resp)
+    raise CartError(f"change_cart_quantity 실패: {resp.status_code} {code}")
 
 
 async def add_wishlist(request: AddWishlistRequest) -> WishlistAddResult:

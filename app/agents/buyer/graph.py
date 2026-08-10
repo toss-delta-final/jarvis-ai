@@ -32,6 +32,7 @@ from app.agents.buyer.cart.intent_guard import (
     has_wishlist_remove_evidence,
 )
 from app.agents.buyer.cart.options import condition_terms as cart_condition_terms
+from app.agents.buyer.cart.quantity import stream_cart_quantity_change
 from app.agents.buyer.cart.remove import stream_cart_remove
 from app.agents.buyer.cart.state import get_cart_store
 from app.agents.buyer.cart.wishlist import (
@@ -63,6 +64,7 @@ from app.agents.buyer.recommendation.graph import stream_recommendation
 from app.agents.profile.builder import record_remember
 from app.agents.buyer.session_state import context_thread_key, ensure_thread_adopted
 from app.agents.profile.gate import is_remember_command
+from app.agents.profile.personalization_gate import personalization_enabled
 from app.agents.profile.reader import read_profile_summary
 from app.agents.profile.store import get_profile_store
 from app.core import pg_store
@@ -929,9 +931,30 @@ async def run_buyer_turn(
     # 프로필 주입 (회원만, read-only) — 게스트/신규는 None(개인화 스킵, 결정 8)
     profile = None
     profile_vec = None
+    # [#359] 개인화 중지(§6.6)가 이 턴의 **수집**도 막는지. 소비는 아래 `profile`·`profile_vec`
+    # 를 비우는 것으로 끝나지만 수집 지점은 두 곳(여기의 "기억해", 아래의 세션 버퍼)이라
+    # 판정 결과를 변수로 들고 다닌다 — 턴당 플래그 조회는 **1회**여야 한다.
+    personalization_on = False
     profile_eligible = bool(not identity.is_guest and identity.user_id and not identity.seller_id)
     if profile_eligible:
-        summary = await read_profile_summary(identity.user_id)
+        # 요약 조회와 중지 플래그 조회를 **병렬**로 띄운다. 직렬로 붙이면 관문 안 직렬 합이
+        # 한 왕복만큼 늘어나는데, 아래 §관문 주석이 적었듯 그 예산은 이미 최악에서 상한을
+        # 넘긴다 — 같은 pg-profile 을 치는 두 조회라 병렬이면 벽시계는 `max` 이지 `sum` 이
+        # 아니다. `return_exceptions=True` 로 한쪽 실패가 다른 쪽을 취소해 고아 태스크를
+        # 만들지 않게 한다(이 파일의 `_cancel_scope_task` 와 같은 규율).
+        summary_result, gate_result = await asyncio.gather(
+            read_profile_summary(identity.user_id),
+            # 소비·hot-path 쓰기는 fail-closed 다 — 사용자가 껐는데 저장소 장애 동안 시스템이
+            # 몰래 개인화를 재개하는 것이 이 기능이 막으려는 상황이다(personalization_gate).
+            personalization_enabled(identity.user_id, on_error=False),
+            return_exceptions=True,
+        )
+        if isinstance(summary_result, BaseException):
+            raise summary_result
+        # 게이트는 자기 실패를 이미 `on_error` 로 흡수한다 — 여기까지 예외가 오면 프로그래밍
+        # 오류이므로 조용히 삼키지 않고 안전한 쪽(중지)으로 닫는다.
+        personalization_on = gate_result is True
+        summary = summary_result if personalization_on else None
         profile = summary.get("markdown") if summary else None
         # [#162] 요약 생성 시점에 미리 만들어 둔 취향 벡터(#148 `store._embed_summary`).
         # 종전에는 markdown 만 꺼내 쓰고 이 값을 버렸다 — 조건 없는 발화의 회원 경로가 이걸로
@@ -939,7 +962,9 @@ async def run_buyer_turn(
         profile_vec = summary.get("embedding") if summary else None
         # "기억해"류 명시 명령은 게이트 없이 즉시 승격(hot-path, REQ-PROF). intent 와 무관한
         # 명시 명령이라 라우팅 앞에 둔다 — decompose 가 실패한 턴에도 기록돼야 한다.
-        if is_remember_command(request.message):
+        # **[#359] 단 전역 중지가 개별 명시 요청보다 우선한다**(REQ-PGRAPH-052, api-spec §3.9.5
+        # "명시적 '기억해' 요청도 저장하지 않는다").
+        if personalization_on and is_remember_command(request.message):
             await record_remember(identity.user_id, request.message)
 
     # 장바구니 문맥 — 직전 추천(담기 productId 해소)·옵션 되물음 대기 상태.
@@ -1237,8 +1262,15 @@ async def run_buyer_turn(
     # 신호로도 쓰지 않는다는 판단이다.
     # [#84] 빈 발화 가드 — conditionActions 만 있고 message 가 빈 턴(계약상 허용, api-spec §3.1)은
     # 취향 신호가 0인데 버퍼(슬라이딩 윈도우)만 밀어낸다. 공백-only 도 같이 막는다.
+    # [#359] 개인화 중지면 여기도 막는다(REQ-PGRAPH-052). "기억해" 는 명시 명령이고 이쪽은 모든
+    # 발화가 지나가는 상시 경로라, 막지 않으면 중지해도 취향 원문이 계속 쌓이고 다음 배치가
+    # 그것을 델타로 뽑아 "수집 중지" 가 사후에 무너진다. 판정은 위 프로필 블록이 턴당 1회
+    # 조회해 둔 값을 재사용한다 — 여기서 다시 조회하면 왕복이 하나 늘어난다.
+    # **차단은 호출부에 둔다.** `store.append_session_ctx` 안에 넣으면 그 함수를 직접 부르는
+    # `evals/taste_probe/runner.py` 가 조용히 0건이 된다(프로덕션 함수 재사용이 그 하네스의 목적).
     if (
         profile_eligible
+        and personalization_on
         and request.message.strip()
         and decision.intent not in settings.profile_buffer_excluded_intents
     ):
@@ -1563,6 +1595,27 @@ async def run_buyer_turn(
                 message=request.message,
                 cart_store=cart_store,
                 thread_key=thread_key,
+                settings=settings,
+                observer=observer,
+            ):
+                yield frame
+        return
+
+    # [#285, I-25 §4.13] cart_remove 분기와 같은 자리·같은 방식으로 위임한다 — decompose 가
+    # 직접 `cart_quantity` 를 내면 여기서 바로 위임하고, 여전히 `cart_add` 로 오분류하면
+    # `cart/graph.py::stream_cart_add` 안의 `classify_cart_utterance` 2선 방어(사다리 4-a)가
+    # 같은 도착지로 다시 갈라낸다(cart_remove 와 완전히 대칭 — 위 "decompose 가 cart_remove/
+    # wishlist_add/wishlist_remove 를 직접 산출하면" 문단 참조). 화면 지시어 해소(`cart_intent`)
+    # 는 이 intent 를 받지 않는다 — 대상 해소는 장바구니 내용에서 이름으로 하지 화면 순번으로
+    # 하지 않는다(cart_remove 와 같은 이유, 위 화면 해소 블록 조건에 없다).
+    if decision.intent == "cart_quantity":
+        if trace := current_request_trace():
+            trace.set_lane("cart")
+        with trace_span("buyer.graph.cart", "chain"):
+            async for frame in stream_cart_quantity_change(
+                identity=identity,
+                cart=cart_intent,
+                message=request.message,
                 settings=settings,
                 observer=observer,
             ):

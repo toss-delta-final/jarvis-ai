@@ -509,3 +509,77 @@ async def test_stream_cart_add_wishlist_intent_clears_pending() -> None:
         )
     )
     assert await store.get_pending(thread_key) is None
+
+
+# ─────────── classify_cart_utterance — #285 I-25 §4.13 수량 변경(사다리 4-a) ───────────
+
+
+@pytest.mark.parametrize(
+    "message,expected",
+    [
+        # 함정 2 — 치환(cart_quantity) vs 합산(cart_add). 합산 표지가 있으면 cart_quantity 로
+        # 가지 않는다(대개 "담아"를 포함해 0-a 에서 이미 걸리지만, 표지 자체를 직접 확인한다).
+        ("3개로 바꿔줘", "cart_quantity"),
+        ("수량 2개로 변경해줘", "cart_quantity"),
+        ("수량 바꿔줘", "cart_quantity"),
+        ("하나 더 담아줘", "cart_add"),
+        ("추가로 담아줘", "cart_add"),
+        # 0-a(담기)가 여전히 4-a 보다 강하다 — "담아"가 걸리면 그 자리에서 cart_add 로 확정되고
+        # cart_quantity 후보로도 내려가지 않는다(intent_guard.py 사다리 4-a 문단 참조).
+        ("3개로 바꿔서 담아줘", "cart_add"),
+        # 회귀 없음 — 기존 삭제·찜 판정은 그대로.
+        ("빼줘", "cart_remove"),
+        ("찜해줘", "wishlist_add"),
+    ],
+)
+def test_classify_cart_utterance_quantity_ladder(message: str, expected: str) -> None:
+    assert classify_cart_utterance(message, get_settings()) == expected
+
+
+def test_classify_cart_utterance_quantity_negation_suppresses_marker() -> None:
+    """[함정 2 회귀 — 부정] 표지가 실제로 매칭된 뒤에도(정적 목록 "수량 바꿔") 짧은 창 안의
+    부정 표지("하지 마")가 뒤따르면 무효화된다 — `"수량 바꾸지 마"` 는 애초에 정적 표지("수량
+    바꿔")와 문자열이 달라 무신호로 빠지므로, 실제로 표지가 매칭된 경우로 검증한다(변이 시험:
+    `_matches_unnegated` 를 단순 `in` 검사로 바꾸면 이 테스트가 깨진다)."""
+    settings = get_settings()
+    assert classify_cart_utterance("수량 바꿔달라고 하지 마", settings) == "cart_add"
+    # 대조 — 같은 표지가 부정 없이 오면 그대로 cart_quantity.
+    assert classify_cart_utterance("수량 바꿔줘", settings) == "cart_quantity"
+
+
+def test_classify_cart_utterance_quantity_literal_negation_phrase_stays_cart_add() -> None:
+    """패킷이 명시한 회귀 문구 그대로 — "수량 바꾸지 마"는 cart_add(부정)여야 한다."""
+    assert classify_cart_utterance("수량 바꾸지 마", get_settings()) == "cart_add"
+
+
+async def test_stream_cart_add_quantity_intent_delegates_to_quantity_change() -> None:
+    """`stream_cart_add` 의 `classify_cart_utterance` 2선 방어가 `cart_quantity` 를 돌려주면
+    `stream_cart_quantity_change` 로 위임돼 CART_QUANTITY_CHANGED 가 나가야 한다(cart_remove
+    2선 경로와 대칭 — `cart/graph.py` 위임 분기 참조)."""
+    store = CartStateStore()
+
+    async def get_cart_fn(*, user_id=None, guest_id=None):
+        return CartView(items=[CartViewItem(cart_item_id=1, product_id=10, product_name="이어폰")])
+
+    class _Result:
+        success = True
+        quantity = 3
+
+    async def change_quantity_fn(cart_item_id, quantity, *, user_id=None, guest_id=None):
+        return _Result()
+
+    events = await _collect(
+        stream_cart_add(
+            identity=_member(),
+            cart=CartIntent(target_quantity=3),
+            cart_store=store,
+            thread_key="m:t-2nd-line-quantity",
+            settings=get_settings(),
+            message="이어폰 3개로 바꿔줘",
+            get_cart_fn=get_cart_fn,
+            change_quantity_fn=change_quantity_fn,
+        )
+    )
+    actions = [e["data"] for e in events if e["type"] == "action"]
+    assert actions[0]["type"] == "CART_QUANTITY_CHANGED"
+    assert actions[0]["quantity"] == 3

@@ -531,6 +531,11 @@ class ActionData(CamelModel):
     `WISHLIST_REMOVED`·`WISHLIST_REMOVE_FAILED`, reason `WISHLIST_ERROR` 는 **확정 2026-08-05**
     (정본 CH-2 등재 완료, I-24~I-28 — `docs/api-spec.md` §3.1 v0.22.0에 반영됨). **[라운드 23]**
     삭제·찜 흐름의 온/오프를 가리던 두 설정 필드를 제거했다 — 이제 항상 emit 된다.
+
+    [#285] `CART_QUANTITY_CHANGED`·`CART_QUANTITY_CHANGE_FAILED` 는 §3.1 이 v0.22.0 에서 이미
+    사전 등재해 둔 어휘다(**계약 신설이 아니라 구현이 계약을 따라잡는 것**, I-25/§4.13) — AI 가
+    이제 emit 한다. `quantity` 는 이 두 type 전용(성공 시 최종 수량) — `cart_item_id` 는 기존
+    필드를 그대로 재사용한다.
     """
 
     type: Literal[
@@ -542,6 +547,8 @@ class ActionData(CamelModel):
         "WISHLIST_ADD_FAILED",
         "WISHLIST_REMOVED",
         "WISHLIST_REMOVE_FAILED",
+        "CART_QUANTITY_CHANGED",
+        "CART_QUANTITY_CHANGE_FAILED",
     ]
     message: str
     # [확정 2026-08-05] cartItemId 는 number(BIGINT) — 삭제 확장안이 제안했던 문자열 표기는
@@ -549,6 +556,9 @@ class ActionData(CamelModel):
     # 사용 중) 셋 다 number 로 확정돼, CART_REMOVED 도 이 필드를 그대로 재사용한다(§2.6·
     # docs/api-spec.md §3.1).
     cart_item_id: int | None = None  # 숫자(BIGINT, cart_item.id)
+    # [#285] CART_QUANTITY_CHANGED/CART_QUANTITY_CHANGE_FAILED 전용 — 성공 시 BE 가 반영한
+    # 최종 수량(§3.1·§4.13). 다른 type 은 이 필드를 쓰지 않는다.
+    quantity: int | None = None
     reason: (
         Literal["STOCK_INSUFFICIENT", "PRODUCT_NOT_FOUND", "CART_ERROR", "WISHLIST_ERROR"] | None
     ) = None

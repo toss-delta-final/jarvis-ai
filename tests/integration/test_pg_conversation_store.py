@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import psycopg
@@ -66,6 +67,11 @@ async def test_save_and_get_turn_roundtrip(pool) -> None:
     assert turn.user_text == "안녕하세요"
     assert turn.assistant_text == ""
     assert turn.status == TurnStatus.PENDING
+    # [F1, #321 리뷰 2라운드] _row_to_turn 이 created_at 을 안 실으면 default_factory 가
+    # "읽은 시각"으로 채워 삽입 시각이 조용히 거짓이 된다 — 실제 DB 컬럼 값(방금 삽입된
+    # 시각)이 왕복되는지 잰다.
+    assert turn.created_at is not None
+    assert (datetime.now(UTC) - turn.created_at) < timedelta(minutes=1)
 
 
 async def test_finalize_assistant_updates_status_and_text(pool) -> None:
@@ -151,6 +157,52 @@ async def test_scoped_by_conversation_id(pool) -> None:
     turns_b = await store.turns_for(conv_b)
     assert len(turns_a) == 1 and turns_a[0].user_text == "a"
     assert len(turns_b) == 1 and turns_b[0].user_text == "b"
+
+
+async def test_purge_expired_turns_deletes_only_before_cutoff(pool) -> None:
+    """이슈 #321 — 컷오프 이전 턴만 지워지고 이후 턴은 남는다."""
+    store = PgConversationStore(pool)
+    conversation_id = _conversation_id()
+    old_committed = await store.save_user_message(conversation_id, None, "user", "old")
+    new_committed = await store.save_user_message(conversation_id, None, "user", "new")
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE conversation_turns SET created_at = now() - interval '200 days' "
+            "WHERE turn_id = %s",
+            (old_committed.turn_id,),
+        )
+
+    # 전역 스윕이라 conversation_id 로 좁혀지지 않는다 — 다른(이전) 테스트가 남긴 만료 행이
+    # 섞일 수 있어 정확한 카운트 대신 "내 오래된 턴은 지워지고 내 새 턴은 남는가"만 잰다.
+    deleted = await store.purge_expired_turns(retention_days=90.0)
+
+    assert deleted >= 1
+    assert await store.get_turn(old_committed.turn_id) is None
+    assert await store.get_turn(new_committed.turn_id) is not None
+
+
+async def test_purge_expired_turns_deletes_pending_rows_too(pool) -> None:
+    """PENDING(assistant_text 미확정) 도 컷오프를 넘으면 지운다 — 죽은 스트림 방치 방지."""
+    store = PgConversationStore(pool)
+    conversation_id = _conversation_id()
+    committed = await store.save_user_message(conversation_id, None, "user", "old")
+    turn = await store.get_turn(committed.turn_id)
+    assert turn is not None
+    assert turn.status is TurnStatus.PENDING
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE conversation_turns SET created_at = now() - interval '200 days' "
+            "WHERE turn_id = %s",
+            (committed.turn_id,),
+        )
+
+    # [F5, #321 리뷰 2라운드] 전역 스윕이라 conversation_id 로 좁혀지지 않는다 — pg-profile은
+    # 여러 worktree 가 공유해 다른 레인이 남긴 만료 행이 같은 배치에 섞이면 `== 1` 이 깨진다
+    # (형제 테스트 `..._deletes_only_before_cutoff` 와 같은 이유·같은 형태로 고정한다).
+    deleted = await store.purge_expired_turns(retention_days=90.0)
+
+    assert deleted >= 1
+    assert await store.get_turn(committed.turn_id) is None
 
 
 async def test_state_persists_across_store_instances() -> None:

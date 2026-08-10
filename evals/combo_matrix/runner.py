@@ -598,7 +598,7 @@ async def _observe_home(case: ComboCase) -> dict:
             }
         )
         try:
-            response = await home_svc.rank_home(request)
+            response = await home_svc.rank_home(request, request_id="combo-matrix-eval")
             observed = {"outcome": response.outcome, "itemCount": len(response.items)}
             # 주입이 실제로 실행됐는지를 관측에 남긴다 — profile_unavailable 은 outcome 만으로
             # none 과 구별되지 않는다(계약상 와이어 구별 신호 없음, api-spec §3.7 v0.26.1).

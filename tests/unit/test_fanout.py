@@ -818,7 +818,7 @@ def test_condition_chips_multi_brand_one_chip_per_value() -> None:
 
 
 def test_condition_chips_single_brand_value_is_scalar_not_list() -> None:
-    """[#434, §3.1 v0.32.8 정정] 단일 브랜드는 label 종전 동일, value 는 스칼라 문자열(리스트 아님)."""
+    """[#434, §3.1 v0.32.14 정정] 단일 브랜드는 label 종전 동일, value 는 스칼라 문자열(리스트 아님)."""
     chips = build_condition_chips(ProductSearchFilters(brand=["삼성"]))
     brand_chip = next(c for c in chips if c.field == "brand")
     assert brand_chip.label == "삼성"
