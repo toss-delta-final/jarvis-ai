@@ -30,7 +30,7 @@ from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.language_models.chat_models import BaseChatModel
 
 from app.core.config import LLMProvider, get_settings
-from app.core.llm import ModelTier, resolve_provider_model
+from app.core.llm import LLMNotConfigured, ModelTier, resolve_provider_model
 from app.core.tracing import current_request_trace
 
 logger = logging.getLogger(__name__)
@@ -86,6 +86,11 @@ SellerRole = Literal[
     "recommend",
     "analysis_judge",
     "graph",
+    # [#506] 이미지 기반 등록 초안 — vision(사진 1회 분석)·draft_gate(초안 대기 발화 분류).
+    "vision",
+    "draft_gate",
+    # [#506 후속] category — 에이전트가 카테고리를 못 고른 턴의 폴백 택1(단발 호출).
+    "category",
 ]
 
 # SPEC §8 표의 코드화 — 판매자 전 역할 smart(2026-07-29, 품질 우선 전환).
@@ -103,6 +108,13 @@ ROLE_TIER: dict[SellerRole, ModelTier] = {
     "recommend": "smart",
     "analysis_judge": "smart",
     "graph": "smart",
+    # [#506] 전 역할 smart 정책 유지 — vision 은 이미지 이해 품질이 초안 전체의 원천이고,
+    # draft_gate 는 오분류가 곧 UX 사고(초안 방치·오폐기)다. 지연이 문제가 되면
+    # draft_gate 부터 fast 강등을 검토한다(모듈 docstring 정책과 동일한 완화 순서).
+    "vision": "smart",
+    "draft_gate": "smart",
+    # [#506 후속] 오배정이 등록 후 되돌릴 수 없는 필드(카테고리)를 결정하므로 smart 유지.
+    "category": "smart",
 }
 
 
@@ -153,8 +165,22 @@ def init_seller_model(role: SellerRole) -> BaseChatModel:
     Literal 밖 역할은 KeyError 로 즉시 실패 — 신규 역할(예: chart 복원 §12)은
     SellerRole·ROLE_TIER 에 먼저 등록한다. 같은 실효 provider 설정은 같은 인스턴스를
     공유한다(lru_cache).
+
+    **판매자 레인은 `LLM_PROVIDER=scripted`(#438 부하 테스트 스텁)를 지원하지 않는다** —
+    명시적으로 먼저 검사해 뜻이 분명한 예외를 던진다. 이 함수는 `LLMClient`(app/core/llm.py)를
+    거치지 않고 `init_chat_model(model_provider=...)` 로 langchain 모델을 직접 만들기 때문에,
+    검사 없이 흘려보내면 `model_provider="scripted"` 가 langchain 안 어딘가에서 알아보기
+    힘든 예외로 죽는다(#438 D5 — 판매자 스텁 구현은 이번 범위 밖, 무료 모드는 구매자 레인
+    전용, evals/benchmark/README.md 참조).
     """
     settings = get_settings()
+    if settings.llm_provider == "scripted":
+        raise LLMNotConfigured(
+            "LLM_PROVIDER=scripted has no seller-lane implementation (#438) — the free "
+            "load-test mode only covers the buyer recommendation lane. Set LLM_PROVIDER to "
+            "openai/anthropic to exercise seller endpoints, or skip seller scenarios in the "
+            "load-test manifest."
+        )
     tier = ROLE_TIER[role]
     resolved = resolve_provider_model(settings, tier, with_tools=True)
     temperature = None

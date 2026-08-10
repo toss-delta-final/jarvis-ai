@@ -11,7 +11,14 @@ import logging
 import pytest
 
 from app.agents.profile.graph_merge import build_graph_document, empty_document
-from app.agents.profile.graph_models import GraphDocument, GraphEdge, GraphNode, make_edge_id
+from app.agents.profile.graph_models import (
+    GraphDocument,
+    GraphEdge,
+    GraphNode,
+    GraphTombstone,
+    UserIntent,
+    make_edge_id,
+)
 from app.agents.profile.store import FactRecord
 from app.core.config import Settings
 
@@ -71,6 +78,23 @@ def _edge_by_key(document: GraphDocument, edge_key: str) -> GraphEdge | None:
     return next((e for e in document.edges if e.edge_key == edge_key), None)
 
 
+def _pin(kind: str = "assert") -> UserIntent:
+    """사용자 편집 고정 표식 — **근거가 사라져도 이월되는 edge** 를 만드는 수단.
+
+    #499 이전에는 `status="suppressed"` 가 그 역할을 겸했지만, 이제 사용자 삭제는 edge 를 떠나
+    `tombstones` 로 간다(물리 삭제). 그래서 "이월되는 edge" 시나리오의 매개체는 pin 과
+    `superseded` 둘뿐이다.
+    """
+    return UserIntent(kind=kind, asserted_at=NOW, mutation_id="m-test")
+
+
+def _tombstone(label: str = "소니", *, predicate: str = "likes") -> GraphTombstone:
+    """지운 취향의 차단 표식 — 라벨이 아니라 `edge_id` 만 든다."""
+    return GraphTombstone(
+        edge_id=make_edge_id(f"{predicate}|brand:{label}"), suppressed_at=NOW, user_intent=None
+    )
+
+
 # ─────────── LLM 0회 — 구조적 보장 ───────────
 
 
@@ -113,7 +137,7 @@ def test_observation_order_does_not_depend_on_input_order(settings: Settings) ->
 def test_decay_clock_is_one_snapshot_per_batch(settings: Settings) -> None:
     """감쇠 시계는 배치당 1회 고정 — 관측별 현재시각을 쓰면 재생이 깨진다(REQ-PGRAPH-015).
 
-    **문서에 실리는 모든 edge를 검사한다** — 어떤 경로로 만들어졌든(신규 관측·이월 tombstone·
+    **문서에 실리는 모든 edge를 검사한다** — 어떤 경로로 만들어졌든(신규 관측·이월 pin·
     앞으로 생길 무엇이든) 시계가 다르면 여기서 걸린다. 시계가 갈리면 `_truncate` 의 확신도 정렬과
     `_resolve_conflicts` 의 승자 판정이 **서로 다른 자로 잰 값을 비교**하게 된다(PR #410 리뷰).
     이 단언이 그 계열 전체를 막는 구조적 가드다 — 표에 적은 것만 재는 방식이 아니다.
@@ -123,8 +147,7 @@ def test_decay_clock_is_one_snapshot_per_batch(settings: Settings) -> None:
         [
             _stored_edge(
                 "삼성",
-                status="suppressed",
-                suppressed_at=stale,
+                user_intent=_pin(),
                 confidence=0.95,
                 decay_evaluated_at=stale,
                 last_observed_at=stale,
@@ -138,14 +161,14 @@ def test_decay_clock_is_one_snapshot_per_batch(settings: Settings) -> None:
 
     document = build_graph_document(facts, existing=existing, settings=settings, now=NOW)
 
-    assert len(document.edges) == 3  # 신규 2 + 이월 tombstone 1
+    assert len(document.edges) == 3  # 신규 2 + 이월 pin 1
     assert {e.decay_evaluated_at for e in document.edges} == {NOW}
 
 
-def test_carried_tombstone_confidence_decays_to_the_batch_clock(settings: Settings) -> None:
-    """이월 tombstone 의 확신도는 **이번 배치 시각으로** 감쇠한다 — 옛 값이 박제되면 안 된다.
+def test_carried_pin_confidence_decays_to_the_batch_clock(settings: Settings) -> None:
+    """이월되는 edge 의 확신도는 **이번 배치 시각으로** 감쇠한다 — 옛 값이 박제되면 안 된다.
 
-    근거가 사라진 tombstone 은 계속 이월되는데, 확신도를 그대로 두면 반감기를 여러 번 넘긴 값이
+    근거가 사라진 pin 은 계속 이월되는데, 확신도를 그대로 두면 반감기를 여러 번 넘긴 값이
     방금 관측된 edge 와 같은 자로 비교된다 — `_truncate` 의 `-confidence` 정렬에서 7개월 묵은
     0.95 가 방금 들어온 0.5 를 이기고 살아남는다. `decay_evaluated_at` 이 존재하는 이유가
     "이 값이 언제 기준인가"를 남기기 위해서인데, 그걸 갱신하지 않으면 필드가 뜻을 잃는다.
@@ -155,8 +178,7 @@ def test_carried_tombstone_confidence_decays_to_the_batch_clock(settings: Settin
         [
             _stored_edge(
                 "삼성",
-                status="suppressed",
-                suppressed_at=stale,
+                user_intent=_pin(),
                 confidence=0.95,
                 decay_evaluated_at=stale,
                 last_observed_at=stale,
@@ -167,7 +189,7 @@ def test_carried_tombstone_confidence_decays_to_the_batch_clock(settings: Settin
     document = build_graph_document([], existing=existing, settings=settings, now=NOW)
 
     carried = document.edges[0]
-    assert carried.status == "suppressed"  # 보존 자체는 그대로다(AC-PROF-31)
+    assert carried.user_intent is not None  # 보존 자체는 그대로다(REQ-PGRAPH-031)
     assert carried.confidence < 0.95  # 7개월치 감쇠가 반영됐다
     assert carried.decay_evaluated_at == NOW
     assert carried.last_observed_at == stale  # 관측 **사실**은 시간이 지나도 안 바뀐다
@@ -463,9 +485,14 @@ def test_revision_ignores_evidence_fields_which_are_wire_invisible(settings: Set
 # ─────────── 상태 보존 — 이 이슈의 존재 이유 ───────────
 
 
-def test_suppressed_edge_is_not_reactivated_by_new_evidence(settings: Settings) -> None:
-    """[HARD] 지운 취향은 재관측돼도 되살아나지 않는다(REQ-PGRAPH-022/023, AC-PROF-31)."""
-    existing = _document_with(status="suppressed", suppressed_at=NOW, promoted=True)
+def test_deleted_preference_is_not_recreated_by_new_evidence(settings: Settings) -> None:
+    """[HARD] 지운 취향은 재관측돼도 되살아나지 않는다(REQ-PGRAPH-022/023, AC-PROF-31).
+
+    #499 로 삭제가 즉시 물리 삭제가 되면서 확인할 것이 바뀌었다 — 구 계약은 "edge 가 남되 상태가
+    `suppressed` 인가"였지만, 이제는 **edge 가 아예 만들어지지 않고 라벨 원문도 문서에 없는가**다.
+    차단은 `tombstones` 가 맡는다.
+    """
+    existing = _document_of([], tombstones=[_tombstone("소니")])
 
     document = build_graph_document(
         [_fact("f1"), _fact("f2", fact="소니 또", created_at="2026-08-05T00:00:00+00:00")],
@@ -474,25 +501,37 @@ def test_suppressed_edge_is_not_reactivated_by_new_evidence(settings: Settings) 
         now=NOW,
     )
 
-    edge = document.edges[0]
-    assert edge.status == "suppressed"
-    assert edge.suppressed_at == NOW
-    assert edge.evidence_count == 2  # 근거는 계속 쌓인다 — 상태만 안 바뀐다
+    assert _edge_by_key(document, "likes|brand:소니") is None
+    assert document.nodes == []  # 노드도 안 생긴다 — 라벨은 노드에 있다
+    assert "소니" not in repr(document.model_dump(mode="json"))
+    assert [t.edge_id for t in document.tombstones] == [make_edge_id("likes|brand:소니")]
 
 
-def test_suppressed_edge_survives_when_evidence_disappears(settings: Settings) -> None:
-    """근거 fact 가 cap 트리밍으로 밀려나도 tombstone 은 남는다.
+def test_tombstone_carries_forward_when_evidence_disappears(settings: Settings) -> None:
+    """근거 fact 가 cap 트리밍으로 밀려나도 차단 표식은 남는다.
 
-    사라지면 같은 취향이 새 active edge 로 부활해 삭제가 조용히 무력화된다.
+    사라지면 같은 취향이 새 active edge 로 부활해 삭제가 조용히 무력화된다. 이제 표식이 `edges`
+    밖 별도 리스트라 **이월 로직이 아니라 자료 구조로** 성립한다.
     """
-    existing = _document_with(status="suppressed", suppressed_at=NOW)
+    existing = _document_of([], tombstones=[_tombstone("소니")])
 
     document = build_graph_document([], existing=existing, settings=settings, now=NOW)
 
-    edge = _edge_by_key(document, "likes|brand:소니")
-    assert edge is not None
-    assert edge.status == "suppressed"
-    assert edge.evidence_count == 0
+    assert [t.edge_id for t in document.tombstones] == [make_edge_id("likes|brand:소니")]
+
+
+def test_legacy_suppressed_edge_is_absorbed_into_a_tombstone(settings: Settings) -> None:
+    """구 문서(`status="suppressed"` edge)는 읽는 즉시 표식으로 수렴하고 라벨을 떨군다.
+
+    별도 백필 잡 없이 `GraphDocument` 검증 지점에서 처리한다 — 안 하면 이미 지운 취향의 원문이
+    문서에 남은 채로 남고, 그건 "지웠다"는 약속이 거짓인 상태다.
+    """
+    legacy = _document_with(status="suppressed", suppressed_at=NOW)
+
+    assert legacy.edges == []
+    assert legacy.nodes == []
+    assert "소니" not in repr(legacy.model_dump(mode="json"))
+    assert [t.edge_id for t in legacy.tombstones] == [make_edge_id("likes|brand:소니")]
 
 
 def test_active_edge_without_evidence_is_dropped(settings: Settings) -> None:
@@ -701,37 +740,37 @@ def test_edges_are_sorted_by_total_order(settings: Settings) -> None:
     assert [n.node_id for n in document.nodes] == sorted(n.node_id for n in document.nodes)
 
 
-def test_truncation_keeps_tombstones_first(settings: Settings) -> None:
-    """상한을 넘기면 자르되 tombstone 을 먼저 지킨다 — 절단으로 삭제가 되살아나면 안 된다."""
+def test_truncation_keeps_pins_first(settings: Settings) -> None:
+    """상한을 넘기면 자르되 pin 을 먼저 지킨다 — 절단으로 사용자 편집이 사라지면 안 된다."""
     tight = Settings(_env_file=None, profile_graph_max_edges=1)
-    existing = _document_with(status="suppressed", suppressed_at=NOW)
+    existing = _document_with(user_intent=_pin())
     facts = [_fact("f1", triples=[_triple("brand:애플", label="애플")])]
 
     document = build_graph_document(facts, existing=existing, settings=tight, now=NOW)
 
     assert len(document.edges) == 1
-    assert document.edges[0].status == "suppressed"
+    assert document.edges[0].user_intent is not None
 
 
-def test_truncation_never_drops_user_deletions_even_past_the_cap(settings: Settings) -> None:
-    """사용자 삭제가 상한보다 많아도 하나도 잘리지 않는다 — 상한을 넘겨서라도 지킨다.
+def test_truncation_never_drops_pins_even_past_the_cap(settings: Settings) -> None:
+    """pin 이 상한보다 많아도 하나도 잘리지 않는다 — 상한을 넘겨서라도 지킨다.
 
-    `_carried_tombstones` 는 **문서에 남아 있는** tombstone 만 보존할 수 있다. 절단이 tombstone
-    자체를 지우면 다음 배치에 같은 `edge_key` 가 새 `active` 로 살아난다(AC-PROF-31 회귀).
+    `active`·`superseded` 는 잘려도 재파생으로 자기복구되지만 pin 은 복구 경로가 없다. 잘리는
+    순간 "기계 재파생에 덮이지 않는다"(REQ-PGRAPH-031)는 보장이 저장 상한 때문에 깨진다.
     """
     tight = Settings(_env_file=None, profile_graph_max_edges=2)
     existing = _document_of(
         [
-            _stored_edge("소니", status="suppressed", suppressed_at=NOW),
-            _stored_edge("애플", status="suppressed", suppressed_at=NOW),
-            _stored_edge("삼성", status="suppressed", suppressed_at=NOW),
+            _stored_edge("소니", user_intent=_pin()),
+            _stored_edge("애플", user_intent=_pin()),
+            _stored_edge("삼성", user_intent=_pin()),
         ]
     )
     facts = [_fact("f1", triples=[_triple("brand:엘지", label="엘지")])]
 
     document = build_graph_document(facts, existing=existing, settings=tight, now=NOW)
 
-    assert {e.edge_key for e in document.edges if e.status == "suppressed"} == {
+    assert {e.edge_key for e in document.edges if e.user_intent is not None} == {
         "likes|brand:소니",
         "likes|brand:애플",
         "likes|brand:삼성",
@@ -745,13 +784,11 @@ def test_deleted_preference_does_not_resurrect_after_truncation(settings: Settin
     이 이슈의 존재 이유라 절단 경계에서 한 번 더 고정한다.
     """
     tight = Settings(_env_file=None, profile_graph_max_edges=2)
-    # 소니를 **맨 뒤**에 둔다 — 앞에 두면 상한 안에 우연히 들어가 절단을 통과해 버린다.
+    # 차단 표식은 `edges` 밖 별도 리스트라 절단 대상이 아니다 — 그 **구조적** 성질을 상한이
+    # 빡빡한 경계에서 한 번 더 고정한다. 표식을 다시 edges 안으로 넣는 설계로 되돌리면 여기서 깨진다.
     existing = _document_of(
-        [
-            _stored_edge("애플", status="suppressed", suppressed_at=NOW),
-            _stored_edge("삼성", status="suppressed", suppressed_at=NOW),
-            _stored_edge("소니", status="suppressed", suppressed_at=NOW),
-        ]
+        [_stored_edge("애플"), _stored_edge("삼성")],
+        tombstones=[_tombstone("소니")],
     )
     first = build_graph_document(
         [_fact("f1", triples=[_triple("brand:엘지", label="엘지")])],
@@ -770,15 +807,14 @@ def test_deleted_preference_does_not_resurrect_after_truncation(settings: Settin
         now=NOW,
     )
 
-    revived = _edge_by_key(second, "likes|brand:소니")
-    assert revived is not None
-    assert revived.status == "suppressed"
+    assert _edge_by_key(second, "likes|brand:소니") is None
+    assert make_edge_id("likes|brand:소니") in {t.edge_id for t in second.tombstones}
 
 
-def test_truncation_drops_machine_superseded_before_user_deletions(settings: Settings) -> None:
-    """`superseded` 는 잘려도 재파생으로 자기복구되지만 `suppressed` 는 복구 경로가 없다.
+def test_truncation_drops_machine_superseded_before_user_pins(settings: Settings) -> None:
+    """`superseded` 는 잘려도 재파생으로 자기복구되지만 pin 은 복구 경로가 없다.
 
-    그래서 두 tombstone 을 같은 등급으로 두지 않는다 — 밀려나는 쪽은 항상 기계 판정이다.
+    그래서 둘을 같은 등급으로 두지 않는다 — 밀려나는 쪽은 항상 기계 판정이다.
     문서 등장 순서가 아니라 확신도로 갈리는지도 함께 고정한다(순서 우연으로 통과하지 않게).
     """
     tight = Settings(_env_file=None, profile_graph_max_edges=2)
@@ -798,7 +834,7 @@ def test_truncation_drops_machine_superseded_before_user_deletions(settings: Set
                 superseded_by=make_edge_id("avoids|brand:삼성"),
                 confidence=0.9,
             ),
-            _stored_edge("소니", status="suppressed", suppressed_at=NOW),
+            _stored_edge("소니", user_intent=_pin()),
         ]
     )
     facts = [
@@ -810,7 +846,7 @@ def test_truncation_drops_machine_superseded_before_user_deletions(settings: Set
 
     assert len(document.edges) == 2
     sony = _edge_by_key(document, "likes|brand:소니")
-    assert sony is not None and sony.status == "suppressed"  # 사용자 삭제는 무조건 남고
+    assert sony is not None and sony.user_intent is not None  # 사용자 편집은 무조건 남고
     assert _edge_by_key(document, "likes|brand:삼성") is not None  # 확신도 높은 쪽이 남고
     assert _edge_by_key(document, "likes|brand:애플") is None  # 낮은 쪽이 밀린다
 
@@ -883,8 +919,8 @@ def test_truncated_flag_is_false_when_the_cap_is_exceeded_but_nothing_dropped(
     tight = Settings(_env_file=None, profile_graph_max_edges=1)
     existing = _document_of(
         [
-            _stored_edge("소니", status="suppressed", suppressed_at=NOW),
-            _stored_edge("애플", status="suppressed", suppressed_at=NOW),
+            _stored_edge("소니", user_intent=_pin()),
+            _stored_edge("애플", user_intent=_pin()),
         ]
     )
 
@@ -928,7 +964,7 @@ def test_truncation_keeps_active_edges_within_the_remaining_budget(settings: Set
     tombstone 우선이 "이번 배치 반영 0건"을 뜻하지 않는다는 경계다.
     """
     tight = Settings(_env_file=None, profile_graph_max_edges=2)
-    existing = _document_of([_stored_edge("소니", status="suppressed", suppressed_at=NOW)])
+    existing = _document_of([_stored_edge("소니", user_intent=_pin())])
     facts = [
         _fact("f1", triples=[_triple("brand:엘지", label="엘지", salience=0.9)]),
         _fact("f2", triples=[_triple("brand:애플", label="애플", salience=0.2)]),
@@ -946,8 +982,8 @@ def test_truncation_logs_when_user_deletions_alone_exceed_the_cap(
     tight = Settings(_env_file=None, profile_graph_max_edges=1)
     existing = _document_of(
         [
-            _stored_edge("소니", status="suppressed", suppressed_at=NOW),
-            _stored_edge("애플", status="suppressed", suppressed_at=NOW),
+            _stored_edge("소니", user_intent=_pin()),
+            _stored_edge("애플", user_intent=_pin()),
         ]
     )
 
@@ -1045,7 +1081,9 @@ def _document_with(**overrides: object) -> GraphDocument:
     return _document_of([_stored_edge(**overrides)])
 
 
-def _document_of(edges: list[GraphEdge]) -> GraphDocument:
+def _document_of(
+    edges: list[GraphEdge], *, tombstones: list[GraphTombstone] | None = None
+) -> GraphDocument:
     """이미 만든 edge 들로 기존 문서를 구성한다 — 노드는 edge 가 가리키는 것만 채운다."""
     nodes = {
         edge.node_id: GraphNode(
@@ -1064,6 +1102,7 @@ def _document_of(edges: list[GraphEdge]) -> GraphDocument:
         truncated=False,
         purged_at=None,
         updated_at="2026-07-01T00:00:00+00:00",
+        tombstones=list(tombstones or []),
     )
 
 

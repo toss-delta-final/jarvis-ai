@@ -1,0 +1,5525 @@
+[
+  {
+    "term": "001 코랄스튜디오",
+    "canonical": null,
+    "status": "rejected",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "001 핑크",
+    "canonical": "핑크",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "001 핑크(라이트 핑크)",
+    "canonical": "핑크",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "002 로즈커넥트",
+    "canonical": null,
+    "status": "rejected",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "003 뮤트라이브러리",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "004 코랄",
+    "canonical": null,
+    "status": "rejected",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "004 핑크페어링",
+    "canonical": "핑크",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "007 라즈베리",
+    "canonical": null,
+    "status": "rejected",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "008 라떼는선임",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "008 울트라 핑크",
+    "canonical": "핑크",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "01 달빛물방울",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "01 로즈핑크",
+    "canonical": "핑크",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "01 핑크 더비",
+    "canonical": "핑크",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "01. 실버 프리즘",
+    "canonical": "실버",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "012 로즈우드",
+    "canonical": null,
+    "status": "rejected",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "014 영원한모브를약속해줘",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "015 체리",
+    "canonical": null,
+    "status": "rejected",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "02 레드 플레이버",
+    "canonical": "레드",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "02 말랑반죽",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "02 핑크메이트",
+    "canonical": "핑크",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "02. 골드 프리즘",
+    "canonical": "골드",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "023 베이비밀크냥냥",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "025 서울스칼렛",
+    "canonical": null,
+    "status": "rejected",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "03 복숭아진주",
+    "canonical": null,
+    "status": "rejected",
+    "provenance": "human",
+    "doc_count": 2
+  },
+  {
+    "term": "03 탠 크러시",
+    "canonical": null,
+    "status": "rejected",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "03 피크닉레드",
+    "canonical": "레드",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "03. 핑크 프리즘",
+    "canonical": "핑크",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "031 스트로베리",
+    "canonical": null,
+    "status": "rejected",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "033 코랄 핑크",
+    "canonical": "핑크",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "04 레드시그널",
+    "canonical": "레드",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "04 레몬별사탕",
+    "canonical": null,
+    "status": "rejected",
+    "provenance": "human",
+    "doc_count": 2
+  },
+  {
+    "term": "04 비터 카라멜",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "04. 로제 프리즘",
+    "canonical": null,
+    "status": "rejected",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "05 솔티 피그",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "05 체리키스",
+    "canonical": null,
+    "status": "rejected",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "05. 코랄 프리즘",
+    "canonical": null,
+    "status": "rejected",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "06 너티 피치",
+    "canonical": null,
+    "status": "rejected",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "06. 라일락 프리즘",
+    "canonical": null,
+    "status": "rejected",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "07. 오로라 프리즘",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "10 로지 밤",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "13호 포슬린",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "1C0 쉘",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "1N0 포슬린",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "1N1 아이보리 누드",
+    "canonical": "아이보리",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "1W1 본",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "1W2 샌드",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "1그린",
+    "canonical": "그린",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "1호 애쉬 브라운",
+    "canonical": "브라운",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "20호 바닐라",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "21N1",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "21호",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 3
+  },
+  {
+    "term": "21호 내추럴 베이지",
+    "canonical": "베이지",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "21호 아이보리",
+    "canonical": "아이보리",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "22호 페탈",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "23N1",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "23N1 베이지",
+    "canonical": "베이지",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "23호",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "23호 베이지",
+    "canonical": "베이지",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "25호 탠",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "28 크리미 핑크",
+    "canonical": "핑크",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "2C0 쿨바닐라",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "2W0 웜바닐라",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "2옐로우",
+    "canonical": "옐로우",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "30 뮤트 로즈",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "31 피치 코랄",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "3W1 토니",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "3핑크",
+    "canonical": "핑크",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "3호 밀크 브라운",
+    "canonical": "브라운",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "42 로지 코랄",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "45 웜 레드",
+    "canonical": "레드",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "4푸시아핑크",
+    "canonical": "핑크",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "60 모브 플럼",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "6레드",
+    "canonical": "레드",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "BK",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "BR",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "CANDY FLUFF(NEW)",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "COOLEST",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "CR",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "Cherry Wood",
+    "canonical": "브라운",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "DarkGreyHeather/White",
+    "canonical": null,
+    "status": "rejected",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "Deep Brown",
+    "canonical": "브라운",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "Grayish Cool",
+    "canonical": null,
+    "status": "rejected",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "LC5",
+    "canonical": null,
+    "status": "rejected",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "LN10",
+    "canonical": null,
+    "status": "rejected",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "LN25",
+    "canonical": null,
+    "status": "rejected",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "LN5",
+    "canonical": null,
+    "status": "rejected",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "LUZTIC",
+    "canonical": null,
+    "status": "rejected",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "MUTE LILAC(NEW)",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "Natural Brown",
+    "canonical": "브라운",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "SPICED UP",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "TAN",
+    "canonical": "베이지",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "VERY SPRING(NEW)",
+    "canonical": null,
+    "status": "rejected",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "WT",
+    "canonical": null,
+    "status": "rejected",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "Walnut",
+    "canonical": "브라운",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 3
+  },
+  {
+    "term": "YAY OR NAY",
+    "canonical": null,
+    "status": "rejected",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "갈색",
+    "canonical": "브라운",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 2
+  },
+  {
+    "term": "건메탈",
+    "canonical": "그레이",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "검정",
+    "canonical": "블랙",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 11
+  },
+  {
+    "term": "검정색",
+    "canonical": "블랙",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 3
+  },
+  {
+    "term": "검회색",
+    "canonical": "그레이",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "곤색",
+    "canonical": "네이비",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 5
+  },
+  {
+    "term": "골드",
+    "canonical": "골드",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 92
+  },
+  {
+    "term": "골드-블랙",
+    "canonical": "골드",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "골드-블루",
+    "canonical": "골드",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "골드-화이트",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "골드블랙",
+    "canonical": "골드",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "광택 검정 탄소 섬유",
+    "canonical": null,
+    "status": "rejected",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "광택 은색 노란색",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "광택 은색 마젠타",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "광택 은색 연한 파란색 LED",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "광택 은색 오렌지",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "광택 은색 카키 LED",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "광택 은회색 LED",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "광택 짙은 파란색",
+    "canonical": null,
+    "status": "rejected",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "광택 흰색 탄소 섬유",
+    "canonical": null,
+    "status": "rejected",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "광택 흰색 탄소 섬유 LED",
+    "canonical": null,
+    "status": "rejected",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "구아바",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "구형 플라스틱 원형",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "그라데이션블랙",
+    "canonical": "블랙",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "그레이",
+    "canonical": "그레이",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 750
+  },
+  {
+    "term": "그레이(카키)",
+    "canonical": "그레이",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "그레이/네이비",
+    "canonical": "그레이",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "그레이/실버",
+    "canonical": "그레이",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 11
+  },
+  {
+    "term": "그레이네이비",
+    "canonical": "그레이",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "그레이브라운",
+    "canonical": "다크브라운",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "그레이블랙",
+    "canonical": "블랙",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "그레이블루",
+    "canonical": "그레이",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 4
+  },
+  {
+    "term": "그레이시블루",
+    "canonical": "그레이",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "그레이오렌지",
+    "canonical": "그레이",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "그레이지",
+    "canonical": "그레이",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "그레이청",
+    "canonical": "블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "그리너리",
+    "canonical": "그린",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "그린",
+    "canonical": "그린",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 287
+  },
+  {
+    "term": "글로시 실버 카키",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "글로시 은회색",
+    "canonical": "실버",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "금색",
+    "canonical": "골드",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "기타",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 70
+  },
+  {
+    "term": "꼬냑 스웨이드",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "꽃그레이",
+    "canonical": "그레이",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "꽃블루",
+    "canonical": "블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "꽃아이보리",
+    "canonical": "아이보리",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "꽃핑크",
+    "canonical": "핑크",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "남보라",
+    "canonical": "퍼플",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "남색",
+    "canonical": "네이비",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 8
+  },
+  {
+    "term": "내추럴",
+    "canonical": "베이지",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "내추럴 베이지",
+    "canonical": "베이지",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "내추럴 화이트",
+    "canonical": "화이트",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "내추럴/우드",
+    "canonical": "베이지",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "내추럴베이지",
+    "canonical": "베이지",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "내추럴브라운",
+    "canonical": "브라운",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 5
+  },
+  {
+    "term": "내추럴블랙",
+    "canonical": "블랙",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 7
+  },
+  {
+    "term": "내추럴오크",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "내추럴우드",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "내츄럴브라운(자연갈색)",
+    "canonical": "브라운",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 5
+  },
+  {
+    "term": "네온로즈",
+    "canonical": "로즈골드",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "네이비",
+    "canonical": "네이비",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 632
+  },
+  {
+    "term": "네이비/블루",
+    "canonical": "네이비",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "네이비/청록",
+    "canonical": "네이비",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "네이비/카키",
+    "canonical": "네이비",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "네이비스트라이프",
+    "canonical": "네이비",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "네추럴",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "노란색",
+    "canonical": "옐로우",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 2
+  },
+  {
+    "term": "노랑",
+    "canonical": "옐로우",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 12
+  },
+  {
+    "term": "노랑색",
+    "canonical": "옐로우",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 3
+  },
+  {
+    "term": "노블 베이지",
+    "canonical": "베이지",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "녹색",
+    "canonical": "그린",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 4
+  },
+  {
+    "term": "녹색천",
+    "canonical": "그린",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "누드",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 17
+  },
+  {
+    "term": "누드/베이지",
+    "canonical": "베이지",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "누드베이지",
+    "canonical": "베이지",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 7
+  },
+  {
+    "term": "뉴그레이",
+    "canonical": "그레이",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "니켈/코퍼",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "다크그레이",
+    "canonical": "다크그레이",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 26
+  },
+  {
+    "term": "다크그린",
+    "canonical": "그린",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 22
+  },
+  {
+    "term": "다크네이비",
+    "canonical": "네이비",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 18
+  },
+  {
+    "term": "다크레드",
+    "canonical": "레드",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "다크모스",
+    "canonical": "다크그레이",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 4
+  },
+  {
+    "term": "다크민트",
+    "canonical": "민트",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "다크베이지",
+    "canonical": "베이지",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "다크브라운",
+    "canonical": "다크브라운",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 34
+  },
+  {
+    "term": "다크브라운(흑갈색)",
+    "canonical": "다크브라운",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 4
+  },
+  {
+    "term": "다크블루",
+    "canonical": "블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 9
+  },
+  {
+    "term": "다크블루(진청)",
+    "canonical": "네이비",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 6
+  },
+  {
+    "term": "다크실버",
+    "canonical": "실버",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "다크오렌지",
+    "canonical": "오렌지",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "다크차콜",
+    "canonical": "차콜",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "다크카키",
+    "canonical": "카키",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "다크핑크",
+    "canonical": "핑크",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "다홍색",
+    "canonical": "레드",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "단일색(호수 없음)",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "단일색상",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 10
+  },
+  {
+    "term": "담뱃재",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "더스티민트",
+    "canonical": "민트",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 3
+  },
+  {
+    "term": "더스티핑크",
+    "canonical": "핑크",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 3
+  },
+  {
+    "term": "데님",
+    "canonical": "블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "데님블루",
+    "canonical": "블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "도형블루",
+    "canonical": "블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "도형옐로우",
+    "canonical": "옐로우",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "듄카키",
+    "canonical": "카키",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "딥그레이",
+    "canonical": "다크그레이",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "딥그린",
+    "canonical": "그린",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 9
+  },
+  {
+    "term": "딥네이비",
+    "canonical": "네이비",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 4
+  },
+  {
+    "term": "딥바이올렛",
+    "canonical": "퍼플",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "딥베이지",
+    "canonical": "베이지",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "딥브라운",
+    "canonical": "다크브라운",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "딥블랙",
+    "canonical": "블랙",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 4
+  },
+  {
+    "term": "딥블루",
+    "canonical": "블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 4
+  },
+  {
+    "term": "딥퍼플",
+    "canonical": "퍼플",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "라벤더",
+    "canonical": "라벤더",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 34
+  },
+  {
+    "term": "라벤더퍼플",
+    "canonical": "퍼플",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "라이트",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "라이트 그레이",
+    "canonical": "그레이",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "라이트 베이지",
+    "canonical": "베이지",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "라이트 블루",
+    "canonical": "블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "라이트그레이",
+    "canonical": "라이트그레이",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 32
+  },
+  {
+    "term": "라이트그린",
+    "canonical": "그린",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 9
+  },
+  {
+    "term": "라이트민트",
+    "canonical": "민트",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "라이트베이지",
+    "canonical": "베이지",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 9
+  },
+  {
+    "term": "라이트브라운",
+    "canonical": "브라운",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 15
+  },
+  {
+    "term": "라이트블루",
+    "canonical": "라이트블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 46
+  },
+  {
+    "term": "라이트블루(연청)",
+    "canonical": "스카이블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 10
+  },
+  {
+    "term": "라이트실버",
+    "canonical": "실버",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 4
+  },
+  {
+    "term": "라이트인디고",
+    "canonical": "인디고",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 11
+  },
+  {
+    "term": "라이트카키",
+    "canonical": "카키",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "라이트퍼플",
+    "canonical": "퍼플",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "라이트핑크",
+    "canonical": "핑크",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 4
+  },
+  {
+    "term": "라이트하바나",
+    "canonical": "베이지",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "라이트헤더그레이",
+    "canonical": "라이트그레이",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 3
+  },
+  {
+    "term": "라인그레이",
+    "canonical": "그레이",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "라일락",
+    "canonical": "퍼플",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 2
+  },
+  {
+    "term": "라임",
+    "canonical": "그린",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 4
+  },
+  {
+    "term": "라탄색",
+    "canonical": "베이지",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "랜덤",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 6
+  },
+  {
+    "term": "랜덤발송",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "랜덤컬러",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "레드",
+    "canonical": "레드",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 209
+  },
+  {
+    "term": "레드골드",
+    "canonical": "골드",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "레드와인",
+    "canonical": "와인",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "레몬",
+    "canonical": "옐로우",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 4
+  },
+  {
+    "term": "레오파드",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 3
+  },
+  {
+    "term": "레오파드골드",
+    "canonical": "골드",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "레인보우",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 3
+  },
+  {
+    "term": "로봇화이트",
+    "canonical": "화이트",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "로얄블루",
+    "canonical": "블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "로열블루",
+    "canonical": "블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "로잘린핑크",
+    "canonical": "핑크",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "로즈",
+    "canonical": "핑크",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 7
+  },
+  {
+    "term": "로즈 톤업 밤 웜",
+    "canonical": null,
+    "status": "rejected",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "로즈 톤업 밤 쿨",
+    "canonical": null,
+    "status": "rejected",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "로즈골드",
+    "canonical": "로즈골드",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 28
+  },
+  {
+    "term": "로즈골드-블랙",
+    "canonical": "골드",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "로즈베이지",
+    "canonical": "베이지",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "로지 프로미스",
+    "canonical": null,
+    "status": "rejected",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "로지모브(더스티 핑크)",
+    "canonical": "핑크",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "로지브라운",
+    "canonical": "브라운",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "루비레드",
+    "canonical": "레드",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "리얼블랙",
+    "canonical": "블랙",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "마린블루",
+    "canonical": "블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "마브 라벤더",
+    "canonical": "라벤더",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "마블 그레이",
+    "canonical": "그레이",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "마젠타",
+    "canonical": "핑크",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 3
+  },
+  {
+    "term": "말차그린",
+    "canonical": "그린",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "매트블랙",
+    "canonical": "블랙",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 4
+  },
+  {
+    "term": "매트화이트",
+    "canonical": "화이트",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "머스타드",
+    "canonical": "옐로우",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "머스터드그린",
+    "canonical": "그린",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "멀티",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 15
+  },
+  {
+    "term": "멀티(리버서블)",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 20
+  },
+  {
+    "term": "멀티(스트라이프)",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "멀티(체크)",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 3
+  },
+  {
+    "term": "멀티(투톤)",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "멀티(패턴)",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 6
+  },
+  {
+    "term": "멀티(혼합)",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 20
+  },
+  {
+    "term": "멀티/기타",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "멀티/레오파드",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 3
+  },
+  {
+    "term": "멀티/스트라이프",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "멀티/프린트",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "멀티/혼합",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 11
+  },
+  {
+    "term": "멀티컬러",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 40
+  },
+  {
+    "term": "멀티팝",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "메탈 그레이",
+    "canonical": "그레이",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "메탈 블랙",
+    "canonical": "블랙",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 3
+  },
+  {
+    "term": "멜란지",
+    "canonical": "그레이",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 3
+  },
+  {
+    "term": "멜란지그레이",
+    "canonical": "그레이",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 17
+  },
+  {
+    "term": "멜란지핑크",
+    "canonical": "핑크",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "멜란지화이트",
+    "canonical": "화이트",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "모닝 듀",
+    "canonical": null,
+    "status": "rejected",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "모던체크 그레이",
+    "canonical": "그레이",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "모카",
+    "canonical": "브라운",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 5
+  },
+  {
+    "term": "모카브라운",
+    "canonical": "브라운",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "모카스킨",
+    "canonical": "브라운",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 4
+  },
+  {
+    "term": "모카토프",
+    "canonical": "브라운",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "무광 위장",
+    "canonical": null,
+    "status": "rejected",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "무광 위장 줄무늬 LED",
+    "canonical": null,
+    "status": "rejected",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "무지",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "뮤추얼 필링",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "뮤트 그레이",
+    "canonical": "그레이",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "미네랄 그레이.",
+    "canonical": "그레이",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "미드나이트",
+    "canonical": "블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "미드나잇 네이비",
+    "canonical": "네이비",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "미드나잇블랙",
+    "canonical": "블랙",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "미드헤더그레이",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 3
+  },
+  {
+    "term": "미디엄브라운",
+    "canonical": "브라운",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 3
+  },
+  {
+    "term": "미디엄블루(중청)",
+    "canonical": "블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 6
+  },
+  {
+    "term": "미색",
+    "canonical": "베이지",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 2
+  },
+  {
+    "term": "미색화이트",
+    "canonical": "화이트",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "믹스(혼합)",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "믹스드 베리",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "믹스컬러",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "민트",
+    "canonical": "민트",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 61
+  },
+  {
+    "term": "민트그린",
+    "canonical": "민트",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 3
+  },
+  {
+    "term": "민트네이비",
+    "canonical": "민트",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "민트블루",
+    "canonical": "민트",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "밀리터리",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "밀리터리그린",
+    "canonical": "그린",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "밀키베이지",
+    "canonical": "베이지",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "밀키블루",
+    "canonical": "블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "바닐라",
+    "canonical": "화이트",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "바닐라 너츠",
+    "canonical": "베이지",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "바닐라베이지",
+    "canonical": "베이지",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "바다그린색",
+    "canonical": "그린",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "바이올렛",
+    "canonical": "퍼플",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 8
+  },
+  {
+    "term": "바이올렛(84)",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "반짝이는 로즈 핑크",
+    "canonical": "핑크",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "반투명",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 3
+  },
+  {
+    "term": "밝은 은록색",
+    "canonical": "그린",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "밝은 은색주황 LED",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "밝은 은황색 LED",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "밝은 하늘색",
+    "canonical": "스카이블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "밝은핑크",
+    "canonical": "핑크",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "백색",
+    "canonical": "화이트",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 5
+  },
+  {
+    "term": "백색(흰색)",
+    "canonical": "화이트",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 2
+  },
+  {
+    "term": "버건디",
+    "canonical": "와인",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 16
+  },
+  {
+    "term": "버터옐로우",
+    "canonical": "옐로우",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "버터크림",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "베네통그린",
+    "canonical": "그린",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "베라블랙",
+    "canonical": "블랙",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 3
+  },
+  {
+    "term": "베리",
+    "canonical": "레드",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "베리핑크",
+    "canonical": "핑크",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "베쉬",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "베이비핑크",
+    "canonical": "핑크",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "베이지",
+    "canonical": "베이지",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 592
+  },
+  {
+    "term": "베이지/스킨톤",
+    "canonical": "베이지",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "베이지핑크",
+    "canonical": "핑크",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "베이직",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "보라",
+    "canonical": "퍼플",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 17
+  },
+  {
+    "term": "보라(84)",
+    "canonical": null,
+    "status": "rejected",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "보라색",
+    "canonical": "퍼플",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 3
+  },
+  {
+    "term": "보람천",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "보람포",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "본",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "분홍",
+    "canonical": "핑크",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "붉은색",
+    "canonical": "레드",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "브라운",
+    "canonical": "브라운",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 401
+  },
+  {
+    "term": "브라운/갈색",
+    "canonical": "브라운",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "브라운카키",
+    "canonical": "카키",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "브란스",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "브릭",
+    "canonical": "브라운",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 3
+  },
+  {
+    "term": "블랙",
+    "canonical": "블랙",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 2358
+  },
+  {
+    "term": "블랙 머스크",
+    "canonical": "블랙",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "블랙+브라운(혼합)",
+    "canonical": "블랙",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "블랙-블랙",
+    "canonical": "블랙",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "블랙/로즈골드",
+    "canonical": "블랙",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "블랙/브라운(양면)",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 10
+  },
+  {
+    "term": "블랙/화이트",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "블랙2",
+    "canonical": "블랙",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "블랙골드",
+    "canonical": "골드",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "블랙그린",
+    "canonical": "블랙",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "블랙네이비",
+    "canonical": "네이비",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 8
+  },
+  {
+    "term": "블랙누아르",
+    "canonical": "블랙",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 3
+  },
+  {
+    "term": "블랙브라운",
+    "canonical": "블랙",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "블랙블랙",
+    "canonical": "블랙",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "블랙블루",
+    "canonical": "블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "블랙실버",
+    "canonical": "실버",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "블랙차콜",
+    "canonical": "차콜",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "블랙청",
+    "canonical": "블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "블랙펄",
+    "canonical": "블랙",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "블랙화이트",
+    "canonical": "블랙",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 3
+  },
+  {
+    "term": "블러쉬베이지",
+    "canonical": "베이지",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "블루",
+    "canonical": "블루",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 438
+  },
+  {
+    "term": "블루 머스크",
+    "canonical": "블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "블루 머스크 제스트",
+    "canonical": "블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "블루(73)",
+    "canonical": "블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "블루(청록)",
+    "canonical": "블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "블루(하늘색)",
+    "canonical": "스카이",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "블루그레이",
+    "canonical": "블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 3
+  },
+  {
+    "term": "블루그린",
+    "canonical": "그린",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 3
+  },
+  {
+    "term": "블루바이올렛",
+    "canonical": "블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "블루블루",
+    "canonical": "블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "블루청",
+    "canonical": "블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "블루화이트",
+    "canonical": "블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "비비드라이트블루",
+    "canonical": "블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "비비드블루",
+    "canonical": "블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "비비드옐로우",
+    "canonical": "옐로우",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "비비드오렌지",
+    "canonical": "오렌지",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "비비드핑크",
+    "canonical": "핑크",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "빈티지",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "빈티지블루",
+    "canonical": "블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 7
+  },
+  {
+    "term": "빛나는 라이트 블루",
+    "canonical": "라이트블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "빛나는 붉은색",
+    "canonical": "레드",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "빨강",
+    "canonical": "레드",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 7
+  },
+  {
+    "term": "빨강색",
+    "canonical": "레드",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 3
+  },
+  {
+    "term": "살구",
+    "canonical": "오렌지",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "살구색",
+    "canonical": "핑크",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 13
+  },
+  {
+    "term": "살색",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 5
+  },
+  {
+    "term": "상세설명참조",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 5
+  },
+  {
+    "term": "상세페이지 참조",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 4
+  },
+  {
+    "term": "새틴 그레이지",
+    "canonical": "그레이",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "새틴 베이지",
+    "canonical": "베이지",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "샌드",
+    "canonical": "베이지",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 2
+  },
+  {
+    "term": "샌드 화이트",
+    "canonical": "화이트",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "샌드베이지",
+    "canonical": "베이지",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "샌드브라운",
+    "canonical": "브라운",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "샌드스톤",
+    "canonical": "베이지",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "샌드스톰",
+    "canonical": "차콜",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "생지",
+    "canonical": "브라운",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "샤이니 구스 옐로우",
+    "canonical": "옐로우",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "샤이니 올리브",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "샴페인",
+    "canonical": "아이보리",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "세라믹핑크/로즈골드",
+    "canonical": "핑크",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "세이지",
+    "canonical": "베이지",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 3
+  },
+  {
+    "term": "세틴그레이지",
+    "canonical": "그레이",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "소라",
+    "canonical": "스카이블루",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 6
+  },
+  {
+    "term": "소프트그레이",
+    "canonical": "그레이",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "소프트베이지",
+    "canonical": "베이지",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "소프트브라운",
+    "canonical": "브라운",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "소프트블루",
+    "canonical": "블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "솔리드블랙",
+    "canonical": "블랙",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "솝스톤 차콜",
+    "canonical": "차콜",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "스마일네이비",
+    "canonical": "네이비",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "스마일옐로우",
+    "canonical": "옐로우",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "스카이",
+    "canonical": "스카이",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 27
+  },
+  {
+    "term": "스카이 블루",
+    "canonical": "스카이",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "스카이블루",
+    "canonical": "스카이블루",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 55
+  },
+  {
+    "term": "스킨",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 26
+  },
+  {
+    "term": "스킨/베이지",
+    "canonical": "베이지",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 3
+  },
+  {
+    "term": "스킨베이지",
+    "canonical": "베이지",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "스킨색",
+    "canonical": "베이지",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "스타 그레이",
+    "canonical": "그레이",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "스타 블랙.",
+    "canonical": "블랙",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "스타 실버",
+    "canonical": "실버",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "스타라이트",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "스타리 실버",
+    "canonical": "실버",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "스테인리스",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "스테인리스 스틸 링",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "스테인리스 스틸 원형+AATCC 콘트라스트 카드",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "스텔라",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "스톤",
+    "canonical": "그레이",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 2
+  },
+  {
+    "term": "스트라이프",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 4
+  },
+  {
+    "term": "시에나브라운",
+    "canonical": "브라운",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "시에라블루",
+    "canonical": "블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "시크 블랙",
+    "canonical": "블랙",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "시티레드",
+    "canonical": "레드",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "실버",
+    "canonical": "실버",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 250
+  },
+  {
+    "term": "실버 그레이",
+    "canonical": "실버",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "실버(은색)",
+    "canonical": "실버",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "실버+블랙",
+    "canonical": "실버",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "실버/홀로그램",
+    "canonical": "실버",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "실버블랙",
+    "canonical": "실버",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 3
+  },
+  {
+    "term": "실버블루",
+    "canonical": "실버",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 3
+  },
+  {
+    "term": "썸머베이지",
+    "canonical": "베이지",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "썸머브라운",
+    "canonical": "브라운",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "아몬드그린",
+    "canonical": "그린",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "아몬드오렌지",
+    "canonical": "오렌지",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "아보카도",
+    "canonical": "그린",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "아이보리",
+    "canonical": "아이보리",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 223
+  },
+  {
+    "term": "아이보리/퍼플",
+    "canonical": "아이보리",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "아이보리그레이",
+    "canonical": "아이보리",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "아이보리색",
+    "canonical": "아이보리",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "아이스 오펄",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 3
+  },
+  {
+    "term": "아이스블루",
+    "canonical": "블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 3
+  },
+  {
+    "term": "아이스셀",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "아이스오펄",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 3
+  },
+  {
+    "term": "아이언 레드",
+    "canonical": "레드",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "아카시아",
+    "canonical": "그린",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "아쿠아",
+    "canonical": "블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 3
+  },
+  {
+    "term": "아프리칸 바이올렛",
+    "canonical": "퍼플",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "애쉬",
+    "canonical": "그레이",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 2
+  },
+  {
+    "term": "애쉬그레이",
+    "canonical": "그레이",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "애쉬브라운",
+    "canonical": "브라운",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "애쉬블루",
+    "canonical": "블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "애쉬청",
+    "canonical": "블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "애쉬핑크",
+    "canonical": "핑크",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "앤틱그린",
+    "canonical": "그린",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "에어블랙",
+    "canonical": "블랙",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "에어블루",
+    "canonical": "블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "에어크림",
+    "canonical": "크림",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "에크루",
+    "canonical": "크림",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "에토프",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 9
+  },
+  {
+    "term": "에토프 실버",
+    "canonical": "실버",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "에토프실버",
+    "canonical": "실버",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "엔틱",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "엔틱골드",
+    "canonical": "골드",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 4
+  },
+  {
+    "term": "엠버 옐로우",
+    "canonical": "옐로우",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "연갈색",
+    "canonical": "브라운",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "연그레이",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 4
+  },
+  {
+    "term": "연그린",
+    "canonical": "그린",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "연노랑",
+    "canonical": "옐로우",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "연두",
+    "canonical": "그린",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 4
+  },
+  {
+    "term": "연두색",
+    "canonical": "그린",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 4
+  },
+  {
+    "term": "연베이지",
+    "canonical": "베이지",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 3
+  },
+  {
+    "term": "연보라",
+    "canonical": "퍼플",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "연보라색",
+    "canonical": "퍼플",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 3
+  },
+  {
+    "term": "연분홍",
+    "canonical": "핑크",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 6
+  },
+  {
+    "term": "연브라운",
+    "canonical": "브라운",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "연블루",
+    "canonical": "블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "연살구색",
+    "canonical": "핑크",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "연지",
+    "canonical": "레드",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "연청",
+    "canonical": "블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 8
+  },
+  {
+    "term": "연청색천",
+    "canonical": "블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "연커피색",
+    "canonical": "브라운",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "연핑크",
+    "canonical": "핑크",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 10
+  },
+  {
+    "term": "연핑크(16)",
+    "canonical": "핑크",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "연하늘",
+    "canonical": "스카이",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "연회색",
+    "canonical": "그레이",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "연회색.",
+    "canonical": "그레이",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "옐로",
+    "canonical": "옐로우",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 4
+  },
+  {
+    "term": "옐로우",
+    "canonical": "옐로우",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 160
+  },
+  {
+    "term": "옐로우골드",
+    "canonical": "골드",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 5
+  },
+  {
+    "term": "옐로우블랙",
+    "canonical": "옐로우",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "오닉스 블랙",
+    "canonical": "블랙",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "오렌지",
+    "canonical": "오렌지",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 88
+  },
+  {
+    "term": "오렌지그레이",
+    "canonical": "오렌지",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "오렌지색",
+    "canonical": "오렌지",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 3
+  },
+  {
+    "term": "오션블루",
+    "canonical": "블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 4
+  },
+  {
+    "term": "오크",
+    "canonical": "브라운",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 4
+  },
+  {
+    "term": "오트밀",
+    "canonical": "크림",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 5
+  },
+  {
+    "term": "오트밀멜란지",
+    "canonical": "크림",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 4
+  },
+  {
+    "term": "오트베이지",
+    "canonical": "베이지",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "오프화이트",
+    "canonical": "화이트",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 8
+  },
+  {
+    "term": "올골드",
+    "canonical": "골드",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "올리브",
+    "canonical": "그린",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 19
+  },
+  {
+    "term": "올리브그린",
+    "canonical": "그린",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 11
+  },
+  {
+    "term": "올리브카키",
+    "canonical": "카키",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "올블랙",
+    "canonical": "블랙",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 4
+  },
+  {
+    "term": "와인",
+    "canonical": "와인",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 35
+  },
+  {
+    "term": "와인브라운(적갈색)",
+    "canonical": "와인",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "우드",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 6
+  },
+  {
+    "term": "우드/원목색",
+    "canonical": "브라운",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "우드톤",
+    "canonical": "브라운",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 4
+  },
+  {
+    "term": "워싱블루",
+    "canonical": "블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "원목색",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "월넛",
+    "canonical": "브라운",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 5
+  },
+  {
+    "term": "월넛 베이지",
+    "canonical": "베이지",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "월넛 화이트",
+    "canonical": "화이트",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "웜그레이",
+    "canonical": "다크그레이",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 3
+  },
+  {
+    "term": "유광 실버 로즈 핑크 LED",
+    "canonical": "실버",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "은색",
+    "canonical": "실버",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "인디고",
+    "canonical": "인디고",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 34
+  },
+  {
+    "term": "인디네이비",
+    "canonical": "네이비",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "인디블루",
+    "canonical": "블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "인디핑크",
+    "canonical": "핑크",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 4
+  },
+  {
+    "term": "일반(황색/미표기)",
+    "canonical": null,
+    "status": "rejected",
+    "provenance": "human",
+    "doc_count": 6
+  },
+  {
+    "term": "잉크",
+    "canonical": "블랙",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "잉크블랙",
+    "canonical": "블랙",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "자색/보라색",
+    "canonical": "퍼플",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "자연갈색",
+    "canonical": "브라운",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "자연검정",
+    "canonical": "블랙",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 3
+  },
+  {
+    "term": "자주",
+    "canonical": "퍼플",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "자카드 교토",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "자카드 라이트 레오파드",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "자카드 파스텔 꽃",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "제트 블랙",
+    "canonical": "블랙",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "제트블랙",
+    "canonical": "블랙",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 3
+  },
+  {
+    "term": "젯블랙",
+    "canonical": "블랙",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "주차금지",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "주황",
+    "canonical": "오렌지",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 3
+  },
+  {
+    "term": "줄보라",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "중청",
+    "canonical": "블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 10
+  },
+  {
+    "term": "쥐색",
+    "canonical": "그레이",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "쥬스한잔",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "지그재그",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "지그재그 그레이",
+    "canonical": "그레이",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "진그레이",
+    "canonical": "다크그레이",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 3
+  },
+  {
+    "term": "진그레이오렌지",
+    "canonical": "그레이",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "진노랑",
+    "canonical": "옐로우",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "진밤",
+    "canonical": "브라운",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "진분홍",
+    "canonical": "핑크",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "진브라운",
+    "canonical": "브라운",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "진블루",
+    "canonical": "블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "진저",
+    "canonical": "오렌지",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "진청",
+    "canonical": "다크그레이",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 9
+  },
+  {
+    "term": "진한갈색",
+    "canonical": "브라운",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "진회색",
+    "canonical": "그레이",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 3
+  },
+  {
+    "term": "짙은갈색",
+    "canonical": "브라운",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "짙은회색",
+    "canonical": "다크그레이",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "차분한베이지",
+    "canonical": "베이지",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "차콜",
+    "canonical": "차콜",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 72
+  },
+  {
+    "term": "차콜 그레이",
+    "canonical": "차콜",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "차콜그레이",
+    "canonical": "차콜",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "챠콜",
+    "canonical": "차콜",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "철회색천",
+    "canonical": "그레이",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "청녹색",
+    "canonical": "그린",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "청록",
+    "canonical": "스카이블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 5
+  },
+  {
+    "term": "청록/블루",
+    "canonical": "블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "청록/카키",
+    "canonical": "카키",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "청색",
+    "canonical": "블루",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 2
+  },
+  {
+    "term": "체리로즈",
+    "canonical": "핑크",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "체리블랙",
+    "canonical": "블랙",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "체크",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "체크그린",
+    "canonical": "그린",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "체크네이비",
+    "canonical": "네이비",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "체크블랙",
+    "canonical": "블랙",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "체크스카이",
+    "canonical": "스카이블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "초록",
+    "canonical": "그린",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "초록색",
+    "canonical": "그린",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "초코브라운",
+    "canonical": "브라운",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 7
+  },
+  {
+    "term": "초크화이트",
+    "canonical": "화이트",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "칠리레드",
+    "canonical": "레드",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "카라멜",
+    "canonical": "브라운",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 2
+  },
+  {
+    "term": "카멜",
+    "canonical": "브라운",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 14
+  },
+  {
+    "term": "카멜브라운",
+    "canonical": "브라운",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 3
+  },
+  {
+    "term": "카모",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "카모/카키카모",
+    "canonical": "카키",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "카본블랙",
+    "canonical": "블랙",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "카카오브라운",
+    "canonical": "브라운",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "카키",
+    "canonical": "카키",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 196
+  },
+  {
+    "term": "카키/블루",
+    "canonical": "카키",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "카키가죽",
+    "canonical": "카키",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "카키그레이",
+    "canonical": "카키",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "카키브라운",
+    "canonical": "브라운",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "카키색",
+    "canonical": "카키",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 3
+  },
+  {
+    "term": "카키포리지",
+    "canonical": "카키",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "카페오레",
+    "canonical": "베이지",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "캐시미어",
+    "canonical": "아이보리",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "커스타드 옐로우",
+    "canonical": "옐로우",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "커스터드 옐로우",
+    "canonical": "옐로우",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "커피",
+    "canonical": "브라운",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 8
+  },
+  {
+    "term": "커피 그라운드",
+    "canonical": "브라운",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "커피/브라운",
+    "canonical": "브라운",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "커피색",
+    "canonical": "브라운",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 2
+  },
+  {
+    "term": "컬러",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "컬러4종",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "코냑",
+    "canonical": "브라운",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "코랄",
+    "canonical": "핑크",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 4
+  },
+  {
+    "term": "코랄레드",
+    "canonical": "레드",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "코발트",
+    "canonical": "블루",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 2
+  },
+  {
+    "term": "코발트 바이올렛",
+    "canonical": "퍼플",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "코발트블루",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "코스탈블루",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "코코넛베이지",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "코코아",
+    "canonical": "브라운",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 2
+  },
+  {
+    "term": "코튼 핑크",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "콜그레이",
+    "canonical": "그레이",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 3
+  },
+  {
+    "term": "쿨그레이",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "크롬",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "크롬/실버",
+    "canonical": "실버",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 3
+  },
+  {
+    "term": "크리스탈베이지",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "크림",
+    "canonical": "크림",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 50
+  },
+  {
+    "term": "크림골드",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "크림로즈",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "크림베이지",
+    "canonical": "베이지",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 6
+  },
+  {
+    "term": "크림아이보리",
+    "canonical": "아이보리",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "크림화이트",
+    "canonical": "화이트",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 6
+  },
+  {
+    "term": "클라우드",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "클래식그린",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "클래식블루",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "클래식옐로우",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "클래식오렌지",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "클리어",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "클리어베이지",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "클리어브라운",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "클리어블루",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "탄",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "터콰이즈그린",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "터키블루",
+    "canonical": "블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "토파즈",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "토프",
+    "canonical": "브라운",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 3
+  },
+  {
+    "term": "투명",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 45
+  },
+  {
+    "term": "투명 실버",
+    "canonical": "실버",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "투명/무색",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 10
+  },
+  {
+    "term": "투명/반투명",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 3
+  },
+  {
+    "term": "투명/크리스탈",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "투명그레이",
+    "canonical": "그레이",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "투명레드",
+    "canonical": "레드",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "투명블루",
+    "canonical": "블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "투톤",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "특허 워터프루프 디자인++AATCC 콘트라스트 카드",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "특허 집수 설계",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "티아라 핑크",
+    "canonical": "핑크",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "티크",
+    "canonical": "브라운",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "티타늄",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 9
+  },
+  {
+    "term": "틸블루",
+    "canonical": "블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 5
+  },
+  {
+    "term": "파랑",
+    "canonical": "블루",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 4
+  },
+  {
+    "term": "파랑색",
+    "canonical": "블루",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 5
+  },
+  {
+    "term": "파스텔 옐로우",
+    "canonical": "옐로우",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "파스텔노랑",
+    "canonical": "옐로우",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "파스텔보라",
+    "canonical": "퍼플",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "파스텔블루",
+    "canonical": "블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "파스텔혼합",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "파우더베이지",
+    "canonical": "베이지",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "패브릭 블루",
+    "canonical": "블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "패턴/캐릭터",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "퍼플",
+    "canonical": "퍼플",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 130
+  },
+  {
+    "term": "퍼플/보라",
+    "canonical": "퍼플",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 11
+  },
+  {
+    "term": "퍼플그레이",
+    "canonical": "퍼플",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "퍼플라벤더",
+    "canonical": "퍼플",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "펀칭블랙",
+    "canonical": "블랙",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 5
+  },
+  {
+    "term": "펄",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "펄그레이",
+    "canonical": "그레이",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "펄레드",
+    "canonical": "레드",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "펄블랙",
+    "canonical": "블랙",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "펄차콜",
+    "canonical": "차콜",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "펄화이트",
+    "canonical": "화이트",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "페일블루",
+    "canonical": "블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "페일코발트",
+    "canonical": "블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "페탈",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "페트롤블루",
+    "canonical": "블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 4
+  },
+  {
+    "term": "포슬린",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "포인트",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "포인트핑크",
+    "canonical": "핑크",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "폴리스네이비",
+    "canonical": "네이비",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "표기없음",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "푸시아 핑크",
+    "canonical": "핑크",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 3
+  },
+  {
+    "term": "푸시아핑크",
+    "canonical": "핑크",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 3
+  },
+  {
+    "term": "퓨어 그레이.",
+    "canonical": "그레이",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "프레쉬민트",
+    "canonical": "민트",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "프레스코",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "프로즌크리스탈",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "플라스틱 원형",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "플라스틱 원형+AATCC 콘트라스트 카드",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "플라워",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "플라워네이비",
+    "canonical": "네이비",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "플라워다크",
+    "canonical": null,
+    "status": "rejected",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "플라워블랙",
+    "canonical": "블랙",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 4
+  },
+  {
+    "term": "플럼",
+    "canonical": "퍼플",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 3
+  },
+  {
+    "term": "플럼 스모크",
+    "canonical": "퍼플",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "피스타치오그린",
+    "canonical": "그린",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "피치",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "피치베이지",
+    "canonical": "베이지",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "피치사파이어",
+    "canonical": "블루",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "피치스킨",
+    "canonical": "오렌지",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 4
+  },
+  {
+    "term": "피치핑크",
+    "canonical": "핑크",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "핑크",
+    "canonical": "핑크",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 381
+  },
+  {
+    "term": "핑크골드",
+    "canonical": "골드",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 4
+  },
+  {
+    "term": "핑크골드(로즈골드)",
+    "canonical": "골드",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "핑크베이지",
+    "canonical": "핑크",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 5
+  },
+  {
+    "term": "핑크색",
+    "canonical": "핑크",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 5
+  },
+  {
+    "term": "하늘색",
+    "canonical": "스카이블루",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 10
+  },
+  {
+    "term": "하바나",
+    "canonical": "브라운",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 4
+  },
+  {
+    "term": "하얀색",
+    "canonical": "화이트",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "핫핑크",
+    "canonical": "핑크",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 4
+  },
+  {
+    "term": "해당없음",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 27
+  },
+  {
+    "term": "헌터그린",
+    "canonical": "그린",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 3
+  },
+  {
+    "term": "형광",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "형광그린",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 5
+  },
+  {
+    "term": "형광녹색",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "형광연두",
+    "canonical": "그린",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "호피",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "혼합",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 6
+  },
+  {
+    "term": "혼합(랜덤)",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "혼합(레드/옐로/화이트)",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "혼합(투톤)",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "혼합/기타",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 4
+  },
+  {
+    "term": "혼합/랜덤",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 5
+  },
+  {
+    "term": "혼합/멀티",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 16
+  },
+  {
+    "term": "혼합/상세설명참조",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "혼합/세트",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 3
+  },
+  {
+    "term": "혼합/투톤",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "혼합구성",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "혼합색",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 4
+  },
+  {
+    "term": "혼합색상",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 132
+  },
+  {
+    "term": "혼합색상(멀티)",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 9
+  },
+  {
+    "term": "혼합형",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "홍색/적색",
+    "canonical": "레드",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "화사한베이지",
+    "canonical": "베이지",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "화이트",
+    "canonical": "화이트",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 869
+  },
+  {
+    "term": "화이트 머스크 오리지널",
+    "canonical": "화이트",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "화이트(하늘색 배색)",
+    "canonical": "화이트",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "화이트+네이비",
+    "canonical": "화이트",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 9
+  },
+  {
+    "term": "화이트/실버",
+    "canonical": "화이트",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 3
+  },
+  {
+    "term": "화이트골드",
+    "canonical": "골드",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 8
+  },
+  {
+    "term": "화이트크림",
+    "canonical": "화이트",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "황금",
+    "canonical": "골드",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "황금색(옐로우골드)",
+    "canonical": "골드",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "황색",
+    "canonical": "옐로우",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "황토색",
+    "canonical": null,
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "회갈색",
+    "canonical": "브라운",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "회색",
+    "canonical": "그레이",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 5
+  },
+  {
+    "term": "회색가죽(대리석무늬)",
+    "canonical": "그레이",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "흑갈색",
+    "canonical": "블랙",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 2
+  },
+  {
+    "term": "흑색",
+    "canonical": "블랙",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 9
+  },
+  {
+    "term": "흑청",
+    "canonical": "블랙",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 5
+  },
+  {
+    "term": "흰둥이",
+    "canonical": "화이트",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "흰둥이블루",
+    "canonical": null,
+    "status": "rejected",
+    "provenance": "human",
+    "doc_count": 1
+  },
+  {
+    "term": "흰둥이아이보리",
+    "canonical": "아이보리",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "흰둥이옐로우",
+    "canonical": "옐로우",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "흰둥이핑크",
+    "canonical": "핑크",
+    "status": "pending_review",
+    "provenance": "seed_llm_assignment",
+    "doc_count": 1
+  },
+  {
+    "term": "흰색",
+    "canonical": "화이트",
+    "status": "approved",
+    "provenance": "human",
+    "doc_count": 5
+  }
+]

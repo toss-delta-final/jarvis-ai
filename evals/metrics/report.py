@@ -9,6 +9,7 @@ from typing import Any
 
 from evals.filter_axes.metrics import aggregate_axis_metrics
 from evals.filter_axes.spec import AXES_SPEC_PATH
+from evals.metrics.run_manifest import strip_volatile_manifest_keys
 
 
 def _json_text(value: object) -> str:
@@ -385,13 +386,15 @@ def write_artifacts(
 
 
 def normalize_artifacts(output_dir: Path) -> dict[str, bytes]:
-    """run 섹션의 실행 인스턴스 메타데이터를 제거해 artifact 결정론을 비교한다."""
+    """run_manifest.json에서 실행 인스턴스·워킹트리 상태 축(run·commitSha·dirty)을 제거해
+    artifact 결정론을 비교한다."""
     normalized: dict[str, bytes] = {}
     for path in sorted(output_dir.iterdir()):
         if path.name == "run_manifest.json":
             manifest = json.loads(path.read_text(encoding="utf-8"))
-            manifest.pop("run", None)
-            normalized[path.name] = (_json_text(manifest) + "\n").encode()
+            normalized[path.name] = (
+                _json_text(strip_volatile_manifest_keys(manifest)) + "\n"
+            ).encode()
         else:
             normalized[path.name] = path.read_bytes()
     return normalized

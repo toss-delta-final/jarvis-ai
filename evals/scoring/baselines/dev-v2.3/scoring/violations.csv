@@ -1,0 +1,4 @@
+caseId,productId,constraint
+buy-cmap-0004,1679183612,mustExclude
+buy-over-0003,9406282766,forbiddenProductId
+buy-over-0003,9406282766,mustExclude

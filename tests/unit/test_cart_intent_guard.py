@@ -319,6 +319,32 @@ async def test_stream_cart_add_wishlist_add_intent_delegates_to_wishlist_flow() 
     assert action["type"] == "WISHLIST_ADDED"
 
 
+async def test_stream_cart_add_wishlist_add_delegation_forwards_has_last_reco() -> None:
+    """[#435 W4] `stream_cart_add` 의 2선 방어(찜 위임)도 `has_last_reco` 를 전달한다 — 빠뜨리면
+    이 경로만 옛 문구로 새어 절반만 고친 것이다(패킷 §4 W4)."""
+    store = CartStateStore()
+
+    async def add_wishlist_fn(req):
+        raise AssertionError("productId 미해소인데 add_wishlist_fn 이 호출됐다")
+
+    events = await _collect(
+        stream_cart_add(
+            identity=_member(),
+            cart=CartIntent(product_id=None, quantity=1),
+            cart_store=store,
+            thread_key="m:t-wishlist-add-reco",
+            settings=get_settings(),
+            message="이거 찜해줘",
+            add_wishlist_fn=add_wishlist_fn,
+            has_last_reco=True,
+        )
+    )
+    text = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert (
+        text == "어떤 상품을 찜할까요? 추천해 드린 상품 중에서 이름을 말씀해 주시면 찜해 드릴게요."
+    )
+
+
 async def test_stream_cart_add_wishlist_remove_intent_delegates_to_wishlist_flow() -> None:
     """찜 해제 판정 → `stream_wishlist_remove` 로 위임된다(라운드 23, 위 함수와 같은 사실).
     `add_fn`(담기)은 한 번도 안 불린다.

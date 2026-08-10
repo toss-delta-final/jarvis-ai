@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import math
 
-from app.agents.seller.analysis.types import SeasonalAnomaly
+from app.agents.seller.analysis.types import SeasonalAnomaly, SeasonalAnomalyDetection
 
 # MAD → σ 환산 상수(정규분포 가정, Iglewicz & Hoaglin). robust z = |x-med| / (1.4826×MAD).
 _MAD_TO_SIGMA = 1.4826
@@ -106,27 +106,40 @@ def detect_seasonal_anomalies(
     alpha: float,
     max_anomalies_ratio: float,
     min_history_for_stl: int,
-) -> list[SeasonalAnomaly]:
+) -> SeasonalAnomalyDetection:
     """일별 시계열에서 계절성 인지 이상점을 검출한다 (S-H-ESD).
 
     이력이 min_history_for_stl 이상이면 STL(period, robust) 분해 잔차에,
-    미만이면 원값의 중앙값 편차에 GESD 를 건다(계절 미조정 폴백 — 호출부는
-    `len(values) < min_history_for_stl` 로 같은 분기를 판별해 폴백 사실을 표기한다).
+    미만이면 원값의 중앙값 편차에 GESD 를 건다(계절 미조정 폴백 — 어느 분기를
+    탔는지는 반환값 ``seasonal_adjusted`` 가 알린다, #512).
 
     [무매출 규칙 계승(#194)] 값이 0 인 포인트는 이상으로 판정하지 않는다 —
     저볼륨 판매자의 무판매일이 전부 급락 판정되는 노이즈 방지. 반대로 무매출
     이력(전부 0) 직후의 매출 발생은 상수 수열의 무한 편차로 검출된다(sigma=inf).
 
-    반환은 날짜 오름차순. expected(STL 재구성 기대값)가 0 이하면 편차%는 정의
-    불가라 deviation_pct=None 이다(0 나눗셈 위장 금지).
+    [#512] 표본이 _MIN_POINTS_FOR_GESD 미만이면 검정 자체가 불능이라
+    ``decided=False`` 로 돌려준다 — 종전엔 이 경우와 "검정했고 이상 0건"이
+    똑같이 빈 리스트라, 호출부가 표본 2개짜리 확정적 "이상 감지 없음"을
+    내보내고 있었다. 실패를 기본값(빈 리스트)으로 환원하지 않는다.
+
+    anomalies 는 날짜 오름차순. expected(STL 재구성 기대값)가 0 이하면 편차%는
+    정의 불가라 deviation_pct=None 이다(0 나눗셈 위장 금지).
     """
     if len(dates) != len(values):
         raise ValueError(f"dates({len(dates)})/values({len(values)}) 길이가 다르다")
     n = len(values)
     if n < _MIN_POINTS_FOR_GESD:
-        return []  # 검정 불능 — 이상 없음이 아니라 판정 보류(호출부가 표본 수로 판별)
+        # 검정 불능 — "이상 없음"이 아니라 판정 보류. decided=False 가 그 구분이다.
+        return SeasonalAnomalyDetection(
+            anomalies=[],
+            decided=False,
+            sample_size=n,
+            min_samples=_MIN_POINTS_FOR_GESD,
+            seasonal_adjusted=False,
+        )
 
-    if n >= min_history_for_stl:
+    seasonal_adjusted = n >= min_history_for_stl
+    if seasonal_adjusted:
         # STL 은 statsmodels 구현(Cleveland 1990 원 알고리즘, robust=True 로
         # 이상점의 계절/추세 오염을 억제). 결정론 — 같은 입력 = 같은 분해.
         import pandas as pd
@@ -168,4 +181,10 @@ def detect_seasonal_anomalies(
             )
         )
     anomalies.sort(key=lambda a: a.date)
-    return anomalies
+    return SeasonalAnomalyDetection(
+        anomalies=anomalies,
+        decided=True,
+        sample_size=n,
+        min_samples=_MIN_POINTS_FOR_GESD,
+        seasonal_adjusted=seasonal_adjusted,
+    )

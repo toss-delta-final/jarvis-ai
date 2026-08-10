@@ -397,12 +397,31 @@ analysis 의 최종 리포트는 **한 덩어리로 도착**한다(스트리밍 
 }
 ```
 
+**[#524] 옵션별 재고 상품** — 옵션마다 change 1건이고 각 change 에 `optionName` 이 실린다(추가 전용 키):
+
+```json
+{
+  "type": "draft",
+  "data": {
+    "draftId": "a3f1c2d4-5e6f-7890-abcd-ef1234567890",
+    "op": "update",
+    "productId": 101,
+    "changes": [
+      { "field": "stockQuantity", "optionName": "블랙/M", "before": "5", "after": "10" },
+      { "field": "stockQuantity", "optionName": "블랙/L", "before": "0", "after": "3" }
+    ],
+    "summary": "옵션별 재고 보충"
+  }
+}
+```
+
 | 필드 | 타입 | 실측 비고 |
 |---|---|---|
 | `draftId` | string | 서버 발급 **UUID v4**. 노션 예시 `"draft-8f21"` 은 형식만 예시 |
 | `op` | `"create"｜"update"｜"delete"` | I-10 / I-11 / I-12 매핑 |
 | `productId` | **number ｜ null** | 숫자(BIGINT). `create` 는 `null` |
 | `changes[].field` | string | ✅ **camelCase** (C-1 수정 2026-07-22) — 규약 §2.2 |
+| `changes[].optionName` | string | **[#524] 옵션별 재고 change 에만 실리는 추가 전용 키** — 그 외에는 **키 자체가 없다**(`preview`·`orderItemId` 와 같은 규약). 표시용 옵션명(`"블랙/M"`)이며 실행 대상 `optionId` 는 서버가 승인 시점 I-9 로 해소한다. **FE 는 이 키가 있으면 재고 행 라벨에 함께 보여야 한다** — 없으면 "재고 5 → 10" 두 줄이 옵션 구분 없이 뜬다 |
 | `changes[].before` | string | `create` 는 `""`. 수치도 문자열 |
 | `changes[].after` | string | 수치도 문자열 |
 | `summary` | string | diff 카드 부제용 한 줄 요약. api-spec §3.2·노션에 반영됨 |
@@ -418,7 +437,8 @@ name  price  originalPrice  description  category  imageUrl  status  stockQuanti
 `status` 값은 `ON_SALE` ｜ `HIDDEN` 만 허용. `delete` 는 `status: ON_SALE → HIDDEN` 1건으로 표현된다(soft delete 가시화).
 
 `op: "create"` 제약 (`hitl.validate_draft`):
-- **필수** `name`·`price`·`stockQuantity` — 누락 시 draft 불성립 → 되묻기 token
+- **필수** `name`·`price`·`stockQuantity`·**`category`** — 누락 시 draft 불성립 → 되묻기 token
+  ([#506 후속] `category` 필수화 — BE `SellerProductCreateRequest.categoryId` 가 필수라 없이 보내면 등록이 422 로 실패한다)
 - **금지** `imageUrl`·`status` — 포함 시 draft 불성립 → 되묻기 token
 
 ### 3.7 `done` — 종료 + 패널 조치
@@ -538,6 +558,8 @@ name  price  originalPrice  description  category  imageUrl  status  stockQuanti
 
 `stale` 검증 세부: `stock_quantity` 는 비교에서 **제외**한다(주문 재고 차감으로 자연 변동, F6). 대신 변동이 감지되면 결과 안내에 현재값을 덧붙인다.
 
+**[#524] 옵션별 재고에서는 이 비교·안내가 옵션 단위다** — 변동 여부는 그 change 가 가리키는 옵션의 현재 수량과 대조하고(합계와 비교하면 다른 옵션의 주문 차감까지 "변동"으로 오보한다), 안내 문구에 옵션명을 함께 싣는다(`재고가 블랙/M 3건 · 블랙/L 1건으로 변동되어…`). 옵션이 없는 상품의 문구는 종전과 **글자 그대로 동일**하다.
+
 > **FE 영향**: 성공/실패를 프로그램적으로 구분할 수단이 현재 없다. §5-D 제안.
 
 ### 4.4 draft 불성립 — `token` + `done` (200)
@@ -547,7 +569,10 @@ name  price  originalPrice  description  category  imageUrl  status  stockQuanti
 | 대상 상품 미특정 (`update`/`delete` 인데 productId 없음) | "어느 상품을 변경할지 특정하지 못했습니다…" |
 | `update` 인데 changes 비어있음 | "무엇을 어떻게 바꿀지 파악하지 못했습니다…" |
 | `create` 에 `image_url`/`status` 포함 | "상품 등록 시에는 이미지·상태를 함께 지정할 수 없습니다…" |
-| `create` 에 `name`/`price`/`stock_quantity` 누락 | "상품 등록에는 상품명·가격·재고 수량이 필요합니다…" |
+| `create` 에 `name`/`price`/`stock_quantity`/`category` 누락 | "상품 등록에는 상품명·가격·재고 수량·카테고리가 필요합니다…" |
+| `create` 에 카테고리만 누락 ([#506 후속]) | "어느 카테고리에 등록할지 확정하지 못했습니다…" (카테고리만 되묻는다 — 이미 말한 값을 다시 입력시키지 않는다) |
+| [#524] 옵션이 여럿인데 어느 옵션 재고인지 모호 | "이 상품은 옵션별로 재고가 관리됩니다. 어느 옵션의 재고를 바꿀지 알려주세요: 블랙/M · 블랙/L" |
+| [#524] 옵션별 재고 상품에 재고 추천을 `apply` | "'…' 추천은 재고 변경인데 이 상품은 옵션별로 재고가 관리됩니다(…). 어느 옵션의 재고를 얼마로 바꿀지 말씀해 주시면…" |
 | 값 캐스팅 실패 (예: price="비싸게") | "'price' 값 '비싸게' 을(를) 해석하지 못했습니다…" |
 | LLM 이 `clarification` 반환 (대상 모호 등) | LLM 이 생성한 되물음 |
 

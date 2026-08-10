@@ -88,6 +88,8 @@ class ConversationStoreProtocol(Protocol):
 
     async def turns_for(self, conversation_id: str) -> list[Turn]: ...
 
+    async def delete_turns_for_user(self, user_id: str) -> int: ...
+
 
 class ConversationStore:
     """인메모리 대화 저장소(테스트 전용). conversationId(=sessionId) 별로 턴을 순서대로 보관한다."""
@@ -176,6 +178,19 @@ class ConversationStore:
     async def turns_for(self, conversation_id: str) -> list[Turn]:
         return [self._turns[t] for t in self._by_conversation.get(conversation_id, [])]
 
+    async def delete_turns_for_user(self, user_id: str) -> int:
+        """전체 초기화 — 이 사용자의 전사록을 지운다 (#358, REQ-PGRAPH-061)."""
+        doomed = [tid for tid, turn in self._turns.items() if turn.user_id == user_id]
+        for turn_id in doomed:
+            self._turns.pop(turn_id, None)
+        for conversation_id, turn_ids in list(self._by_conversation.items()):
+            remaining = [t for t in turn_ids if t in self._turns]
+            if remaining:
+                self._by_conversation[conversation_id] = remaining
+            else:
+                self._by_conversation.pop(conversation_id, None)
+        return len(doomed)
+
 
 class PgConversationStore:
     """pg-profile conversation_turns 테이블 기반 스토어. ConversationStore 와 동일 인터페이스."""
@@ -253,6 +268,13 @@ class PgConversationStore:
                     await conn.execute(
                         "CREATE INDEX IF NOT EXISTS idx_conversation_turns_thread "
                         "ON conversation_turns (conversation_id, thread_id)"
+                    )
+                    # 전체 초기화가 사용자별로 지운다(#358, SPEC-PROFILE-GRAPH-149 §7.2).
+                    # 이 인덱스가 없으면 그 DELETE 가 풀스캔이라, 대화가 쌓일수록 초기화 하나가
+                    # 테이블 전체를 훑는다(§12 선결조건 7).
+                    await conn.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_conversation_turns_user "
+                        "ON conversation_turns (user_id)"
                     )
 
         await asyncio.wait_for(_run(), timeout=settings.state_store_migration_timeout_s)
@@ -389,6 +411,17 @@ class PgConversationStore:
             return [_row_to_turn(row) for row in rows]
 
         return await run_with_query_timeout(_run())
+
+    async def delete_turns_for_user(self, user_id: str) -> int:
+        """전체 초기화 — 이 사용자의 전사록을 물리 삭제하고 지운 행 수를 돌려준다.
+
+        컬럼이 `text` 라 호출부가 `str(user_id)` 로 넘긴다(BIGINT 표기 불일치, SPEC §12-7).
+        저장되는 값은 회원 id 문자열이고(`observability` 의 `identity.user_id or subject`),
+        게스트 턴은 게스트 subject 라 매칭되지 않는다 — 이 경로에 게스트는 없으므로 정상이다.
+
+        `setup()` 이 만드는 `idx_conversation_turns_user` 가 없으면 이 DELETE 가 풀스캔이다.
+        """
+        return await self._execute("DELETE FROM conversation_turns WHERE user_id = %s", (user_id,))
 
 
 def _row_to_turn(row: tuple) -> Turn:

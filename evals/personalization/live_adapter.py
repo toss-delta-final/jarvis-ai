@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any, Literal
 from unittest.mock import patch
 
@@ -9,6 +10,7 @@ from app.agents.buyer.recommendation.decompose import _filter_axes
 from app.core.config import Settings
 from app.schemas.spring import ProductSearchFilters
 from evals.goldenset.schema import Identity
+from evals.metrics.runner import EvaluationFixtures
 from evals.model_eval.adapter import LiveBuyerAdapter
 from evals.model_eval.budget import BudgetLimits, estimate_calls, preflight
 from evals.model_eval.pricing import PriceBook
@@ -27,11 +29,15 @@ def profile_for_scope(
     )
 
 
-def filter_axis_leakage(guest_filters: dict[str, Any], member_filters: dict[str, Any]) -> list[str]:
-    """값을 기록하지 않고 member에만 새로 생긴 필터 축 이름을 반환한다."""
-    guest_axes = set(_filter_axes(ProductSearchFilters.model_validate(guest_filters)))
-    member_axes = set(_filter_axes(ProductSearchFilters.model_validate(member_filters)))
-    return sorted(member_axes - guest_axes)
+def filter_axis_leakage(baseline_filters: dict[str, Any], arm_filters: dict[str, Any]) -> list[str]:
+    """값을 기록하지 않고 arm에만 새로 생긴 필터 축 이름을 반환한다.
+
+    [#483] 인자 이름이 guest/member 였던 건 기준선이 `guest` 로 하드코딩돼 있던 시절의 흔적이다.
+    기준선은 이제 호출부가 정한다(`cli.annotate_axis_metrics`).
+    """
+    baseline_axes = set(_filter_axes(ProductSearchFilters.model_validate(baseline_filters)))
+    arm_axes = set(_filter_axes(ProductSearchFilters.model_validate(arm_filters)))
+    return sorted(arm_axes - baseline_axes)
 
 
 class PersonalizationLiveBuyerAdapter:
@@ -45,8 +51,12 @@ class PersonalizationLiveBuyerAdapter:
         identity_kind: Literal["guest", "member"],
         settings,
         model_config: dict[str, Any] | None = None,
+        markdown_resolver: Callable[[object, EvaluationFixtures], str | None] | None = None,
     ) -> None:
         self.profile_markdown = profile_markdown
+        # [#484] 케이스별 프로필. 생성자 고정값만 있으면 arm 하나가 dev 전 케이스에 같은
+        # 문자열을 먹인다 — Tier D 의 `preference_resolver` 와 같은 콜백 규약을 쓴다.
+        self.markdown_resolver = markdown_resolver
         self.identity_kind = identity_kind
         self.settings = settings
         self.adapter = LiveBuyerAdapter(llm, settings=settings, model_config=model_config)
@@ -61,8 +71,13 @@ class PersonalizationLiveBuyerAdapter:
     def __call__(self, case, fixtures):
         from evals.model_eval import adapter as live_module
 
+        markdown = (
+            self.markdown_resolver(case, fixtures)
+            if self.markdown_resolver is not None
+            else self.profile_markdown
+        )
         decompose_profile, rerank_profile = profile_for_scope(
-            self.profile_markdown, self.settings.profile_injection_scope
+            markdown, self.settings.profile_injection_scope
         )
         original_decompose = live_module.decompose
         original_stream = live_module.stream_recommendation

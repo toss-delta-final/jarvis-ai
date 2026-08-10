@@ -16,11 +16,16 @@ FE 가 AI 서버를 다른 오리진에서 직접 호출하므로 CORS 가 앞�
 (app/pipelines/category_seed.py check_category_dictionary)를 검사한다. 기본값(log)·off 는
 DB 연결 실패로 기동을 막지 않는다. category_dictionary_startup_check="fail" 로 강한 검증을
 opt-in 하면 사전 상태를 확인 못하는 모든 경우(도달 불가 포함)에 기동을 거부한다(라운드 7 F8).
+
+[추가 2026-08-08, 이슈 #437] lifespan 에서 모델 단가표 상태(app/core/model_pricing.py
+log_model_price_table_status)를 1회 로그한다 — I/O 가 없어 항상 실행되고, category
+dictionary 점검이 실패해도 이 신호는 남도록 그 앞에 둔다.
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -35,6 +40,7 @@ from fastapi.middleware.cors import CORSMiddleware
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
+from app.agents.profile.graph_journal import close_pool as close_graph_journal_pool
 from app.agents.profile.processed_events import close_pool as close_processed_events_pool
 from app.agents.profile.session_activity import close_pool as close_session_activity_pool
 from app.agents.profile.store import close_store as close_profile_store
@@ -43,13 +49,19 @@ from app.agents.seller.history import close_store as close_seller_history_store
 from app.api import chat, events, internal, profile, seller
 from app.core.body_limit import BodySizeLimitMiddleware
 from app.core.conversation import close_store as close_conversation_store
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.core.errors import install_error_handling
 from app.core.logging import configure_logging, get_logger
+from app.core.model_pricing import log_model_price_table_status
 from app.core.pg_store import close_store as close_pg_store
 from app.core.pg_resilience import close_advisory_pool
 from app.core.session_context import close_session_lifecycle, initialize_session_lifecycle
 from app.core.ratelimit import rate_limit_middleware
+from app.core.stream import (
+    close_stream_registry,
+    initialize_stream_registry,
+    registry_is_process_local,
+)
 from app.pipelines.category_seed import (
     CategoryDictionaryError,
     check_category_dictionary,
@@ -60,12 +72,36 @@ from app.pipelines.scheduler import start_scheduler, stop_scheduler
 logger = get_logger(__name__)
 
 
+def _warn_process_local_registry_workers() -> None:
+    """프로세스 로컬 레지스트리와 uvicorn worker 설정의 위험한 조합을 관측만 한다.
+
+    프로세스 로컬 여부는 이제 `STREAM_REGISTRY_BACKEND` 에서 파생된다 (#476,
+    docs/specs/DESIGN-SHARED-STREAM-REGISTRY-476.md §1).
+    """
+    if not registry_is_process_local():
+        return
+    try:
+        workers = int(os.environ.get("WEB_CONCURRENCY", "1"))
+    except ValueError:
+        return
+    if workers >= 2:
+        logger.warning(
+            "WEB_CONCURRENCY=%s with process-local stream registry can bypass the §2.9(a) "
+            "concurrency guard; see docs/specs/OPS-SCALEOUT-476.md",
+            workers,
+        )
+
+
 async def _close_owned_resources() -> None:
     """소유한 리소스를 의존성 역순으로 닫고 개별 실패를 격리한다."""
     resources = (
+        ("stream_registry", close_stream_registry),
         ("session_lifecycle", close_session_lifecycle),
         ("seller_history_store", close_seller_history_store),
         ("seller_checkpointer", close_seller_checkpointer),
+        # 그래프 저널(#358)은 profile_store 보다 **먼저** 닫는다 — 변경 조립이 store 를 부르므로
+        # 의존하는 쪽이 앞이다(이 목록은 의존성 역순).
+        ("graph_journal_pool", close_graph_journal_pool),
         ("profile_store", close_profile_store),
         ("session_activity_pool", close_session_activity_pool),
         ("processed_events_pool", close_processed_events_pool),
@@ -200,8 +236,12 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Lifecycle migration 뒤 scheduler를 시작하고 owned resources를 역순 종료한다."""
     scheduler_started = False
     try:
+        log_model_price_table_status(get_settings())
+        _warn_process_local_registry_workers()
         await _check_category_dictionary_startup()
         await initialize_session_lifecycle()
+        # 공유 레지스트리 백엔드일 때만 스키마·풀을 준비한다(기본 memory 는 no-op).
+        await initialize_stream_registry()
         start_scheduler()
         scheduler_started = True
         yield
@@ -213,10 +253,31 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             await _close_owned_resources()
 
 
+def _warn_if_scripted_llm(settings: Settings) -> None:
+    """G2(#438) — 스텁 LLM 활성 시 기동 로그에 눈에 띄는 배너를 남긴다.
+
+    G1(config.py `_forbid_scripted_outside_local`)이 local/test 밖 기동 자체를 막지만, 그
+    안에서도 "지금 이 서버가 가짜 응답을 낸다"는 사실을 로그로만 보고 켠 사람이 잊을 수 있다.
+    운영 var 실수(deploy.yml `LLM_PROVIDER`)는 G1 이 기동 자체를 거부해 이 배너까지 갈 일이
+    없다 — deploy.yml 은 이 이슈에서 건드리지 않는다(§7 범위 밖, evals/benchmark/README.md 참조).
+    """
+    if settings.llm_provider != "scripted":
+        return
+    logger.warning(
+        "=" * 60
+        + "\nSTUB LLM MODE — LLM_PROVIDER=scripted\n"
+        + "이 서버는 모든 LLM 호출에 결정론 가짜 응답을 낸다 — 실 모델 호출이 아니다.\n"
+        + "운영 사용 금지: 사용자에게 정상 200 으로 가짜 추천/응답이 나간다(#438).\n"
+        + "부하 테스트 전용(app_environment=local|test 에서만 기동 허용).\n"
+        + "=" * 60
+    )
+
+
 def create_app() -> FastAPI:
     """FastAPI 앱을 생성·구성해 반환한다 (앱 팩토리)."""
     configure_logging()
     settings = get_settings()
+    _warn_if_scripted_llm(settings)
 
     app = FastAPI(
         title="Jarvis AI Server",

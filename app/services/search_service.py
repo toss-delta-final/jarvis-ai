@@ -17,15 +17,33 @@ import asyncio
 import functools
 import logging
 import math
+from time import monotonic
 from typing import Protocol
 
 from app.core.config import get_settings
+from app.core.tracing import current_request_trace
 from app.pipelines import embedding as _embedding
 from app.pipelines.artifact_store import ArtifactStore, get_catalog_store
 from app.schemas.spring import ProductSearchFilters, ProductSearchResult
 from app.services import spring_client
 
 _log = logging.getLogger(__name__)
+
+
+async def _search_products_with_observation(
+    filters: ProductSearchFilters,
+) -> ProductSearchResult:
+    """Spring 검색 성공 결과를 요청 관측에만 누적하고, 관측 실패는 검색 결과에 영향 주지 않는다."""
+    started = monotonic()
+    result = await spring_client.search_products(filters)
+    elapsed_ms = round((monotonic() - started) * 1_000)
+    try:
+        trace = current_request_trace()
+        if trace is not None:
+            trace.record_search_result(len(result.products), result.total_count, elapsed_ms)
+    except Exception:
+        _log.warning("search result observation failed code=SEARCH_RESULT_OBSERVATION_FAILED")
+    return result
 
 
 class SearchBackend(Protocol):
@@ -74,7 +92,7 @@ class SpringSearchBackend:
 
     async def search(self, filters: ProductSearchFilters) -> ProductSearchResult:
         """Spring 위임 검색. 실패 시 spring_client 가 SpringUnavailableError 를 던진다."""
-        return await spring_client.search_products(filters)
+        return await _search_products_with_observation(filters)
 
 
 class EmbeddingRerankBackend:
@@ -118,7 +136,7 @@ class EmbeddingRerankBackend:
         return ranked
 
     async def search(self, filters: ProductSearchFilters) -> ProductSearchResult:
-        result = await spring_client.search_products(filters)
+        result = await _search_products_with_observation(filters)
         # 의미검색 입력은 semantic_query(#101) — 없으면 상품명 keyword 로 폴백. 둘 다 없거나 후보가
         # 없으면 Spring 순서 그대로(재정렬 skip). keyword 유무와 무관하게 semantic 이 있으면 재정렬.
         # 최종 소비 지점 방어 — semantic_query/keyword 가 공백-only('  ')여도 truthy 라 무의미한

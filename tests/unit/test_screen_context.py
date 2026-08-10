@@ -1956,9 +1956,40 @@ def test_unresolved_notice_falls_back_to_the_default_for_unknown_reasons() -> No
     """새 사유가 생겨도 문구 분기가 조용히 빈 문자열을 내지 않는다(기본 문구로 degrade)."""
     from app.agents.buyer.cart.graph import _unresolved_notice
 
-    assert _unresolved_notice(None) == "어떤 상품을 담을까요? 추천을 먼저 받아보시면 담아드릴게요."
-    assert _unresolved_notice("some_future_reason") == _unresolved_notice(None)
-    assert _unresolved_notice("ambiguous_screen_candidates") != _unresolved_notice(None)
+    default = _unresolved_notice(None, False)
+    assert default == "어떤 상품을 담을까요? 추천을 먼저 받아보시면 담아드릴게요."
+    assert _unresolved_notice("some_future_reason", False) == default
+    assert _unresolved_notice("ambiguous_screen_candidates", False) != default
+
+
+def test_unresolved_notice_has_last_reco_changes_the_default_only() -> None:
+    """[#435 W4] `has_last_reco` 는 `screen_reason` 이 없을 때만 문구를 바꾼다.
+
+    화면 해소 사유가 있으면(순번/좌표 모호·미발견) 그 문구가 **우선**한다 — `last_reco` 유무와
+    무관하게 그대로다. `screen_reason` 이 없을 때만 "이미 추천을 받았다"는 사실을 반영한다.
+    """
+    from app.agents.buyer.cart.graph import _unresolved_notice
+
+    assert (
+        _unresolved_notice(None, False)
+        == "어떤 상품을 담을까요? 추천을 먼저 받아보시면 담아드릴게요."
+    )
+    assert (
+        _unresolved_notice(None, True)
+        == "어떤 상품을 담을까요? 추천해 드린 상품 중에서 이름을 말씀해 주시면 담아드릴게요."
+    )
+    for screen_reason in ("ambiguous_screen_candidates", "unknown_product_id_spoken"):
+        assert _unresolved_notice(screen_reason, False) == _unresolved_notice(screen_reason, True)
+
+
+def test_unresolved_notice_screen_reason_precedes_push_failed_marker() -> None:
+    """[#468 I-21] #118 화면 해소 사유는 push 실패 마커가 있어도 가장 구체적인 안내로 남는다."""
+    from app.agents.buyer.cart.graph import _unresolved_notice
+
+    for screen_reason in ("ambiguous_screen_candidates", "unknown_product_id_spoken"):
+        assert _unresolved_notice(screen_reason, False, has_push_failed=True) == _unresolved_notice(
+            screen_reason, False
+        )
 
 
 # ─────────── PR 2차 리뷰 — 좌표 축 반전 (열 = column) ───────────

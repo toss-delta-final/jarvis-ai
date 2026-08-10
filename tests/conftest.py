@@ -15,11 +15,12 @@ if not ("smoke" in " ".join(sys.argv) and "not smoke" not in " ".join(sys.argv))
     os.environ["OPENAI_API_KEY"] = ""
     os.environ["ANTHROPIC_API_KEY"] = ""
     os.environ["GOOGLE_API_KEY"] = ""
+    os.environ["INTERNAL_API_TOKEN"] = ""
 
 from app.agents.buyer.cart.state import reset_cart_store
 from app.agents.buyer.graph import reset_thread_store
 from app.agents.buyer.recommendation.state import reset_repurchase_store, reset_revert_store
-from app.agents.profile import processed_events, session_activity
+from app.agents.profile import graph_journal, processed_events, session_activity
 from app.agents.profile import store as profile_store_module
 from app.agents.profile.store import reset_profile_store
 from app.core import conversation as conversation_module
@@ -28,7 +29,7 @@ from app.core.conversation import reset_store
 from app.core.pg_resilience import close_advisory_pool, reset_advisory_pool
 from app.core.ratelimit import reset_limiter
 from app.core.session_context import close_session_lifecycle
-from app.core.stream import get_registry
+from app.core.stream import set_registry
 from app.pipelines.artifact_store import reset_catalog_store
 from app.pipelines.artifacts_batch import reset_batch_failure_state
 from app.services import spring_client as _spring_client
@@ -51,9 +52,9 @@ def _reset_infra_state():
     reset_profile_store()
     reset_catalog_store()
     reset_batch_failure_state()
-    get_registry()._active.clear()
-    get_registry()._fences.clear()
-    get_registry()._scope_idle.clear()
+    # 싱글턴 자체를 버린다 — 백엔드 선택이 설정에서 파생되므로(#476) dict 만 비우면
+    # 이전 테스트가 고른 백엔드와 lease 토큰이 다음 테스트로 샌다.
+    set_registry(None)
     yield
     reset_limiter()
     reset_store()
@@ -64,9 +65,9 @@ def _reset_infra_state():
     reset_profile_store()
     reset_catalog_store()
     reset_batch_failure_state()
-    get_registry()._active.clear()
-    get_registry()._fences.clear()
-    get_registry()._scope_idle.clear()
+    # 싱글턴 자체를 버린다 — 백엔드 선택이 설정에서 파생되므로(#476) dict 만 비우면
+    # 이전 테스트가 고른 백엔드와 lease 토큰이 다음 테스트로 샌다.
+    set_registry(None)
 
 
 @pytest.fixture(autouse=True)
@@ -103,6 +104,7 @@ async def close_pg_pools_on_loop() -> None:
     for close in (
         processed_events.close_pool,
         session_activity.close_pool,
+        graph_journal.close_pool,
         conversation_module.close_store,
         pg_store.close_store,
         profile_store_module.close_store,

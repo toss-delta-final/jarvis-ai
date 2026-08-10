@@ -135,7 +135,7 @@ class LiveBuyerAdapter:
                 failure_reason = f"nonRecommendIntent:{decision.intent}"
             else:
 
-                def _client() -> httpx.AsyncClient:
+                def _client(*, timeout: float | None = None) -> httpx.AsyncClient:
                     return httpx.AsyncClient(
                         base_url=self.settings.spring_base_url,
                         timeout=self.settings.spring_timeout_s,

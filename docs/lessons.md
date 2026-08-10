@@ -13,6 +13,628 @@
 
 ---
 
+## [2026-08-10] 서로 다른 저장소를 잇는 단계 사이에는 "의도"를 먼저 적어야 재개가 성립한다
+- 증상: #358 조립부(`apply_edge_mutation`)가 `문서 쓰기 → 감사 → 원장 완료` 순인데, **문서는 썼고
+  완료 표시 전에 끊긴** 창에서 재시도가 `404`(초기화는 `409`)를 받았다. api-spec §3.9.2 가 ⚠️ 로
+  *"이미 삭제된 edge 는 404 로 뭉뚱그리면 멱등 규약과 정면으로 모순"* 이라고 못박은 바로 그 판정을
+  하고 있었다. PR 리뷰가 잡았다.
+- 원인 셋이 겹쳤다.
+  1. **404 판정이 원장을 안 봤다.** `document` 만 보고 "대상이 없으니 404"라 했는데, 그 부재가
+     *이 요청이 만든 결과*일 수 있다. 게다가 그 판정이 claim 보다 앞이라 **TTL 이 지나도 같은 답**
+     이었다 — 자가 복구가 구조적으로 불가능했다.
+  2. **의도를 안 적었다.** 문서 쓰기와 완료 표시는 서로 다른 저장소라 한 트랜잭션에 못 묶이는데
+     (다중 항목 원자성 없음), 그 사이에 끊기면 "이 요청이 무엇을 만들려 했는가"가 어디에도 없어
+     재개가 응답을 재구성할 수 없다. SPEC 이 "저널 **선행** 기록(의도)"이라고 적은 이유가 이거였는데
+     구현이 그 단계를 생략했다.
+  3. **크래시한 시도의 lease 가 살아 있어** 재선점이 막혔다 — 재시도가 최대 TTL 동안 틀린 답을 받는다.
+- 규칙: **서로 다른 저장소에 걸친 다단계 쓰기는 (a) 첫 쓰기 전에 의도를 적고, (b) 실패·부재 판정을
+  그 의도 기록과 함께 하고, (c) 재개가 남은 단계만 마저 하게 만든다.** 셋 중 하나만 빠져도 중간에
+  끊긴 요청이 영구히 틀린 답을 받는다. 특히 "부재"를 오류로 판정하는 자리는 **그 부재를 내가 만든
+  것인지** 먼저 물어야 한다.
+- 규칙(추가): 재개가 생기면 **각 단계가 멱등이어야** 한다. 감사처럼 "한 변경 = 한 행"인 기록은 자연
+  키로 UNIQUE 를 걸어 두 번째 쓰기를 무시하게 한다. 그 키가 PII 를 담으면 지문으로 바꿔 담는다.
+- 규칙(추가): **크래시 재개는 "무엇이 진짜 상호배제인가"를 먼저 정해야 한다.** 여기서는 per-user
+  advisory 락이 그것이고, 그 락을 쥔 채 `processing` 잔재를 봤다면 주인은 돌고 있지 않다 — lease
+  만료를 기다릴 이유가 없다. 반대로 `completed` 는 어떤 경우에도 재선점하지 않는다(부작용 2회).
+- 관련: `app/agents/profile/graph_journal.py::apply_edge_mutation`·`record_intent`·`claim(takeover=)` ·
+  `tests/unit/test_profile_graph_apply.py` · api-spec §3.9.2 · PR #540 리뷰
+
+## [2026-08-10] 새 pg 모듈의 정리 배선은 "테스트 하니스"와 "앱 종료" 두 곳이다
+- 증상: #358 의 `graph_journal` 을 `tests/conftest.py::close_pg_pools_on_loop` 에는 배선했는데
+  **`app/main.py::_close_owned_resources` 에는 빠뜨렸다.** 통합 테스트도 유닛도 초록이었다 —
+  테스트는 하니스 쪽만 쓰고, 앱 종료 경로를 재는 테스트는 자원 목록을 손으로 열거하고 있었기
+  때문이다. 그 상태로 배포하면 **재배포마다 pg 커넥션 풀이 새고**, `max_connections` 에 닿아서야
+  무관해 보이는 곳에서 연결 실패로 드러난다.
+- 원인: 같은 성격의 목록이 두 곳에 있는데 서로를 강제하지 않았다. 한쪽만 채워도 스위트가 통과한다.
+- 규칙: **pg 풀을 여는 모듈을 새로 만들면 배선은 세 곳이 한 단위다** —
+  ① `tests/conftest.py::close_pg_pools_on_loop`(빠지면 CI 무한 대기)
+  ② `tests/integration/test_pg_pool_loop_teardown.py`(①의 누락을 잡는 가드가 성립하려면 필요)
+  ③ **`app/main.py::_close_owned_resources`(빠지면 운영에서 커넥션 누수)**.
+- 규칙(추가): 목록을 **손으로 세는 대신 구조로 고정한다.** 이름을 하드코딩한 테스트는 "둘 다
+  잊는" 실패 모드를 그대로 남긴다 — 패키지를 훑어 `close_pool` 을 가진 모듈이 전부 배선돼
+  있는지 확인하는 테스트를 넣었고(`test_every_pg_pool_module_is_wired_into_lifespan_shutdown`),
+  그게 실제로 이 누락을 잡았다.
+- 관련: `app/main.py::_close_owned_resources` · `tests/unit/test_main_lifespan.py` · 이슈 #208·#358
+
+## [2026-08-10] CHECK 제약의 어휘를 바꾸면 DROP → 행 이행 → ADD 셋이 한 세트다
+- 증상: 감사 `action` 어휘를 `edgeSuppress`→`edgeDelete` 로 개명(#499)하면서 **세 번 연속으로
+  다른 실패**를 밟았고, 매번 **기존 데이터가 있는 볼륨에서만** 터졌다.
+  1. 코드·DDL 문자열만 바꿨다 → `IF NOT EXISTS` 로 감싼 `ADD CONSTRAINT` 가 아무것도 안 해서
+     **이름이 같은 낡은 CHECK 가 그대로 남았고**, 새 값 INSERT 가 거부됐다.
+  2. 제약을 DROP 후 재생성했다 → 옛 값이 든 기존 행 6건 때문에 `ADD CONSTRAINT` **검증이 실패**해
+     `_ensure_schema` 전체가 죽었고, dev 폴백이 그 예외를 삼켜 "풀이 안 열림"으로만 보였다.
+  3. 행을 먼저 UPDATE 했다 → **낡은 CHECK 가 아직 살아 있어** 새 값이 거부됐다
+     (`new row for relation ... violates check constraint`).
+- 원인: `CREATE ... IF NOT EXISTS` / `DO $$ IF NOT EXISTS ... ADD CONSTRAINT $$` 관용구는
+  **"없으면 만든다"이지 "다르면 고친다"가 아니다.** 그리고 제약과 데이터는 서로를 막는다 —
+  제약이 살아 있으면 데이터를 못 고치고, 데이터가 낡았으면 제약을 못 건다.
+- 규칙: **enum 성격의 CHECK 어휘를 바꾸면 한 트랜잭션 안에서 `DROP CONSTRAINT IF EXISTS` →
+  기존 행 UPDATE → `ADD CONSTRAINT` 순서로 쓴다.** 셋 중 하나만 빠져도 빈 볼륨(CI·새 개발자)에서는
+  통과하고 **데이터가 있는 볼륨에서만** 깨진다 — 즉 운영에서 처음 드러난다.
+- 규칙(추가): **DDL 실패가 dev 폴백에 삼켜지면 증상이 "연결 실패"로 위장한다.** `_get_pool` 이
+  `except Exception → InMemory 폴백` 이라 진짜 원인(제약 위반)이 안 보였다. 스키마 오류를 쫓을
+  때는 폴백을 우회해 `_ensure_schema` 를 직접 부르거나, psql 로 같은 DDL 을 실행해 본다.
+  (Windows 에서 psycopg async 를 스크립트로 직접 돌리면 `ProactorEventLoop` 비호환이라
+  `docker exec ... psql` 이 더 빠르다.)
+- 관련: `app/agents/profile/graph_journal.py::_ensure_schema` ·
+  `tests/integration/test_pg_graph_journal.py` · #358 / #499
+
+## [2026-08-10] "되돌리면 깨지는지"를 실제로 해 보면 테스트가 주장을 안 재고 있는 게 드러난다
+- 증상: #358 조립부에서 `409` 경로의 claim 롤백(`release`)을 **일부러 제거했는데 14건이 전부
+  통과**했다. `test_conflict_releases_the_claim_so_a_corrected_retry_can_proceed` 라는 이름을 달고
+  있었는데도 그랬다.
+- 원인: 그 테스트가 재시도에 **다른 `If-Match`**(g41→g42)를 썼다. 파생 키가
+  `{action}:{userId}:{scopeId}:{ifMatch}` 라 `If-Match` 가 바뀌면 **키 자체가 달라져**, 남아 있는
+  claim 이 애초에 방해할 수 없다. 이름이 주장하는 인과가 시나리오에 없었다.
+- 규칙: **"되돌리면 깨지는지"는 문장으로 적지 말고 실제로 되돌려 돌려 본다.** 통과하면 그 코드가
+  불필요하거나 테스트가 다른 것을 재고 있는 것이고, 둘 다 고칠 거리다. 특히 **키·식별자가 입력에서
+  파생되는 경우** 두 요청이 같은 키를 쓰는지 먼저 확인한다 — 안 그러면 "경합"을 재는 시나리오가
+  실은 경합이 아니다. 여기서는 롤백이 진짜로 필요한 자리가 `409` 가 아니라 **no-op** 이었다
+  (같은 `If-Match` 로 온 진짜 변경이 같은 키를 쓴다).
+- 규칙(추가): 같은 점검에서 **만들어 놓고 배선 안 한 방어**도 드러났다(`request_fp`). 방어 장치를
+  추가한 커밋과 그것을 호출부에 꽂는 커밋이 다르면, 그 사이에 "있는데 안 쓰이는" 상태가 남는다 —
+  방어를 추가할 때 **그 방어가 없으면 깨지는 테스트를 같은 커밋에** 넣는다.
+- 관련: `app/agents/profile/graph_journal.py::_apply_claimed` ·
+  `tests/unit/test_profile_graph_apply.py` · #358
+
+## [2026-08-10] 표현을 바꾸면 그 표현을 읽던 먼 코드가 조용히 판정을 잃는다
+- 증상: #358 에서 삭제를 "`status="suppressed"` edge 보존" → "물리 삭제 + 별도 tombstone 리스트"로
+  바꿨더니, `builder._summary_input` 이 **지운 취향을 요약에 되돌려 넣기** 시작했다.
+- 원인: 그 함수는 "문서에 없는 `edge_key` 는 `active` 로 간주한다"는 규칙을 갖고 있었다. 절단으로
+  빠진 edge 를 삭제로 오인하지 않으려는 **정당한** 규칙인데, 삭제가 edge 를 문서에서 없애는 순간
+  "없음"의 뜻이 둘("저장 한계로 빠짐" vs "사용자가 지움")이 되어 규칙이 반대로 작동했다.
+- 규칙: **"없음"을 신호로 쓰는 코드를 먼저 찾고 나서 표현을 바꾼다.** 부재(absence)로 판정하는
+  자리는 표현이 바뀔 때 침묵으로 깨진다 — 예외도 타입 오류도 안 난다. 검색어는 필드 이름이 아니라
+  **그 필드가 없을 때의 기본값**(`.get(key, DEFAULT)` · `or` · `if not`)이다.
+- 규칙(추가): 이번엔 기존 테스트 6건이 잡아 줬다. 표현 변경 PR 에서 **기존 테스트가 무더기로
+  깨지는 것은 신호지 잡음이 아니다** — 하나씩 "이 테스트가 재던 성질이 새 표현에서도 성립하는가"를
+  묻고, 성립하면 매개체만 바꾸고 성립하지 않으면 그게 설계 결함이다.
+- 관련: `app/agents/profile/builder.py::_summary_input` · `graph_merge.py` · REQ-PGRAPH-023 · #358
+
+## [2026-08-09] OS별 구현이 다른 저수준 API를 전역 패치로 막으면 CI가 초록인 채 로컬만 죽는다
+- 증상: 유닛 스위트가 Windows 로컬에서 **556건 실패 / 4716 통과**. 실패가 `test_home_recommendation`
+  (66)·`test_seller_api`(64)·`test_auth_e2e`(59)처럼 **async 비중이 높은 파일 순서**로 몰렸고, 오류는
+  전부 `ConnectionRefusedError: unit tests must not open live TCP connections` + teardown 경고
+  `'ProactorEventLoop' object has no attribute '_ssock'`. 같은 커밋에서 CI(ubuntu-latest)는 전부 success.
+- 원인: 바로 아래 항목의 TCP 격리 가드가 `socket.socket`을 전역 패치해 AF_INET/AF_INET6 `connect`를
+  거부하는데, **Windows에는 AF_UNIX socketpair가 없어** CPython이 `socket.socketpair()`를
+  127.0.0.1 리스닝 소켓 + `connect()`로 흉내낸다. asyncio는 이벤트 루프 생성 시 self-pipe를
+  socketpair로 만들므로 **루프 생성 자체가 실패**했다(`_ssock` 미설정이 그 흔적). 리눅스·macOS는
+  커널 AF_UNIX라 `connect()`를 타지 않아 이 경로가 아예 없다.
+- 규칙: **테스트 격리를 위해 저수준 API를 전역 패치할 때는 그 API의 OS별 구현 차이를 먼저 확인한다.**
+  `socketpair`·`pipe`·`fork`처럼 POSIX 원형이 Windows에서 에뮬레이션되는 것들이 대상이다. 그리고
+  차단 가드는 **"막는 것"과 "통과해야 하는 것"을 같은 파일에서 둘 다 테스트로 고정**한다 — 막는
+  쪽만 재면 이런 과차단을 못 잡고, 통과 쪽만 재면 가드에 뚫린 구멍을 못 잡는다. 예외 범위를
+  스레드 전역이 아니라 **스레드 로컬**로 두는 것도 같은 이유다(예외 구간에 다른 스레드의 실 TCP가
+  묻어 통과하면 안 된다).
+- 규칙(추가): **CI가 단일 OS면 그 OS에서만 성립하는 회귀는 영영 안 잡힌다.** 로컬 전용 실패를
+  "환경 탓"으로 넘기기 전에 원인을 한 번은 분류한다 — 여기서는 그 분류가 실제 버그를 찾아냈다.
+- 관련: `tests/unit/conftest.py::_guarded_socketpair` · `tests/unit/test_unit_tcp_guard.py` ·
+  `.github/workflows/ci.yml:10`(ubuntu-latest) · #474 회귀, #358 작업 중 발견
+
+## [2026-08-10] 반복 실행 지표에서 기준선만 repeat 0 으로 고정하면 지터가 신호로 둔갑한다
+- 증상: Tier L 축 유출(`filterAxisLeakage`)이 기준선을 `repeat == 0` 한 벌로 뽑아 놓고 비교
+  대상은 전 repeat 을 돌았다. `--repeats 1` 에서는 무해했지만 `--repeats 3` 을 켜는 순간
+  arm 의 repeat 1·2 가 **기준선의 다른 샘플**과 비교돼, 같은 프롬프트라도 반복마다 흔들리는
+  LLM 지터가 "프로필이 새로 만든 필터 축"으로 계상된다.
+- 원인: 같은 파일의 활성화 지표(`activation.ranking_change`)는 `(caseId, repeat)` 로 짝짓는
+  규약을 docstring 에까지 명시해 뒀는데, 유출 지표만 그 규약 밖에 있었다. 두 지표가 같은
+  산출물을 읽으면서 짝짓기 키가 서로 달랐고, repeats=1 에서는 두 규약이 우연히 일치해
+  어긋남이 드러나지 않았다.
+- 규칙: 반복 실행 산출물을 짝지어 비교하는 지표는 **예외 없이 `(caseId, repeat)`** 를 키로
+  쓴다. `caseId` 만 쓰는 코드를 보면 "repeats>1 에서도 맞는가"를 먼저 묻는다. 그리고 짝이
+  없는 행은 `[]`(=이상 없음)로 채우지 말고 `None`(=계산 못 함)으로 남긴다 — 빈 리스트는
+  측정 중단을 안전 신호로 둔갑시킨다(아래 #512 교훈과 같은 취지다). 이때 "측정됐는가" 판정은
+  **양쪽 모두**에 걸어야 한다: 기준선만 거르면 비교 대상 자신이 스텁일 때 빈 입력이 "이상 없음"
+  으로 계산돼 같은 둔갑이 방향만 바꿔 되살아난다(PR #536 리뷰에서 두 번 지적받았다).
+- 관련: `evals/personalization/cli.py::annotate_axis_metrics`,
+  `evals/personalization/activation.py::_by_pair_key` (#483)
+
+---
+
+## [2026-08-10] 이슈 착수 전에 **열린 PR**을 확인한다 — 이슈 본문은 작성일에 멈춰 있다 (#306)
+- 증상: #306(미룬 턴 재시도 스킵 원복) 계획을 "오늘 기본값에서 무동작(no-op)인 죽은 코드 정리"로
+  세워 검증까지 마쳤는데, 착수 직전 발견한 **열린 PR #532**(#406 + #394 원복)가 그 전제를
+  뒤집었다. 그 PR 은 `spring_max_retries` 를 0→1, `rescue_budget_mode` 를 observe→narrow 로
+  올리고 **우리가 고칠 `with` 블록을 통째로 재작성**해 놓은 상태였다(겹치는 파일 6개). 계획을
+  처음부터 다시 세우고 검증도 다시 돌렸다.
+- 원인: 착수 판별을 **이슈 본문과 병합된 `dev`** 만으로 했다. 이슈는 작성일(08-04) 스냅샷이고
+  `dev` 는 아직 머지되지 않은 작업을 모른다 — 그 사이의 진실은 **열린 PR·원격 브랜치**에 있다.
+  #306 은 심지어 관련 이슈(#427·#394)를 본문에 다 적어 두었는데, 그 이슈들이 **닫힌 뒤** 후속
+  PR 이 또 열려 있었다.
+- 규칙: 이슈에 착수하기 전에 **`gh pr list --state open` 으로 열린 PR 을 훑고, 손댈 파일과
+  겹치는 PR 이 있으면 그 diff 를 먼저 읽는다.** 특히 (1) 이슈 본문이 지목한 심볼을 grep 으로
+  열린 브랜치들에서 찾고, (2) `git log --all --grep=<이슈번호>` 로 다른 브랜치가 이미 그 이슈를
+  언급하는지 본다. 겹치면 **머지 순서를 먼저 정한다** — 선후가 뒤집히면 한쪽이 다른 쪽 전제를
+  깨고, 계획의 "동작이 바뀌는가" 판정 자체가 반대가 된다.
+- 관련: #306, PR #532(#406), `git log --all --grep`, `gh pr list --state open`
+
+---
+
+## [2026-08-09] 실패를 기본값(0·빈 리스트)으로 환원하지 않는다 — 기본값은 정상값과 구별되지 않는다
+- 증상: 판매자 매출 도구가 오류 없이 HTTP 200 으로 **틀린 답**을 내는 경로가 3개 있었다.
+  (1) `granularity=summary` 는 응답 shape 이 달라 `SalesResult(extra="allow")` 가 `series=[]`
+  로 삼켜 **언제나 "총매출 0원"**, (2) 파싱은 되지만 정규형이 아닌 ISO(`"20260801"`)가
+  문자열 비교 필터(`p.date >= from_date`)의 경계값이 돼 전 포인트 탈락 → 또 0원,
+  (3) 표본 3개 미만이라 검정 불능인데 빈 리스트가 "이상 감지 없음"으로 번역돼 확정적
+  all-clear 가 나갔다.
+- 원인: 세 경로 모두 실패를 **그 도메인의 기본값**(0원·빈 목록)으로 환원했다. 기본값은
+  정상값과 형태가 같아 로그에도, 판매자 눈에도 이상으로 보이지 않는다. 특히 "형식 오류는
+  Spring 검증 경로에 맡긴다"(`except ValueError: pass`)는 사실상 **상대 파서의 관대함에
+  안전을 건 것**이었다.
+- 규칙: 판정 불능·미지원·형식 위반은 기본값이 아니라 **타입이나 문자열로 드러낸다** —
+  판정 함수는 "결과"와 "판정 가능 여부"를 함께 반환하고(`decided`), 도구는 지원하지 않는
+  입력을 `Error:` 로 즉시 거절한다. 문자열이 비교 연산의 경계값이 될 자리라면 파싱 성공이
+  아니라 **정규형 일치**(`parsed.isoformat() == 원문`)까지 확인한다.
+- 관련: `app/agents/seller/tools.py` · `app/agents/seller/analysis/timeseries.py` ·
+  `app/agents/seller/analysis/types.py` · `docs/specs/STATUS-seller-analysis-2026-08-09.md` §3 · #512
+
+---
+
+## [2026-08-09] pydantic 의 `str = ""` 기본값은 **키 결측**만 흡수한다 — nullable 컬럼에는 `| None` 이 필요하다
+- 증상: I-31 리뷰 조회에서 `rows[]` 중 **한 행만** `content: null` 이어도 그 페이지 전체가
+  `ValidationError` → `SpringUnavailableError` → 도구 degrade 로 죽었다. 판매자에게는
+  "리뷰 조회에 실패했습니다" 로만 보여서, 부분 결측이 원인이라는 단서가 표면에 없었다.
+- 원인: `SellerReviewRow.content: str = ""` 였다. 기본값은 **키가 아예 없을 때** 쓰이는 값이지
+  타입 허용 범위가 아니다 — 명시적 `null` 이 오면 pydantic 은 기본값과 무관하게 `str` 에
+  `None` 을 넣기를 거부한다. 베이스의 `extra="allow"` 도 여분 필드만 다루므로 이 경로를
+  구제하지 못한다(#489 가 고친 `extra="ignore"` 필드 소실과는 층위가 다르다). DDL 은
+  `content TEXT NULL` 이었고 별점만 남기는 리뷰는 흔한 입력이었다.
+- 규칙: 스키마 필드를 쓸 때 **DDL/명세의 NULL 허용 여부를 기본값이 아니라 타입으로** 옮긴다.
+  `X = ""`·`X = 0` 은 "이 필드는 절대 null 이 아니다" 는 선언이며, 확신이 없으면 `| None` 이
+  기본이다(#197 의 "기본값 0 금지" 와 같은 취지 — 그쪽은 오독, 이쪽은 전량 실패). 그리고
+  **행 단위 결측이 페이지 전체를 죽이는지**를 스키마 리뷰의 상시 질문으로 둔다: 한 행짜리
+  정상 픽스처만 있으면 이 실패 모드는 테스트에 잡히지 않는다 — null 행과 정상 행을 **섞은**
+  응답으로 고정한다.
+- 관련: `app/schemas/spring.py`(SellerReviewRow) · `app/agents/seller/tools.py`(표시 폴백) ·
+  `tests/unit/test_seller_spring_client.py::test_get_reviews_parses_null_content_without_failing_the_page` ·
+  이슈 #518 · api-spec §4.20
+
+---
+
+## [2026-08-10] 구조화 로그의 message 형식을 바꾸면 선택자도 전수 이관한다
+- 증상: #385가 구조화 이벤트의 message를 JSON으로 바꾼 뒤, 예산 테스트 4건이 옛
+  `record.message == "recommend_pipeline"` 선택자를 써 `StopIteration` 또는 `None`으로 실패했다.
+- 원인: 첫 수정에서 일부 caplog 선택자만 JSON 파싱으로 바꾸고, 저장소 전체의 message/msg/getMessage
+  기반 이벤트 선택을 전수 검색하지 않았다.
+- 규칙: 구조화 로그의 message 표현을 바꿀 때는 안정적인 LogRecord extra 선택자(여기서는 `event`)를
+  함께 제공하고, 이벤트명으로 message/msg/getMessage를 고르는 모든 호출부를 grep으로 0건 확인한다.
+- 관련: `app/core/logging.py::log_structured` · `tests/unit/test_rescue_budget_427.py` · #385
+
+---
+
+## [2026-08-10] `extra=` 검증은 렌더된 sink 문자열까지 확인한다
+- 증상: 구제 체인 이벤트가 `extra`에 계측 필드를 넣었고 caplog의 `record.rescue_elapsed_ms` 단언도
+  통과했지만, 표준 formatter가 `%(message)s`만 출력해 운영 stdout에서는 필드가 전부 사라졌다.
+- 원인: LogRecord 속성 보존과 formatter 렌더는 별도 단계인데, 테스트가 전자만 확인했다.
+- 규칙: stdout/file sink로 소비되는 구조화 로그는 실제 formatter로 레코드를 렌더한 뒤 파서·집계기까지
+  왕복하는 회귀 테스트를 둔다. `extra=` 속성 단언은 호환성 검증으로만 남긴다.
+- 관련: `app/core/logging.py::log_structured` · `tests/unit/test_aggregate_rescue_chain.py` · #385
+
+---
+
+## [2026-08-09] 분포 분리 테스트는 변이 뒤 순위가 실제로 바뀌는 표본을 써야 한다
+- 증상: #385의 `may_auto_relax=False` 분리 테스트가 False 표본 하나(1ms)와 True 표본 둘
+  (100/200ms)을 썼더니, False를 True 분포에 잘못 섞는 변이가 통과했다.
+- 원인: 최근접 순위 p50은 `[100, 200]`과 `[1, 100, 200]`에서 모두 100이라, "작은 False 값을
+  넣었다"는 사실만으로 분리 결함을 검출하지 못했다.
+- 규칙: 분위수·분모 분리 회귀 테스트는 의도한 잘못된 결합을 실제로 적용한 변이에서 적어도 하나의
+  단언값이 달라지는 손계산 표본을 사용하고, 변이 실행으로 그 실패를 확인한다.
+- 관련: `tests/unit/test_aggregate_rescue_chain.py` · #385
+
+## [2026-08-10] 동시 레인의 완료 조건은 이슈가 아니라 최신 dev에서 다시 실측한다
+- 증상: 이슈 완료 조건에 "미구현"으로 표시된 항목을 그대로 믿고 승인 0건 가드를 구현했는데,
+  같은 조건을 다른 레인(PR #502)이 이미 dev 에 넣어 둔 상태였다. back-merge 때 같은 판정이 두
+  곳에 생겨 한쪽을 걷어내야 했다.
+- 원인: 착수 시점에 `origin/dev` 를 fetch 하지 않고 베이스 커밋(`f1f621e`) 기준으로만 실측했다.
+  그 사이 dev 는 34커밋 앞서 있었고, 문제의 코드는 "docs 전용"이라고 적힌 PR(#502, 커밋
+  `13c84e3`)이 함께 실어 커밋 제목·본문으로는 검색되지 않았다.
+- 규칙: 동시 레인이 여럿이면 착수 전 `git fetch origin` 후 **`origin/dev` 기준으로** 완료 조건을
+  실측한다. 이슈 본문의 체크박스와 완료 조건 표는 작성 시점 스냅샷이라 근거가 아니다. 커밋 제목이
+  docs 라도 코드가 실려 있을 수 있으니 `git log -S<심볼> origin/dev -- <경로>` 로 심볼 단위 확인을
+  한다.
+- 관련: `app/pipelines/color_synonyms.py::_warn_empty_map_once` · PR #502 · #505
+
+---
+
+## [2026-08-09] 전체 `ruff format` 은 현재 변경 범위를 벗어난 포맷 churn을 만든다 (#406)
+- 증상: #406 검증에서 인자 없는 `uv run ruff format`을 실행해 이슈와 무관한 26개 파일이 순수
+  포맷 변경으로 워킹트리에 함께 남았다.
+- 원인: 저장소에는 CI가 강제하지 않는 기존 포맷 드리프트가 있고, 전체 format은 그 드리프트까지
+  현재 작업의 변경으로 흡수한다.
+- 규칙: format은 이번에 수정한 파일 목록만 인자로 넘기고, 전체 검증은 `uv run ruff check`로 한다.
+- 관련: #406 · `.github/workflows/ci.yml` · `docs/lessons.md`
+
+---
+
+## [2026-08-09] `asyncio.run` 을 타는 유닛 테스트는 Windows 에서만 TCP 차단에 걸린다
+- 증상: `tests/unit/test_personalization_scope.py::test_live_wrapper_routes_profile_for_all_scopes`
+  가 로컬(Windows)에서만 `ConnectionRefusedError: unit tests must not open live TCP connections`
+  로 실패한다. httpx 는 `MockTransport` 라 실제 요청이 없는데도 그렇다. 같은 코드가 CI 는 통과한다.
+- 원인: `LiveBuyerAdapter.__call__` 이 `asyncio.run` 을 쓰는데, Windows 기본 루프인
+  `ProactorEventLoop` 는 self-pipe 를 **TCP 루프백 socketpair** 로 만든다. `tests/unit/conftest.py`
+  의 `_TcpRefusingSocket` 이 AF_INET `connect` 를 전부 거부하므로 루프 생성 자체가 죽는다
+  (뒤따르는 `AttributeError: 'ProactorEventLoop' object has no attribute '_ssock'` 이 그 흔적).
+  POSIX 는 AF_UNIX socketpair 라 같은 가드에 걸리지 않는다 — 그래서 OS 별로 갈린다.
+- 규칙: 유닛 테스트에서 **주입·배선 경로만** 검증할 거면 `asyncio.run` 을 타는 실행기를 통째로
+  부르지 말고 경계 함수(여기서는 `profile_for_scope`)의 입력을 가로채고 내부 어댑터는 대역으로
+  바꾼다. 로컬 실패를 보고 "환경 탓"으로 넘기기 전에 **변경 전 baseline 에서도 같은 실패가
+  나는지** 먼저 확인한다(`git stash push -u -m <고유태그>` → 확인 → `git stash apply <sha>` → drop).
+- 관련: `tests/unit/conftest.py:23-36`, `evals/model_eval/adapter.py::LiveBuyerAdapter.__call__`,
+  `tests/unit/test_personalization_scope.py::_resolved_markdowns` (#484)
+
+---
+
+## [2026-08-09] 계약 어휘 동기화의 완료 조건은 "신규 값 등장"이 아니라 "구 값 0건"이다
+- 증상: BE 가 `ProductStatus.DELETED` 를 신설했는데, #472 사본 동기화가 api-spec §4.5 **표**를
+  정본에 맞춘 뒤 §4.5 를 "확정·구현 완료"로 표시했다. 실제로는 §3.2 산문이 `status=HIDDEN` 으로
+  남았고 `app/` 에는 `DELETED` 가 0회여서, AI 는 나흘간 삭제를 숨김으로 다뤘다.
+- 원인: 완료 판정을 "새 값이 표에 있는가"로 했다. 새 값이 들어와도 **구 값이 남아 있으면 코드는
+  구 값대로 동작한다** — 둘은 배타가 아니다.
+- 규칙: 어휘를 바꾸는 동기화는 **폐기된 구 값의 repo 전역 잔여가 0건**임을 확인해야 끝난다
+  (과거 변경 이력 행은 제외). 훑을 대상 목록은 같은 날의 「계약 문자열 폐기는 동의어·enum 값·
+  다른 표기까지 함께 훑는다」 항목을 따른다.
+- 관련: `docs/api-spec.md` v0.29.4 → v0.32.1 · #511 · BE `docs/backend/02-data-model.md` D41
+
+---
+
+## [2026-08-09] 선례를 근거로 규약을 세울 땐 그 선례가 실제로 그런지 코드로 확인한다
+- 증상: `spring_client.py` 주석이 **"I-12 ALREADY_HIDDEN 논리"** 를 근거로 I-30 에 전용 예외
+  3종을 두면서, 정작 그 논리의 출처인 I-11·I-12 에는 `error_code_map` 이 없었다.
+- 원인: 신규 기능(#297)에서 규약을 정립하며 기존 호출부의 소급 적용을 남기지 않았다. 주석이
+  선례를 인용하는 순간 "선례도 그렇게 돼 있다"는 착시가 생겨 아무도 되짚지 않았다.
+- 규칙: 기존 API 를 근거로 새 규약을 세우면 **그 기존 API 가 규약을 따르는지 코드로 확인**하고,
+  아니면 같은 PR 에서 맞추거나 이슈를 남긴다. 주석의 인용은 근거가 아니다.
+- 관련: `app/services/spring_client.py` I-11·I-12·I-30 · #511 · #297
+
+---
+
+## [2026-08-09] 변이가 살아남으면 "테스트가 약한 것"이 아니라 **더 위 계층에서 멈춘 것**일 수 있다
+- 증상: #476 공유 스트림 레지스트리에서 `release_stream` 의 SQL `AND stream_token=%s` 를 지우는
+  변이를 넣었는데, 그 조건을 검증한다고 이름 붙인 통합 테스트
+  (`test_pg_release_only_deletes_the_row_this_worker_owns`)가 **그대로 통과**했다.
+- 원인: 테스트가 `SharedStreamRegistry.release()` 를 통해 들어갔는데, 레지스트리가 자기 로컬
+  토큰 맵에 키가 없으면 **DB 를 치기 전에 조기 반환**한다. 즉 테스트는 상위 계층 가드를 재고
+  있었고 SQL 조건에는 애초에 도달한 적이 없다. 이름과 주석은 SQL 을 검증한다고 말하고 있었다.
+- 규칙: 다층 방어(호출부 가드 + 저장소 조건)를 넣었으면 **각 층을 그 층의 진입점에서** 시험한다.
+  저장소 조건은 저장소 API 를 직접 불러(`store.release_stream(..., stream_token=<틀린 토큰>)`)
+  확인하고, 변이 시험은 층마다 따로 돌린다. 변이가 살아남으면 "단언을 세게" 하기 전에
+  **호출 경로가 그 코드에 닿는지부터** 확인할 것.
+- 관련: `tests/integration/test_pg_shared_stream_registry.py` ·
+  `app/core/stream_registry.py::SharedStreamRegistry.release` · #476
+
+---
+
+## [2026-08-09] Windows 로컬 `uv run pytest` 554건 실패는 TCP 차단 가드 × ProactorEventLoop 충돌이다
+- 증상: 문서만 고친 브랜치에서 `uv run pytest` 가 **554 failed / 4729 passed**. 실패 트레이스는
+  전부 `tests/unit/conftest.py:28 ConnectionRefusedError: unit tests must not open live TCP connections`
+  이고, 무관한 `tests/unit/test_health.py` 도 똑같이 5건 실패한다. **CI(Linux)는 통과한다.**
+- 원인: #501(`bbbf715`)이 넣은 유닛 테스트 TCP 차단 가드가 `AF_INET` connect 를 전부 막는데,
+  **Windows 의 asyncio 는 `ProactorEventLoop` self-pipe 를 loopback TCP socketpair 로 만든다.**
+  이벤트 루프를 만드는 테스트가 전부 가드에 걸린다. Linux 는 self-pipe 가 TCP 가 아니라 안 걸린다.
+- 규칙: **로컬 pytest 대량 실패를 보면 먼저 무관한 테스트 하나(`test_health.py`)를 돌려 본다** —
+  같이 죽으면 내 변경이 아니라 환경이다. 문서 전용 변경이라면 `test_contract_docs.py` 만 돌려
+  계약 문서 검증을 확인하고, 전체 판정은 CI 에 맡긴다. 기존 메모의 "로컬 전용 실패 2건"은
+  #501 이후 이 규모로 커졌으니 그 숫자를 믿지 않는다.
+- 관련: `tests/unit/conftest.py:23-31` · `bbbf715`(#501) · #499
+
+## [2026-08-09] 사본 동기화는 착수 시점에 정본을 다시 읽는다 — 이슈 본문은 작성일에 멈춰 있다
+- 증상: #499 본문은 2026-08-08 BE 확약 기준 **4건**의 체크리스트였는데, 착수 시점에 노션 정본을
+  열어 보니 **다음 날(08-09) 10벌이 확정되면서 §3.8 응답 구조까지 개편**돼 있었다. 이슈만 따랐으면
+  `nodes[]` 폐지·edge 필드 13→5·`purged` 개편을 통째로 놓친 채 "완료" 보고를 했을 것이다.
+- 원인: 사본 동기화 이슈는 **정본의 스냅샷**으로 작성된다. 정본은 그 뒤에도 움직이는데 이슈 본문은
+  안 움직인다. 게다가 확정된 정본 페이지들이 *자기* 변경 이력으로 그 이슈 번호를 지목하고 있어,
+  정본 쪽은 이미 "이 이슈가 다 반영할 것"으로 간주하고 있었다.
+- 규칙: **동기화 작업은 착수 직전에 정본을 전수로 다시 읽고, 이슈 본문과의 차이를 먼저 보고한다.**
+  범위가 넓어지면 사용자에게 확인받되, 이슈 본문을 "범위의 상한"으로 취급하지 않는다.
+- 관련: `docs/api-spec.md` v0.32.0 · 노션 「♻️ 취향 관리 API 10개 — 고쳐야 할 것 정리」 · #499
+
+## [2026-08-09] 계약 문자열 폐기는 동의어·enum 값·다른 표기까지 함께 훑는다
+- 증상: undo 폐기 정정에서 `restorable`·`includeSuppressed` 를 다 지웠는데 **감사 로그 enum 의
+  `edgeRestore`** 가 api-spec §6.3·SPEC §5.4 양쪽에 그대로 남아 있었다. 준비한 grep 목록
+  (`restorable`·`undo`·`되돌리기`…)으로는 **한 건도 안 잡혔다.**
+- 원인: 폐기 대상을 "필드명"으로만 생각했다. 같은 개념이 **enum 값(camelCase 합성어)·한국어 서술·
+  코드 docstring**으로 흩어져 있으면 문자열이 서로 다르다.
+- 규칙: 개념을 폐기할 때 grep 목록에 **필드명 + enum 값 + 한국어 표현 2~3종 + 코드 주석**을 모두
+  넣는다. 특히 `<동사>Restore` 처럼 **접두어가 붙어 원래 단어가 부분 문자열이 되는** 형태를 의심한다.
+- 관련: `docs/api-spec.md` §6.3 (c) · `SPEC-PROFILE-GRAPH-149` §5.4 · #499
+
+## [2026-08-09] 상대 구현을 "실질 효과 없음"으로 판정해 요청에서 빼지 않는다
+- 증상: 협의 문서(`BE-NEGOTIATION-GRAPH-357`)는 C-27 캐시 무효화 필요 지점을 **"중지·초기화 2곳"**
+  으로 축소하고 개별 삭제를 *"다음 consolidation 전까지 랭킹 미반영이라 실질 효과가 없다"* 며
+  뺐다. BE 는 **수정·삭제·초기화·중지 4곳 전부**에 구현했다. 같은 문서 §6.1 은 "3종"이라 적어
+  **내부에서도 숫자가 갈려 있었다.**
+- 원인: 우리 판정 근거(랭킹 반영 시점)는 맞았지만, 상대는 **사용자 약속**("지웠다고 했는데 홈에
+  남아 있다")을 기준으로 봤다. 축소 판정은 상대의 구현 자유도·판단 기준을 예측하는 일이다.
+- 규칙: 요청 범위를 줄일 때는 **줄인 근거를 상대에게 보이되 항목은 남긴다**("불필요해 보이지만
+  판단은 그쪽"). 그리고 같은 문서 안에서 같은 수를 두 번 적었으면 **반드시 대조**한다.
+- 관련: `docs/api-spec.md` §5 C-27 · `jarvis-backend#132` · #499
+
+## [2026-08-09] 범위 대조는 선언된 건수보다 열거된 식별자를 우선한다
+- 증상: #472 정본 인덱스는 범위를 44건이라 표기했지만, 실제 열거는 internal 36건·chat 6건·S-4·P-4/P-5·E-1로 46건이었다.
+- 원인: 요약 집계와 개별 범위 목록이 독립적으로 수정돼 산술 검증이 빠졌다.
+- 규칙: 전수 대조표는 식별자 열거를 기준으로 만들고, 선언 건수와 다르면 누락시키지 말고 불일치와 산식을 감사 결과에 기록한다.
+- 관련: `docs/api-spec-canonical-audit.md` #472 범위 기준
+
+---
+
+## [2026-08-09] 로컬 pytest 무더기 실패는 워크트리 환경을 먼저 분리해 재현한다
+- 증상: #472에서 로컬 `uv run pytest`가 38건 실패했다.
+- 원인: 워크트리의 `.env`가 테스트 환경에 개입했지만, CI는 `.env` 없이 실행한다.
+- 규칙: 무더기 실패 시 자기 변경이나 dev 환경을 의심하기 전에 `.env`를 내용을 열지 않고 잠시 치운 뒤 재현하고 반드시 되돌린다.
+- 관련: #472 검증 기록
+
+---
+
+## [2026-08-09] 유닛 테스트는 로컬 BE가 살아 있어도 TCP를 열면 안 된다
+- 증상: 로컬 Spring BE가 8080에서 실행 중이고 `.env`의 내부 토큰이 채워지면 재구매·완화 유닛
+  테스트가 실제 응답을 받아 CI와 다른 단언 결과를 냈다.
+- 원인: PG 연결은 `tests/unit/conftest.py`에서 구조적으로 격리했지만, httpx/anyio가 만드는 TCP
+  연결에는 같은 차단 경계가 없었고 `INTERNAL_API_TOKEN`도 공통 환경 초기화에서 빠져 있었다.
+- 규칙: 유닛 테스트는 `tests/unit/` 범위에서만 실제 TCP를 `ConnectionRefusedError`로 거부하고,
+  로컬 서비스·토큰 유무와 무관하게 CI의 연결 실패 degrade 경로를 검증한다.
+- 관련: `tests/conftest.py` · `tests/unit/conftest.py` · `tests/unit/test_network_isolation.py` · #474
+
+## [2026-08-09] datasetHash 규칙을 바꾸면 연결된 baseline을 즉시 재생성한다
+- 증상: `audit/holdout_runs.jsonl`을 해시 대상에서 제외한 뒤 datasetHash는 바뀌었지만,
+  `dev-v2.3`와 `trivial_empty` baseline은 이전 hash를 계속 가리켰다.
+- 원인: 재현 가능한 파일 목록을 고친 후 baseline 산출물의 `datasetHash` 연결을 재검증하지 않았다.
+- 규칙: datasetHash 입력·제외 규칙을 바꾼 커밋에서는 모든 현재 baseline을 재생성하고, 산출물의
+  hash가 manifest와 같은지 확인한다. append-only 런타임 로그는 해시에서 제외한다.
+- 관련: `evals/goldenset/refresh_manifest.py::HASH_EXCLUDED_PATHS` ·
+  `tests/unit/test_goldenset_audit.py` · #474
+
+## [2026-08-08] 로컬 BE 가 떠 있으면 유닛 테스트가 라이브 BE 를 친다 — `dev` 나 내 변경을 의심하기 전에 `.env` 를 무력화해 재현하라
+- 증상: 문서 2개만 고친 상태에서 `uv run pytest` 가 **38건 실패**했다(재구매 지목·완화 경로).
+  같은 커밋이 6시간 전엔 4829 passed 였고 **CI 도 초록**이었다. 실패는 결정적이었고(ordering
+  무관, `-p no:randomly` 동일) 문서를 stash 해도 그대로였다.
+- 원인: 누군가 3시간 전 로컬에 **Spring BE(:8080)·mariadb·redis 를 띄웠고**, 이 worktree `.env`
+  에 유효한 `INTERNAL_API_TOKEN` 이 있어 **유닛 테스트가 라이브 BE 를 호출**했다. 그래서 주입한
+  가짜 검색 대신 실 카탈로그 상품 id 가 push 페이로드에 실렸다. `tests/conftest.py` 는
+  `OPENAI/ANTHROPIC/GOOGLE_API_KEY` 만 비우고 **`INTERNAL_API_TOKEN` 은 비우지 않는다** —
+  CI 는 BE 가 없어서 이 갭이 드러나지 않았다.
+- 규칙: 로컬 pytest 가 CI 와 다르게 깨지면 **코드보다 환경을 먼저 의심한다**. 순서는
+  (1) `Settings()` vs `Settings(_env_file=None)` 의 **차이 나는 필드 이름만** 뽑아 본다
+  (값 출력 금지 — 시크릿이 섞인다), (2) 후보를 하나씩 빈 값으로 덮어 이분한다
+  (`INTERNAL_API_TOKEN= uv run pytest ...`), (3) `docker ps` 로 로컬 BE·DB 기동 여부를 본다.
+  `.env` 를 읽거나 옮기지 말 것 — 덮어쓰기(override)만으로 판정된다.
+- 관련: `tests/conftest.py`(키 3종만 무력화), `app/core/config.py::Settings.model_config`
+  (`env_file=".env"`, CWD 상대), #395 작업 중 발견
+## [2026-08-08] `ruff format` 을 인자 없이 돌려 무관한 파일 30개가 diff 에 딸려 왔다
+- 증상: #438 작업 중 `CLAUDE.md` "자동 정리: `uv run ruff check --fix && uv run ruff format`" 을
+  문자 그대로 인자 없이(= 저장소 전체 대상) 돌렸더니, 이번 이슈와 무관한 파일 30개가 순수 포맷
+  변경으로 딸려 들어왔다 — `data-analysis/generate_dummy.py` 만 +1189줄,
+  `docs/research/research-275-harness/*`·`evals/ablation/*`·`evals/scoring/*`·여러
+  `tests/unit/test_*.py`·`.github/scripts/review_mode.py`. `git status --porcelain` 으로 발견해
+  `git checkout --` 로 그 파일들만 원복했다.
+- 원인: 저장소에 **사전 존재하던 포맷 드리프트**다. CI 와 pre-commit 훅이 실제로 강제하는 것은
+  다르다 — CI 는 `ruff check` 만 돌고(`ruff format --check` 는 안 돈다), pre-commit 의
+  `ruff-format` 훅은 **스테이징된 파일에만** 걸린다. 그래서 한 번도 커밋 경로를 타지 않은
+  파일들(분석 스크립트·연구 하네스 등)은 포맷되지 않은 채로 남아 있고, 그 상태에서 전체
+  `ruff format` 을 돌리면 무관한 파일이 한꺼번에 재포맷된다. `CLAUDE.md` 의 문구를 그대로
+  따르면 누구나 이걸 밟는다.
+- 왜 나쁜가: 한 커밋 = 한 논리 단위 규약이 깨지고, 리뷰어가 실제 변경을 포맷 노이즈 속에서
+  찾아야 하며, 무관한 파일을 건드려 다른 레인과 충돌할 수 있다.
+- 규칙: 커밋 전 자동 정리는 **이번에 실제로 고친 파일에만 스코프를 좁혀** 건다
+  (`uv run ruff format <파일들>`). 전체 대상 `ruff format` 은 "포맷 드리프트 정리" 를 목적으로
+  하는 **별도 PR** 에서만 돌린다. 돌렸다면 `git status --porcelain` 으로 의도 밖 파일이 없는지
+  반드시 확인하고, 있으면 `git checkout --` 로 되돌린 뒤 커밋한다. (`uv run ruff check` 는
+  전체로 돌려도 안전하다 — 이번 사고는 `format` 쪽이다.)
+- 관련: #438 · `CLAUDE.md` "커밋 워크플로" 2단계 · `.pre-commit-config.yaml`(ruff-format 은
+  스테이징 파일 한정) · `.github/workflows` 의 CI 는 `ruff check` 만 실행
+
+## [2026-08-08] 응답 픽스처 계약 테스트는 "요청 파라미터 누락"을 못 잡는다 (#494)
+- 증상: `get_reviews(stats=True, rating="1,2")` 가 rating 을 쿼리스트링에 **안 실어** 전 별점
+  합산 `byProduct` 를 받아왔다. HTTP 200, 예외 없음, 숫자도 자연스러움 — 워커는 그것을
+  "1–2점이 몰린 상품"으로 서술했다. 명세(I-31)가 대표 사용례로 든 질문이 조용히 틀렸다.
+  `passed=True` 로 끝나므로 **로그·구조화 트레이스에도 안 남는다.**
+- 원인: `SpringClient.get_review_stats` 시그니처에 `rating` 이 아예 없었다. 도구 층은 인자를
+  받아서(`tools.py` 시그니처·docstring 에 존재) 클라이언트에 넘기지 않고 **버렸다** — 무시
+  사실을 출력에 적지도 않았다. 기존 테스트는 응답 JSON 픽스처를 고정해 파싱만 검증해서,
+  요청이 무엇을 보냈는지는 아무도 보지 않았다.
+- 규칙:
+  - **필터 인자를 받는 클라이언트 메서드에는 요청 쿼리스트링 스냅샷 테스트를 별도로 둔다.**
+    응답 shape 검증(픽스처 계약 테스트)과 요청 파라미터 검증은 서로 다른 실패를 잡는다 —
+    후자가 없으면 인자 누락이 200 뒤에 숨는다. 실린 것뿐 아니라 **안 실려야 할 것**
+    (집계 모드의 sort/limit/offset)도 같이 못 박는다.
+  - 도구가 인자를 받아 하위로 안 넘길 때 선택지는 둘뿐 — **넘기거나, 무시를 코드로 강제하고
+    그 사실을 출력 문자열에 적거나.** 조용히 버리는 세 번째는 없다
+    (선례: `get_order_events` 의 `ignored_status_note`).
+  - 집계 결과를 문장으로 내보낼 때는 **어떤 필터가 적용된 집계인지 스코프를 함께 적는다.**
+    "리뷰 집계: 총 18건"과 "리뷰 집계(별점 1,2 한정): 총 18건"은 워커에게 전혀 다른 사실이다.
+  - 0건 응답도 같은 함정 — "리뷰가 없습니다"와 "별점 1,2 리뷰가 없습니다"를 구분한다.
+- 관련: `app/services/spring_client.py` `get_review_stats`, `app/agents/seller/tools.py`
+  `get_reviews`, `docs/api-spec.md` §4.20(I-31), 이슈 #494
+
+## [2026-08-08] TTL 만료를 엄격 부등호로 재면 판정이 시계 분해능에 걸린다 (리눅스만 통과)
+- 증상: `period_confirm.load_pending` 의 TTL 테스트(`test_pending_expires_after_ttl`, ttl=0)가
+  **리눅스 CI 에서는 늘 통과하는데 Windows 로컬에서 실패**했다 — 만료됐어야 할 대기가
+  그대로 돌아왔다. #345 에서 들어온 코드이고 #346 작업 중 로컬 실행에서 처음 드러났다.
+- 원인: `datetime.now(UTC) - created_at > ttl` 의 **엄격 부등호**. ttl=0 이면 "경과가 0보다
+  커야 만료" 라는 뜻이 되는데, 저장→조회가 인메모리 체크포인터라 마이크로초 안에 끝난다.
+  Windows 의 기본 시스템 타이머 틱은 ~15.6ms 라 두 `now()` 가 **같은 값**을 반환해 경과가
+  정확히 0 이 되고 만료 판정이 안 선다. 리눅스는 µs 분해능이라 항상 양수가 나와 가려졌다.
+  "시간이 흐른다" 를 코드가 암묵적으로 가정했고, 그 가정이 플랫폼마다 다른 값이었다.
+- 규칙: 만료·쿨다운·디바운스처럼 **경과 시간을 임계와 비교**할 때 경계를 포함할지(`>=`)
+  배제할지(`>`)를 의식적으로 고른다 — 임계 0 이 "즉시"를 뜻해야 하면 `>=` 다. 그리고
+  "두 번의 `now()` 사이에는 시간이 흐른다"를 전제로 테스트를 쓰지 않는다: 그건 OS 타이머
+  분해능에 의존하는 가정이고, 리눅스 CI 가 초록이어도 개발자 머신에서 깨진다.
+- 관련: `app/agents/seller/period_confirm.py::load_pending` · 같은 형태가
+  `hitl.py:527`(draft TTL)에도 있으나 ttl=0 경로가 없어 현재는 드러나지 않는다 · #345·#346
+
+## [2026-08-08] 머지 여부를 확인하면서 `git branch -r --contains` 와 페이지 요약을 "독립된 두 근거"로 착각했다
+- 증상: #346 착수 전 선행 조건(#345 머지)을 확인하면서 **"PR #429 는 아직 open"** 이라고 보고했다.
+  실제로는 그날 `dev` 로 머지된 뒤였다. 사용자가 PR 상태를 직접 확인하고 나서야 정정했고,
+  그 사이 "머지될 때까지 대기 vs `feat/345` 위에 스택" 이라는 **있지도 않은 선택지**를 놓고
+  설계 논의를 한 턴 낭비했다.
+- 원인: 근거가 둘이었지만 **같은 결함을 공유**했다. (1) 페이지 요약이 오래된 상태를 반환했고,
+  (2) 교차 검증으로 쓴 `git branch -r --contains <sha>` 는 **로컬 원격 참조**만 본다. 그 직전
+  `git fetch` 가 네트워크 차단(403)으로 실패한 것을 보고도, 그 실패가 (2)의 전제를 무너뜨린다는
+  연결을 짓지 않았다. 두 근거가 모두 "오래된 스냅샷"이라는 하나의 원인에서 나온 셈이라,
+  일치하는 것이 확증이 아니라 **같은 오류의 중복**이었다.
+- 규칙: 원격 상태(머지·브랜치 존재·태그)를 판단할 때는 **`git fetch` 가 성공했는지 먼저 확인**하고,
+  실패했으면 `origin/*` 기반 판정을 근거로 쓰지 않는다 — "fetch 불가"는 "확인 못 함"이지
+  "없음"이 아니다. 교차 검증을 셀 때는 근거의 개수가 아니라 **실패 원인이 서로 독립인지**를 센다:
+  같은 캐시·같은 스냅샷·같은 네트워크 경로를 공유하는 두 근거는 하나로 친다.
+- 관련: #346 착수 · PR #429(#345) · `git worktree`/`origin/dev` 확인 절차
+
+---
+
+## [2026-08-08] 하나의 명세 개정이 여러 I-번호에 걸치면, 반영한 것 말고 **안 한 것**을 세야 한다
+- 증상: #481 이 노션 2026-08-06 개정을 반영하면서 I-8·I-14 만 손보고 **I-16 을 빠뜨렸다**(#487).
+  그 개정의 핵심이 "회원 재식별 키(memberId)를 판매자 LLM 표면에서 걷어낸다" 였는데, I-16
+  `get_churn_cohort` 요약은 계속 `[41] 마지막 활동 …` 로 원시 memberId 를 실었다. 노션 I-16 은
+  "I-8·I-14 와 동시 배포(분리 시 그 사이 기간 개인정보 노출 지속)" 를 명시했으므로, #481 이
+  막으려던 노출이 정확히 한 경로로만 그대로 열린 채 배포된 것이다.
+- 원인: 두 가지가 겹쳤다. ① 개정 범위를 "이슈 제목에 적힌 I-번호"(I-14·I-8)로 잡고, 개정
+  문서가 건드리는 I-번호 전체를 역으로 세지 않았다 — I-16 은 #481 의 api-spec 개정문에
+  `returnReasonsTop` 단위 파급으로 **이름이 언급되기까지 했는데** 그게 "확인했다"는 착각을 줬다.
+  ② 공유돼야 할 규약 문구(customerLabel 주의)가 `_ORDER_LOG_RULES_NOTE` 안에 I-14 기록 규칙과
+  **섞여 박혀 있어** 재사용 지점이 없었다. 재사용 가능한 상수였다면 "이 상수를 쓰는 곳이 한
+  군데뿐"이라는 사실 자체가 누락 신호였을 것이다.
+- 규칙:
+  - 정본(노션) 개정 하나를 반영할 때는 **그 개정 문서가 언급하는 I-번호를 전부 나열해
+    체크리스트로 만들고**, 각 항목에 "반영함 / 해당 없음(이유)" 중 하나를 붙인다. 이슈 제목의
+    번호만 따라가지 않는다. 개정문에 "동시 배포" 문구가 있으면 분리 반영은 그 자체로 계약 위반이다.
+  - 여러 계약 경로가 공유하는 규약 문구는 **처음부터 상수로 뽑아** 각 도구 출력에 부착한다.
+    한 도구의 노트 안에 섞어 넣으면 두 번째 경로에서 복붙본이 갈라지거나(규약이 낡음),
+    이번처럼 아예 누락된다.
+  - 개인정보 관련 필드 교체는 **폴백을 만들지 않는다** — 신 필드 결측 시 구 필드로 되돌리면
+    "미배포 구간에는 원래대로 노출"이 되어 차단 자체가 무의미해진다. 결측은 `?` 로 떨어뜨리고,
+    그 상태를 회귀 테스트로 고정한다(구응답 스텁 → 요약에 원시 키 부재 단언).
+- 관련: `app/agents/seller/tools.py`(`_CUSTOMER_LABEL_NOTE`·`get_churn_cohort`),
+  `app/schemas/spring.py`(`ChurnMember`), `docs/api-spec.md` §4.4 I-16(v0.29.1), #481·#487
+
+---
+
+## [2026-08-08] 명세 개정이 폐기한 규정이 프롬프트·주석에 남으면 미반영이 아니라 LLM 에 대한 능동적 오정보다
+- 증상: I-13 `purchaseComplete` 산출 규정은 2026-07-31 에 "이벤트 기준, 권위는 I-6/I-14"
+  → "주문 기준 집계(`order_item × product × brand`, PAID, `COUNT(DISTINCT order_id)`)" 로
+  개정됐다(jarvis-backend#62 근본 수정 배포 / #196). 그런데 구 규정 문구가 코드에 **3개월간
+  잔존**해, `get_behavior_events` 도구 출력 말미에 상시 부착되고 behavior·abuse 워커
+  프롬프트에 박힌 채 LLM 에게 "이 값은 0 일 수 있으니 근거로 쓰지 말라"고 안내하고 있었다.
+  워커는 실재하는 구매 데이터를 신뢰 불가로 취급하고 다른 도구로 우회한다 — **데이터가
+  없어서 못 쓰는 게 아니라, 우리가 쓰지 말라고 시켜서 안 쓴 것**이다.
+- 원인: 개정 작업이 "새 규정을 어디에 반영할까"(추가 지점)만 보고 "구 규정이 어디에
+  적혀 있나"(제거 지점)를 grep 하지 않았다. 게다가 잔존 지점이 이슈에 적힌 3곳이 아니라
+  **6곳**이었다 — 도구 상수(`tools.py`)·워커 프롬프트 2종(`prompts.py` ABUSE/BEHAVIOR)·
+  스키마 docstring(`spring.py`)·군집 모듈 docstring(`segmentation.py`)·계약 사본
+  (`docs/api-spec.md` §4.4 I-13). 특히 **주** 프롬프트인 BEHAVIOR_PROMPT 와 계약 사본이
+  이슈 목록에서 빠져 있었다. 기존 테스트는 전부 "구 문구가 **있는지**"를 어설션해서
+  (`assert "권위는 매출 조회(I-6)" in result`) 드리프트를 잡기는커녕 **고정하고** 있었다.
+- 규칙: (1) 계약·명세를 개정하면 **폐기되는 문구를 문자열로 grep** 해 잔존 지점을 전부
+  세고 같은 PR 에서 지운다 — 코드뿐 아니라 프롬프트·docstring·`docs/api-spec.md` 사본까지.
+  이슈에 적힌 목록을 그대로 믿지 말고 직접 grep 한다. (2) LLM 에 주입되는 문구를 바꿀 때는
+  "새 문구가 있다"는 어설션만 두지 말고 **"폐기 문구가 없다"는 역방향 어설션**을 함께 남긴다
+  — 존재 어설션은 드리프트를 못 잡고, 문구가 재작성될 때마다 리터럴만 갱신되며 살아남는다.
+  (3) 부재 검사의 범위는 **LLM 이 실제로 읽는 표면**(도구 출력 문자열·프롬프트 상수)으로
+  한정한다. 파일 단위 grep 으로 짜면 "구 규정은 폐기됐다"고 남긴 개정 이력·주석까지 잡혀
+  결국 이력을 못 남기게 된다. (4) 폐기 규정을 근거로 세웠던 **판단 게이트**도 함께 걷어낸다
+  — BEHAVIOR_PROMPT 에는 "구매 관련 판정은 퍼널과 교차 확인한 뒤에만 warning 이상으로
+  올린다"는 게이트가 있었고, 전제가 사라진 뒤에도 남으면 근거 없이 워커 민감도만 깎는다.
+- 관련: `app/agents/seller/tools.py::_BEHAVIOR_PURCHASE_RULES_NOTE`(구
+  `_BEHAVIOR_AUTHORITY_NOTE`) · `app/agents/seller/prompts.py`(BEHAVIOR/ABUSE) ·
+  `app/schemas/spring.py::BehaviorEventsResult` · `app/agents/seller/analysis/segmentation.py` ·
+  `docs/api-spec.md` §4.4 I-13(v0.29.2) · `tests/unit/test_seller_tools.py::
+  test_behavior_surfaces_drop_deprecated_purchase_wording` · #488
+
+## [2026-08-07] "얼마나 좁힐지" 계산에 하한만 걸고 "이미 지났으면" 을 안 걸면 좁히기가 음수를 낸다
+- 증상: #427 리뷰(오케스트레이터 직접 재현)가 `rescue_deadline` 이 이미 지난 턴(과거
+  `turn_started_at`)에서 `narrow_search_budget` 이 **음수 예산**을 받는 결함을 잡았다.
+  `_stage_budget` 은 `granted = min(spring_search_timeout_s, remaining / n)` 를 그대로
+  돌려주는데, `remaining = rescue_deadline - time.monotonic()` 이 음수면 `granted` 도 음수다.
+  `_apply_stage_budget` 의 skip→narrow 강등 두 경로(본검색의 `allow_skip=False`, `narrow`
+  모드의 skip 실행)가 그 음수를 검증 없이 그대로 실행에 넘겼다 — `asyncio.wait_for(timeout=
+  음수)` 가 즉시 만료돼 **HTTP 요청 자체가 나가지 않았다**. "본검색은 절대 건너뛰지 않는다"는
+  불변식이 이름만 남고 실제로는 건너뛴 것보다 나쁜 결과(요청 없이 실패)를 냈고, 자동완화
+  probe 는 `relaxing` progress 를 emit 해 놓고 아무 일도 안 하는 거짓 신호(H4)까지 재현했다.
+- 원인: `granted >= min_threshold` 형태의 하한 분기(`"narrow"` vs `"skip"` 판정)를 만들 때
+  "판정이 `narrow`" 와 "그 값이 실행 가능한 양수" 를 같은 조건으로 착각했다 — 실제로는
+  `min(x, remaining/n)` 의 `remaining` 이 음수일 수 있다는 걸 놓쳐 `granted < min_threshold`
+  분기(`"skip"`)만 하한 아래를 잡고, `"skip"` 을 다시 `"narrow"` 로 강등하는 경로에는 하한이
+  전혀 적용되지 않았다. **판정 임계값과 실행 임계값은 같은 변수를 참조해도 강제 지점이 다르면
+  분리해서 각각 확인해야 한다** — 하나는 분류용(threshold 비교), 하나는 집행용(clamp)이다.
+  테스트도 `search=` 에 fake 를 주입해 `narrow_search_budget` 이 **불렸다는 것만** 확인하고
+  그 인자 값이 실제로 유효한지, 끝단(`spring_client.search_products`)까지 살아있는지는 재지
+  않아 이 결함을 통과시켰다.
+- 규칙: "예산을 좁힌다/못 쓰게 건너뛴다" 류 로직에서 원본 시간축 계산(`deadline - now`)이
+  음수가 될 수 있는 경우(데드라인이 이미 지난 턴), **판정(분류)과 실제로 실행에 넘기는 값을
+  분리해서 각각 clamp 하라** — 판정은 "어느 분기인가"만 정하고, 그 분기가 무엇이든 실행 직전에
+  "이 값을 그대로 API 에 넘겨도 되는가"(양수·최소 유효값 이상)를 다시 확인한다. 테스트는
+  fake 를 주입해 "그 함수가 불렸다"만 보지 말고, 스파이가 **실제 함수를 통과시키면서** 인자
+  값을 기록하게 하거나(`with real_fn(x): yield` 형태), 최소한 그 값 자체에 대한 별도 어설션을
+  추가한다 — 호출 여부와 호출 값의 유효성은 다른 주장이다.
+- 관련: `app/agents/buyer/recommendation/graph.py::stream_recommendation` 의 `_stage_budget`/
+  `_apply_stage_budget`(D4) · `app/services/spring_client.py::narrow_search_budget` · #427
+
+## [2026-08-07] `open_stream` 의 `inner_factory` 시그니처를 바꾸면 테스트 전수가 조용히 깨진다
+- 증상: #427 에서 `open_stream(..., inner_factory: Callable[[], AsyncIterator[str]])` 를
+  `Callable[[float], AsyncIterator[str]]` 로 바꿨더니(D2 턴 시작 시각 플럼빙), `uv run pytest`
+  전체 실행에서 `tests/unit/test_observability.py`·`test_infra.py`·`test_recommendation.py`·
+  `test_buyer_tracing.py`·`test_seller_tracing.py`·`test_session_claim_api.py`·
+  `test_spring_search_budget_132.py`·`tests/integration/conftest.py`·`evals/scoring/adapter.py`·
+  `evals/model_eval/adapter.py`·`evals/metrics/harness.py`·`evals/first_event_budget/
+  measure_first_event.py` 에 걸쳐 `TypeError: <lambda>() got an unexpected keyword/positional
+  argument` 가 40건 넘게 났다 — 전부 `inner_factory` 로 넘기는 0-인자 로컬 함수/람다/클래스
+  (`async def slow(): ...`, `lambda: httpx.AsyncClient(...)`)였다.
+- 원인: `open_stream` 은 `app/services/spring_client.py::_client()` 처럼 프로덕션 코드
+  안쪽에만 있는 함수가 아니라, 테스트가 **직접 인자로 넘기는 콜백**의 시그니처 계약이다.
+  그런 함수는 `grep -rn "open_stream(" tests/` 로도 호출부만 보이고 실제 깨지는 지점(그 호출에
+  넘긴 콜백의 정의부)은 별도로 찾아야 한다 — 콜백 정의가 호출부와 수십~수백 줄 떨어져 있거나
+  다른 파일(`tests/integration/conftest.py` 의 공유 fixture, `evals/*/adapter.py` 의 하네스)에
+  있으면 놓치기 쉽다. `spring_client._client()` 도 같은 패턴이라 `timeout=` 키워드 인자를
+  추가했을 때 `lambda: httpx.AsyncClient(...)` 로 patch 한 fake 들이 같은 이유로 깨졌다.
+- 규칙: 테스트가 **콜백으로 주입하는** 함수(래퍼가 시그니처를 정의하고 호출부가 인자를 받아
+  넘기는 패턴 — `open_stream(inner_factory)`, `_client()` 등)의 시그니처를 바꿀 때는
+  `grep -rn "<함수명>(" tests/ evals/` 로 호출부만 보지 말고, 그 호출에 넘겨지는 각 인자
+  (변수명)의 **정의부**를 별도로 찾아 전수 갱신한다. 새 인자는 가능하면 키워드 전용 +
+  기본값(`*, timeout: float | None = None`)으로 추가해 fake 들이 무시해도 무해하게 만들되,
+  위치 인자가 필수면(D2 의 `turn_started_at` 처럼 값 자체를 검증해야 하는 경우) 콜백 시그니처를
+  전수 갱신하고 `uv run pytest`(전체, 개별 파일 단위가 아니라)로 결과를 확인한다 — 개별 파일만
+  돌리면 다른 파일의 같은 패턴을 놓친다.
+- 관련: `app/core/stream.py::open_stream`(D2) · `app/services/spring_client.py::_client`(§1) ·
+  #427
+
+## [2026-08-07] 두 정상 설계의 이음매는 어느 쪽 코드를 봐도 결함으로 안 보인다 — 적용 범위를 문서에 적어라
+- 증상: #435 "추천 카드를 이름으로 지목한 찜/담기가 실패한다"가 여러 라운드 동안 "미확정"
+  으로 남아 있었다. `screen_reference.py`(화면 지시어 결정적 해소기)를 보면 정상 설계고,
+  `no_condition.rank_by_profile`(프로필 벡터 추천)를 봐도 정상 설계다 — 어느 쪽도 단독으로는
+  결함이 아니다.
+- 원인: FE 위조방지 설계(추천 카드는 서버가 `listId` 로 이미 알아 `screen` 에서 의도적으로
+  제외)와 AI 상품명 공백(AI 카탈로그 인덱스에는 원본 컬럼이 없어 프로필 경로가 상품명을
+  모른다)이 **서로 다른 시점에 각자 옳게 결정된 설계**인데, 그 둘이 만나는 지점(추천 카드
+  턴의 이름 지목)에 아무도 적어두지 않았다. `screen_reference.py` 를 진단하는 사람은 "이
+  모듈은 `screen.products` 가 있을 때만 돈다"만 보고 추천 카드 턴이 왜 안 되는지 모르고,
+  `no_condition.py` 를 진단하는 사람은 "이름을 모른다"만 보고 그게 이음매 반대편에서 되물음
+  문구·찜 실패로 이어지는 줄 모른다. 각 모듈 안에서는 완결된 근거가, 모듈을 넘어서는 인과를
+  가리지 못했다.
+- 규칙: 두 설계가 서로의 전제를 깨는 지점(A 가 의도적으로 비운 것을 B 가 의도적으로 요구하는
+  경우)을 발견하면, 그 교차점을 **양쪽 모듈 docstring 모두에** 적어라(한쪽에만 적으면 반대편
+  진단자가 여전히 못 찾는다). "이 결함처럼 보이는 동작은 설계의 귀결이다"라고 명시적으로
+  적어야 다음 추적 라운드가 같은 두 모듈을 또 오가며 낭비되지 않는다.
+- 관련: `app/agents/buyer/screen_reference.py`(모듈 docstring) ·
+  `app/agents/buyer/recommendation/no_condition.py::rank_by_profile` ·
+  `docs/api-spec.md` §3.1 v0.28.1 · #435
 ## [2026-08-08] 어절 경계가 없는 한국어에서 부분 문자열 표지만으로 조회/해제(파괴적 동작)를 가르려 하지 마라
 - 증상: #386 은 "내가 뭐 찜했지?" 같은 찜 조회 발화가 `wishlist_remove` 로 잘못 라우팅돼 찜을
   지우는 것을 두 가지 접근으로 막으려다 둘 다 되돌렸다 — ① 조회 표지 목록("보여줘"·"뭐 있어"
@@ -758,6 +1380,45 @@
   `evals/filter_axes/probe.py:83-125`(같은 패턴의 선례가 이미 repo 에 있었는데 참조되지 않았다) ·
   `evals/combo_matrix/README.md` "필터링 검색 대역의 성격"
 
+## [2026-08-06] 사용자 대면 문구의 생성 지점이 둘이면 "예외 메시지가 곧 사용자 문구"는 보장이 아니라 조건부다
+- 증상: #269 P0(PR #284)는 `calc.normalize_period` 의 `ValueError` 메시지를 "그대로 판매자에게
+  노출되는 문구"로 설계하고 그렇게 주석까지 달았다. 그런데 dev 실측 응답이 코드 원문과 달랐다 —
+  `최근 0일` 의 코드 원문은 "기간 일수는 1일 이상이어야 합니다…" 인데 화면에는 "'최근 0일'은
+  조회할 수 없는 기간입니다…" 가 나왔다. #345 에서 이 불일치를 조사 항목으로 다시 열었다.
+- 원인: 되묻기 문구의 생성 지점이 **두 곳**이었다. ① planner LLM 이 채우는 `AnalysisPlan.clarification`
+  (→ `resolve_plan` 첫 줄이 `raise ValueError(plan.clarification)`), ② `calc` 의 예외 메시지.
+  둘 다 `PipelineResult(kind="clarification", text=str(exc))` 로 합류하는데, **PLANNER_PROMPT 가
+  기간 미지원 판정을 LLM 에게 시키고 있었기 때문에** LLM 이 먼저 되물으면 ②는 아예 실행되지
+  않는다. 즉 P0 의 보장은 "planner 가 통과시켰을 때만" 성립했고, 그 조건은 어디에도 적히지 않았다.
+- 규칙:
+  - **사용자 대면 문구는 소유자를 한 모듈로 못박고, 그 사실을 문구를 만들 수 있는 다른 지점(프롬프트·
+    스키마 description)에 금지 문장으로 적는다.** "코드가 문구를 만든다"는 코드 쪽 주석만으로는
+    지켜지지 않는다 — LLM 이 같은 일을 할 수 있으면 언젠가 한다.
+  - **어느 쪽이 썼는지 실측해 맞춰가지 말고, 생성 지점을 하나로 만들어 구조로 닫아라.** 측정은
+    그 시점의 LLM 산출을 고정해줄 뿐이고 프롬프트·모델이 바뀌면 다시 갈린다.
+  - **LLM 출력 스키마의 `Field(description=...)` 은 프롬프트와 한 쌍이다.** 구조화 출력에서는 LLM 이
+    둘을 함께 읽으므로 한쪽만 고치면 서로 반대를 지시해 산출이 비결정적이 된다 — 같은 커밋에서 고친다.
+  - 파생 규칙: **"코드가 판정한다" 고 적어 놓고 프롬프트가 같은 판정을 시키고 있지 않은지** 확인한다.
+    #345 에서 어휘 확장의 실질 차단 지점은 `calc` 가 아니라 planner 프롬프트였다.
+- 관련: `app/agents/seller/period.py` · `prompts.py` PLANNER_PROMPT `[기간]` 절 ·
+  `schemas.py` `AnalysisPlan.period_expr` · `docs/specs/DESIGN-SELLER-PERIOD.md` §4, 이슈 #345(#269 P1)
+
+## [2026-08-06] 부분 구현 PR 이 이슈를 닫아 나머지 범위가 통째로 유실됐다
+- 증상: #269 는 P0·P1·P2 로 범위가 나뉘어 있었는데, P0 만 구현한 PR #284 가 병합되며 이슈가
+  닫혔다(2026-08-04). PR 본문에 "어휘 확장·확인 흐름은 out of scope" 라고 적혀 있었는데도
+  후속 이슈가 남지 않아, P1 이 있었다는 사실 자체가 2주 가까이 아무 데도 추적되지 않았다.
+  #345 로 다시 열면서 발견 — 예고됐던 `docs/specs/DESIGN-SELLER-PERIOD.md` 도 미작성 상태였다.
+- 원인: `Closes #N` 이 **PR 이 이슈 전체를 닫는지** 와 무관하게 붙었다. 리뷰도 "P0 가 맞게
+  구현됐는가"만 봤고 "이 PR 이 이슈를 닫아도 되는가"는 아무도 판단하지 않았다.
+- 규칙:
+  - **PR 이 이슈의 일부만 구현하면 `Closes` 를 쓰지 않는다.** `Refs #N` 으로 연결만 하고,
+    남은 범위를 후속 이슈로 즉시 만들어 원 이슈 본문에 링크한다.
+  - 범위가 P0/P1/P2 로 쪼개진 이슈는 **각 범위를 별도 이슈로 먼저 분해**하는 편이 안전하다 —
+    "본문 안의 미구현 항목"은 이슈가 닫히는 순간 검색되지 않는다.
+  - SPEC/DESIGN 문서를 예고한 이슈는 **문서 작성도 완료 조건에 넣는다** — 설계 근거가 없으면
+    다음 사람이 같은 판단을 처음부터 다시 한다.
+- 관련: 이슈 #269 · PR #284 · 이슈 #345, `docs/specs/DESIGN-SELLER-PERIOD.md`
+
 ## [2026-08-07] `uv run ruff check --fix && uv run ruff format` 커밋 워크플로 문구를 문자 그대로 실행하면 무관 파일 30개가 재포맷된다
 - 증상: #439 구현 검증 단계에서 CLAUDE.md 커밋 워크플로 2항을 그대로 `uv run ruff check --fix &&
   uv run ruff format`으로 실행했더니 `ruff check`는 `All checks passed!`였지만 `ruff format`은
@@ -885,6 +1546,10 @@
 - 관련: `evals.metrics.run_manifest.build_run_manifest`(`commitSha`·`dirty`) ·
   `evals.metrics.report.normalize_artifacts` ·
   `evals.personalization.cli.normalize_paired_artifacts` · #380
+- **후속(#413)**: 정규화가 `commitSha`·`dirty` 축을 정본으로 걷어내 이 함정 자체는 사양으로
+  해소됐다(`evals.metrics.run_manifest.strip_volatile_manifest_keys`). 남은 위험은 `hashes`
+  축뿐 — `uv run pytest` 도중 uv.lock·goldenset·decompose.py·rerank.py·config.py 를 편집하면
+  여전히 실패한다(의도된 계약).
 
 ## [2026-08-06] `ruff format`/`--fix` 는 쓰기 명령이다 — `ruff check` 와 같은 감각으로 전체 스코프에 돌리면 안 된다
 - 증상: #380 리뷰 라운드 1 작업 중 `uv run ruff format .` 을 스코프 없이 전체 리포에 돌렸다.
@@ -1926,7 +2591,12 @@
   - 순서를 근거로 쓴 서술은 **그 순서를 바꾼 PR이 함께 갱신한다.**
   - 예산 검증은 첫 이벤트 앞에 호출이 **몇 번** 놓이는지까지 센다. 인프로세스 `TestClient`는
     SSE 본문을 버퍼링하므로 첫 이벤트 측정에 쓰지 않고 실 HTTP 경계에서 잰다.
-- 관련: #277, #113/PR #248, `app/core/config.py`
+- **[2026-08-10 갱신] 이 응급 처치는 #306으로 제거됐다.** 근거였던 관문(첫 이벤트가 검색 뒤)이
+  #396의 `progress` 상시화로 사라졌고, 그 조합을 지금 막는 것은 억제가 아니라
+  `RESCUE_BUDGET_MODE=narrow`의 런타임 좁히기다(미룬 턴 본검색을 ≈4.8s로 묶어 "1차 3.0s
+  타임아웃 + 2차 2.9s 성공"이 성립하지 않게 한다). `SEARCH_RETRY_ON_DEFERRED_CONDITIONS`도
+  함께 폐지됐다 — 재시도는 `SPRING_MAX_RETRIES` 하나가 정한다.
+- 관련: #277, #113/PR #248, #306, `app/core/config.py`
   `_require_search_retry_within_stream_budget`, `evals/first_event_budget/`, api-spec §2.9(c)
 
 ---

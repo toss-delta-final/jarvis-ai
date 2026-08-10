@@ -74,7 +74,12 @@ class ProductSearchFilters(CamelModel):
     # 의미검색용 자연어(#101) — AI 내부 필드. keyword(상품명 LIKE)와 분리되며 Spring 에 안 나가고
     # EmbeddingRerankBackend(방식2)가 pgvector 재정렬의 query 임베딩 입력으로 쓴다(§4.8 방식2).
     semantic_query: str | None = None
-    color: str | None = None  # 색상 조건(#100 P1) — BE I-1 attributes LIKE 로 필터
+    # 색상 조건(#100 P1) — 내부 모델: decompose 가 사용자 발화에서 표기 하나만 뽑아 담는다.
+    # 와이어로 나갈 때 app.pipelines.color_synonyms.expand_color 가 동의어 묶음으로 펼쳐
+    # 반복 파라미터 리스트가 된다(api-spec §4.6, #258) — 여기 타입이 str 인 건 드리프트가
+    # 아니라 의도다. BE 매칭은 attributes 전문 LIKE 가 아니라 json_extract 로 색상 키만
+    # 좁힌 뒤 regexp_instr 부분 일치다(#258, BE 2026-08-03 개정).
+    color: str | None = None
     # 명시 속성조건(PR②, api-spec §4.6 "2차 압축 속성 매칭 대상") — 축→희망값(예 {소재:린넨, 핏:오버핏}).
     # AI 내부 필드(Spring 에 안 나감) — search_catalog 가 SpringProduct.attributes 와 관대 하드 매칭한다.
     # 사용자 명시 조건만 담는다(하드). 추측 선호(소프트)는 rerank(원문+attributes)가 판단(별도 필드 없음).
@@ -365,8 +370,11 @@ class AddToCartResult(CamelModel):
 
 # 구매 가능 상태 — I-18(§4.9) · I-28(§4.16) 공용. 겹치면 HIDDEN 우선(서버가 정해서 내린다).
 # 둘 다 상품 단위 판정이되 성격이 다르다: HIDDEN 은 status != ON_SALE 이라 옵션과 무관하게
-# 상품 전체가 판매 종료이고, SOLD_OUT 은 재고가 product.stock_quantity 하나로 옵션 전체에
-# 공유되므로(product_option 에 재고 컬럼 없음) "옵션 중 하나라도 살 수 있으면 AVAILABLE" 이다.
+# 상품 전체가 판매 종료이고, SOLD_OUT 은 "옵션 중 하나라도 살 수 있으면 AVAILABLE" 이다.
+# ⚠️ [#524/#508] 구 주석의 근거였던 "재고가 product.stock_quantity 하나로 옵션 전체에 공유
+# (product_option 에 재고 컬럼 없음)" 은 **BE 옵션별 재고 전환(02 D33 — product_stock 신설)
+# 이후 사실이 아니다.** 판정 규칙(하나라도 살 수 있으면 AVAILABLE)은 그대로지만 근거가
+# "공유 재고" 에서 "옵션별 재고의 OR" 로 바뀐다. 구매자 레인 동작 정합은 #508 소관.
 PurchaseState = Literal["AVAILABLE", "SOLD_OUT", "HIDDEN"]
 
 # 상태 → 안내용 한국어 라벨. **전사(全射) 매핑을 의도한다**(ORDER_ITEM_STATUS_TEXT 와 같은 형태).
@@ -561,6 +569,11 @@ class ProductChange(CamelModel):
 
     콘텐츠 필드는 enrichment·search_doc 조립 입력 — AI 는 저장하지 않고 산출물 생성에만 사용.
     미정의 status 는 페이지 전체 계약 위반으로 거부해 해당 페이지 artifact·커서를 보존한다.
+
+    **`DELETED`(BE 02 D41)를 여기 추가하지 않는다** — Spring 이 `!= ON_SALE` 을 전부
+    `"HIDDEN"` 으로 실어 보내므로(`ProductChangesResponse.Item.hidden()`) 삭제·숨김이
+    AI 에겐 같은 신호(생성물 제거)이고 동작이 동일하다. 3값으로 넓히면 위 fail-closed
+    규약과 충돌해 정상 페이지가 전량 실패한다.
     """
 
     product_id: (
@@ -613,6 +626,13 @@ class SalesSeriesPoint(SellerAggregateModel):
     date: str
     sales: int
     order_count: int
+    # [#489] 판매 **수량** — PAID 주문 order_item 의 SUM(oi.quantity), CANCELLED/
+    # RETURNED 제외(S-1 과 동일 규칙). orderCount(주문 **건수**)와 단위가 다르다.
+    # nullable 인 이유: granularity=summary 응답에는 수량 필드가 없다고 명세가
+    # 명시했고, BE 미배포 구간 대비도 겸한다. (2026-08-06 드리프트 정정 — 구현
+    # sumSellerSalesByPeriod 에는 처음부터 있었으나 스키마에 필드가 없어 AI 가
+    # 파싱하지 않고 버리고 있었다. 신규 계약이 아니라 문서 정정이다.)
+    sales_count: int | None = None
     is_anomaly: bool = False
     deviation_pct: float | None = None
 
@@ -703,17 +723,49 @@ class FunnelResult(SellerAggregateModel):
 # ── I-13 행동 이벤트 집계 (§4.4 — 07/17 BE 확정 명세 반영, REALIGN F4/②-3) ──
 
 
-class BehaviorProductRow(CamelModel):
+class BehaviorProductRow(SellerAggregateModel):
     """I-13 groupBy=product rows[] 항목 — 상품별 행동 카운트·전환 보조 지표.
 
-    counts 키는 event_type 의 camelCase(productView/addToCart/checkoutStart/
-    purchaseComplete). viewToCartRate 는 addToCart/productView(분모 0 = null).
+    counts 키는 event_type 의 camelCase(productView/addToCart/removeFromCart/
+    checkoutStart/purchaseComplete — 2026-08-06 개정으로 4종 → 5종, 장바구니
+    이벤트 BE 이관과 함께 remove_from_cart 편입). viewToCartRate 는
+    addToCart/productView(분모 0 = null).
     uniqueVisitors = distinct(memberId, guestId) — 비로그인 게스트 포함.
+
+    [#489 근본 수정] 베이스가 CamelModel(extra 무설정 = pydantic 기본 "ignore")
+    이라 형제 판매자 모델(SellerAggregateModel, extra="allow")과 달리 **BE 가
+    추가한 신필드가 예외도 안 나고 model_extra 에도 안 남고 통째로 소실**됐다.
+    필드 5종을 더하는 것보다 이 베이스 교체가 근본 수정이다 — 앞으로 BE 가 뭘
+    추가하든 같은 일이 반복된다. SellerAggregateModel 은 CamelModel 하위라
+    alias_generator(to_camel)·populate_by_name 규약은 그대로다.
+
+    [#489] 신필드 5종은 전부 nullable 이며 **기본값 0 을 두지 않는다** — 명세가
+    null 을 계약값으로 규정한다(0="안 팔림"/"체류 0초", null="미조회"/"표본 없음").
+    0 기본값은 churn_rate 에서 잡았던 silent-mismatch(#197)를 그대로 재도입한다.
     """
 
     product_id: int
     product_name: str | None = None
     counts: dict[str, int] = Field(default_factory=dict)
+    # 판매 **수량**(2026-08-06 신설) — 기간 내 PAID 주문(orders.paid_at)의
+    # SUM(oi.quantity). 아이템 상태 PENDING/CANCELLED/RETURNED 를 **제외**한다
+    # (I-6 salesCount 와 동일 산식). 같은 row 의 counts.purchaseComplete 는 주문
+    # **건수**이고 아이템 상태를 보지 않아 부분 취소·반품을 포함한다 — 단위도
+    # 규칙도 달라 두 값을 직접 비교하면 안 된다(명세상 의도된 비대칭).
+    # eventType 필터에 purchase_complete 가 없으면 null(= 미조회).
+    sales_quantity: int | None = None
+    # 체류시간 4종(2026-08-06 신설 — 이벤트 차분 산출, FE 무변경·과거 로그 소급).
+    # 같은 session_key 안에서 occurred_at 오름차순 정렬 후 product_view 부터 다음
+    # 이벤트까지의 초 단위 시간차(끝 이벤트 종류 무관 = 이탈 시각).
+    # ⚠️ 세션의 **마지막 조회는 표본에서 빠진다** — page_leave 를 수집하지 않아
+    # 끝 시각이 없다(구조적 한계, 버그 아님). dwellSource 가 이 사실을 표기한다.
+    # 이상치 제외 3종은 BE 설정 고정(AI 가 바꿀 수 있는 쿼리 파라미터가 아니다):
+    # properties._timeShifted 행 · 음수(시계 역전) · 1800초 초과(세션 30분 정합).
+    # eventType 필터에 product_view 가 없거나 표본 0건이면 4필드 모두 null.
+    median_dwell_seconds: float | None = None  # 주 지표(롱테일 분포라 평균은 참고값)
+    avg_dwell_seconds: float | None = None  # 분포 왜곡 확인용 참고값
+    dwell_sample_count: int | None = None  # 이것 없이 평균·중앙값만 해석 금지
+    dwell_source: str | None = None  # "next_event" | (향후) "page_leave"
     view_to_cart_rate: float | None = None
     unique_visitors: int | None = None
 
@@ -721,13 +773,26 @@ class BehaviorProductRow(CamelModel):
 class BehaviorEventsResult(SellerAggregateModel):
     """I-13 GET /internal/seller/{brandId}/events 응답 (07/17 확정 — 구 events[] 폐기).
 
-    원천 = behavior_events(상품 연계 4종만 — session_start/login/search/page_view 는
-    브랜드 귀속 불가로 제외). groupBy 3형이 한 모델에 겹친다 — 채워지는 필드:
+    원천 = behavior_events(상품 연계 **5종**만 — session_start/login/search/page_view
+    는 브랜드 귀속 경로가 없어 제외). [2026-08-06 개정, #489] remove_from_cart 편입
+    으로 4종 → 5종 — 장바구니 이벤트 BE 이관과 동시 신설된 이벤트로, 열지 않으면
+    이벤트가 쌓여도 AI 가 읽을 경로가 없다. counts 키가 5종이 되고 **rows 정렬
+    기준(활동량 합)에도 removeFromCart 가 포함**된다(삭제가 잦은 상품의 순위가
+    올라갈 수 있다 — "담김도 삭제도 활동"이라는 의도된 변경).
+    groupBy 3형이 한 모델에 겹친다 — 채워지는 필드:
       - product(기본) : rows (+ total)
       - eventType     : counts
       - date          : series (date + camelCase 이벤트 카운트, 키 동적 → dict 유지)
-    ⚠️ purchaseComplete 는 이벤트 기준(주문 완료 페이지 발사) — 매출·주문수의
-    권위는 I-6/I-14(order 기준)다(명세 집계 규칙 — 워커 해석 주의).
+    ⚠️ purchaseComplete 는 **주문 기준** 집계다 — order_item × product × brand 의
+    PAID(paid_at) 건을 COUNT(DISTINCT order_id) 한 값으로 I-7 퍼널 4단과 같은
+    정본이며, 이벤트 유실과 무관하고 과거 구간도 소급 복구된다. 건수이지 수량이
+    아니고(한 주문에 같은 상품 여러 개여도 1), 상품별 합이 eventType 합계보다
+    클 수 있으며(한 주문에 자사 상품 여러 종), 조회·담기 없이 구매만 있는 상품도
+    rows 에 등장한다. 구 "이벤트 기준·권위는 I-6/I-14" 규정은 2026-07-31 개정
+    (jarvis-backend#62)으로 폐기(#488).
+    ⚠️ 판매 **수량**은 purchaseComplete 가 아니라 rows[].salesQuantity 다(#489,
+    2026-08-06 신설 — PAID SUM(oi.quantity), 아이템 취소·반품 제외). 위 "건수이지
+    수량이 아니다"의 답이 이 필드이며, 취소·반품 처리 규칙까지 서로 다르다.
     """
 
     group_by: str = "product"
@@ -749,13 +814,25 @@ class OrderEventsResult(SellerAggregateModel):
     (= "주문 상태 전이 0건")으로 새던 버그의 원인이었다.
 
     shape 3형이 한 모델에 겹친다 — 채워지는 필드:
-      - 목록(기본)        : rows(Row: orderId/fromStatus/toStatus/actorType/reason/
-                            buyerMemberId/createdAt) + total
+      - 목록(기본)        : rows(Row: orderId/orderItemId/fromStatus/toStatus/
+                            actorType/reason/customerLabel/createdAt) + total
       - stats=true        : byStatus + cancelReasonsTop (rows 없음)
-      - groupBy=memberId  : rows(MemberRow: buyerMemberId/orderCount/cancelCount/
+      - groupBy=memberId  : rows(MemberRow: customerLabel/orderCount/cancelCount/
                             cancelRatio/maxOrdersPerHour/isSuspicious) + total
     rows 는 groupBy 에 따라 이형(異形)이라 dict 유지 — kv 요약(_summarize_events)이
     양쪽 모두 소화한다. rows 는 limit(기본 100) 절단본, 전수는 total.
+
+    [개정 2026-08-06, #481] ① buyerMemberId(Long) → customerLabel(String, HMAC 6자
+    사례번호) 교체 — orderId+memberId 를 S-2 화면과 대조하면 회원이 재식별되는
+    프라이버시 문제. 같은 회원=같은 라벨(반복 패턴 표현), 브랜드별 상이, 역산 불가.
+    ② rows[].orderItemId 신설 — 아이템 전이(SHIPPING/DELIVERED/CANCELLED/RETURNED)만
+    값이 채워지고 주문 전이(PENDING/PAID/PAYMENT_FAILED)는 null. 같은 orderId 행
+    복수 = 아이템별 전이(중복 아님). ③ 브랜드 스코프 축소 — orderItemId 가 있는
+    행은 자사 아이템만 포함(행 수·byStatus 감소는 회귀가 아니라 타사 노출 제거).
+    ④ 단위 — byStatus 는 상태별 층위 상이(SHIPPING·DELIVERED=아이템 수,
+    PAID·PAYMENT_FAILED=주문 수), cancelReasonsTop.count 는 아이템 수. MemberRow 의
+    orderCount·cancelRatio·isSuspicious·maxOrdersPerHour 는 DISTINCT 기반 불변
+    (I-14 의 isSuspicious 는 브랜드 스코프가 원래라 I-8 과 달리 유지).
 
     구매자 fetch_product_changes(I-8·§4.8)와 무관한 별개 계약(혼동 금지, §4.4 주)."""
 
@@ -817,11 +894,20 @@ class ChurnMember(SellerAggregateModel):
 
     preChurnEvent: 클레임 있으면 "RETURNED(상품불량)" 형식(최신 1건), 없으면 마지막
     행동 이벤트 타입. 서버가 CHURN_LIST_CAP=50 으로 절단해 내려보낸다(별도 total
-    없음 — 이탈 전수는 cohortSize×churnRate 로 유추)."""
+    없음 — 이탈 전수는 cohortSize×churnRate 로 유추).
 
-    member_id: int | None = None
+    [개정 2026-08-06, #487 — #481 잔여분] memberId(Long) → customerLabel(HMAC-SHA256
+    앞 6자 Base32 사례번호)로 교체하고 lastLoginAt 을 제거한다. 원시 memberId 는
+    가명이 아니라 재식별 키라 S-2(orderId+수령인 실명) 대조로 회원이 특정된다 —
+    I-14 개정(#481)과 같은 근거가 I-16 에만 적용되지 않고 있었다. lastLoginAt 은
+    계정 보안 정보라 판매자에게 회원 단위로 줄 이유가 없다(요약에서 읽히지도 않던 사문).
+
+    ※ 필드 제거는 배포 순서와 무관하게 안전하다 — SellerAggregateModel 이
+    extra="allow" 라 BE 미배포 구간의 구응답 memberId/lastLoginAt 은 예외 없이
+    model_extra 로 흡수되고, 표시 계층이 읽지 않으므로 노출만 끊긴다."""
+
+    customer_label: str | None = None  # HMAC 익명 라벨(사례번호) — 구 memberId 대체
     last_activity_at: str | None = None
-    last_login_at: str | None = None  # 로그인 이벤트가 없으면 null
     # to_camel("sessions_30d") 은 "sessions30D"(숫자 뒤 접미 대문자화)라 와이어 키
     # "sessions30d" 와 어긋난다 — 명시 alias 로 고정한다(#197, 테스트로 회귀 방지).
     sessions_30d: int | None = Field(default=None, alias="sessions30d")
@@ -836,7 +922,12 @@ class ChurnResult(SellerAggregateModel):
     churnRate 는 소수(fraction, 0.6=60%, round3 — DTO 주석 명시) — % 변환은 표시
     계층(tools)만 한다(스키마는 와이어 값 보존). 응답의 brandId/from/to/inactiveDays
     에코는 extra="allow" 로 흡수한다. 코호트 0명이면 cohortSize=0·churnRate=0.0·
-    빈 signals·빈 members 로 온다(BE short-circuit)."""
+    빈 signals·빈 members 로 온다(BE short-circuit).
+
+    [#495 주의] 코호트 0명의 churnRate 는 정본(노션 I-16)이 null 인데 본 사본
+    api-spec §4.4(v0.19.1)는 0.0 으로 적어 어긋나 있다 — 런타임은 tools 의
+    cohort_size == 0 조기 반환이 먼저라 어느 값이 와도 무해하다. 사본 정정 자체는
+    전수 대조(#472) 소관이라 여기서는 표시만 남긴다."""
 
     # [#197 PR 리뷰] 기본값 0.0 금지 — churnRate 키 결측이 조용히 "이탈률 0.0%"로
     # 렌더링되는 silent-mismatch(이 PR 이 제거한 #194 패턴)를 이 필드만 재도입하지
@@ -847,36 +938,65 @@ class ChurnResult(SellerAggregateModel):
     members: list[ChurnMember] = Field(default_factory=list)
 
 
-# ── I-8 계정/보안 이벤트 집계 (전역, brandId 없음) (§4.4) ──
+# ── I-8 계정 이벤트 집계 (자사 코호트, §4.4 — 2026-08-06 브랜드 스코프 전환) ──
 
 
 class AccountEventsResult(SellerAggregateModel):
-    """I-8 GET /internal/account-events 응답(AccountEventAggregateResponse 실측) —
-    전역(브랜드 스코프 아님)·IP 마스킹·집계 전용, admin 소유 🔴.
+    """I-8 GET /internal/seller/{brandId}/account-events 응답 — 자사 코호트 스코프
+    (#481, 노션 2026-08-06 개정)·IP 마스킹·집계 전용.
+
+    [개정 2026-08-06] 전역 → 자사 코호트 전환에 따른 ip rows 개정 —
+    isSuspicious(브랜드 스코프에선 임계 도달 불가 → 상시 false 오보 위험이라
+    재정의가 아니라 제거)·failCount(동일 사유, 총량은 eventCount 대체)·
+    nullMemberRatio(member 조인 코호트에선 상시 0) 제거.
+    suspiciousMemberCount(해당 IP 코호트 회원 중 I-14 어뷰징 기준 해당 **회원
+    수** — 서버가 SQL 교차, 회원 키는 주지 않는다)·scope("brand" 에코) 신설.
 
     [수정 #197] 구 events 필드 폐기 — Spring 은 rows 를 내려보낸다. extra="allow"
     탓에 검증이 조용히 통과해 항상 "0건 집계됨"으로 새던 I-14/I-15(#194)와 동일
     패턴. rows 는 groupBy 별 이형(異形) — eventType|hour: Bucket{key, count} /
-    ip: IpRow{ipMasked, failCount, distinctMembers, nullMemberRatio, isSuspicious,
-    firstSeen, lastSeen}(무차별 대입 신호) — 이라 dict 유지, kv 요약이 소화한다.
+    ip: IpRow{ipMasked, distinctMembers, suspiciousMemberCount, eventCount,
+    firstSeen, lastSeen} — 이라 dict 유지, kv 요약이 소화한다.
     응답의 groupBy 에코는 서버가 실제 적용한 집계 기준 고지용."""
 
     group_by: str | None = None
+    scope: str | None = None  # "brand" 에코(2026-08-06) — 구버전(전역) 응답 오독 차단
     rows: list[dict] = Field(default_factory=list)
 
 
 # ── I-9 자사 상품 목록 (§4.5) ──
 
 
+class SellerStockRow(CamelModel):
+    """I-9 rows[].stocks[] 항목 (#524) — 에이전트가 I-11 에 넣을 optionId 의 원천.
+
+    판매자용이라 품절(quantity 0) 옵션도 그대로 내려온다. option_id null 은 옵션 없는
+    상품의 유일한 재고 행이다. 구(stockQuantity 단일) BE 는 이 배열을 보내지 않으므로
+    수신은 관대하게 — 빈 목록이 기본값이다.
+    """
+
+    option_id: int | None = None
+    option_name: str | None = None
+    quantity: int = 0
+
+
 class SellerProductRow(CamelModel):
     """I-9 rows[] 항목. originalPrice 는 구매자 SpringProduct.listPrice 와 필드명이 달라
-    별도 모델로 유지한다(§2.4)."""
+    별도 모델로 유지한다(§2.4).
+
+    `status` 는 `ON_SALE`|`HIDDEN` 만 온다 — `DELETED` 는 BE 가 목록에서 제외한다(§4.5).
+
+    [#524] stocks 는 옵션별 재고 — BE PR B 배포 후에만 채워진다(그 전엔 빈 목록).
+    stockQuantity 는 그 시점부터 "옵션 재고 합계(파생)" 로 의미가 바뀌지만 필드는 유지된다.
+    빈 목록은 "옵션이 없다"가 아니라 **"BE 가 아직 구버전"** 이다(hitl._stocks_mode_ready).
+    """
 
     product_id: int
     name: str
     price: int
     original_price: int | None = None
     stock_quantity: int = 0
+    stocks: list[SellerStockRow] = Field(default_factory=list)
     status: str = "ON_SALE"  # ON_SALE | HIDDEN
     displayed_sales_count: int | None = None
     category: str | None = None
@@ -893,29 +1013,69 @@ class SellerProductList(CamelModel):
 # ── I-10/I-11/I-12 상품 쓰기 (§4.5, product_agent 전용, HITL 승인 후 호출) ──
 
 
+class StockEntry(CamelModel):
+    """I-10/I-11 요청 `stocks[]` 한 줄 (#524) — 옵션 없는 상품은 optionId null 한 줄.
+
+    quantity 음수는 BE 422 INVALID_STOCK — 여기서 ge=0 으로 선차단한다. optionId 가
+    그 상품의 옵션이 아니어도 INVALID_STOCK 인데, 그 검증은 hitl 이 I-9 stocks 로
+    선해소하므로(resolve_stock_option) 정상 경로에서는 발생하지 않는다.
+
+    직렬화 주의: 클라이언트가 exclude_none 으로 본문을 만들므로 optionId null 은
+    **키 자체가 빠져** 나간다 — Jackson 은 키 누락을 null 로 바인딩하니(record) 계약상
+    "optionId: null 한 줄"과 동등하다. BE 가 키 존재를 강제하게 되면 여기를 고친다.
+    """
+
+    option_id: int | None = None
+    quantity: int = Field(ge=0)
+
+
 class ProductCreate(CamelModel):
-    """I-10 POST 요청 본문 — name/price/stockQuantity 필수(price ≤ originalPrice)."""
+    """I-10 POST 요청 본문 — name/price/stockQuantity/categoryId 필수(price ≤ originalPrice).
+
+    [2026-08-09 정정] `category`(자유 문자열) → `categoryId`(Long). BE
+    `SellerProductCreateRequest` 는 `categoryId: Long` 만 받고 소분류(leaf)인지까지
+    검증한다(`Category.isRoot()` → PRODUCT_CATEGORY_INVALID). 구 구현이 보내던
+    `category` 키는 BE 가 조용히 버렸고, 남은 categoryId 누락으로 등록이 항상
+    실패했다 — 판매자에게는 "등록 중 오류"로만 보였다.
+
+    필수지만 타입은 `int | None` 이다: 누락은 여기서 500 을 만들지 말고 상위
+    (hitl.validate_draft)가 되묻기로 전환해야 한다. 전송은 exclude_none 이므로
+    None 이면 키 자체가 빠지고 BE 가 422 MISSING_FIELD 로 응답한다.
+    """
 
     name: str
     price: int
     original_price: int | None = None
-    stock_quantity: int = Field(0, ge=0)
-    category: str | None = None
+    # [#524 듀얼모드] 재고는 wire_mode 에 따라 정확히 한 필드만 채운다(다른 쪽 None →
+    # exclude_none 으로 본문에서 빠진다). quantity 모드=stock_quantity(현행 BE),
+    # stocks 모드=stocks(PR B 이후). 등록 시점엔 옵션이 없어 stocks 는 optionId null 한 줄.
+    stock_quantity: int | None = Field(default=None, ge=0)
+    stocks: list[StockEntry] | None = None
+    category_id: int | None = None
     description: str | None = None
     image_url: str | None = None
 
 
 class ProductUpdate(CamelModel):
-    """I-11 PATCH 요청 본문 — 바꿀 필드만(전 필드 Optional). 재고도 이 API로 통합."""
+    """I-11 PATCH 요청 본문 — 바꿀 필드만(전 필드 Optional). 재고도 이 API로 통합.
+
+    ⚠️ `category` 는 BE `SellerProductUpdateRequest` 에 **없는 필드**다(2026-08-09 실측)
+    — Jackson 이 모르는 키로 버리므로 카테고리 수정 요청은 조용히 무시된다. I-10 등록
+    시에만 정할 수 있는 값이라는 뜻이고, preview 의 "카테고리는 등록 후 변경할 수
+    없습니다" 경고와도 일치한다. BE 가 필드를 열기 전까지 여기 남는 값은 전송돼도
+    효과가 없다 — 수정 흐름에서 카테고리를 다루려면 별도 이슈로 BE 를 먼저 연다."""
 
     name: str | None = None
     price: int | None = None
     original_price: int | None = None
+    # [#524 듀얼모드] ProductCreate 와 동일 — 정확히 한 재고 필드만 채운다.
+    # stocks 는 부분 수정이다: 배열에 실린 옵션만 갱신되고 나머지는 그대로다(05 §I-11).
     stock_quantity: int | None = Field(default=None, ge=0)
+    stocks: list[StockEntry] | None = None
     category: str | None = None
     description: str | None = None
     image_url: str | None = None
-    status: str | None = None  # ON_SALE | HIDDEN
+    status: str | None = None  # ON_SALE | HIDDEN — DELETED 는 BE 가 거부(삭제는 I-12 전용)
 
 
 class ProductCreateResult(SellerAggregateModel):
@@ -932,10 +1092,13 @@ class ProductUpdateResult(SellerAggregateModel):
 
 
 class ProductDeleteResult(SellerAggregateModel):
-    """I-12 200 응답 — soft delete, {productId, status:"HIDDEN"}."""
+    """I-12 200 응답 — soft delete, {productId, status:"DELETED"} (§4.5, 정본 Notion I-12).
+
+    `HIDDEN`(숨김·판매정지)이 아니다 — 숨김은 판매자 목록에 남고 삭제는 목록에서도 빠진다.
+    """
 
     product_id: int
-    status: str = "HIDDEN"
+    status: str = "DELETED"
 
 
 # ── I-29/I-30/I-31 판매자 주문·리뷰 (§4.18~§4.20, 이슈 #297 — 🔶 초안, BE 협의 전) ──
@@ -1001,14 +1164,26 @@ class OrderItemStatusResult(SellerAggregateModel):
 
 
 class SellerReviewRow(SellerAggregateModel):
-    """I-31 rows[] 항목 — VISIBLE 리뷰만(P-3 와 동일한 진실). authorNickname 은 공개 정보."""
+    """I-31 rows[] 항목 — VISIBLE 리뷰만(P-3 와 동일한 진실). authorNickname 은 공개 정보.
+
+    [#518] content·authorNickname 은 **nullable**이다 — DDL 이 `content TEXT NULL` 이고
+    별점만 남기는 리뷰가 실제로 존재한다. 구 `str = ""` 기본값은 키 **결측**만 흡수하고
+    명시적 `null` 은 못 먹어서(pydantic 은 기본값과 무관하게 `str` 에 `None` 을 거부),
+    rows 한 행만 content 가 null 이어도 `_validate` → ValidationError →
+    SpringUnavailableError 로 **리뷰 조회 전체가** degrade 됐다. 부분 결측이 전량 실패로
+    번지는 것을 막는 게 요지이며, `SellerAggregateModel` 의 `extra="allow"` 는 여분 필드만
+    다루지 이 경로를 구제하지 못한다(#489 의 `extra="ignore"` 건과 층위가 다르다).
+
+    표시 폴백은 여기서 하지 않는다 — 스키마는 와이어 값을 보존하고, 결측 문구는 tools 가
+    정한다(#495 에서 churnRate 를 두고 세운 것과 같은 규약).
+    """
 
     review_id: int
     product_id: int | None = None
     product_name: str = ""
     rating: int = 0
-    content: str = ""
-    author_nickname: str = ""
+    content: str | None = None
+    author_nickname: str | None = None
     created_at: str = ""
 
 
