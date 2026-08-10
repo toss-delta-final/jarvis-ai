@@ -1,6 +1,6 @@
 # 구매자 추천 품질 평가
 
-- dataset: `2.1.0` / `d16eb0e98e28486e2e63a7218cb8b25a96f9ebe69dbe0a37c5b205a16f01efb1`
+- dataset: `2.3.0` / `675520d999dc1fbf0a4b32e13914205bc61c606c9adc2f65833eb67fc133ae50`
 - algorithm/config: `buyer-metrics-v1` / `buyer-eval-config-v1`
 - model config: `{"decompose":"expectedFilters","profileArm":"member_no_profile","profileSource":"caseDerivedFixtureArm","provider":"scripted","recentPurchaseWindowDays":90,"referenceDate":"2026-08-02","rerank":"deterministicScoringBaseline","weights":{"diversity_bonus":0.1,"popularity":0.15,"profile_match":0.3,"recency":0.05,"recent_purchase_penalty":0.2,"semantic":0.55}}`
 - 기본 scripted adapter는 expectedFilters를 decompose 출력으로 사용하므로 Filter Accuracy 1.0이 구조적으로 기대됩니다(#144에서 실모델로 교체).
@@ -11,15 +11,15 @@
 
 | metric | value |
 |---|---:|
-| cases | 96 |
-| ranking cases | 55 |
-| nDCG@10 (primary) | 0.429822 |
+| cases | 109 |
+| ranking cases | 68 |
+| nDCG@10 (primary) | 0.428237 |
 | filter accuracy | 1.000000 |
 | hard constraint violation rate | 0.000000 |
-| coverage | 0.325000 |
-| diversity | 0.842593 |
-| MRR | 0.568254 |
-| candidate depth (min/median/max) | 30/30/30 |
+| coverage | 0.337107 |
+| diversity | 0.854230 |
+| MRR | 0.639741 |
+| candidate depth (min/median/max) | 30/30.0/34 |
 | candidates ≤10 (count/ratio) | 0/0.0000 |
 
 ## 순위 지표 분모 제외
@@ -38,8 +38,8 @@
 
 | metric | system | no-op | delta(system-noop) |
 |---|---:|---:|---:|
-| nDCG@10 | 0.429822 | 0.367219 | 0.062603 |
-| MRR | 0.568254 | 0.449214 | 0.119040 |
+| nDCG@10 | 0.428237 | 0.374147 | 0.054091 |
+| MRR | 0.639741 | 0.493943 | 0.145798 |
 | hard constraint violation rate | 0.000000 | 0.000000 | 0.000000 |
 
 ## Slice
@@ -50,11 +50,27 @@
 | category_mapping_failure | 8 | 9 | 0.000000 | exploratory |
 | cold_start | 2 | 2 | 0.000000 | exploratory |
 | failure | 0 | 5 | 0.000000 | exploratory |
-| guest | 26 | 63 | 0.000000 | exploratory |
-| member | 29 | 33 | 0.000000 | exploratory |
+| guest | 37 | 74 | 0.000000 | confirmatory |
+| member | 31 | 35 | 0.000000 | confirmatory |
 | multi_constraint | 10 | 12 | 0.000000 | exploratory |
 | personalization | 11 | 11 | 0.000000 | exploratory |
 | personalization_overreach | 6 | 6 | 0.000000 | exploratory |
 | repurchase | 7 | 8 | 0.000000 | exploratory |
-| search | 55 | 55 | 0.000000 | exploratory |
-| single_need | 26 | 64 | 0.000000 | exploratory |
+| search | 68 | 68 | 0.000000 | exploratory |
+| single_need | 39 | 77 | 0.000000 | exploratory |
+
+## 축별 필터 지표(#334)
+
+- axes spec: `filter-axes-v1` / `795211072c578ebf7a95581dfef8c7544d8b94187e1a8b6dde4633567ecc0158` (emptyAxisRule=bothAbsentExcluded)
+- 기존 filter accuracy(합집합 분모 단일값)와 병행 — 정의·관계는 `evals/filter_axes/README.md` 참조. 기본 scripted adapter는 expectedFilters를 그대로 내므로 아래 값이 구조상 전부 1.0/None입니다(model_eval/ablation에서 실측).
+
+| axis | support | spurious | missing | valueStrict P | valueStrict R | valueStrict F1 | presence P | presence R |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| attr_conditions | 3 | 0 | 0 | 1.000000 | 1.000000 | 1.000000 | 1.000000 | 1.000000 |
+| brand | 1 | 0 | 0 | 1.000000 | 1.000000 | 1.000000 | 1.000000 | 1.000000 |
+| category | 4 | 0 | 0 | 1.000000 | 1.000000 | 1.000000 | 1.000000 | 1.000000 |
+| color | 21 | 0 | 0 | 1.000000 | 1.000000 | 1.000000 | 1.000000 | 1.000000 |
+| keyword | 109 | 0 | 0 | 1.000000 | 1.000000 | 1.000000 | 1.000000 | 1.000000 |
+| price_max | 34 | 0 | 0 | 1.000000 | 1.000000 | 1.000000 | 1.000000 | 1.000000 |
+| price_min | 1 | 0 | 0 | 1.000000 | 1.000000 | 1.000000 | 1.000000 | 1.000000 |
+| rating_min | 0 | 0 | 0 | N/A | N/A | N/A | N/A | N/A |
