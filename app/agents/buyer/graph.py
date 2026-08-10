@@ -1472,7 +1472,18 @@ async def run_buyer_turn(
         surface_columns = screen.columns if screen is not None else None
         surface_positional_order_verified = True
         surface_name_confirmation_enabled = False
-    elif reco_cards:
+    # [F-h, 라운드 3 리뷰] `screen is None and ...` — `screen_products`(위)는 "screen 자체가
+    # 없다"와 "screen 은 왔는데 정제 후 products 가 0건"을 똑같이 falsy `[]` 로 뭉갠다. 후자에서
+    # `elif reco_cards:` 로 그냥 넘어가면 사용자가 지금 보고 있는(비어 있는) 화면과 무관한
+    # **이전 턴 추천 카드**로 순번·이름 해소가 돌아 오담기가 난다(재현: 이전 턴 카드 A·B·C
+    # + 이번 턴 `screen.products == []` + `"3번째 거 담아줘"` → C 오확정). 바로 아래
+    # `screen_reference_attempted` 의 F29 주석이 이미 세운 구분("화면이 없다"는 FE 가 `screen`
+    # 자체를 안 보냈다는 뜻이지, 화면은 왔는데 정제 후 상품이 비었다는 뜻이 아니다)과 정확히
+    # 같은 원칙을 여기서도 지킨다 — 후자는 "표면은 있는데 확정할 게 없다"(F21 사례)이지 "다른
+    # 표면으로 갈아탄다"가 아니다. `screen is None` 으로 좁히면 화면이 왔지만 비어 있는 턴은
+    # `surface = []`(아래 else)로 떨어져 해소기를 아예 돌리지 않는다 — #571 이전 동작(LLM 산출
+    # 존중 + `allowed` 가드 유지)과 같다.
+    elif screen is None and reco_cards:
         surface = reco_cards
         surface_columns = None
         surface_positional_order_verified = (

@@ -3143,3 +3143,80 @@ async def test_screen_products_take_priority_over_reco_cards_for_ordinal(
     action = next(e for e in events if e["type"] == "action")["data"]
     assert action["type"] == "CART_ADDED"
     assert added["product_id"] == 502  # 화면 2번째(추천 카드 2번째 602 가 아니다)
+
+
+async def test_empty_screen_products_does_not_fall_back_to_reco_cards(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[F-20, 라운드 3 리뷰 PR #573] `screen` 이 왔는데 `screen.products == []` 인 턴은 이전
+    턴 추천 카드로 폴백하지 않는다 — 사용자가 지금 보고 있는(비어 있는) 화면과 무관한 카드가
+    순번으로 확정되면 오담기다. 이전 턴 추천 카드 3건(A·B·C, `ordinal_span=3`) + 이번 턴
+    `screen.products == []` + `"3번째 거 담아줘"` → 코드가 C 를 확정하지 않는다(코드 확정
+    0회 — LLM 이 목록 밖 id 를 냈다고 두고 그 값도 담기지 않는 것까지 확인한다)."""
+    import app.services.spring_client as sc
+
+    async def fake_add(req):  # noqa: ANN001
+        raise AssertionError(f"빈 screen.products 턴에 이전 턴 추천 카드가 담기면 안 됨: {req}")
+
+    monkeypatch.setattr(sc, "add_to_cart", fake_add)
+
+    request = BuyerChatRequest.model_validate(
+        _buyer_payload(
+            message="3번째 거 담아줘",
+            threadId="t-screen-empty-products-no-reco-fallback",
+            screen={"pageType": "chat", "columns": 3, "products": []},
+        )
+    )
+    cart_store = await get_cart_store()
+    await cart_store.set_last_reco(
+        await _thread_key(request, _member()),
+        [(601, "상품A"), (602, "상품B"), (603, "상품C")],
+        ordinal_span=3,
+    )
+    # LLM 은 두 목록 밖 id 를 냈다고 둔다 — surface 가 비어 해소기가 안 도는데 이 값이 allowed
+    # 밖이라 가드도 막아야 한다(코드가 C 로 override 하지 않는 것과 별개로 이중 확인).
+    llm = FakeLLM(decompose={"intent": "cart_add", "cart": {"productId": 999, "quantity": 1}})
+    events = await _collect(_run_buyer_turn(request, _member(), llm=llm))
+    assert "action" not in [e["type"] for e in events]
+    token_text = next(e for e in events if e["type"] == "token")["data"]["text"]
+    # 해소기가 아예 안 돌아 `screen_reason` 이 None 으로 남고, `has_last_reco=True` 라
+    # `_unresolved_notice` 가 이름 지목 유도 문구로 떨어진다(화면 위치 재질문 문구가 아니다 —
+    # 이 턴은 화면 순번을 시도할 대상 자체가 없다).
+    assert "이름을 말씀해 주시면" in token_text
+
+
+async def test_control_group_no_screen_field_still_resolves_reco_card_ordinal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[F-20 대조군] `screen` 필드 자체가 없는(요청에 `screen` 이 아예 안 실린) 같은 발화는
+    여전히 추천 카드 3번째가 담긴다 — #571 본래 기능(추천 표면 순번 해소)이 이 수정으로
+    죽지 않았음을 증명한다."""
+    import app.services.spring_client as sc
+
+    added: dict = {}
+
+    async def fake_add(req):  # noqa: ANN001
+        added["product_id"] = req.product_id
+        return AddToCartResult(success=True, cart_item_id=2001)
+
+    monkeypatch.setattr(sc, "add_to_cart", fake_add)
+    monkeypatch.setattr(sc, "get_cart", _empty_cart_view())
+
+    request = BuyerChatRequest.model_validate(
+        _buyer_payload(
+            message="3번째 거 담아줘",
+            threadId="t-no-screen-field-reco-ordinal-control",
+        )
+    )
+    assert request.screen is None  # screen 자체가 없음을 사전 확인 — 빈 screen 과 다른 케이스다
+    cart_store = await get_cart_store()
+    await cart_store.set_last_reco(
+        await _thread_key(request, _member()),
+        [(601, "상품A"), (602, "상품B"), (603, "상품C")],
+        ordinal_span=3,
+    )
+    llm = FakeLLM(decompose={"intent": "cart_add", "cart": {"productId": 999, "quantity": 1}})
+    events = await _collect(_run_buyer_turn(request, _member(), llm=llm))
+    action = next(e for e in events if e["type"] == "action")["data"]
+    assert action["type"] == "CART_ADDED"
+    assert added["product_id"] == 603  # 추천 카드 3번째(C) — LLM 산출(999) 아님
