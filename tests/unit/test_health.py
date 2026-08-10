@@ -118,4 +118,12 @@ def test_openapi_surface_is_exactly_mvp() -> None:
         # [#148] I-22 홈 추천 랭킹 — Spring → AI 위임(레인 b, api-spec §3.7).
         # `/events/*` 와 같은 서비스 토큰 레인이지만 통지가 아니라 동기 요청/응답이다.
         "/internal/recommendations/home",
+        # [#360] 마이페이지 취향 관리 I-32~I-37 — 같은 레인, `M-11`~`M-16` 의 internal 판
+        # (api-spec §3.8·§3.9). 조회 1 + 변경 4 이고 I-35(되돌리기)는 2026-08-07 폐기됐다.
+        # 자리표시자 이름이 정본의 `{userId}`·`{edgeId}` 와 다른 것은 **드리프트가 아니다** —
+        # 실제 URL 은 숫자·식별자라 와이어가 같고, 이름은 파이썬 인자명 규약을 따른다.
+        "/internal/profile/{user_id}/graph",
+        "/internal/profile/{user_id}/graph/edges/{edge_id}",
+        "/internal/profile/{user_id}/graph/reset",
+        "/internal/profile/{user_id}/personalization",
     }

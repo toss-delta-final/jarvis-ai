@@ -9,6 +9,42 @@
 
 ## [Unreleased]
 
+### Security
+- **#321 — "기억해" 원문의 하드 PII(전화번호·주민번호·카드번호·계좌번호·이메일·시크릿 토큰)가
+  게이트 없이 저장되던 결함을 막았다.** 신설 `app/core/pii.py`(순수·동기·무 I/O, 예외를 던지지
+  않는 결정론적 정규식 탐지기 — LLM 호출 추가 없음, 인라인 게이트가 첫 SSE 프레임 예산을 깎지
+  않게)를 저장 경계마다 다르게 배선했다: **fact 저장**(`record_remember`·`ProfileStore.add_fact`,
+  fact 뿐 아니라 개인화 그래프 triple 의 `label`/`anchorPhrase` 도 검사)과 **요약 저장**
+  (`set_summary`, `_embed_summary` 가 외부 Google API 로 나가기 직전 마지막 관문)은 히트 시
+  **전량 폐기**(SPEC-PROFILE-GRAPH-149 REQ-PGRAPH-071 — 파생 취향도 만들지 않는다), **세션 버퍼**
+  (`append_session_ctx`)와 **LangSmith 콘텐츠 트레이스**(`record_request_content`·
+  `record_llm_content`, `PII_REDACT_TRACE_CONTENT` 기본 on)는 **치환**(닫힌 어휘 placeholder —
+  버퍼 치환은 델타 추출 LLM 이 원문 숫자를 애초에 못 보게 해 fact/label/anchorPhrase 로 옮겨
+  적는 세탁 경로를 구조적으로 닫는다). `record_remember` 는 **절단 전 원문**을 검사한다 —
+  절단이 먼저면 `010-1234-` 처럼 번호가 잘려 정규식이 못 잡는다. 탐지는
+  `app/core/text.py::_security_skeleton` 위에서 해 zero-width 문자를 숫자 사이에 끼우는 우회를
+  막는다. 로그에는 이벤트명 + `safe_fingerprint(user_id)` 만 남기고 히트 클래스·매치 문자열·
+  카운트는 남기지 않는다(REQ-PGRAPH-075/076). `tracing.py` 의 기존 카나리아 검증기·면제 목록·
+  `_DELTA_SYSTEM` 계열 프롬프트는 변경하지 않았다.
+- **#321 — 대화 전사록(`conversation_turns`)에 처음으로 시간 기반 보존 정책을 도입했다**
+  (`SPEC-PROFILE-001` OPEN-P5 해소). 이 리포에 시간 기반 삭제 스윕이 없었다 —
+  `graph_audit_retention_days`(기본 90일)도 만료 행을 지우는 스윕이 없다. 신설
+  `conversation_retention_days`(기본 **90일**, `graph_audit_retention_days` 와 의도적으로
+  짝지음 — 감사 원장이 지문만 남기므로 원문 대조 상대는 전사록뿐이라, 전사록이 감사 원장보다
+  먼저 지워지면 그 사이 구간이 조사 불가능해진다)를 기동 시점 fail-fast 검증기로 강제한다.
+  삭제는 `app/pipelines/scheduler.py` 의 별도 job(`conversation_retention_sweep`, 기본 1시간
+  주기, `CONVERSATION_RETENTION_SWEEP_ENABLED` 기본 on)이 유계 배치로 수행 — `ORDER BY
+  created_at LIMIT` + `FOR UPDATE SKIP LOCKED`(동시 `finalize_assistant` UPDATE 를 건너뜀) +
+  배치당 짧은 트랜잭션 1개(장수 트랜잭션의 autovacuum 봉쇄 방지). PENDING 턴도 지운다 —
+  세션 lifecycle sweep 의 "진행 중 턴 보호" 규칙과 달리, 90일 된 PENDING 은 죽은 스트림이라
+  예외를 두면 TTL 이 지우려던 것이 정확히 그만큼 남는다. `conversation_turns (created_at)`
+  인덱스를 신설(`PgConversationStore.setup()` 멱등 마이그레이션 + `db/profile/init/`)해 스윕
+  조회가 풀스캔이 되지 않게 했다. `ConversationStoreProtocol` 에 `purge_expired_turns` 를
+  추가해 인메모리 구현도 같은 계약을 따른다(스윕 job 이 isinstance 분기 없이 양쪽을 다룬다).
+  와이어 계약(엔드포인트·SSE 이벤트·필드·오류 코드) 은 불변 — `turns_for()`/`get_turn()` 의
+  프로덕션 호출부가 없어 전사록은 감사·상관관계 조회 전용이다(`docs/api-spec.md` §3.9.4 C-23·
+  §3.9.4 OPEN-P5 서술 사본 동기화, `SPEC-PROFILE-001`·`SPEC-PROFILE-GRAPH-149` OPEN 항목 갱신).
+
 ### Fixed
 - **#553 — 운영 배포 전면 중단 복구: `deploy.yml` 설명문의 빈 Actions 표현식** — `script: |` 은 YAML 블록 스칼라라 `#` 가 주석이 아니라 리터럴이고 Actions 가 그 안의 표현식도 평가한다. #539 가 넣은 설명문의 **내용이 빈 표현식**이 문법 오류를 내 워크플로가 job 을 시작조차 못 했고(startup failure, run 2건 job 0개), 승격 #552 의 41커밋이 실서버에 반영되지 못했다. 설명문에서 표현식 리터럴을 걷어내고, 같은 블록에 "여기서는 표현식을 쓰지 않는다"는 경고를 남겼다. 로컬 YAML 파싱은 통과하므로 CI 로는 못 잡는 계열이라 `docs/lessons.md` 에 진단 단서(트리거 밖 브랜치에서도 run 생성 = startup failure)까지 기록했다.
 
@@ -34,6 +70,115 @@
   기본 on(하방이 유계) · `BRAND_ALIAS_MAX_VALUES` 로 개수 상한.
 
 ### Added
+- **#361 — 그래프 데이터가 검색 필터에 닿지 못하게 구조로 막았다** (INV-PGRAPH-ORDER,
+  SPEC-PROFILE-GRAPH-149 §6.12). 취향 그래프는 **rerank 순서 지시**와 **홈 프로필 벡터**에만
+  쓰이고 후보를 좁히는 데는 쓰이지 않는다. 순서로 틀리면 3위가 1위로 갈 뿐 상품은 화면에 있지만,
+  필터로 틀리면 상품이 애초에 검색 결과에 없어 하류가 복구할 수 없다 — #119 에서 회원 추천이
+  게스트보다 나빠진(nDCG@10 −0.288) 메커니즘이다. **런타임 변경 0줄** — 오늘 유출 생산자가 없으므로
+  산출물은 "생기는 순간 깨지는" 테스트다. api-spec §3.8 v0.32.0 이 `usagePolicy.filterSafe` 를
+  폐기하며 집행을 계약 문장 + 코드 구조로 옮긴 뒤(SPEC v0.3.5, #360) 그 "코드 구조"가 이것이다.
+  - **정적**(REQ-PGRAPH-110) — 그래프 모듈 19개(glob 이라 새 모듈 자동 포함)가 필터 타입을 import
+    하지 않고, 필터 모양 타입을 정의하지 않고(필드명이 검색 축과 2개 이상 겹치면 적발 — 이름이
+    아니라 구조로 판정해 다른 이름의 같은 물건도 잡는다), 공개 함수 87개가 반환형을 밝힌다.
+    와이어 `GraphEdgeView` 5필드에 필터 축이 없는지도 잠근다.
+  - **행동**(REQ-PGRAPH-112·113·115·116) — 모든 `NodeType`×`Predicate` 를 채운 그래프와 그 파생
+    요약을 **함께** 심고(그래프만 심으면 추천 경로에 소비자가 없어 `0 == 0` 을 잰다) 회원·게스트의
+    decompose 프롬프트·검색 페이로드·스레드 필터 저장소가 같은지, `avoids` 가 후보를 줄이지 않는지
+    본다. 픽스처 값은 fake 카탈로그와 **아프게** 교차시켰다 — 선호 가격대가 카탈로그 위에 있어야
+    유출 시 후보가 준다.
+  - **유효성 대조군** — `profile_injection_scope="both"` 로 #119 이전 배선을 되살리면 프롬프트가
+    실제로 갈라진다. 이게 없으면 위 초록불이 전부 공허할 수 있다. 실제로 회원에게만 필터를 심는
+    변이를 넣어 행동 테스트 5건이 전부 실패하는 것을 확인했고, 그 과정에서 fake 검색이 필터를
+    무시해 후보 비교가 무력했던 사실이 드러나 필터를 적용하도록 고쳤다.
+- **#360 — 개인화 그래프 API 표면 5종(I-32~I-37)을 붙였다** (api-spec §3.8·§3.9, v0.32.7~v0.32.8).
+  마이페이지 **"AI가 이해한 내 취향"** 화면이 이제 실제로 동작한다 — 취향을 항목 단위로 조회하고
+  고치고 지우고 통째로 초기화하고 개인화를 끌 수 있다. 저장 계층(#356·#358) 위에 얹는 마지막 층이다.
+  - **결정론적 투영** — 저장된 구조화 트리플의 파생이며 **요청 경로 LLM 0회**다. 정렬은 `predicate`
+    고정 순서 → 최근 확인 시각 → `edgeId` 3키 전순서이고 `graph_merge` 의 정렬 키를 **재사용**한다
+    (두 곳에 적으면 저장 순서와 화면 순서가 갈린다). 투영은 문서를 **다시 정렬한다** — 사용자 편집은
+    새 edge 를 리스트 뒤에 덧붙이고 끝나 편집 직후 문서는 정렬이 깨져 있다.
+  - **서버 화면 상한이 없다** — 자르면 상한 밖 항목을 사용자가 보지도 지우지도 못해 취향 관리
+    화면의 목적과 정면으로 부딪힌다. 페이지네이션도 없다.
+  - **오류 매핑을 한 곳에 모았다**(`_GRAPH_ERROR_MAP`) — 라우터는 도메인 예외만 던진다. `409` 의
+    기본 코드가 `STREAM_IN_PROGRESS` 라 코드 지정을 한 번만 빠뜨려도 FE 에 "스트림 진행 중"이 나가고
+    그 결함은 정상 경로 테스트로 안 잡힌다. `error_envelope` 에 `error.detail` 을 열어
+    `PROFILE_VERSION_CONFLICT` 가 최신 `graphVersion` 을 동봉한다.
+  - **응답 예산 실측 등재** — 조회 2s·변경 3s(§2.9 (c)). 실측 p95 는 예산의 1.5~4.3% 다.
+- **#360 — I-33 재전송이 최초 응답을 그대로 돌려준다** (REQ-PGRAPH-043). 수정 성공 뒤 그 edge 를
+  삭제하고 원래 `If-Match` 로 온 네트워크 재시도가 원장 TTL 안에 도착하면 **현재 문서로는 응답을
+  재구성할 수 없다.** 원장이 투영된 항목을 들게 했다 — #358 이 테이블을 3개로 나눈 근거가 바로
+  "원장이 드는 응답 본문에 라벨이 섞인다"였다.
+
+- **#359 — 사용자가 고친 취향을 기계 배치가 덮지 못하게 하고, 개인화 중지를 실제로 집행한다**
+  (`SPEC-PROFILE-GRAPH-149` §6.4·§6.6, v0.3.3 / api-spec §3.7 v0.32.10 — **와이어 계약 불변,
+  Spring·FE 무변경**). #356 이 병합 엔진을, #358 이 저장 안전장치와 중지 플래그 테이블을
+  깔았는데 **사용자 의사를 존중하는 로직이 하나도 안 들어가 있었다** — 고친 취향은 다음 배치가
+  되돌렸고, `get_personalization_flag` 의 프로덕션 호출자는 0건이라 스위치를 꺼도 아무 일도
+  일어나지 않았다. §6.4 의 제목이 「기능이 연극이 되지 않게 하는 조항」인 이유다.
+  - **pin 불변**(REQ-PGRAPH-031 [HARD]·035) — 실제 위반 경로 3곳을 닫았다. `_merge_edge` 가
+    관측 한 건에 최상급 확신도를 감쇠 EMA 로 덮던 것, `_carried_tombstones` 가 이월 pin 을
+    감쇠시키던 것, `_resolve_conflicts` 승자 키에 origin 클래스가 없어 **방금 관측된 기계
+    `avoids` 가 오래된 사용자 pin 을 `superseded` 로 강등**하던 것. 그 위에 터미널 게이트
+    `_reassert_pins` 를 얹되, **정상 경로에서는 아무것도 바꾸지 않는다**를 불변식으로 세워
+    게이트가 국소 수정을 가리지 않게 했다. AC-PGRAPH-09(배치 재실행 후 사용자 수정 유지)를
+    재는 테스트가 리포에 하나도 없어 함께 신설했다.
+  - **`challenged` 신호**(REQ-PGRAPH-033, `graph_pin_challenge_count`=3) — pin 에 반대 관측이
+    임계 이상 쌓이면 표시하되 **상태는 바꾸지 않는다**. 값 계산·저장까지가 이 이슈이고 와이어
+    노출은 #360. 카운터는 **이번 배치에 실제 반대 관측이 있을 때만** 오른다 — 진 edge 가 근거
+    0건이어도 영구 이월되므로 승패만 보면 배치 횟수를 세게 되고, 60초 sweep 기준 3분 침묵으로
+    깃발이 켜진다. `challenge_count` 는 지문에서 빼고 파생 `challenged` 만 넣어 `If-Match` 가
+    상시 무효가 되는 것을 막았다. 설정값 `0` 은 신호를 끈다(순진한 `>=` 비교는 정반대로 동작).
+  - **절단 상한을 바구니별로**(REQ-PGRAPH-005 개정) — pin 무제한 / `active` /
+    `superseded` / tombstone 목록. 단일 상한에서는 근거 0건으로도 영구 이월되는 `superseded` 가
+    단조 누적되며 `active` 보다 먼저 보존돼, **`active` 가 하나도 안 남는** 되먹임이 있었다
+    (밀려난 active 는 투영에 없어 지울 수도 없는데 요약·추천에는 계속 반영된다). active 상한을
+    fact 상한과 같게 두면 그 절단은 **구조적으로 발동 불가**가 된다. 이슈 #150 코멘트
+    (2026-08-09)의 결정을 #358 이후 상황으로 재조정한 것이며, `superseded` 의 실효 예산은
+    `상한 − |pin|` → 자기 상한 전량으로 **늘어난다**.
+  - **중지 = 사용·수집 동시 정지**(REQ-PGRAPH-051/052/053) — 소비 3표면(rerank 주입·홈 프로필
+    벡터·마이페이지)과 수집 3지점("기억해" hot-path·세션 버퍼·델타/consolidation). 구매자 턴은
+    플래그를 **턴당 1회** 조회해 요약 조회와 `asyncio.gather` 로 병렬 처리하므로 왕복이 늘지
+    않는다. 중지 회원의 rerank 인자가 **게스트와 동일**함을 `buyer/graph.py` 를 실제로 통과하는
+    CI 게이트로 고정했다. 수집을 멈춰도 finalizer 의 버퍼 정리·처리 완료 표시는 계속되며
+    (`finalizer.py` **무변경**), 그 덕에 중지 기간 발화의 소급 반영 금지(REQ-PGRAPH-056)가 별도
+    방어 없이 성립한다.
+  - **중지 중 I-22 는 `NO_PROFILE`** — 시그널이 있어도 그렇다. api-spec v0.22.0 이 적은 근거
+    ("프로필 벡터 항을 빼면 근거가 남지 않는다")가 성립하지 않아 **판정 기준보다 앞서는 단락**
+    으로 규정을 정정했다(결론 불변). 중지는 장애가 아니라 정상 동작이므로 `profile_unavailable`
+    degrade 어휘를 붙이지 않는다 — 붙이면 REQ-PGRAPH-054("중지 여부가 실패로 추론되지 않는다")가
+    관측 계층에서 깨진다.
+  - **중지 기간 감쇠 정지**(REQ-PGRAPH-055) — 배치를 멈추는 것만으로는 부족하다. `_confidence` 는
+    `decay_evaluated_at` 을 읽지 않고 관측 시각부터 매 배치 새로 계산하므로 6개월 중지 후 재개
+    시 6개월치가 그대로 걸린다. 중지 구간을 `profile_personalization_state.disabled_spans` 에
+    쌓고(그래프 문서에 두면 `graphVersion`·감사·원장이 거짓이 되고 락 규약이 깨진다) 병합 엔진이
+    **겹친 만큼만** 차감한다 — 누적 스칼라는 관측보다 앞선 중지까지 깎아 준다.
+  - **실패 정책은 경로별로 갈린다** — hot-path 쓰기·소비는 fail-closed, 배치 델타 추출은
+    fail-unknown(`None` = degrade·버퍼 보존), consolidation 은 fail-open. 전 구간 fail-closed 로
+    통일하면 DB 블립 한 번에 개인화가 **켜져 있는** 사용자의 누적 세션 버퍼가 영구 삭제된다.
+  - 부수: `graph_journal` pg 풀을 lifespan 에서 워밍한다(종료 목록에만 있었다) — 중지 게이트가
+    첫 호출자를 백그라운드 sweep 에서 **구매자 턴**으로 바꿔, 지연 초기화(연결 5s + 마이그레이션
+    30s, `_init_lock` 직렬화)를 first-token 10s 관문 안에서 물게 되기 때문이다. 워밍 실패는
+    기동을 막지 않는다. `store.set_summary` 가 `existing` 을 무조건 읽게 고쳐 임베딩 성공 경로에서
+    `usable` 이 리셋되던 구멍도 닫았다.
+  - **비범위**: API 엔드포인트(I-32~I-37)와 `challenged` 와이어 노출은 **#360**, 소비 측 필터
+    격리(INV-PGRAPH-ORDER)는 **#361**. 경계는 [#360 코멘트](https://github.com/toss-delta-final/jarvis-ai/issues/360#issuecomment-5234964138)에
+    정리했다 — 병합 엔진(`graph_merge`·`config` 그래프 축)은 #359 소유이고 #360 은 #359 머지 후
+    rebase 한다.
+  - **미해결로 남긴 것**: 추천에 반영되는 범위가 화면 범위보다 넓다 — 요약 입력이 `promoted` 를
+    보지 않아 **강등된 취향(약 40일 침묵)이 화면에서 사라진 뒤에도 추천을 움직인다.** 사용자가
+    볼 수도 지울 수도 없다. 투영 경계 건이라 #360 에서 다룬다(같은 코멘트 5번 항목).
+- **#140 — 추천 실행 provenance 를 구조화 로그 `recommend_provenance` 로 남긴다** (api-spec
+  §6.3 (d) 신설). `recommendationRequestId` 는 I-21 와이어에 이미 있었지만(§4.2) 발급 3곳
+  (`graph.py` 메인/프로필 경로, `home_recommendation.py`) 어디서도 로그되지 않아 BE
+  `behavior_events.recommendation_request_id` 와 이을 AI 쪽 상관 기록이 0건이었다. 추천이
+  실제로 도달했을 때만(push 성공/홈 응답 반환) 목록 순서·`algorithmVersion`·`rankSource`
+  (닫힌 어휘 `rerank`/`search_order`/`repurchase_pin`/`expose_min_fill`/`profile_vector` —
+  rerank 가 수치 score 를 내지 않아 "무엇이 순위를 정했는지"로 번역)를 한 줄에 남긴다.
+  수치 score 가 없는 결정론 정책이라 IPS 용 `propensity` 상수를 심는 대신 `deterministic`
+  플래그로 정직하게 표시한다(근거는 `app/core/reco_provenance.py` docstring). 모델·버전은
+  로그 전용이며 홈 표면은 `rankerModel` 이 항상 `null`(§3.7 [HARD] 준수, 응답·SSE 불변).
+  튜너블 `RECO_ALGORITHM_VERSION`·`RERANK_PROMPT_VERSION`·`RECO_PROVENANCE_MAX_ITEMS`
+  신설(config 주입, 초과분은 silent cap 없이 `itemsTruncated=true`).
 - **#466 — 브랜드 추출 축 프로브를 세웠다** (`evals/filter_axes/brand_probe.py` +
   `brand_cases.json`, 수동 도구·CI 제외). 기존 축을 먼저 확인한 결과 재고 있는 것이 없었다 —
   `evals/filter_axes` 의 `brand` 축은 goldenset dev 109건 중 라벨이 **1건뿐**이고,
@@ -57,13 +202,23 @@
   고정했다. 재현 스크립트 `scripts/measure_i1_live_395.py` 신설.
 
 ### Changed
+- **#361 — 개인화 평가 dev-v2 baseline 을 현행 골든셋으로 재생성하고, 수치 자체를 회귀 게이트로
+  세웠다** (REQ-PGRAPH-114). 커밋된 baseline 이 **다른 케이스 집합을 설명하고 있었다** —
+  `datasetHash` 가 `d16eb0e9…`(dev 96건)인데 현행은 `675520d9…`(v2.3.0, dev 109건)다. 직전 판은
+  #333 작업 도중의 더러운 워킹트리에서 생성돼(`dirty: true`, 히스토리에 없는 `commitSha`) 그 PR
+  최종 dev 집합(103건)조차 반영하지 못했고 이후 #474 가 6건을 더했다. arm 별 nDCG@10 이 전부
+  움직였다(clean 0.734220 → 0.686380, 주 비교 meanDelta 0.304398 → 0.258142). **분모가 바뀐
+  것이지 품질 저하가 아니다** — 서로 다른 케이스 집합의 nDCG 는 비교 대상이 아니다.
+  기존 eval 게이트가 **verdict 문자열만** 비교해 이 드리프트를 며칠간 놓쳤으므로, 신설
+  `test_default_weight_ndcg_matches_committed_baseline` 이 `caseCount` 를 먼저 보고(분모가
+  다르면 수치 일치는 우연이다) arm 별 `ndcgAtK` 전 k 와 헤드라인 meanDelta 를 `rel=1e-6` 으로
+  잠근다. 앞으로 골든셋·픽스처·스코어링을 바꿔 Tier D 수치를 움직이는 PR 은 baseline 재생성을
+  요구받는다 — 그 비용 대신 커밋된 수치가 무엇을 설명하는지가 항상 참이 된다.
 - **#505 — 색상 동의어 정본을 2차 사람 검수해 부분 일치로 닿지 않는 독립 색명만 확대했다.**
   `카멜→브라운`·`버건디→와인`처럼 자명한 표기 상이 40건을 승인하고, 실제 동의어 묶음이 있는
   독립 어휘 앵커 4개를
   추가했다. 밝기·채도 수식어, 복합색, 데님 밝기 축은 확장 때 원래 조건을 잃으므로 보류했으며,
   코드·마케팅명 등 40건은 반려로 고정했다. 생성 JSON·SQL은 검수 오버레이에서 재파생한다.
-
-### Added
 - **#358 — 개인화 그래프의 사용자 변경 경로에 저장 안전장치를 깔았다** (SPEC-PROFILE-GRAPH-149
   §5.4·§6.5·§7.1·§7.2). #356 이 배치 쓰기까지 만들었다면 이번은 **사용자가 직접 고치고 지우는**
   경로를 안전하게 만든다. `store.set_graph` 가 CAS 없는 blind overwrite 라 그 위에 네 층을 얹었다.
@@ -114,6 +269,22 @@
   Markdown·CSV로 남긴다.
 
 ### Fixed
+- **#360 — 개인화를 끄면 최대 24시간 다시 켤 수 없던 문제** (api-spec §3.9.5). I-37 토글의 파생 키가
+  대상 상태를 담지 않았는데, 이 경로는 그래프 문서를 안 바꿔 `graphVersion` 이 고정이라 **끄기와
+  켜기가 정상적으로 같은 선행조건을 지참한다** — 두 요청이 같은 키가 되어 켜기가 끄기 응답을
+  재생했다. 프라이버시 스위치라 영향이 크다. 파생 키 scope 에 대상 상태를 싣는다.
+- **#360 — I-33 부분 변경이 `500` 을 내던 문제** (api-spec §3.9.1). `predicate`·`object` 중 하나만
+  보내는 것은 계약이 허용하는데 조립부가 `ValueError` 를 올렸고, 그것이 저장소 장애 판정에 안 걸려
+  그대로 전파됐다. 생략한 쪽을 **잠금 아래에서 읽은 문서**로 채운다 — 미리 읽어 채우면 재전송이
+  이미 사라진 edge 를 찾다 실패해 §7.2 의 "재전송 판정이 `404` 보다 앞"이 깨진다.
+- **#360 — 전체 초기화 응답이 계약과 한 키도 안 겹치던 문제** (api-spec §3.9.4). `{facts, summary,
+  buffers, conversationTurns}` → **`{edges, transcriptTurns}`**. `edges` 는 사용자가 I-32 에서 보던
+  개수로 센다 — 술어를 `is_projected` 한 곳에 두어 화면 문구("취향 12건")와 초기화 응답이 갈리지
+  않게 했다.
+- **#360 — 구매 이력 파생 수정이 거부되지 않던 문제** — `GraphEdgeNotEditable` 이 정의만 되고 아무도
+  던지지 않았다(#358 이 "판정은 #360 소유"로 남긴 자리). 두 `409` 가 겹치면 **재조회로 결과가 바뀌지
+  않는 쪽**을 먼저 알린다 — 반대로 하면 FE 가 규약대로 재조회 후 재시도하고 그 재시도가 결국 같은
+  코드를 받아 왕복이 낭비된다.
 - **#440 후속 — 찜 해제 오분류의 역방향(장바구니 삭제 의도 증발)을 정정했다** (계약 무변경).
   `"찜닭 빼줘"`류(음식명 + 장바구니 삭제 의도)를 decompose 가 `wishlist_remove` 로 오분류하면,
   근거 게이트가 찜 삭제는 막았지만 사용자가 실제로 요청한 장바구니 삭제는 아무도 수행하지 않아
@@ -222,6 +393,14 @@
   구 G1(`verifier.run_chart_checks`)과 결정 D-4 는 폐기.
 
 ### Docs
+- **#360 — 계약 문서의 빈칸 5건과 SPEC 드리프트 5건을 정리했다** (api-spec v0.32.7·v0.32.8,
+  `SPEC-PROFILE-GRAPH-149` v0.3.3). 와이어 계약(엔드포인트·필드·오류 코드)은 **불변**이며 이미
+  있는 것들 사이의 적용 조건·우선순위를 명시한 것이다 — 두 `409` 의 우선순위 · `type`+`label`
+  정규화 실패 `400` · 부분 변경 기본값의 출처 · §3.8 투영 대상 · 중지 중 `markdown` 유지.
+  특히 **REQ-PGRAPH-021 의 `active` + `promoted` 가 정본과 어긋난 드리프트**였다 — 노션 정본 I-32
+  는 `active` 만이고 *"요약 생성이 같은 규칙을 쓴다"* 로 화면=추천을 이미 요구한다. 그 조건을
+  그대로 구현했다면 **화면에 안 보이는데 추천에는 쓰이는 취향**이 생겨 사용자가 `edgeId` 를 몰라
+  지울 수단을 잃었다. `promoted` 는 병합 엔진 내부 히스테리시스이고 필터 소비처가 0건이다(실측).
 - **#518 — api-spec §3.2 `findings[].analysisType` 표에 `"review"` 등재** (v0.32.5, 사본
   드리프트 정정). v0.25.0(#297)이 리뷰 워커를 6종째로 붙일 때 이 열거 표만 5종에 멈춰 있었다
   — 코드·실 와이어는 처음부터 6종이라 신설 협의가 아니라 문서 정정이다.

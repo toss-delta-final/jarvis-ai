@@ -13,6 +13,223 @@
 
 ---
 
+## [2026-08-11] 판정 라벨만 비교하는 회귀 테스트는 수치 드리프트를 통과시킨다
+- 증상: #361 착수 중 개인화 평가 baseline 이 **다른 케이스 집합을 설명하고 있는 것**을 발견했다.
+  `run_manifest.datasetHash` 가 `d16eb0e9…`(dev 96건)인데 현행 골든셋은 `675520d9…`(109건)였고,
+  arm 별 nDCG@10 이 전부 움직여 있었다(clean 0.734 → 0.686, 주 비교 meanDelta 0.304 → 0.258).
+  그런데 `uv run pytest` 는 계속 초록불이었다.
+- 원인: 유일한 baseline 대조 테스트가 `overreach.json` 의 **verdict 문자열만**(`"regression"` /
+  `"pass"`) 비교했다. 판정 라벨은 굵어서 케이스가 13건 늘고 점수가 5% 움직여도 값이 안 바뀐다.
+  게다가 그 baseline 은 **더러운 워킹트리**(`dirty: true`)에서, 이 저장소 히스토리에 없는
+  `commitSha` 로 생성돼 있어 무엇을 잰 것인지 재현조차 불가능했다.
+- 규칙: **"baseline 을 회귀시키지 않는다"를 문서로 적었으면 그 수치를 비교하는 assert 를 같이
+  넣는다.** verdict·pass/fail 같은 파생 라벨만 보는 테스트는 무회귀를 집행하지 못한다.
+- 규칙(추가): **수치를 비교하기 전에 분모를 먼저 비교한다.** 케이스 수가 달라진 상태의 nDCG
+  일치는 무회귀가 아니라 우연이다. `caseCount`·`ndcgCaseCount` 를 선행 assert 로 둔다.
+- 규칙(추가): **평가 산출물은 깨끗한 워킹트리에서 생성한다.** `build_run_manifest` 가
+  `git status --porcelain` 으로 `dirty` 를 박으므로, 더러운 상태로 커밋하면 그 baseline 이
+  무엇을 잰 것인지 영원히 확정할 수 없다. 데이터셋을 바꾸는 PR 은 baseline 재생성까지가 범위다.
+- 관련: `tests/eval/test_personalization_eval.py::test_default_weight_ndcg_matches_committed_baseline` ·
+  `evals/personalization/baselines/dev-v2/README.md` · `evals/metrics/run_manifest.py:56,73` ·
+  SPEC-PROFILE-GRAPH-149 REQ-PGRAPH-114 · 이슈 #361·#474·#333
+
+## [2026-08-11] 필터를 무시하는 fake 로는 "후보가 줄지 않았다"를 증명할 수 없다
+- 증상: #361 의 `test_avoids_does_not_shrink_the_candidate_set` 이 통과했는데, 회원에게만 필터를
+  심는 변이를 넣어도 **여전히 통과**했다. 나머지 동등성 테스트 4건은 그 변이에서 정상적으로
+  실패했다.
+- 원인: 하네스가 쓰던 검색 대역(`tests/_fakes.FakeBackend` 계열)이 `filters` 를 받기만 하고
+  **무시한 채 고정 상품 3건을 돌려준다.** 그래서 후보 집합이 무슨 필터에도 항상 3건이었고,
+  "후보가 줄지 않았다"는 단언이 잴 대상 자체가 없었다.
+- 규칙: **"X 가 결과를 좁히지 않는다"를 재려면 대역이 X 를 실제로 적용해야 한다.** 좁힘을 재는
+  테스트에서 대역이 입력을 무시하면, 그 테스트는 성립하는 것이 아니라 **아무것도 재지 않는다**.
+- 규칙(추가): **회귀 테스트는 변이를 심어 실패하는 것을 보고 나서 커밋한다.** 초록불만으로는
+  "지키고 있다"와 "안 보고 있다"가 구분되지 않는다 — 이 결함도 통과 상태에서는 안 드러났고
+  변이 주입으로만 드러났다.
+- 관련: `tests/unit/test_profile_graph_filter_isolation.py::_RecordingSearch` ·
+  `tests/_graph_fixtures.py`(픽스처 값이 카탈로그와 교차해야 하는 이유도 같은 종류) · 이슈 #361
+
+## [2026-08-11] 읽기에서 숨긴 것을 쓰기에서 안 숨기면, 상태 코드가 오라클이 된다
+- 증상: I-32(GET)는 `is_projected`(`active` + 민감 파생 제외)로 걸러 `superseded`·민감 파생 edge 를
+  절대 안 보여주는데, I-33/I-34(PATCH/DELETE)의 대상 판정은 **`edge_id` 일치만** 봤다. PR 자동
+  리뷰가 잡았다.
+- 원인: **노출 경계를 읽기 경로에만 적었다.** 쓰기 경로는 "그 id 가 문서에 있나"만 물었고, 그
+  질문이 읽기 경로의 답과 다르다는 것을 아무도 확인하지 않았다.
+- 왜 위험한가 둘:
+  1. **존재 오라클** — `edge_id` 가 `sha256("{predicate}|{node_id}")` 라 **사용자별 salt 가 없는
+     콘텐츠 해시**다. 라벨만 알면 계산되므로, 숨긴 edge 에 변경을 쏴 `200`/`404` 차이로 *"이
+     취향이 추론된 적 있나"* 를 알아낼 수 있다. 민감 파생은 **존재 자체를 노출하지 않아야**
+     한다(REQ-PGRAPH-076 [HARD]) — 필드를 빼도 상태 코드가 남으면 안 뺀 것이다.
+  2. **불변식 우회** — `superseded`(병합 엔진이 상충에서 내린 패자)를 수정하면 `_pin` 이 무조건
+     `active` 로 되돌려, 같은 노드에 상충하는 active edge 가 둘 생긴다. 배치의 `_resolve_conflicts`
+     를 전혀 거치지 않는다.
+- 규칙: **읽기에서 감춘 것은 쓰기에서도 "없는 것"이어야 한다.** 노출 술어를 만들었으면 그것을
+  **대상 판정에도 같이 쓴다** — 두 경로가 다른 질문을 하면 상태 코드·지연·오류 문구 중 하나가
+  반드시 그 차이를 새어 보낸다.
+- 규칙(추가): **식별자가 내용 파생이면 "모르니까 안전하다"가 성립하지 않는다.** 결정론적
+  `edge_id` 는 tombstone 이 재파생을 막기 위한 기능 요구사항이라 포기할 수 없다 — 그러면 그
+  식별자를 **추측 가능한 공개 값**으로 보고 접근 판정을 따로 세워야 한다.
+- 규칙(추가): **같은 이름의 조회 헬퍼라도 용도가 다르면 필터를 같이 걸면 안 된다.** 리뷰는
+  `graph_mutations._find` 전부에 필터를 제안했는데, 그중 하나는 **병합 대상 조회**
+  (`apply_correction` 의 `target = _find(document, new_id)`)라 숨겨진 edge 도 봐야 한다 — 거기서
+  못 찾으면 관측 근거를 잃고 `merged` 가 거짓이 된다. 경계는 **진입점 한 곳**에 둔다.
+- 관련: `app/agents/profile/graph_journal.py::_find_edge`·`apply_edge_mutation` ·
+  `tests/unit/test_profile_graph_apply.py` · api-spec §3.8 · PR #562 리뷰
+
+## [2026-08-11] 멱등 파생 키에 "무엇을 하려는지"가 없으면 되돌리는 요청이 원래 요청을 재생한다
+- 증상: I-37 로 개인화를 끄고 **같은 `If-Match` 로 다시 켜면** 끄기 응답이 재생돼 플래그가
+  `false` 로 남았다. 원장 TTL(`graph_idempotency_ttl_h`, 기본 24시간) 동안 사용자가 프라이버시
+  스위치를 다시 켤 수 없다. 정본 I-37 은 정반대를 요구한다 — *"토글은 마지막 의사가 이긴다."*
+- 원인: 파생 키가 `{action}:{userId}:{scopeId}:{ifMatch}` 인데 토글의 `scopeId` 가 **빈 값**이었다.
+  이 경로는 그래프 문서를 건드리지 않아 **`graphVersion` 이 고정**이라, 끄기와 켜기가 **정상적으로
+  같은 선행조건**을 지참한다. 두 요청이 같은 키가 되는 것이 예외가 아니라 **정상 동작**이다.
+- 규칙: **멱등 키를 설계할 때 "그 요청이 무엇을 하려는지"가 키에 들어가는지 확인한다.**
+  특히 **선행조건이 변하지 않는 경로**(버전을 안 올리는 플래그 토글류)는 키에 대상 상태를 넣지
+  않으면 **역방향 요청이 정방향 응답을 재생**한다. 상태를 바꾸는데 버전이 안 오르는 엔드포인트를
+  보면 이 질문을 먼저 한다.
+- 규칙(추가): **본문 지문(`request_fp`)으로 막는 것은 해법이 아니다** — 같은 키·다른 본문이
+  `LedgerRequestMismatch` → `409` 로 떨어져 "끄기가 실패하는 상황"을 만든다. 두 요청이 **다른
+  일을 하는 것이면 키를 갈라야지 충돌로 막으면 안 된다.**
+- 규칙(추가): **선택 파라미터는 "주면 어떻게 되나"를 성공 경로에서도 잰다.** 기존 테스트 8건이
+  이 버그를 못 잡은 이유는 `If-Match` 를 주는 케이스가 **CAS 실패 시나리오 하나뿐**이라 원장 키가
+  아예 만들어지지 않았기 때문이다. 선택 파라미터의 테스트가 실패 경로에만 있으면, 그 파라미터가
+  여는 코드 경로는 통째로 미검증이다.
+- 관련: `app/agents/profile/graph_journal.py::set_personalization`·`derived_key` ·
+  `tests/unit/test_profile_personalization.py` · api-spec §3.9.5 · #360
+
+## [2026-08-11] 드리프트를 발견하고도 소수 쪽을 골랐다 — "더 자세히 적힌 쪽"이 정본은 아니다
+- 증상: 투영 조건을 `SPEC-PROFILE-GRAPH-149` REQ-PGRAPH-021 의 `active` + `promoted` 로 정했다.
+  그 결정을 근거로 "화면 < 추천 갭"을 진단하고 **안 B**(요약을 `promoted` 로 좁힘)를 채택해
+  `builder._summary_input` 수정 + `evals/personalization` 실측이 계획에 들어갔다. **전부
+  불필요했다** — 정본 I-32 는 `active` 만이고 *"요약 생성이 같은 규칙을 쓴다"* 로 화면=추천을
+  이미 요구하고 있었다.
+- 원인: 세 문서(노션 정본 I-32 · api-spec §3.8 · M-11)에 그 조건이 **없다는 것을 실측으로 확인해
+  놓고도**, 유일하게 조건을 적은 SPEC 을 따랐다. *"더 구체적으로 적힌 쪽이 더 정확할 것"* 이라는
+  잘못된 가중치다. 실제로는 **한 문서에만 있는 조건은 드리프트일 확률이 높다.**
+- 규칙: **드리프트를 발견하면 "어느 쪽이 더 자세한가"가 아니라 "어느 쪽이 정본인가"로 정한다.**
+  조건이 정본에 없고 사본에만 있으면 **사본이 틀린 것**이다. 반대 방향(정본에 있고 사본에 없음)
+  일 때만 사본을 채운다. `docs/` 는 전부 사본이고 정본은 노션이다 — SPEC 처럼 "내부 모델을
+  소유"하는 문서도 **와이어 조건을 인용하는 순간 사본**이다.
+- 규칙(추가): **의심스러운 필드는 소비처를 grep 한다.** `promoted` 를 필터로 읽는 코드가 0건
+  (전부 `graph_merge` 안쪽의 히스테리시스 계산)이라는 사실이 문서 대조보다 먼저 답을 줄 수
+  있었다 — 계약이 정말 그 필드로 무언가를 가른다면 **읽는 코드가 있어야 한다.**
+- 관련: `SPEC-PROFILE-GRAPH-149` REQ-PGRAPH-021 · `docs/api-spec.md` §3.8 ·
+  `app/agents/profile/graph_merge.py` · #360 코멘트(2026-08-10)
+## [2026-08-10] `make_interval(days => %s)` 는 실수(float) 보존기간 설정과 못 섞는다
+- 증상: 전사록 보존 스윕(#321) SQL 이 통합 테스트에서 `psycopg.errors.UndefinedFunction:
+  function make_interval(days => double precision) does not exist` 로 죽었다.
+- 원인: `conversation_retention_days` 는 (다른 보존기간 설정들과의 일관성 때문에) `float`
+  이다. Postgres `make_interval` 의 `days` 인자는 **정수(int)** 전용 오버로드만 있어 float
+  값을 그대로 바인딩하면 매칭되는 함수가 없다. `graph_journal.py` 가 쓰는
+  `make_interval(secs => %s)` 는 `secs` 가 `double precision` 이라 같은 함수를 그대로
+  베껴 쓰면 안전해 보이지만, `days`/`hours`/`mins` 인자는 시그니처가 다르다.
+  실 pg-profile 없이 `_Connection` fake 로만 돌리는 유닛 테스트는 SQL 문자열만 보고
+  실행하지 않아 이 클래스의 버그를 못 잡는다 — 실 Postgres 를 치는 통합 테스트가 잡았다.
+- 규칙: `make_interval` 을 새로 쓸 때는 **인자별 타입을 먼저 확인**한다(`secs` 만
+  `double precision`, 나머지는 `int`). float 보존기간/윈도우를 초 단위가 아닌 다른 단위로
+  넘겨야 하면 `make_interval` 대신 `interval '1 day' * %s`(interval-스칼라 곱, float 그대로
+  받는다) 를 쓴다. SQL 리터럴을 바꾸는 변경은 fake 커넥션 유닛 테스트만으로 "통과"라고
+  보고하지 말고 실 DB 를 치는 integration 테스트로 최소 1회 실행해 확인할 것.
+- 관련: `app/core/conversation.py::PgConversationStore.purge_expired_turns`,
+  `tests/integration/test_pg_conversation_store.py`
+
+
+## [2026-08-10] 초록불이 "잰다"는 뜻은 아니다 — 한 이슈에서 공허한 테스트를 세 번 만들었다
+- 증상: #359 작업 중 **새로 쓴 테스트가 통과했는데 아무것도 안 재는** 경우가 세 번 나왔다.
+  전부 변이 검증(고친 코드를 되돌려 보기)으로만 드러났고, 코드 리뷰나 커버리지로는 안 보였다.
+  1. **심층 방어가 국소 수정을 가렸다.** `_reassert_pins` 터미널 게이트를 넣자
+     `_merge_edge`·`_carried_tombstones`·`_resolve_conflicts` 의 pin 분기를 **통째로 지워도
+     61건이 전부 통과**했다 — 결과만 재니 게이트가 뒤에서 고쳐 놓는다.
+  2. **테스트 더블을 두 번 설치하며 앞의 것을 감쌌다.** `stream_recommendation` 스파이를
+     `buyer_graph.stream_recommendation` 을 그때그때 읽어 설치했더니 두 번째 스파이가 첫 번째를
+     래핑해, **두 번째 실행이 첫 스파이의 기록을 덮어썼다.** 소비 게이트를 지워도 4건 통과.
+  3. **테스트 환경이 검증하려던 분기를 안 탔다.** `set_summary` 의 `usable` 리셋 구멍은
+     "임베딩 성공" 경로에만 있는데, 유닛 환경은 API 키가 없어 `_embed_summary` 가 늘 `None` 을
+     돌려줘 다른 분기로 샜다.
+- 원인: 셋 다 **"어서션이 참이 되는 경로가 하나뿐인가"를 안 물었다.** 통과 사실만 확인하고
+  *무엇 때문에* 통과했는지를 확인하지 않았다.
+- 규칙:
+  - **방어를 여러 겹 쌓으면 겹마다 따로 잰다.** 결과 단언만 두면 바깥 겹이 안쪽을 가린다.
+    이번 해법은 **"정상 경로에서 게이트는 아무것도 바꾸지 않는다"** 를 불변식으로 세우고
+    게이트 발화 로그(`profile_graph_pin_reasserted`)의 **부재**를 함께 단언한 것이다 — 그러면
+    안쪽 겹이 깨지는 순간 게이트가 울고 테스트가 잡는다.
+  - **테스트 더블은 생산 함수를 모듈 로드 시점에 붙잡아 쓴다.** 현재 바인딩을 읽어 감싸면
+    두 번 설치했을 때 체인이 생긴다.
+  - **"이 테스트가 재려는 분기에 실제로 들어갔는가"를 단언 하나로 고정한다.** ①은 게이트 로그,
+    ③은 `_embed_summary` 를 성공으로 patch, C3 의 superseded 더미 테스트는 "더미가 실제로
+    `superseded` 로 남았는지"를 본 단언 **앞에** 뒀다(승자를 안 줬더니
+    `_revive_orphan_superseded` 가 전부 active 로 되살려 시나리오가 성립하지 않았다).
+  - 요약하면 lessons 2026-08-10 「되돌리면 깨지는지 실제로 해 본다」의 확장이다 — **새 방어를
+    넣은 커밋에서는 그 방어를 되돌려 보는 것이 기본 절차**다.
+- 관련: `app/agents/profile/graph_merge.py::_reassert_pins`,
+  `tests/unit/test_profile_graph_merge.py::_build_pin_safe`,
+  `tests/unit/test_personalization_optout_buyer_turn.py::_PRODUCTION_STREAM`, 이슈 #359
+
+---
+
+## [2026-08-10] 이중 방어의 2차만 구현하면 1차가 막던 구멍이 그대로 열린다
+- 증상: 개인화 중지 소비 차단을 **요약 항목의 `usable` 표식만** 보고 하려 했다. 왕복이 0회라
+  매력적이었는데(그 값은 이미 읽어 온 필드), 계획 검증에서 세 구멍이 드러났다.
+  (a) 요약 행이 없으면 `mark_summary_usable` 이 **조용히 no-op** 이라 표식을 내릴 자리가 없다 —
+  프로필이 아직 없는 회원이 먼저 끄는 흔한 경우다. 그 뒤 배치가 요약을 만들면 `usable=True` 로
+  태어나 개인화가 되살아난다. (b) 플래그 upsert 성공 후 표식 쓰기에서 실패하는 창이 있다.
+  (c) `set_summary` 의 승계가 조건부라 임베딩 성공 + CAS 미사용 호출에서 `True` 로 리셋됐다.
+- 원인: 명세(REQ-PGRAPH-100)가 *"중지 플래그는 기본 캐시를 두지 않으며(즉시성 약속),
+  **이중 방어로** 요약 항목의 사용 가능 표식도 함께 내려 stale read 가 안전하게 열화하도록 한다"*
+  라고 적은 것을 **"둘 중 하나를 고르라"** 로 읽었다. 문장 구조는 1차(플래그)와 2차(표식)를
+  나눠 놓았고, 2차는 1차의 stale read 를 받아 주는 그물이지 대체재가 아니다.
+- 규칙: **"이중 방어" 는 층 이름이지 선택지가 아니다.** 두 겹 중 하나만 구현하려 할 때는
+  *다른 겹이 막던 경우*를 명시적으로 열거해 본다 — 여기서는 "표식을 내릴 자리가 없는 상태"가
+  1차 없이는 안 닫혔다. 그리고 **한 겹이 다른 겹의 쓰기 성공에 의존하면 그건 한 겹이다.**
+- 규칙(추가): `(c)` 같은 조건부 승계는 **호출자 한 명의 규율에 [HARD] 보장이 걸린 상태**였다
+  (`consolidate` 가 늘 `expected_seq=` 를 넘겨서 안전했다). 불변식을 지키는 코드가 "지금 호출자가
+  마침 그렇게 부르니까" 성립한다면 그건 불변식이 아니다.
+- 관련: `app/agents/profile/reader.py`, `app/agents/profile/store.py::set_summary`,
+  `app/agents/profile/personalization_gate.py`, REQ-PGRAPH-100, 이슈 #359
+
+---
+
+## [2026-08-10] 시계를 멈추려면 시계가 아니라 **시계를 읽는 함수**를 봐야 한다
+- 증상: REQ-PGRAPH-055(중지 기간 감쇠 정지)의 초안 설계가 *"재개 시 모든 edge 의
+  `decay_evaluated_at` 을 `now` 로 당긴다"* 였다. 그럴듯했지만 **관측이 남아 있는 edge 에는
+  효과가 0**이다 — `_confidence` 는 그 필드를 **읽지 않고** 관측 목록에서 매 배치 전량 재계산한다.
+  그 필드를 읽는 곳은 근거가 사라진 edge 를 이월하는 `_carried_tombstones` 하나뿐이었다.
+- 원인: 필드 **이름**(`decay_evaluated_at` = "감쇠를 언제 기준으로 쟀나")이 "감쇠의 단일 출처"처럼
+  읽혀서, 그 값을 고치면 감쇠가 바뀐다고 가정했다. 소비 지점을 grep 하지 않았다.
+- 규칙: **상태를 고쳐 동작을 바꾸려 할 때는 그 상태를 읽는 코드를 먼저 전수로 찾는다.**
+  쓰는 곳이 아니라 **읽는 곳**이 동작을 정한다. 이름이 그럴듯할수록 확인을 건너뛰기 쉽다 —
+  lessons 2026-08-04 「튜너블을 근거로 판단하기 전에 그 값이 실제로 소비되는지 grep 한다」와
+  같은 계열이고, 이번엔 튜너블이 아니라 **저장 필드**에서 같은 함정을 밟았다.
+- 규칙(추가): 같은 검토에서 초안이 **교착·계약 위반**까지 함께 안고 있던 것이 드러났다 —
+  재개 경로에서 그래프 락을 잡으면 기존 테스트(`test_the_toggle_never_holds_the_graph_lock`)가
+  hang 하고, 문서를 고치면 §3.9.5 응답의 `graphVersion`·감사·원장이 거짓이 된다("그래프 문서는
+  안 바뀐다"를 전제로 같은 값을 싣는 코드가 있다). **"어디에 저장할까"는 성능이 아니라 계약
+  문제일 수 있다** — 최종안은 구간을 플래그 테이블(락 없는 단일 행)에 두는 것이었다.
+- 관련: `app/agents/profile/graph_merge.py::_confidence`·`_elapsed_days`,
+  `app/agents/profile/graph_journal.py::get_personalization_state`, REQ-PGRAPH-055, 이슈 #359
+
+---
+
+## [2026-08-10] fail-closed 는 경로마다 잃는 것이 달라서, 한 정책으로 통일하면 데이터를 지운다
+- 증상: 개인화 중지 플래그 조회가 실패했을 때 "프라이버시 스위치니까 전 구간 fail-closed"로
+  통일하려 했다. 그러면 배치 경로에서 `generate_session_delta` 가 `([], watermark)`("처리됨")를
+  돌려주고, `finalizer` 가 그 뒤 `clear_session_ctx_upto` 까지 진행한다 —
+  **DB 블립 한 번에 개인화가 켜져 있는 사용자의 누적 세션 버퍼가 영구 삭제**된다.
+- 원인: "안전한 쪽"을 **한 축**(개인화를 덜 한다)으로만 봤다. 실제로는 경로마다 잃는 것이 다르다:
+  hot-path 쓰기는 발화 1건, 소비는 그 턴의 개인화, **배치는 세션 전체의 원문**이다.
+- 규칙: **실패 정책은 호출부가 정하게 한다.** 게이트 함수에 `on_error` 를 받아
+  `True`/`False`/`None`(판정 불가) 3상태를 돌려주고, 각 지점이 자기가 잃는 것에 맞춰 고른다.
+  기존 계약에 이미 "판정 불가" 어휘가 있으면 그것을 재사용한다 — 여기서는
+  `generate_session_delta` 의 `None`(= degrade·버퍼 보존·RETRYABLE)이 그 자리였다.
+- 규칙(추가): 같은 이유로 `consolidate` 는 **fail-open** 이다. 거기서 중지로 접으면 pg 블립이
+  지속되는 동안 켜진 사용자의 프로필이 영영 갱신되지 않는데 **로그 말고는 드러날 신호가 없다.**
+  "조용히 아무것도 안 하는" 실패는 시끄럽게 실패하는 것보다 대개 나쁘다.
+- 규칙(추가): 홈 추천에서는 판정 불가를 `NO_PROFILE` 로 접으면 api-spec §3.7 「HOME 실패 모드」의
+  `profile_unavailable`(200·프로필 항만 빠짐·남은 근거로 판정)과 충돌한다 — **fail-closed 를
+  "전부 차단"으로 번역하기 전에 그 표면의 degrade 계약을 읽는다.**
+- 관련: `app/agents/profile/personalization_gate.py`, `app/agents/profile/builder.py`,
+  `app/services/home_recommendation.py`, REQ-PGRAPH-052/053, 이슈 #359
+
+---
 ## [2026-08-10] `script: |` 블록 안의 `#` 는 주석이 아니다 — 설명문에 쓴 빈 Actions 표현식이 운영 배포를 전면 중단시켰다
 - 증상: 승격(#552) 머지 후 배포가 실행되지 않았다. 그 직전 dev push(#551)에서도 같은 실패.
   두 run 모두 **job 0개**로 실패했고 `gh run view --log`·`--log-failed` 가 빈 출력이었다
@@ -1255,6 +1472,16 @@
 - 관련: `app/agents/profile/graph_merge.py::_truncate`,
   `tests/unit/test_profile_consolidate_graph.py::test_truncated_superseded_edge_lets_the_losing_preference_back_into_summary`,
   이슈 #356 / PR #410
+- **후속 [2026-08-10, #359]** — 이 항목이 지킨 **비대칭은 그대로 유효**하고, **실현 방식만 바뀌었다.**
+  `_truncate` 가 단일 상한에서 바구니별 상한(pin 무제한 / `active` / `superseded`)으로 개정되면서
+  두 등급이 더는 **경쟁하지 않는다** — "동률에서 이긴다"가 "자기 예산을 보장받는다"가 됐다.
+  그래서 방향을 재던 `test_truncation_drops_active_before_superseded` 는
+  `test_superseded_is_not_evicted_by_the_active_cap` 으로 대체됐다. 보호는 오히려 세졌다:
+  종전 `superseded` 의 실효 예산은 `상한 − |pin|` 이었는데 이제 자기 상한 전량이다.
+  **이 항목을 지우지 않는 이유**는 근거(요약 입력이 "문서에 없는 edge_key 는 active 로 간주"하는
+  비대칭)가 여전히 그 설계를 떠받치고 있어서다 — 바구니를 다시 합치려는 변경이 오면 여기부터 읽어야
+  한다. 뒤집은 쪽(단일 상한)은 `superseded` 가 근거 0건으로 영구 이월되며 단조 누적돼 **active 를
+  0개로 만드는** 별개 결함이 있었다(#150 코멘트 2026-08-09).
 
 ---
 

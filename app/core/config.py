@@ -789,6 +789,21 @@ class Settings(BaseSettings):
     llm_call_limit: int = 2
     relaxation_max_rounds: int = 3
 
+    # ── 추천 실행 provenance 로그 (이슈 #140, app/core/reco_provenance.py) ──
+    # 랭킹 로직 배포 버전 — `recommend_provenance` 로그의 algorithmVersion 조립에 쓰인다
+    # (`f"{pipeline}@{reco_algorithm_version}"`). **모델 식별자를 이 값에 넣지 말 것**
+    # (§3.7 [HARD] — 알고리즘·모델 버전은 와이어에 싣지 않고 로그 전용이며, 모델 식별자는
+    # 별도 필드 `rankerModel` 로만 남긴다).
+    reco_algorithm_version: str = "2026-08-10"
+    # rerank 프롬프트 버전 — LLM 순위가 실제로 관여한 경로(메인 rerank 성공)에서만
+    # provenance `promptVersion` 에 실린다. degrade·프로필 벡터·홈 경로는 LLM 순위가 아니라
+    # `null`.
+    rerank_prompt_version: str = "rerank-v1"
+    # provenance 로그 한 줄의 방어 상한 — 자연 상한은 계약 MAX_LISTS(10) × LIST_MAX_PRODUCTS(9)
+    # = 90 이지만, 별도 방어선을 둬 초과분은 조용히 버리지 않고 `itemsTruncated=true` 로
+    # 표시한다(silent cap 금지, 저장소 관례).
+    reco_provenance_max_items: int = Field(default=128, ge=1)
+
     # ── 0건/소량 조건 완화 (#113, api-spec §3.1 suggestions.relaxation · 결정 14-D) ──
     # 필드명은 **와이어 표기(camelCase)** 다 — 그대로 `relaxation.field` 로 나가므로(§3.1) 내부
     # snake_case 와의 변환은 relaxation.py 한 곳에서만 한다.
@@ -1650,6 +1665,16 @@ class Settings(BaseSettings):
     # 강등 임계 = profile_gate_threshold - graph_demote_margin (REQ-PGRAPH-016 히스테리시스).
     # **승격 임계는 기존 게이트 임계를 재사용한다 — 두 번째 임계 키를 만들지 않는다**(§11).
     graph_demote_margin: float = Field(default=0.1, ge=0.0, lt=1.0)
+    # pin 된 취향에 반대 관측이 몇 건 쌓이면 `challenged` 를 켤지 (REQ-PGRAPH-033).
+    # **상태는 바꾸지 않는다** — 취향 변화의 반영은 명시적 사용자 동작으로만 일어나고, 이 값은
+    # FE 가 "다시 반영할까요?" 를 물을지 판단하는 동작 트리거다(api-spec §3.8).
+    # **`0` 은 신호를 끈다** — `count >= threshold` 로 순진하게 쓰면 0 에서 항상 참이 되어 규약과
+    # 정반대로 동작하므로 `graph_models.is_pin_challenged` 가 특례로 가른다.
+    graph_pin_challenge_count: int = Field(default=3, ge=0)
+    # 중지 구간 목록(`profile_personalization_state.disabled_spans`)의 최대 길이 (REQ-PGRAPH-055).
+    # 넘으면 가장 오래된 두 구간을 bounding span 으로 병합한다 — 감쇠를 **덜 빼는**(취향을 더
+    # 오래 살리는) 쪽으로 틀리므로 보수적이다. 감쇠 정지 자체를 끄는 스위치가 아니다.
+    graph_decay_pause_spans_max: int = Field(default=50, ge=1)
     # confidence 감쇠 반감기(일). 이 키가 없으면 강등이 **구조적으로 도달 불가**하다 — 게이트가
     # salience >= profile_gate_threshold 인 관측만 저장하므로 감쇠 없이는 confidence 가 승격 임계
     # 아래로 내려갈 수 없고, 히스테리시스가 형식만 만족된다(SPEC v0.1.1 §11 보강).
@@ -1657,12 +1682,23 @@ class Settings(BaseSettings):
     # edge 당 보관하는 근거 fact key 개수 상한(무제한 누적 방어).
     graph_evidence_refs_max: int = Field(default=20, ge=1)
     profile_graph_label_max_chars: int = Field(default=60, ge=1)
-    # 문서 edge 개수 상한. suppressed·superseded 는 영구 보존이라 단일 jsonb 가 단조 증가하므로
-    # 저장 폭주는 여기서 막는다. 다만 **사용자 삭제(suppressed·pin)에는 걸리지 않는다** — 절단이
-    # tombstone 을 지우면 지운 취향이 다음 배치에 active 로 부활하고 복구 경로가 없다. 밀리는
-    # 순서는 superseded(재파생으로 자기복구) → active 이고, 사용자 삭제만으로 이 값을 넘으면
-    # 넘긴 채 보존하고 경고한다(graph_merge._truncate).
+    # **`active` edge 전용 상한** (REQ-PGRAPH-005). 키 이름은 유지하되 #359 에서 뜻이 좁아졌다 —
+    # 개명하면 운영 env·문서가 갈라지는데 얻는 것이 없다.
+    # **`profile_max_facts` 와 같은 값으로 둔다**: active 는 서로 다른 edge_key 수를 넘을 수 없고
+    # 그것은 fact 수를 넘을 수 없으므로, 같게 두면 active 절단이 **구조적으로 발동 불가**가 된다.
+    # 값을 낮추면 그 보장이 사라진다.
     profile_graph_max_edges: int = Field(default=200, ge=1)
+    # **`superseded` 전용 상한** (신설 #359). 종전에는 단일 상한 안에서 superseded 가 active 보다
+    # 먼저 보존돼, 근거 0건이어도 영구 이월되는 superseded 가 쌓이면 **active 가 하나도 안 남는**
+    # 되먹임이 있었다(이슈 #150 코멘트). 바구니를 나누면 그 잠식이 사라지고, superseded 의 실효
+    # 예산은 종전 `상한 − |pin|` 에서 이 값 전량으로 **늘어난다**.
+    profile_graph_max_superseded_edges: int = Field(default=200, ge=1)
+    # tombstone(재파생 차단 표식) 목록 상한 (신설 #359). #499/#358 이 tombstone 을 edges 밖 별도
+    # 목록으로 빼면서 상한이 아예 없어졌다 — 항목당 필드 3개라 증가 폭은 작지만 단조 증가다.
+    # 넘으면 `suppressed_at` 오래된 순으로 버린다. 버린 취향이 부활할 잔여 리스크는 낮다:
+    # 개별 삭제가 원문을 물리 삭제하므로 재파생할 fact 가 대부분 없다. 다만 근거 목록이
+    # `graph_evidence_refs_max` 로 잘려 있어 0 은 아니며, 신경 쓰이면 그 값을 함께 올린다.
+    profile_graph_max_tombstones: int = Field(default=1000, ge=1)
     # 와이어 3버킷 라벨의 경계 2개. **버킷 경계는 계약이 아니다**(§6 공통 규약) — 내부 수치는
     # 노출하지 않고 라벨만 나간다.
     profile_graph_confidence_buckets: list[float] = Field(default_factory=lambda: [0.34, 0.67])
@@ -1676,10 +1712,43 @@ class Settings(BaseSettings):
     # 멱등 원장(profile_graph_idempotency) 보존. 재전송이 최초 응답을 찾을 수 있는 창이다.
     # **두 값 모두 🔴 C-23 잔여(정책·법무 미정)라 잠정값**이며, 만료 행을 실제로 지우는 스윕 잡은
     # #358 범위 밖이다 — 지금 이 값들이 바꾸는 동작은 아래 REQ-PGRAPH-044 기동 검증뿐이다.
+    # ── 개인화 그래프 API 응답 예산 (이슈 #360, api-spec §3.8·§3.9) ──
+    # 조회 2s / 변경 3s. **Spring 타임아웃은 각각 1s 길다**(3s·4s) — 그 부등식이 깨지면 Spring 이
+    # 먼저 끊어 AI 의 `504 UPSTREAM_TIMEOUT` 을 **관측할 수 없는 죽은 계약**이 된다.
+    #
+    # 값은 **제안이며 실측이 아니다** — api-spec §2.9 (c) 기준표에 행이 없는 이유가 그것이고,
+    # 구현 후 실측해 등재하는 것이 #360 완료 조건이다.
+    #
+    # `state_store_query_timeout_s`(3.0)와의 관계: 저장소가 **즉시** 실패하면(연결 거부 →
+    # `OperationalError`) 예산 안에 잡혀 `503 UPSTREAM_UNAVAILABLE` 이고, **느리게 실패하면**
+    # (행·풀 고갈) 바깥 예산이 먼저 끊어 `504` 다. 후자를 503 으로 만들려면 그래프 전용 쿼리
+    # deadline 이 필요한데, 전역 값을 낮추면 장바구니 등 무관한 경로가 함께 짧아진다.
+    # "예산 초과 = 504" 가 계약의 뜻이므로 이 분기를 그대로 두고 §2.9 실측에서 다시 본다.
+    profile_graph_read_budget_s: float = Field(default=2.0, gt=0.0)
+    profile_graph_write_budget_s: float = Field(default=3.0, gt=0.0)
+
     graph_idempotency_ttl_h: float = Field(default=24.0, gt=0.0)
     # 변경 감사(profile_graph_audit) 보존. **전체 초기화가 지우지 않는다**(REQ-PGRAPH-062) —
     # 파괴 동작이 추적 불가가 되면 안 되므로, 여기 남는 것은 "무엇을" 이 아니라 "언제" 다.
     graph_audit_retention_days: float = Field(default=90.0, gt=0.0)
+
+    # ── 대화 전사록 보존 기간 (이슈 #321, SPEC-PROFILE-001 OPEN-P5 해소) ──
+    # 90일인 근거: 감사 원장(graph_audit_retention_days, 기본 90일)이 지문만 남기므로(REQ-PGRAPH-081)
+    # 원문 대조 상대는 전사록뿐이다. 전사록을 더 짧게 지우면 감사 행이 가리키는 원문이 없어져
+    # 조사 불가능해진다 — 두 값은 의도적 짝이다(아래 검증기가 이 관계를 기동 시점에 고정한다).
+    conversation_retention_days: float = Field(default=90.0, gt=0.0)
+    conversation_retention_batch_size: int = Field(default=500, ge=1)
+    conversation_retention_max_batches: int = Field(default=20, ge=1)
+    conversation_retention_sweep_interval_s: float = Field(default=3600.0, gt=0.0)
+    # 결함을 고치는 스위치는 기본 on — 하방(오래된 전사록이 지워짐)이 유계다. 삭제는 되돌릴 수
+    # 없으므로 롤백 경로로만 끈다(CONVERSATION_RETENTION_SWEEP_ENABLED=false).
+    conversation_retention_sweep_enabled: bool = True
+
+    # ── PII 하드 게이트 (이슈 #321) ──
+    # 정규식·placeholder 어휘·IIN 목록은 app/core/pii.py 가 모듈 상수로 소유한다(REQ-PGRAPH-070과
+    # 같은 규율 — 규칙 상수는 설정이 아니다). 여기 두 튜너블만 배포 환경별로 조정 가능하다.
+    pii_bank_account_anchor_window: int = Field(default=12, ge=0)
+    pii_redact_trace_content: bool = True
 
     # ── 프로필 개인화 강도 (이슈 #119, SPEC-PROFILE-001 §5.1 v0.6.0 · REQ-REC-005-A) ──
     # 프로필을 **어느 소비처에** 주입할지. 기본 rerank_only 인 근거: decompose(fast tier, 한 호출에
@@ -2999,6 +3068,21 @@ class Settings(BaseSettings):
             raise ValueError(
                 "GRAPH_IDEMPOTENCY_TTL_H must not exceed GRAPH_AUDIT_RETENTION_DAYS "
                 "(replay must always find its audit record)"
+            )
+        # 전사록이 감사 원장보다 먼저 지워지면, 30~90일 구간의 감사 행이 가리키는 원문이
+        # 없어져 조사 불가능해진다(이슈 #321) — 위 멱등 원장 검사와 같은 형식의 fail-fast.
+        # 경계는 포함(같은 값은 허용, 초과일 때만 거부).
+        if self.conversation_retention_days > self.graph_audit_retention_days:
+            raise ValueError(
+                "CONVERSATION_RETENTION_DAYS must not exceed GRAPH_AUDIT_RETENTION_DAYS "
+                "(an audit record must always be able to find its transcript)"
+            )
+        # [#360] 조회가 변경보다 오래 걸리는 예산은 계약(§3.8 2s / §3.9 3s)을 뒤집는다.
+        # 조회는 문서 단일 읽기고 변경은 잠금 + 문서 재작성 + 저널 쓰기라 순서가 고정이다.
+        if self.profile_graph_read_budget_s >= self.profile_graph_write_budget_s:
+            raise ValueError(
+                "PROFILE_GRAPH_READ_BUDGET_S must stay under the write budget "
+                "(api-spec §3.8 2s vs §3.9 3s)"
             )
         if self.state_store_pool_min_size < 0:
             raise ValueError("STATE_STORE_POOL_MIN_SIZE must be non-negative")

@@ -16,9 +16,12 @@ from __future__ import annotations
 
 import hashlib
 import unicodedata
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field, model_validator
+
+if TYPE_CHECKING:  # 런타임 임포트를 만들지 않는다 — 저장 모델이 설정 모듈을 끌고 오지 않게.
+    from app.core.config import Settings
 
 NodeType = Literal[
     "brand", "category", "attribute", "priceBand", "ratingBand", "product", "situation"
@@ -142,10 +145,51 @@ class GraphEdge(BaseModel):
     valid_from: str | None  # 승격 시각
     superseded_by: str | None  # 충돌 패자 → 승자 edge_id
     suppressed_at: str | None
-    user_intent: UserIntent | None  # pin(§6.4) — #356 범위에서는 항상 None
+    user_intent: UserIntent | None  # pin(§6.4). 생산자는 `graph_mutations._pin` 하나뿐이다
+    # pin 이후 쌓인 **반대 관측 건수**(§6.4). 배치 횟수가 아니다 — `graph_merge._resolve_conflicts`
+    # 가 이번 배치에 실제 반대 관측이 있었을 때만 올린다. 노출 판정은 `is_pin_challenged`.
     challenge_count: int
     derived_from_sensitive: bool
     sensitive_topic: str | None  # 보존기간 판정용 — **와이어 미노출**(§6.8)
+
+
+def is_projected(edge: GraphEdge) -> bool:
+    """이 edge 가 **와이어 투영(I-32 `edges[]`)에 실리는가** (#360).
+
+    정본 `I-32` 는 *"`edges` 는 `active` 만 싣는다"* 이고, 민감 파생은 **어떤 카운트에도 세지
+    않는다**(REQ-PGRAPH-076 [HARD]). 두 조건이 전부다 — `promoted` 는 병합 엔진 내부의 확신도
+    히스테리시스 값이지 노출을 가르는 스위치가 아니다(SPEC v0.3.3 에서 정정).
+
+    **술어를 여기 한 곳에 두는 이유**: 투영과 I-36 의 `purged.edges` 가 **같은 모집단**을 세야
+    화면 문구("취향 12건")와 초기화 응답이 어긋나지 않는다. 두 곳에 손으로 같은 조건을 적으면
+    한쪽만 고치는 순간 조용히 갈라진다.
+    """
+    return edge.status == "active" and not edge.derived_from_sensitive
+
+
+def is_pin_challenged(edge: GraphEdge, *, settings: Settings) -> bool:
+    """pin 에 반대 관측이 임계 이상 쌓였는가 (REQ-PGRAPH-033).
+
+    **파생값이라 저장하지 않는다** — 와이어에서 뺀 `confidence` 를 3버킷 라벨로 파생하는
+    `graph_merge._confidence_bucket` 과 같은 패턴이다. 임계는 설정이라 같은 문서라도 값이 바뀌면
+    판정이 달라져야 하는데, 저장해 두면 다음 배치까지 옛 임계로 굳는다.
+
+    **상태를 바꾸는 신호가 아니다.** 참이어도 `status`·`predicate`·`confidence` 는 그대로이며,
+    FE 가 "다시 반영할까요?" 를 물을지 판단하는 **동작 트리거**다(api-spec §3.8). 취향 변화의
+    반영은 명시적 사용자 동작으로만 일어난다.
+
+    **`graph_pin_challenge_count == 0` 은 신호를 끈다.** `count >= threshold` 로만 쓰면 0 에서
+    항상 참이 되어 규약과 정반대로 동작한다 — 설정이 `ge=0` 으로 그 값을 허용하므로 여기서 가른다.
+
+    이 모듈에 두는 이유는 **투영 계층(#360)이 호출하기 때문**이다. `graph_merge` 에 두면 요청
+    경로가 배치 모듈을 통해 `store` → 연결 풀까지 끌고 온다.
+    """
+    if edge.user_intent is None:
+        return False
+    threshold = settings.graph_pin_challenge_count
+    if threshold <= 0:
+        return False
+    return edge.challenge_count >= threshold
 
 
 class GraphTombstone(BaseModel):

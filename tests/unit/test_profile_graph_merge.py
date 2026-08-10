@@ -102,10 +102,18 @@ def test_merge_signature_has_no_llm_or_io_seam() -> None:
     """병합에 LLM·임베딩·저장소를 넘길 자리가 없어야 한다(REQ-PROF-032/033).
 
     누가 실수로 인자를 더하면 여기서 막힌다 — mock 으로 "안 불렸다"를 재는 것보다 강한 보장이다.
+
+    **[#359] 허용 집합에 `decay_pause_spans` 를 더했다.** REQ-PGRAPH-055(중지 기간 감쇠 정지)는
+    배치가 "언제부터 언제까지 시간이 흐르지 않은 것으로 볼지" 를 알아야 집행되는데, 그 값을
+    순수 함수 **밖에서** 읽어 인자로 넣는 것이 이 가드의 취지와 어긋나지 않는다 — 불변 스칼라
+    입력이라 재생 동일성(REQ-PGRAPH-015)이 유지되고, 함수 안에서 저장소를 만지지 않는다.
+    아래 부정 단언이 그 취지를 직접 잰다(허용 집합만 넓히면 가드가 느슨해진다).
     """
     params = set(inspect.signature(build_graph_document).parameters)
 
-    assert params == {"facts", "existing", "settings", "now"}
+    assert params == {"facts", "existing", "settings", "now", "decay_pause_spans"}
+    # 넓힌 것은 허용 목록이지 성질이 아니다 — I/O·LLM 이음매는 여전히 없어야 한다.
+    assert not {"llm", "embed", "store", "client", "pool"} & params
 
 
 # ─────────── 재생 동일성 (REQ-PGRAPH-015) ───────────
@@ -165,34 +173,142 @@ def test_decay_clock_is_one_snapshot_per_batch(settings: Settings) -> None:
     assert {e.decay_evaluated_at for e in document.edges} == {NOW}
 
 
-def test_carried_pin_confidence_decays_to_the_batch_clock(settings: Settings) -> None:
-    """이월되는 edge 의 확신도는 **이번 배치 시각으로** 감쇠한다 — 옛 값이 박제되면 안 된다.
+# `test_carried_pin_confidence_decays_to_the_batch_clock`(#356)은 #359 에서 뒤집혀
+# 「pin 불변」절의 `test_carried_pin_confidence_does_not_decay_while_pinned` 가 됐다 —
+# 감쇠는 `confidence` 변경이고 REQ-PGRAPH-031 [HARD] 가 그것을 금지한다. 뒤집은 근거는
+# 그 테스트 docstring 에 있다.
 
-    근거가 사라진 pin 은 계속 이월되는데, 확신도를 그대로 두면 반감기를 여러 번 넘긴 값이
-    방금 관측된 edge 와 같은 자로 비교된다 — `_truncate` 의 `-confidence` 정렬에서 7개월 묵은
-    0.95 가 방금 들어온 0.5 를 이기고 살아남는다. `decay_evaluated_at` 이 존재하는 이유가
-    "이 값이 언제 기준인가"를 남기기 위해서인데, 그걸 갱신하지 않으면 필드가 뜻을 잃는다.
+
+# ─────────── 중지 기간 감쇠 정지 (REQ-PGRAPH-055) ───────────
+#
+# C7 이 중지 중 배치를 멈췄지만 그것만으로는 감쇠가 안 멈춘다 — `_confidence` 는
+# `decay_evaluated_at` 을 안 보고 **관측 시각부터 `now` 까지** 매 배치 새로 계산하므로,
+# 6개월 중지 후 재개하면 첫 배치에서 6개월치가 그대로 걸린다. "데이터는 보존된다"가 거짓이 된다.
+
+
+def _span(from_: str, to: str) -> dict:
+    return {"from": from_, "to": to}
+
+
+def test_paused_span_is_subtracted_from_the_decay_clock(settings: Settings) -> None:
+    """중지 구간만큼 시간이 안 흐른 것으로 본다 — 같은 관측이 덜 감쇠한다."""
+    observed = "2026-02-01T00:00:00+00:00"
+    facts = [_fact("f1", created_at=observed)]
+
+    without = build_graph_document(facts, existing=empty_document(NOW), settings=settings, now=NOW)
+    with_pause = build_graph_document(
+        facts,
+        existing=empty_document(NOW),
+        settings=settings,
+        now=NOW,
+        # 관측 이후 통째로 중지돼 있었다.
+        decay_pause_spans=(_span("2026-03-01T00:00:00+00:00", "2026-07-01T00:00:00+00:00"),),
+    )
+
+    assert with_pause.edges[0].confidence > without.edges[0].confidence
+
+
+def test_span_outside_the_interval_changes_nothing(settings: Settings) -> None:
+    """관측 구간과 안 겹치는 중지는 감쇠에 영향이 없다 — 총량이 아니라 **겹침**으로 잰다.
+
+    누적 스칼라(총 중지 시간)를 최신 구간부터 소진하는 방식이면 여기서 틀린다: 중지 창이
+    관측보다 **앞**에 있어도 감쇠를 깎아 준다.
     """
-    stale = "2026-01-01T00:00:00+00:00"
+    facts = [_fact("f1", created_at="2026-06-01T00:00:00+00:00")]
+    baseline = build_graph_document(facts, existing=empty_document(NOW), settings=settings, now=NOW)
+
+    document = build_graph_document(
+        facts,
+        existing=empty_document(NOW),
+        settings=settings,
+        now=NOW,
+        # 관측보다 한참 전에 끝난 중지.
+        decay_pause_spans=(_span("2026-01-01T00:00:00+00:00", "2026-02-01T00:00:00+00:00"),),
+    )
+
+    assert document.edges[0].confidence == baseline.edges[0].confidence
+
+
+def test_partial_overlap_subtracts_only_the_overlapping_part(settings: Settings) -> None:
+    """구간이 걸쳐 있으면 **겹친 만큼만** 뺀다."""
+    facts = [_fact("f1", created_at="2026-06-01T00:00:00+00:00")]
+    full = build_graph_document(
+        facts,
+        existing=empty_document(NOW),
+        settings=settings,
+        now=NOW,
+        decay_pause_spans=(_span("2026-06-01T00:00:00+00:00", "2026-07-01T00:00:00+00:00"),),
+    )
+    half = build_graph_document(
+        facts,
+        existing=empty_document(NOW),
+        settings=settings,
+        now=NOW,
+        # 절반이 관측 앞이라 겹치는 것은 6/1~6/16 뿐이다.
+        decay_pause_spans=(_span("2026-05-17T00:00:00+00:00", "2026-06-16T00:00:00+00:00"),),
+    )
+    none = build_graph_document(facts, existing=empty_document(NOW), settings=settings, now=NOW)
+
+    assert none.edges[0].confidence < half.edges[0].confidence < full.edges[0].confidence
+
+
+def test_carried_edges_also_honour_paused_spans(settings: Settings) -> None:
+    """근거가 사라져 이월되는 edge 도 같은 규칙을 쓴다 — 두 감쇠 경로가 갈리면 안 된다."""
+    stale = "2026-02-01T00:00:00+00:00"
     existing = _document_of(
         [
             _stored_edge(
-                "삼성",
-                user_intent=_pin(),
-                confidence=0.95,
+                "애플",
+                status="superseded",
+                superseded_by=make_edge_id("avoids|brand:애플"),
+                confidence=0.9,
                 decay_evaluated_at=stale,
-                last_observed_at=stale,
             )
         ]
     )
+    spans = (_span("2026-03-01T00:00:00+00:00", "2026-07-01T00:00:00+00:00"),)
 
-    document = build_graph_document([], existing=existing, settings=settings, now=NOW)
+    without = build_graph_document([], existing=existing, settings=settings, now=NOW)
+    with_pause = build_graph_document(
+        [], existing=existing, settings=settings, now=NOW, decay_pause_spans=spans
+    )
 
-    carried = document.edges[0]
-    assert carried.user_intent is not None  # 보존 자체는 그대로다(REQ-PGRAPH-031)
-    assert carried.confidence < 0.95  # 7개월치 감쇠가 반영됐다
-    assert carried.decay_evaluated_at == NOW
-    assert carried.last_observed_at == stale  # 관측 **사실**은 시간이 지나도 안 바뀐다
+    assert with_pause.edges[0].confidence > without.edges[0].confidence
+
+
+def test_replay_stays_identical_with_paused_spans(settings: Settings) -> None:
+    """같은 입력이면 같은 문서다 (REQ-PGRAPH-015) — 새 인자가 재생 동일성을 깨지 않는다."""
+    facts = [_fact("f1", created_at="2026-02-01T00:00:00+00:00")]
+    spans = (_span("2026-03-01T00:00:00+00:00", "2026-07-01T00:00:00+00:00"),)
+
+    first = build_graph_document(
+        facts, existing=empty_document(NOW), settings=settings, now=NOW, decay_pause_spans=spans
+    )
+    second = build_graph_document(
+        facts, existing=empty_document(NOW), settings=settings, now=NOW, decay_pause_spans=spans
+    )
+
+    assert first.model_dump(mode="json") == second.model_dump(mode="json")
+
+
+def test_malformed_span_is_ignored_instead_of_killing_the_batch(settings: Settings) -> None:
+    """모양이 깨진 구간은 무시한다 — 저장 payload 하나가 배치를 죽이면 안 된다.
+
+    `_elapsed_days` 가 파싱 실패를 0일로 흡수하는 것과 같은 취지다(그 docstring). 감쇠를 덜
+    빼는 쪽(=보수적)으로 열화한다.
+    """
+    facts = [_fact("f1", created_at="2026-02-01T00:00:00+00:00")]
+    baseline = build_graph_document(facts, existing=empty_document(NOW), settings=settings, now=NOW)
+
+    document = build_graph_document(
+        facts,
+        existing=empty_document(NOW),
+        settings=settings,
+        now=NOW,
+        decay_pause_spans=({"from": "not-a-date", "to": None}, {}, "쓰레기"),  # type: ignore[arg-type]
+    )
+
+    assert document.edges[0].confidence == baseline.edges[0].confidence
 
 
 # ─────────── 병합 (REQ-PGRAPH-015) ───────────
@@ -723,6 +839,404 @@ def test_supersede_does_not_touch_unrelated_nodes(settings: Settings) -> None:
     assert {e.status for e in document.edges} == {"active"}
 
 
+# ─────────── pin 불변 (REQ-PGRAPH-031 [HARD]·035) ───────────
+#
+# §6.4 의 제목이 「기능이 연극이 되지 않게 하는 조항」이다. 사용자가 고친 취향이 다음 배치에
+# 되돌아오면 편집 기능은 겉모습만 남는다. 기계가 갱신해도 되는 것은
+# `evidence_count`·`evidence_by_source`·`last_observed_at`·`challenge_count` 뿐이고
+# `status`·`predicate`·`promoted`·`confidence` 는 손대면 안 된다.
+
+
+def _pinned_edge(label: str = "소니", **overrides: object) -> GraphEdge:
+    """실제 `graph_mutations._pin` 이 새기는 모양 — `origin="user"` 와 `user_intent` 가 함께 온다.
+
+    기존 `_stored_edge(user_intent=_pin())` 은 `origin` 이 `"machine"` 인 채로 남아 **실물과
+    다르다.** 그 픽스처로 origin 기반 판정을 재면 새 코드 경로를 하나도 안 밟은 채 초록불이
+    된다(거짓 초록불). 여기서는 둘을 함께 세운다 — 그 동반 관계 자체는
+    `test_pin_producer_sets_both_origin_user_and_user_intent` 가 잠근다.
+    """
+    base: dict = {
+        "user_intent": _pin(),
+        "origin": "user",
+        "source_latest": "user",
+        "confidence": 1.0,
+        "promoted": True,
+    }
+    base.update(overrides)
+    return _stored_edge(label, **base)
+
+
+def _build_pin_safe(
+    facts: list[FactRecord],
+    *,
+    existing: GraphDocument,
+    settings: Settings,
+    caplog: pytest.LogCaptureFixture,
+    now: str = NOW,
+) -> GraphDocument:
+    """배치를 돌리되 **터미널 게이트가 발화하지 않았음**을 함께 단언한다.
+
+    `_reassert_pins` 는 [HARD] 최종 보증이라 앞 단계가 pin 을 망가뜨려도 결과를 고쳐 놓는다.
+    그래서 결과만 재면 `_merge_edge`·`_carried_tombstones`·`_resolve_conflicts` 의 pin 분기를
+    통째로 지워도 테스트가 초록불이다(실제로 변이 검증에서 61건 전부 통과했다) — **국소 수정에
+    테스트가 없는 상태**가 된다.
+
+    그래서 불변식을 하나 더 세운다: **정상 경로에서 게이트는 아무것도 바꾸지 않는다.**
+    게이트가 무언가 되돌렸다면 그것은 상류 단계가 [HARD] 를 어겼다는 뜻이고, 여기서 잡힌다.
+    """
+    with caplog.at_level(logging.WARNING, logger="app.agents.profile.graph_merge"):
+        document = build_graph_document(facts, existing=existing, settings=settings, now=now)
+    assert "profile_graph_pin_reasserted" not in caplog.text, (
+        "터미널 게이트가 발화했다 — 앞 단계(_merge_edge·_carried_tombstones·_resolve_conflicts)"
+        " 중 하나가 pin 의 [HARD] 필드를 건드렸다는 뜻이다."
+    )
+    return document
+
+
+def test_pinned_edge_wins_conflict_even_when_the_opposing_observation_is_more_recent(
+    settings: Settings, caplog: pytest.LogCaptureFixture
+) -> None:
+    """REQ-PGRAPH-035 — 우선순위 비교는 `(origin 클래스, last_observed_at, confidence, edge_id)`.
+
+    **클래스가 먼저이고 최신성은 클래스 안에서 적용된다.** 현행 승자 판정은 `origin` 을 안 봐서
+    방금 관측된 기계 `avoids` 가 오래된 사용자 pin 을 이기고 `superseded` 로 강등한다 —
+    REQ-PGRAPH-031 이 [HARD] 로 금지한 `status` 변경이다.
+
+    pin 이 recency 에서 불리한 것은 우연이 아니라 구조다: `graph_mutations._pin` 은
+    `last_observed_at` 을 갱신하지 않으므로 **만들어진 직후부터** 최신성 비교에서 진다.
+    """
+    stale = "2026-01-01T00:00:00+00:00"
+    existing = _document_of([_pinned_edge("소니", last_observed_at=stale)])
+    # 방금 관측된 반대 취향 — 최신성만 보면 이쪽이 이긴다.
+    facts = [_fact("f1", triples=[_triple("brand:소니", "avoids", label="소니")])]
+
+    document = _build_pin_safe(facts, existing=existing, settings=settings, caplog=caplog)
+
+    pinned = _edge_by_key(document, "likes|brand:소니")
+    assert pinned is not None
+    assert pinned.status == "active"  # [HARD] 기계가 사용자 편집을 강등하지 못한다
+    assert pinned.superseded_by is None
+    opposing = _edge_by_key(document, "avoids|brand:소니")
+    assert opposing is not None and opposing.status == "superseded"
+
+
+def test_pinned_edge_freezes_confidence_and_promoted_when_new_evidence_arrives(
+    settings: Settings, caplog: pytest.LogCaptureFixture
+) -> None:
+    """관측이 새로 들어와도 pin 의 `confidence`·`promoted` 는 승계한다 (REQ-PGRAPH-031 [HARD]).
+
+    **관측 기록 자체는 계속한다** — 사용자 편집이 시스템을 눈멀게 만들면 나중에 "왜 이걸
+    추천했나"에 답할 근거가 사라진다. 그래서 `evidence_count`·`last_observed_at` 은 갱신된다.
+    """
+    existing = _document_of([_pinned_edge("소니")])
+    # 확신도를 끌어내릴 만큼 약한 관측 — 기계 재계산이 살아 있으면 1.0 이 이 값 근처로 떨어진다.
+    facts = [
+        _fact("f1", created_at=NOW, triples=[_triple("brand:소니", label="소니", salience=0.1)])
+    ]
+
+    document = _build_pin_safe(facts, existing=existing, settings=settings, caplog=caplog)
+
+    edge = _edge_by_key(document, "likes|brand:소니")
+    assert edge is not None
+    assert edge.confidence == 1.0  # 동결
+    assert edge.promoted is True  # 동결
+    assert edge.predicate == "likes"
+    assert edge.status == "active"
+    assert edge.evidence_count == 1  # 관측은 계속 기록한다
+    assert edge.last_observed_at == NOW
+    assert edge.decay_evaluated_at == NOW  # 시계는 배치당 1회 고정을 유지한다
+
+
+def test_user_edit_survives_repeated_consolidation_batches(
+    settings: Settings, caplog: pytest.LogCaptureFixture
+) -> None:
+    """AC-PGRAPH-09 — 같은 취향을 재파생시키는 관측을 여러 배치 주입해도 사용자 수정이 유지된다.
+
+    개별 단계를 재는 위 두 테스트와 달리 **배치를 실제로 여러 번 돌린다.** 리포에 이 성질을
+    끝에서 끝까지 재는 테스트가 없었다 — `test_profile_graph_apply.py` 는 사용자 변경 경로만
+    검증하고 배치 재실행을 안 돌린다.
+    """
+    document = _document_of([_pinned_edge("소니")])
+    facts = [
+        _fact("f1", created_at="2026-08-02T00:00:00+00:00", triples=[_triple(salience=0.2)]),
+        _fact(
+            "f2",
+            created_at="2026-08-03T00:00:00+00:00",
+            triples=[_triple("brand:소니", "avoids", label="소니")],
+        ),
+    ]
+
+    for _ in range(3):
+        document = _build_pin_safe(facts, existing=document, settings=settings, caplog=caplog)
+
+    edge = _edge_by_key(document, "likes|brand:소니")
+    assert edge is not None
+    assert (edge.predicate, edge.status, edge.confidence, edge.promoted) == (
+        "likes",
+        "active",
+        1.0,
+        True,
+    )
+    assert edge.user_intent is not None
+    assert edge.last_observed_at == "2026-08-02T00:00:00+00:00"  # 관측은 반영된다
+
+
+def test_carried_pin_confidence_does_not_decay_while_pinned(
+    settings: Settings, caplog: pytest.LogCaptureFixture
+) -> None:
+    """근거가 사라져 이월되는 pin 도 확신도를 깎지 않는다 (REQ-PGRAPH-031 [HARD]).
+
+    **이 테스트는 `test_carried_pin_confidence_decays_to_the_batch_clock`(#356)을 뒤집은 것이다.**
+    그 테스트의 근거는 *"7개월 묵은 0.95 가 방금 관측된 0.5 를 이기고 살아남는다"* — 즉 서로 다른
+    시각으로 잰 확신도가 `_truncate` 정렬과 `_resolve_conflicts` 승자 판정에서 같은 자로 비교되는
+    것이었다. 그 우려는 #359 가 **두 판정 모두에서 pin 을 확신도 비교 밖으로 빼면서** 사라졌다:
+    승자 판정은 pin 을 최우선 키로 올리고(REQ-PGRAPH-035), 절단은 pin 을 아예 자르지 않는다.
+    남는 것은 [HARD] 쪽이다 — 감쇠는 `confidence` 변경이고 REQ-PGRAPH-031 이 그것을 금지한다.
+
+    `decay_evaluated_at` 은 계속 `now` 로 찍는다. 얼려 두면 "이 값이 언제 기준인가"가 뜻을 잃고
+    `test_decay_clock_is_one_snapshot_per_batch` 의 구조적 가드도 깨진다.
+    """
+    stale = "2026-01-01T00:00:00+00:00"
+    existing = _document_of(
+        [_pinned_edge("삼성", confidence=0.95, decay_evaluated_at=stale, last_observed_at=stale)]
+    )
+
+    document = _build_pin_safe([], existing=existing, settings=settings, caplog=caplog)
+
+    carried = document.edges[0]
+    assert carried.user_intent is not None
+    assert carried.confidence == 0.95  # 7개월이 지나도 깎이지 않는다
+    assert carried.decay_evaluated_at == NOW
+    assert carried.last_observed_at == stale  # 관측 **사실**은 시간이 지나도 안 바뀐다
+
+
+def test_reassert_pins_rescues_a_pin_even_if_an_earlier_stage_corrupted_it(
+    settings: Settings,
+) -> None:
+    """터미널 게이트를 **직접** 부른다 — 앞 단계가 실수해도 [HARD] 4필드가 복원되는가.
+
+    앞 세 테스트는 각 단계가 스스로 옳음을 재고, 이 테스트는 **그 단계들을 못 믿을 때의 보증**을
+    잰다. 미래에 병합 단계가 하나 더 생겨도 자동으로 보호되는 것이 게이트의 존재 이유다.
+    lessons 2026-08-10 「방어를 추가하는 커밋에 그 방어가 없으면 깨지는 테스트를 같은 커밋에」.
+    """
+    from app.agents.profile.graph_merge import _reassert_pins
+
+    prior = _pinned_edge("소니")
+    corrupted = prior.model_copy(
+        update={
+            "status": "superseded",
+            "superseded_by": "e_deadbeefdeadbeef",
+            "predicate": "avoids",
+            "promoted": False,
+            "confidence": 0.01,
+        }
+    )
+
+    restored = _reassert_pins([corrupted], prior={prior.edge_key: prior})
+
+    assert len(restored) == 1
+    edge = restored[0]
+    assert (edge.status, edge.predicate, edge.promoted, edge.confidence) == (
+        "active",
+        "likes",
+        True,
+        1.0,
+    )
+    assert edge.superseded_by is None  # `active` 로 되돌렸으면 패자 표식도 함께 걷는다
+
+
+def test_reassert_pins_leaves_unpinned_edges_alone(settings: Settings) -> None:
+    """게이트는 pin 에만 손댄다 — 기계 edge 의 정상적인 강등·supersede 를 되돌리면 안 된다."""
+    from app.agents.profile.graph_merge import _reassert_pins
+
+    prior = _stored_edge("애플", status="active", confidence=0.9, promoted=True)
+    demoted = prior.model_copy(
+        update={"status": "superseded", "confidence": 0.1, "promoted": False}
+    )
+
+    restored = _reassert_pins([demoted], prior={prior.edge_key: prior})
+
+    assert restored == [demoted]
+
+
+def test_pin_producer_sets_both_origin_user_and_user_intent(settings: Settings) -> None:
+    """`origin == "user"` ⟺ `user_intent is not None` 를 잠근다.
+
+    병합 엔진은 pin 판정에 `_is_pinned`(`user_intent`)를 쓰고 REQ-PGRAPH-035 는 "origin 클래스"라고
+    적는다. 두 표현이 같은 것을 가리키는 근거는 **생산자가 하나뿐**이라는 사실이다 — 그 사실을
+    여기서 고정한다. 배치는 `origin` 에 `"user"` 를 쓸 수 없다(`_merge_edge` 는 prior 승계 또는
+    `"machine"`).
+    """
+    from app.agents.profile.graph_models import make_edge_key
+    from app.agents.profile.graph_mutations import _pin as pin_edge
+
+    node = GraphNode(node_id="brand:소니", type="brand", label="소니", verified=True)
+    key = make_edge_key("likes", node.node_id)
+
+    pinned = pin_edge(
+        _stored_edge("소니"),
+        key=key,
+        edge_id=make_edge_id(key),
+        node=node,
+        intent=_pin(kind="correct"),
+        now=NOW,
+    )
+
+    assert pinned.origin == "user"
+    assert pinned.user_intent is not None
+    assert pinned.status == "active"
+    assert pinned.promoted is True  # 사용자 명시 취향은 게이트 판정을 기다리지 않는다
+
+
+# ─────────── challenged 신호 (REQ-PGRAPH-033) ───────────
+#
+# pin 이후 반대 관측이 임계에 도달하면 표시만 하고 **상태는 바꾸지 않는다.** 취향 변화의 반영은
+# 명시적 사용자 동작으로만 일어난다 — `challenged` 는 FE 가 "다시 반영할까요?" 를 물을지 판단하는
+# 동작 트리거이지 표시용 값이 아니다(api-spec §3.8).
+
+
+def _opposing_fact(key: str, *, created_at: str) -> FactRecord:
+    """pin 된 `likes|brand:소니` 에 맞서는 반대 관측 한 건."""
+    return _fact(
+        key, created_at=created_at, triples=[_triple("brand:소니", "avoids", label="소니")]
+    )
+
+
+def test_challenge_count_rises_when_a_fresh_opposing_observation_arrives(
+    settings: Settings, caplog: pytest.LogCaptureFixture
+) -> None:
+    """pin 에 반대 관측이 새로 들어오면 카운터가 오른다 — **상태는 그대로다**(REQ-PGRAPH-033)."""
+    existing = _document_of([_pinned_edge("소니", last_observed_at="2026-01-01T00:00:00+00:00")])
+
+    document = _build_pin_safe(
+        [_opposing_fact("f1", created_at="2026-08-02T00:00:00+00:00")],
+        existing=existing,
+        settings=settings,
+        caplog=caplog,
+    )
+
+    edge = _edge_by_key(document, "likes|brand:소니")
+    assert edge is not None
+    assert edge.challenge_count == 1
+    assert (edge.status, edge.confidence, edge.promoted) == ("active", 1.0, True)  # 불변
+
+
+def test_challenge_count_does_not_rise_when_only_the_batch_repeats(
+    settings: Settings, caplog: pytest.LogCaptureFixture
+) -> None:
+    """**반대 관측이 아니라 배치 횟수를 세면 안 된다** — 이 커밋에서 가장 조심할 지점이다.
+
+    진 edge 는 근거가 0건이 돼도 `_carried_tombstones` 가 영구 이월하므로(§6.3), 승패만 보고
+    카운터를 올리면 **새 관측이 하나도 없어도 매 배치 conflict 가 다시 성립해** 카운터가 오른다.
+    idle sweep 이 60초 주기이니 `graph_pin_challenge_count=3` 이면 **3분 침묵만으로**
+    `challenged` 가 켜지고, FE 는 시간 경과만으로 "취향이 바뀌셨나요?" 를 띄운다.
+
+    그래서 판정 기준은 **이번 배치에 그 반대 `edge_key` 의 관측이 실제로 있었는가** 다.
+    """
+    existing = _document_of([_pinned_edge("소니", last_observed_at="2026-01-01T00:00:00+00:00")])
+    facts = [_opposing_fact("f1", created_at="2026-08-02T00:00:00+00:00")]
+
+    first = _build_pin_safe(facts, existing=existing, settings=settings, caplog=caplog)
+    assert _edge_by_key(first, "likes|brand:소니").challenge_count == 1  # type: ignore[union-attr]
+
+    # 같은 관측이 더는 없는 배치를 두 번 돌린다 — 이월된 avoids 는 그대로 남아 conflict 는
+    # 계속 성립하지만, **새 반대 관측은 0건**이다.
+    second = _build_pin_safe([], existing=first, settings=settings, caplog=caplog)
+    third = _build_pin_safe([], existing=second, settings=settings, caplog=caplog)
+
+    assert _edge_by_key(third, "likes|brand:소니").challenge_count == 1  # type: ignore[union-attr]
+
+
+def test_challenged_turns_true_at_the_configured_threshold_without_changing_state(
+    settings: Settings, caplog: pytest.LogCaptureFixture
+) -> None:
+    """임계에 도달하면 `challenged` 가 참이 되지만 상태·관계·확신도는 그대로다."""
+    from app.agents.profile.graph_models import is_pin_challenged
+
+    tight = Settings(_env_file=None, graph_pin_challenge_count=2)
+    document = _document_of([_pinned_edge("소니", last_observed_at="2026-01-01T00:00:00+00:00")])
+
+    for day, key in ((2, "f1"), (3, "f2")):
+        document = _build_pin_safe(
+            [_opposing_fact(key, created_at=f"2026-08-0{day}T00:00:00+00:00")],
+            existing=document,
+            settings=tight,
+            caplog=caplog,
+        )
+
+    edge = _edge_by_key(document, "likes|brand:소니")
+    assert edge is not None
+    assert edge.challenge_count == 2
+    assert is_pin_challenged(edge, settings=tight) is True
+    assert (edge.predicate, edge.status, edge.confidence, edge.promoted) == (
+        "likes",
+        "active",
+        1.0,
+        True,
+    )  # 취향 변화의 반영은 명시적 사용자 동작으로만
+
+
+def test_zero_threshold_turns_the_signal_off_instead_of_always_on() -> None:
+    """설정값 `0` 은 신호를 **끈다**(REQ-PGRAPH-033).
+
+    순진하게 `count >= threshold` 로 쓰면 `0` 에서 **항상 참**이 되어 규약과 정반대로 동작한다.
+    `ge=0` 이 그 값을 허용하므로 특례 분기가 없으면 그대로 새어 나간다.
+    """
+    from app.agents.profile.graph_models import is_pin_challenged
+
+    off = Settings(_env_file=None, graph_pin_challenge_count=0)
+    edge = _pinned_edge("소니", challenge_count=99)
+
+    assert is_pin_challenged(edge, settings=off) is False
+
+
+def test_unpinned_edge_is_never_challenged(settings: Settings) -> None:
+    """`challenged` 는 **사용자가 고친 항목**에만 붙는다 — 기계 edge 는 대상이 아니다."""
+    from app.agents.profile.graph_models import is_pin_challenged
+
+    assert is_pin_challenged(_stored_edge("소니", challenge_count=99), settings=settings) is False
+
+
+def test_fingerprint_ignores_challenge_count_but_tracks_challenged(settings: Settings) -> None:
+    """지문에는 **파생 `challenged` 만** 들어가고 원시 `challenge_count` 는 안 들어간다.
+
+    카운터를 지문에 두면 반대 관측이 들어올 때마다 revision 이 올라 #150 의 `If-Match` 토큰이
+    상시 무효가 된다 — `_fingerprint` docstring 이 `confidence` 에 대해 막으려던 바로 그 실패다.
+    반대로 `challenged` 는 api-spec §3.8 의 **와이어 노출 필드**라 지문에 있어야 한다: 값이
+    뒤집혔는데 revision 이 그대로면 FE 가 낡은 토큰으로 계속 쓴다.
+
+    배치를 돌려서 재지 않는 이유는 **공허해지기 때문**이다 — 카운터를 올리려면 반대 관측이
+    새로 있어야 하고, 그러면 그 edge 의 `last_observed_at` 이 함께 바뀌어 지문이 어차피
+    달라진다. 그 시나리오는 "카운터 때문에 올랐다"를 증명하지 못한다.
+    """
+    from app.agents.profile.graph_merge import _fingerprint
+
+    tight = Settings(_env_file=None, graph_pin_challenge_count=3)
+    below = _document_of([_pinned_edge("소니", challenge_count=1)])
+    also_below = _document_of([_pinned_edge("소니", challenge_count=2)])
+    crossed = _document_of([_pinned_edge("소니", challenge_count=3)])
+
+    # 임계 아래에서 카운터만 움직인 것은 와이어에 안 보인다.
+    assert _fingerprint(below, tight) == _fingerprint(also_below, tight)
+    # 임계를 넘으면 `challenged` 가 뒤집히므로 실질 변경이다.
+    assert _fingerprint(also_below, tight) != _fingerprint(crossed, tight)
+
+
+def test_revision_is_stable_when_only_challenge_count_moved(settings: Settings) -> None:
+    """지문 규칙이 `build_graph_document` 의 revision 판정까지 실제로 이어지는지."""
+    tight = Settings(_env_file=None, graph_pin_challenge_count=3)
+    existing = _document_of([_pinned_edge("소니", challenge_count=1)])
+    # 문서에 이미 실린 pin 을 근거 없이 이월시키되, 카운터만 손으로 올려 둔 상태로 다시 돌린다.
+    bumped = existing.model_copy(
+        update={"edges": [existing.edges[0].model_copy(update={"challenge_count": 2})]}
+    )
+
+    document = build_graph_document([], existing=bumped, settings=tight, now=NOW)
+
+    assert document.edges[0].challenge_count == 2
+    assert document.revision == bumped.revision  # 와이어에 안 보이는 변화다
+
+
 # ─────────── 정렬·절단 ───────────
 
 
@@ -740,23 +1254,108 @@ def test_edges_are_sorted_by_total_order(settings: Settings) -> None:
     assert [n.node_id for n in document.nodes] == sorted(n.node_id for n in document.nodes)
 
 
+def test_superseded_pile_cannot_starve_active_edges(settings: Settings) -> None:
+    """**`superseded` 가 아무리 쌓여도 `active` 자리를 먹지 않는다** (REQ-PGRAPH-005, #359).
+
+    단일 상한에서는 보존 우선순위가 높은 쪽이 자리를 독차지했다. `superseded` 는 근거가 0건이어도
+    `_carried_tombstones` 가 영구 이월하므로 **단조 누적**되는데 `active` 보다 먼저 보존되어,
+    개수가 `상한 − |pin|` 에 이르면 active 가 하나도 안 남았다. 밀려난 active 는 투영에 없어
+    사용자가 `edgeId` 를 모르니 지울 수도 없는데 근거 fact 는 살아 있어 요약·추천에는 계속
+    반영된다 — **지울수록 못 지우는 게 늘어나는 되먹임**이다(이슈 #150 코멘트 2026-08-09).
+    """
+    tight = Settings(
+        _env_file=None, profile_graph_max_edges=5, profile_graph_max_superseded_edges=5
+    )
+    # 상한(5)만큼의 superseded 를 쌓아 둔다.
+    piled = [
+        _stored_edge(
+            f"브랜드{i}",
+            status="superseded",
+            superseded_by=make_edge_id(f"avoids|brand:브랜드{i}"),
+            confidence=0.5,
+        )
+        for i in range(5)
+    ]
+    existing = _document_of(piled)
+    # 각 패자의 승자에게 **이번 배치 근거를 준다** — 승자가 사라지면
+    # `_revive_orphan_superseded` 가 더미를 전부 active 로 되살려 시나리오가 성립하지 않는다
+    # (그러면 테스트가 엉뚱한 이유로 초록불이 된다).
+    facts = [
+        _fact(
+            f"w{i}",
+            triples=[_triple(f"brand:브랜드{i}", "avoids", label=f"브랜드{i}", salience=0.5)],
+        )
+        for i in range(5)
+    ]
+    # 관심 대상 — 확신도를 가장 높게 줘서 active 바구니 안 정렬에서도 확실히 살아남게 한다.
+    facts.append(_fact("f1", triples=[_triple("brand:소니", label="소니", salience=0.99)]))
+
+    document = build_graph_document(facts, existing=existing, settings=tight, now=NOW)
+
+    assert {e.status for e in document.edges if e.edge_key.startswith("likes|brand:브랜드")} == {
+        "superseded"
+    }  # 더미가 실제로 superseded 로 남아 있어야 이 테스트가 무언가를 잰다
+    assert _edge_by_key(document, "likes|brand:소니") is not None
+
+
+def test_tombstones_are_capped_oldest_first(settings: Settings) -> None:
+    """tombstone 목록도 상한을 갖는다 — 넘으면 `suppressed_at` 오래된 순으로 버린다.
+
+    #499/#358 이 tombstone 을 `edges` 밖 별도 목록으로 빼면서 **상한이 아예 없어졌다**. 항목당
+    필드 3개라 증가 폭은 작지만 단조 증가라 단일 jsonb 가 무한히 커진다. 버리면 그 취향이
+    부활할 수 있다는 잔여 리스크는 낮다 — 개별 삭제가 원문을 물리 삭제하므로 재파생할 fact 가
+    대부분 없다(REQ-PGRAPH-005 잔여 리스크 항 참조).
+    """
+    tight = Settings(_env_file=None, profile_graph_max_tombstones=2)
+    existing = _document_of(
+        [],
+        tombstones=[
+            GraphTombstone(
+                edge_id=make_edge_id(f"likes|brand:{label}"),
+                suppressed_at=stamp,
+                user_intent=None,
+            )
+            for label, stamp in (
+                ("오래된", "2026-01-01T00:00:00+00:00"),
+                ("중간", "2026-05-01T00:00:00+00:00"),
+                ("최근", "2026-08-01T00:00:00+00:00"),
+            )
+        ],
+    )
+
+    document = build_graph_document([], existing=existing, settings=tight, now=NOW)
+
+    assert {t.edge_id for t in document.tombstones} == {
+        make_edge_id("likes|brand:중간"),
+        make_edge_id("likes|brand:최근"),
+    }
+
+
 def test_truncation_keeps_pins_first(settings: Settings) -> None:
-    """상한을 넘기면 자르되 pin 을 먼저 지킨다 — 절단으로 사용자 편집이 사라지면 안 된다."""
+    """pin 은 절단으로 사라지지 않는다 — 사용자 편집에는 복구 경로가 없다.
+
+    **[#359] 이제 pin 은 active 예산 밖이므로 문서에 둘 다 남는다.** 종전에는 상한 1 안에서
+    pin 이 자리를 차지해 신규 active 가 밀렸다(그리고 그 밀림이 없애야 할 되먹임이었다).
+    이 테스트가 재는 것은 처음부터 "pin 이 남는가" 였으므로 단언을 그쪽으로 좁힌다.
+    """
     tight = Settings(_env_file=None, profile_graph_max_edges=1)
     existing = _document_with(user_intent=_pin())
     facts = [_fact("f1", triples=[_triple("brand:애플", label="애플")])]
 
     document = build_graph_document(facts, existing=existing, settings=tight, now=NOW)
 
-    assert len(document.edges) == 1
-    assert document.edges[0].user_intent is not None
+    assert any(e.user_intent is not None for e in document.edges)
 
 
 def test_truncation_never_drops_pins_even_past_the_cap(settings: Settings) -> None:
-    """pin 이 상한보다 많아도 하나도 잘리지 않는다 — 상한을 넘겨서라도 지킨다.
+    """pin 은 개수가 얼마든 하나도 잘리지 않는다 — 상한을 넘겨서라도 지킨다.
 
     `active`·`superseded` 는 잘려도 재파생으로 자기복구되지만 pin 은 복구 경로가 없다. 잘리는
     순간 "기계 재파생에 덮이지 않는다"(REQ-PGRAPH-031)는 보장이 저장 상한 때문에 깨진다.
+
+    **[#359] pin 에는 이제 상한 자체가 없다** — "상한보다 많아도" 라는 전제가 사라졌다. 그래도
+    이 테스트는 남긴다: 바구니를 나눈 뒤에도 pin 이 어느 상한에도 안 걸리는지가 [HARD] 이고,
+    나중에 pin 바구니에 상한을 도입하려는 변경이 여기서 걸린다.
     """
     tight = Settings(_env_file=None, profile_graph_max_edges=2)
     existing = _document_of(
@@ -817,7 +1416,12 @@ def test_truncation_drops_machine_superseded_before_user_pins(settings: Settings
     그래서 둘을 같은 등급으로 두지 않는다 — 밀려나는 쪽은 항상 기계 판정이다.
     문서 등장 순서가 아니라 확신도로 갈리는지도 함께 고정한다(순서 우연으로 통과하지 않게).
     """
-    tight = Settings(_env_file=None, profile_graph_max_edges=2)
+    # **[#359] 바구니가 갈려 superseded 전용 상한으로 조인다.** 종전에는 단일 상한 2 안에서
+    # pin·superseded·active 가 함께 경쟁했으나, 이제 각 바구니가 자기 예산을 쓴다 — 그래서
+    # superseded 등급 **안의** 우선순위를 재려면 그 바구니를 직접 조여야 한다.
+    tight = Settings(
+        _env_file=None, profile_graph_max_edges=10, profile_graph_max_superseded_edges=1
+    )
     # 두 패자에게 **문서·근거 양쪽에 있는 승자**를 준다 — 상대가 없으면 `_revive_orphan_superseded`
     # 가 둘 다 active 로 되살려, 이 테스트가 재려는 "superseded 등급 안의 우선순위"가 성립하지 않는다.
     existing = _document_of(
@@ -834,7 +1438,7 @@ def test_truncation_drops_machine_superseded_before_user_pins(settings: Settings
                 superseded_by=make_edge_id("avoids|brand:삼성"),
                 confidence=0.9,
             ),
-            _stored_edge("소니", user_intent=_pin()),
+            _pinned_edge("소니"),
         ]
     )
     facts = [
@@ -844,23 +1448,30 @@ def test_truncation_drops_machine_superseded_before_user_pins(settings: Settings
 
     document = build_graph_document(facts, existing=existing, settings=tight, now=NOW)
 
-    assert len(document.edges) == 2
     sony = _edge_by_key(document, "likes|brand:소니")
     assert sony is not None and sony.user_intent is not None  # 사용자 편집은 무조건 남고
     assert _edge_by_key(document, "likes|brand:삼성") is not None  # 확신도 높은 쪽이 남고
     assert _edge_by_key(document, "likes|brand:애플") is None  # 낮은 쪽이 밀린다
 
 
-def test_truncation_drops_active_before_superseded(settings: Settings) -> None:
-    """`active` 가 `superseded` 보다 **먼저** 밀린다 — 잃는 것이 서로 다르기 때문이다.
+def test_superseded_is_not_evicted_by_the_active_cap(settings: Settings) -> None:
+    """`active` 상한이 꽉 차도 `superseded` 는 자기 예산에서 산다 (REQ-PGRAPH-005, #359).
 
-    `active` 가 잘려도 그 fact 는 `_summary_input` 에 그대로 남지만(문서에 없는 edge_key 는
-    `active` 로 간주된다), `superseded` 가 잘리면 같은 규칙 때문에 **진 취향이 요약에 되살아난다.**
-    방향을 반대로 읽기 쉬운 지점이라(PR #410 리뷰) 순서 자체를 여기서 고정한다.
+    **이 테스트는 `test_truncation_drops_active_before_superseded`(#356)를 대체한다.** 그 테스트가
+    지킨 비대칭은 그대로 유효하다 — `active` 가 잘려도 그 fact 는 `_summary_input` 에 남지만
+    (문서에 없는 `edge_key` 는 `active` 로 간주된다), `superseded` 가 잘리면 같은 규칙 때문에
+    **진 취향이 요약에 되살아난다.** 바뀐 것은 **실현 방식**이다: 단일 상한 안에서 "동률에서
+    이긴다" 였던 것이 이제 "자기 예산을 보장받는다" 가 됐다.
+
+    보호는 오히려 세졌다 — 종전 `superseded` 의 실효 예산은 `상한 − |pin|` 이었는데 이제 pin 과
+    무관하게 자기 상한 전량이다.
     """
-    tight = Settings(_env_file=None, profile_graph_max_edges=1)
+    # active 는 한 칸뿐이고 그 자리를 새 관측이 채운다. superseded 는 그 예산과 무관하게 남는다.
+    tight = Settings(
+        _env_file=None, profile_graph_max_edges=1, profile_graph_max_superseded_edges=1
+    )
     # 승자(avoids|brand:애플)를 문서·근거 양쪽에 둔다 — 상대가 없으면 병합이 패자를 되살려
-    # (`_revive_orphan_superseded`) 절단 순서를 재는 시나리오가 성립하지 않는다.
+    # (`_revive_orphan_superseded`) 이 시나리오가 성립하지 않는다.
     winner_key = "avoids|brand:애플"
     existing = _document_of(
         [
@@ -869,7 +1480,6 @@ def test_truncation_drops_active_before_superseded(settings: Settings) -> None:
             )
         ]
     )
-    # 새 active 는 확신도가 훨씬 높다 — 그래도 superseded 가 남아야 한다(확신도로 갈리지 않는다).
     facts = [
         _fact("f1", triples=[_triple("brand:애플", "avoids", label="애플")]),
         _fact("f2", triples=[_triple("brand:엘지", label="엘지", salience=0.99)]),
@@ -877,7 +1487,9 @@ def test_truncation_drops_active_before_superseded(settings: Settings) -> None:
 
     document = build_graph_document(facts, existing=existing, settings=tight, now=NOW)
 
-    assert [(e.edge_key, e.status) for e in document.edges] == [("likes|brand:애플", "superseded")]
+    statuses = {e.edge_key: e.status for e in document.edges}
+    assert statuses.get("likes|brand:애플") == "superseded"  # 확신도 0.1 이어도 자기 예산에서 산다
+    assert "avoids|brand:애플" in statuses or "likes|brand:엘지" in statuses  # active 한 칸
 
 
 def test_truncated_flag_records_that_edges_were_dropped(settings: Settings) -> None:
@@ -958,13 +1570,16 @@ def test_revision_bumps_when_only_truncated_flips(settings: Settings) -> None:
     assert second.revision == first.revision + 1
 
 
-def test_truncation_keeps_active_edges_within_the_remaining_budget(settings: Settings) -> None:
-    """tombstone 이 상한 안이면 남은 자리는 `active` 가 확신도 순으로 채운다.
+def test_pins_do_not_consume_the_active_budget(settings: Settings) -> None:
+    """**pin 은 `active` 예산을 먹지 않는다** — 이 이슈가 만들려는 성질을 정면으로 잰다.
 
-    tombstone 우선이 "이번 배치 반영 0건"을 뜻하지 않는다는 경계다.
+    **`test_truncation_keeps_active_edges_within_the_remaining_budget`(#356)을 뒤집은 것이다.**
+    종전에는 pin 이 상한 2 중 한 칸을 차지해 새 관측 둘 중 하나만 살아남았다("남은 자리"라는
+    이름이 그 구조를 그대로 담고 있다). 그 잠식이 #359 가 없애려는 되먹임의 절반이었다.
+    이제 pin 은 자기 바구니(무제한)에 있고 active 두 칸은 온전히 새 관측 몫이다.
     """
     tight = Settings(_env_file=None, profile_graph_max_edges=2)
-    existing = _document_of([_stored_edge("소니", user_intent=_pin())])
+    existing = _document_of([_pinned_edge("소니")])
     facts = [
         _fact("f1", triples=[_triple("brand:엘지", label="엘지", salience=0.9)]),
         _fact("f2", triples=[_triple("brand:애플", label="애플", salience=0.2)]),
@@ -972,26 +1587,49 @@ def test_truncation_keeps_active_edges_within_the_remaining_budget(settings: Set
 
     document = build_graph_document(facts, existing=existing, settings=tight, now=NOW)
 
-    assert {e.edge_key for e in document.edges} == {"likes|brand:소니", "likes|brand:엘지"}
+    assert {e.edge_key for e in document.edges} == {
+        "likes|brand:소니",  # pin — 예산 밖
+        "likes|brand:엘지",
+        "likes|brand:애플",  # 종전에는 pin 에 밀려 잘렸다
+    }
 
 
-def test_truncation_logs_when_user_deletions_alone_exceed_the_cap(
+def test_truncation_logs_when_pins_alone_exceed_the_document_budget(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """상한을 넘겨 보존하는 것은 의도된 선택이므로 **조용히** 넘기지 않는다 — 정리 신호다."""
-    tight = Settings(_env_file=None, profile_graph_max_edges=1)
-    existing = _document_of(
-        [
-            _stored_edge("소니", user_intent=_pin()),
-            _stored_edge("애플", user_intent=_pin()),
-        ]
+    """pin 이 문서를 부풀리는 것은 **조용히** 넘기지 않는다 — 정리·초기화 신호다.
+
+    **[#359] 경고 조건이 바뀌었다.** 종전 `profile_graph_protected_over_cap` 은 "pin 을 지키느라
+    남을 버렸다" 를 알렸는데, 바구니를 나누면서 **버리는 일 자체가 없어져** 발화 조건이 사라졌다.
+    남는 관심사는 문서 총량 하나뿐이라 그쪽으로 옮겼다:
+    `len(edges) > active 상한 + superseded 상한`. 다른 두 바구니가 상한에 묶여 있으므로
+    **초과분은 정의상 pin** 이고, 그래서 새 튜너블 없이 파생 임계로 잰다.
+    """
+    tight = Settings(
+        _env_file=None, profile_graph_max_edges=1, profile_graph_max_superseded_edges=1
     )
+    existing = _document_of([_pinned_edge("소니"), _pinned_edge("애플"), _pinned_edge("삼성")])
 
     with caplog.at_level(logging.WARNING, logger="app.agents.profile.graph_merge"):
         document = build_graph_document([], existing=existing, settings=tight, now=NOW)
 
-    assert len(document.edges) == 2  # 상한(1)을 넘겨서라도 삭제는 지킨다
-    assert "profile_graph_protected_over_cap" in caplog.text
+    assert len(document.edges) == 3  # pin 은 상한을 넘겨서라도 보존한다
+    assert "profile_graph_pins_over_budget" in caplog.text
+
+
+def test_truncation_stays_quiet_when_pins_fit_the_document_budget(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """총량 안이면 경고하지 않는다 — 매 배치 울리면 신호 노릇을 못 한다."""
+    tight = Settings(
+        _env_file=None, profile_graph_max_edges=5, profile_graph_max_superseded_edges=5
+    )
+    existing = _document_of([_pinned_edge("소니"), _pinned_edge("애플")])
+
+    with caplog.at_level(logging.WARNING, logger="app.agents.profile.graph_merge"):
+        build_graph_document([], existing=existing, settings=tight, now=NOW)
+
+    assert "profile_graph_pins_over_budget" not in caplog.text
 
 
 # ─────────── revision ───────────

@@ -24,13 +24,19 @@ SONY = make_edge_id("likes|brand:소니")
 NOW = "2026-08-10T00:00:00+00:00"
 
 
-def _edge() -> GraphEdge:
+def _edge(
+    label: str = "소니",
+    *,
+    status: str = "active",
+    derived_from_sensitive: bool = False,
+) -> GraphEdge:
+    key = f"likes|brand:{label}"
     return GraphEdge(
-        edge_key="likes|brand:소니",
-        edge_id=SONY,
-        node_id="brand:소니",
+        edge_key=key,
+        edge_id=make_edge_id(key),
+        node_id=f"brand:{label}",
         predicate="likes",
-        status="active",
+        status=status,  # type: ignore[arg-type]
         promoted=True,
         origin="machine",
         source_latest="conversation",
@@ -46,8 +52,8 @@ def _edge() -> GraphEdge:
         suppressed_at=None,
         user_intent=None,
         challenge_count=0,
-        derived_from_sensitive=False,
-        sensitive_topic=None,
+        derived_from_sensitive=derived_from_sensitive,
+        sensitive_topic="health" if derived_from_sensitive else None,
     )
 
 
@@ -126,6 +132,87 @@ async def test_reset_records_when_it_happened() -> None:
 
     document = await (await get_profile_store()).get_graph(USER)
     assert document is not None and document.purged_at == NOW
+
+
+# ─────────── purged 응답 (#360, api-spec §3.9.4) ───────────
+
+
+async def test_reset_reports_purged_in_the_contract_shape() -> None:
+    """`purged` 는 계약이 정한 **정확히 2키**다 — `{edges, transcriptTurns}`.
+
+    구 구현은 `{facts, summary, buffers, conversationTurns}` 를 냈다 — 계약과 **한 키도 겹치지
+    않는다.** 와이어로 나가는 값이라 이름이 다르면 FE 가 "취향 N건"을 못 그린다.
+    """
+    await _seed()
+
+    result = await graph_journal.reset_graph(
+        user_id=int(USER), if_match="g42", request_id="req-1", now=NOW
+    )
+
+    assert result.purged == {"edges": 1, "transcriptTurns": 0}
+
+
+async def test_purged_edges_counts_only_what_the_user_could_see() -> None:
+    """`purged.edges` 는 **I-32 에 보이던 개수**다 — 화면 문구("취향 N건")와 맞아야 한다.
+
+    `superseded` 는 투영에 안 나가고(REQ-PGRAPH-021), 민감 파생은 **어떤 카운트에도 세지 않는다**
+    (REQ-PGRAPH-076 [HARD]). 저장 문서의 edge 를 통째로 세면 사용자가 본 적 없는 수가 나간다.
+    """
+    store = await get_profile_store()
+    await store.set_graph(
+        USER,
+        GraphDocument(
+            revision=42,
+            nodes=[
+                GraphNode(node_id=f"brand:{label}", type="brand", label=label, verified=False)
+                for label in ("소니", "애플", "삼성")
+            ],
+            edges=[
+                _edge("소니"),
+                _edge("애플", status="superseded"),
+                _edge("삼성", derived_from_sensitive=True),
+            ],
+            unprojected_count=0,
+            truncated=False,
+            purged_at=None,
+            updated_at=NOW,
+            tombstones=[],
+        ),
+    )
+
+    result = await graph_journal.reset_graph(
+        user_id=int(USER), if_match="g42", request_id="req-1", now=NOW
+    )
+
+    assert result.purged == {"edges": 1, "transcriptTurns": 0}
+
+
+async def test_reset_replay_returns_the_same_purged_counts() -> None:
+    """재전송은 **최초 응답 본문 그대로**다 — 두 번째가 0 이 되면 계약 위반이다.
+
+    두 번째 호출 시점에는 이미 다 지워져 있어 다시 세면 전부 0 이다. 원장이 최초 값을 들고
+    있어야 한다(REQ-PGRAPH-043).
+    """
+    await _seed()
+    first = await graph_journal.reset_graph(
+        user_id=int(USER), if_match="g42", request_id="req-1", now=NOW
+    )
+
+    second = await graph_journal.reset_graph(
+        user_id=int(USER), if_match="g42", request_id="req-2", now=NOW
+    )
+
+    assert second.replayed is True
+    assert second.purged == first.purged == {"edges": 1, "transcriptTurns": 0}
+
+
+async def test_reset_without_a_profile_reports_zeros() -> None:
+    """프로필이 없어도 오류가 아니다 — `purged` 전부 0 으로 성공한다 (api-spec §3.9.4)."""
+    result = await graph_journal.reset_graph(
+        user_id=int(USER), if_match="g0", request_id="req-1", now=NOW
+    )
+
+    assert result.purged == {"edges": 0, "transcriptTurns": 0}
 
 
 # ─────────── 남기는 것 (REQ-PGRAPH-062/063) ───────────

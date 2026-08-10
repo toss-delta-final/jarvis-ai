@@ -31,13 +31,25 @@ from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
 from app.agents.profile.graph_errors import (
+    GraphEdgeNotEditable,
     GraphEdgeNotFound,
     GraphMutationError,
+    GraphObjectUnknown,
     GraphStoreUnavailable,
     GraphVersionConflict,
 )
-from app.agents.profile.graph_models import GraphDocument, GraphNode
-from app.agents.profile.graph_mutations import apply_correction, apply_suppression
+from app.agents.profile.graph_models import (
+    GraphDocument,
+    GraphEdge,
+    is_projected,
+    normalize_label,
+)
+from app.agents.profile.graph_mutations import (
+    MutationOutcome,
+    apply_correction,
+    apply_suppression,
+)
+from app.agents.profile.resolver import ObjectSpec, resolve_user_object
 from app.core.config import get_settings
 from app.core.observability import identifier_fingerprint
 from app.core.pg_resilience import (
@@ -99,7 +111,10 @@ def derived_key(action: str, user_id: int | str, scope_id: str, if_match: str) -
     `{userId}` 는 **원문**이다 — 지문화하면 pepper 회전 시 TTL 내 모든 원장 히트가 증발해
     재전송이 중복 부작용을 낸다. raw userId 금지는 감사 레코드(`actor_fp`)에만 걸린 조항이다.
 
-    `{scopeId}`: edge 2종 = `edgeId`, `graphReset` = `"ALL"`, `personalizationToggle` = 빈 값.
+    `{scopeId}`: edge 2종 = `edgeId`, `graphReset` = `"ALL"`,
+    `personalizationToggle` = **대상 상태**(`"true"`/`"false"`, #360 — 구 계약은 빈 값이었다).
+    토글은 그래프 문서를 안 바꿔 `graphVersion` 이 고정이라, scope 를 비우면 끄기와 켜기가 같은
+    키가 되어 **재개가 중지 응답을 재생**한다(원장 TTL 동안 프라이버시 스위치가 잠긴다).
     `If-Match` 는 `"g42"` 와 `g42` 가 동등하므로(api-spec §3.9) 따옴표를 벗겨 정규화한다 —
     안 그러면 같은 선행조건이 두 개의 키가 되어 멱등이 성립하지 않는다.
     """
@@ -175,6 +190,24 @@ async def close_pool() -> None:
     """
     set_pool(None)
     await _drain_pending_cleanup(propagate_errors=True)
+
+
+async def warm_pool() -> None:
+    """기동 시 풀·스키마를 미리 준비한다 — 첫 사용자 턴이 그 비용을 물지 않도록 (#359).
+
+    `close_pool` 과 대칭이며 `app.main._lifespan` 이 부른다. 지금까지 이 풀은 열리는 자리가 없어
+    **첫 호출자가 지연 초기화 전체를 지불**했는데, 그 첫 호출자가 항상 백그라운드 sweep(사용자
+    예산 밖)이라 무해했다. #359 의 중지 게이트가 **구매자 턴**을 첫 호출자로 바꾼다 —
+    `pool.open(wait=True)`(연결 5s) + `_ensure_schema`(마이그레이션 30s, advisory 잠금 + 테이블
+    3개 + 인덱스)가 `_init_lock` 안에서 직렬화되므로, 배포 직후 첫 회원 턴이 first-token 10s
+    관문 안에서 그것을 물고 동시 턴까지 함께 막는다.
+
+    **실패해도 기동을 막지 않는다** — 호출부가 잡는다. 워밍은 최적화이지 선결 조건이 아니고,
+    실패하면 지연 초기화가 원래 하던 일을 그대로 한다(운영에서 pg-profile 이 죽어 있으면
+    `_get_pool` 이 raise 하는데, 그걸 기동 실패로 승격시키면 개인화와 무관한 구매자 턴까지 서버가
+    안 뜬다).
+    """
+    await _get_pool()
 
 
 def reset() -> None:
@@ -400,9 +433,18 @@ async def _ensure_schema(pool: AsyncConnectionPool) -> None:
                         user_id bigint PRIMARY KEY,
                         enabled boolean NOT NULL DEFAULT true,
                         disabled_at timestamptz,
+                        disabled_spans jsonb NOT NULL DEFAULT '[]'::jsonb,
                         graph_version text,
                         updated_at timestamptz NOT NULL DEFAULT now()
                     )
+                    """
+                )
+                # 구 볼륨에는 컬럼이 없다 — `CREATE TABLE IF NOT EXISTS` 는 기존 테이블을
+                # 갱신하지 않으므로 추가를 따로 건다(이 파일이 마이그레이션 정본이다).
+                await conn.execute(
+                    """
+                    ALTER TABLE profile_personalization_state
+                        ADD COLUMN IF NOT EXISTS disabled_spans jsonb NOT NULL DEFAULT '[]'::jsonb
                     """
                 )
 
@@ -842,6 +884,14 @@ class GraphMutationResult:
     edge_id: str | None = None
     merged: bool = False
     suppressed: bool = False
+    # I-36 전용. 라벨이 아니라 **개수만**이라 여기 실어도 노출 경계를 넘지 않는다
+    # (api-spec §3.9.4 `purged` — 정확히 `{edges, transcriptTurns}` 2키).
+    purged: dict[str, int] | None = None
+    # I-33 전용. **투영된 edge 를 원장이 든다** — 재전송은 "최초 응답 본문을 그대로"여야 하는데
+    # (REQ-PGRAPH-043), 그 사이 그 edge 가 삭제됐으면 현재 문서로는 재구성할 수 없다. 라벨을
+    # 원장에 두는 것은 #358 이 테이블 3개를 나눌 때 이미 전제한 것이고(감사와 한 행에 둘 수
+    # 없는 이유가 바로 그 라벨이었다), REQ-PGRAPH-081 의 라벨 금지는 **감사 테이블** 조항이다.
+    edge: dict | None = None
 
 
 def graph_version(revision: int) -> str:
@@ -858,13 +908,19 @@ async def apply_edge_mutation(
     request_id: str,
     now: str,
     predicate: str | None = None,
-    node: GraphNode | None = None,
+    object_spec: ObjectSpec | None = None,
     lease_s: float | None = None,
 ) -> GraphMutationResult:
     """edge 수정·삭제를 저널·CAS·멱등 아래에서 적용한다.
 
-    `GraphVersionConflict`·`GraphEdgeNotFound`·`GraphStoreUnavailable` 을 던진다 — 상태 코드
-    매핑은 호출자가 생기는 #360 몫이다(`graph_errors` docstring).
+    `GraphVersionConflict`·`GraphEdgeNotFound`·`GraphEdgeNotEditable`·`GraphObjectUnknown`·
+    `GraphStoreUnavailable` 을 던진다 — 상태 코드 매핑은 `app/core/errors.py` 가 소유한다.
+
+    **[#360] `edgeUpdate` 는 `object_spec` 을 받는다** — 확정된 노드가 아니라 **요청 원문**이다.
+    `predicate`·`object` 중 생략한 쪽은 대상 edge 의 현재 값으로 채우는데(api-spec §3.9.1),
+    그 출처가 **잠금 아래에서 읽은 문서**여야 하기 때문이다. 미리 읽어 채우면 그 사이 값이
+    바뀌었을 때 사용자가 보내지 않은 변경이 적용되고, 재전송이 이미 사라진 edge 를 찾다 실패해
+    §7.2 의 *"재전송 판정이 `404` 판정보다 앞"* 이 깨진다.
     """
     if action not in ("edgeUpdate", "edgeDelete"):
         raise ValueError(f"unsupported edge mutation action: {action}")
@@ -880,7 +936,7 @@ async def apply_edge_mutation(
     # 파생 키에는 **요청 본문이 들어가지 않는다**(REQ-PGRAPH-043). 그래서 스테일한 `If-Match` 를
     # 든 다른 본문이 같은 키를 만들 수 있고, 그대로 재생하면 호출자가 보내지도 않은 변경의
     # 결과를 성공으로 받는다. 본문 지문을 함께 실어 그 경우를 충돌로 떨어뜨린다.
-    request_fp = _request_fingerprint(action, predicate, node)
+    request_fp = _request_fingerprint(action, predicate, object_spec)
     ttl = settings.session_end_claim_ttl_s if lease_s is None else lease_s
 
     async with store.graph_lock(str(user_id)):
@@ -909,10 +965,21 @@ async def apply_edge_mutation(
             # 에서는 대상 edge 가 이미 사라져 있는데, 그걸 "없으니 404"로 판정하면 api-spec 이
             # ⚠️ 로 금지한 **"edge 존재 여부로 뭉뚱그리기"** 를 그대로 하는 것이다. 게다가 이
             # 판정이 원장을 안 보면 TTL 이 지나도 같은 404 라 **자가 복구도 안 된다.**
+            #
+            # **대상 판정은 조회의 노출 경계와 같다**(`is_projected`, PR #562 리뷰). `edge_id` 는
+            # `sha256("{predicate}|{node_id}")` 라 사용자별 salt 가 없는 콘텐츠 해시여서 라벨만
+            # 알면 계산된다 — `edge_id` 일치만 보면 GET 에 안 나오는 edge 가 변경 대상이 되고
+            # 두 가지가 뚫린다. (1) **존재 오라클**: `200`/`404` 차이로 민감 파생 취향이 추론된
+            # 적 있는지 알아낼 수 있다(REQ-PGRAPH-076 [HARD] "존재 자체를 노출하지 않는다").
+            # (2) **충돌 해소 우회**: `superseded`(병합 엔진이 상충에서 내린 패자)를 수정하면
+            # `_pin` 이 무조건 `active` 로 되돌려, 같은 노드에 상충하는 active edge 가 둘 생기고
+            # `_resolve_conflicts` 를 전혀 안 거친다.
+            #
+            # **반대 방향은 막지 않는다** — 보이는 edge 를 고친 결과가 숨겨진 패자와 같은 키가
+            # 되는 경우는 `apply_correction` 의 병합 경로이고 의도된 동작이다(그쪽 `_find` 는
+            # 필터하지 않는다 — 하면 관측 근거를 잃고 `merged` 가 거짓이 된다).
             pending = await lookup(key, request_fp=request_fp)
-            if pending is None and (
-                document is None or not any(e.edge_id == edge_id for e in document.edges)
-            ):
+            if pending is None and _find_edge(document, edge_id) is None:
                 # 흔적이 아예 없다 → 진짜 없는 대상이다. 원장·감사를 건드리기 전에 끝낸다.
                 raise GraphEdgeNotFound(edge_id)
 
@@ -943,7 +1010,7 @@ async def apply_edge_mutation(
                 request_id=request_id,
                 now=now,
                 predicate=predicate,
-                node=node,
+                object_spec=object_spec,
                 key=key,
                 token=token,
                 settings=settings,
@@ -978,6 +1045,56 @@ async def next_revision(*, user_id: int, existing: GraphDocument | None) -> int:
     return max(current, floor) + 1
 
 
+@dataclass(frozen=True)
+class PersonalizationState:
+    """중지 플래그 + 감쇠 차감 입력 (REQ-PGRAPH-050/055).
+
+    `disabled_spans` 는 **닫힌** 구간만 든다 — 중지 중인 현재 구간은 끝이 없어 실을 수 없다.
+    """
+
+    enabled: bool
+    disabled_at: str | None
+    disabled_spans: list[dict]
+
+
+async def get_personalization_state(*, user_id: int) -> PersonalizationState:
+    """플래그와 중지 구간을 **한 번에** 읽는다 (#359).
+
+    `get_personalization_flag` 와 나누면 배치가 왕복을 두 번 하게 된다 — 같은 단일 행이다.
+    hot-path 는 구간이 필요 없어 여전히 `get_personalization_flag` 를 쓴다.
+    """
+    pool = await _get_pool()
+    if pool is None:
+        row = _fallback_table("personalization").get(int(user_id))
+        if row is None:
+            return PersonalizationState(True, None, [])
+        return PersonalizationState(
+            bool(row["enabled"]),
+            row.get("disabled_at"),
+            list(row.get("disabled_spans") or []),
+        )
+
+    async def _run() -> PersonalizationState:
+        async with pool.connection() as conn:
+            cur = await conn.execute(
+                "SELECT enabled, disabled_at, disabled_spans "
+                "FROM profile_personalization_state WHERE user_id = %s",
+                (int(user_id),),
+            )
+            found = await cur.fetchone()
+            if found is None:
+                return PersonalizationState(True, None, [])
+            enabled, disabled_at, spans = found
+            return PersonalizationState(
+                bool(enabled),
+                # 저장은 timestamptz 지만 감쇠 계산은 ISO 문자열로 한다(순수 함수 입력).
+                disabled_at.isoformat() if disabled_at is not None else None,
+                list(spans or []),
+            )
+
+    return await run_with_query_timeout(_run())
+
+
 async def get_personalization_flag(*, user_id: int) -> bool:
     """개인화 중지 플래그 — 없으면 켜짐(기본값). REQ-PGRAPH-050 의 전용 저장 위치."""
     pool = await _get_pool()
@@ -1007,17 +1124,27 @@ async def set_personalization_flag(
 
     **그래프 락과 요약 락을 동시에 쥐지 않기 위해** 여기서 요약 표식은 건드리지 않는다. 그쪽은
     호출부가 요약 락 아래에서 따로 처리한다(`store.py` 의 advisory 풀 이중 점유 주석).
+
+    **[#359] 재개는 같은 upsert 안에서 중지 구간을 닫는다**(REQ-PGRAPH-055) — `disabled_at → now`
+    를 `disabled_spans` 에 덧붙인다. 그래프 문서는 여전히 건드리지 않는다.
     """
-    previous = await get_personalization_flag(user_id=user_id)
-    if previous == enabled:
+    state = await get_personalization_state(user_id=user_id)
+    if state.enabled == enabled:
         return False
 
     disabled_at = None if enabled else now
+    spans = state.disabled_spans
+    if enabled and state.disabled_at:
+        # 재개 — 이제야 구간이 닫힌다. 중지 중에는 끝이 없어 실을 수 없다(열린 구간을 빼면
+        # 미래를 차감하는 셈이고, 어차피 중지 중에는 배치가 안 돌아 감쇠도 안 걸린다).
+        spans = _capped_spans([*spans, {"from": state.disabled_at, "to": now}])
+
     pool = await _get_pool()
     if pool is None:
         _fallback_table("personalization")[int(user_id)] = {
             "enabled": enabled,
             "disabled_at": disabled_at,
+            "disabled_spans": spans,
             "graph_version": graph_version_token,
         }
         return True
@@ -1027,19 +1154,39 @@ async def set_personalization_flag(
             await conn.execute(
                 """
                 INSERT INTO profile_personalization_state
-                    (user_id, enabled, disabled_at, graph_version, updated_at)
-                VALUES (%s, %s, %s, %s, now())
+                    (user_id, enabled, disabled_at, disabled_spans, graph_version, updated_at)
+                VALUES (%s, %s, %s, %s, %s, now())
                 ON CONFLICT (user_id) DO UPDATE
                 SET enabled = EXCLUDED.enabled,
                     disabled_at = EXCLUDED.disabled_at,
+                    disabled_spans = EXCLUDED.disabled_spans,
                     graph_version = EXCLUDED.graph_version,
                     updated_at = now()
                 """,
-                (int(user_id), enabled, disabled_at, graph_version_token),
+                (int(user_id), enabled, disabled_at, Jsonb(spans), graph_version_token),
             )
 
     await run_with_query_timeout(_run())
     return True
+
+
+def _capped_spans(spans: list[dict]) -> list[dict]:
+    """중지 구간 목록을 상한 안으로 — 넘으면 **가장 오래된 두 개를 하나로 합친다**.
+
+    합치면 그 사이 간격까지 중지로 세므로 감쇠를 **덜 빼는**(=취향을 더 오래 살리는) 쪽으로
+    틀린다. 오래된 것을 버리는 대안은 반대로 이미 지난 중지를 없던 일로 만들어 감쇠가 몰린다 —
+    "데이터는 보존된다"는 약속에 가까운 쪽을 고른다. 병합은 결정론적이라 재생 동일성도 유지된다.
+    """
+    limit = get_settings().graph_decay_pause_spans_max
+    ordered = sorted(spans, key=lambda span: (span.get("from") or "", span.get("to") or ""))
+    while len(ordered) > limit:
+        first, second, *rest = ordered
+        logger.warning(
+            "profile_personalization_spans_merged",
+            extra={"limit": limit, "kept": len(rest) + 1},
+        )
+        ordered = [{"from": first["from"], "to": second["to"]}, *rest]
+    return ordered
 
 
 async def set_personalization(
@@ -1067,7 +1214,14 @@ async def set_personalization(
     if if_match is not None and normalize_if_match(if_match) != current:
         raise GraphVersionConflict(current)
 
-    key = derived_key("personalizationToggle", user_id, "", if_match) if if_match else None
+    # **파생 키에 대상 상태를 싣는다** (#360). 이 경로는 그래프 문서를 건드리지 않아
+    # `graphVersion` 이 변하지 않으므로, 끄기와 켜기가 **정상적으로 같은 `If-Match`** 를
+    # 지참한다. scope 가 비면 두 요청이 같은 키가 되어 **켜기가 끄기 응답을 재생**하고,
+    # 원장 TTL(`graph_idempotency_ttl_h`, 기본 24h) 동안 프라이버시 스위치가 잠긴다.
+    # 본문 지문(`request_fp`)으로 막는 것은 틀린 해법이다 — `LedgerRequestMismatch` → `409` 가
+    # 되어 정본 I-37 이 금지한 "충돌로 끄기가 실패하는 상황"을 그대로 만든다.
+    scope = "true" if enabled else "false"
+    key = derived_key("personalizationToggle", user_id, scope, if_match) if if_match else None
     token = None
     try:
         if key is not None:
@@ -1075,7 +1229,7 @@ async def set_personalization(
             if replayed is not None:
                 return replayed
             token = await claim(
-                key, user_id=user_id, scope_id=None, lease_s=settings.session_end_claim_ttl_s
+                key, user_id=user_id, scope_id=scope, lease_s=settings.session_end_claim_ttl_s
             )
             if token is None:
                 raise GraphVersionConflict(current)
@@ -1173,16 +1327,37 @@ async def reset_graph(
                         mutation_key=key,
                     )
                     await complete(key, token, pending.response_payload)
-                    return GraphMutationResult(graph_version=intended, replayed=True)
+                    return GraphMutationResult(
+                        graph_version=intended,
+                        replayed=True,
+                        purged=pending.response_payload.get("purged"),
+                    )
 
             revision = await next_revision(user_id=user_id, existing=document)
             after = graph_version(revision)
-            purged = await store.purge_personal_data(str(user_id))
+            # **개수는 지우기 전에 센다.** 지운 뒤에 세면 전부 0 이다.
+            # 세는 대상은 **사용자가 I-32 에서 보던 것**이라야 화면 문구("취향 12건")와 맞는다 —
+            # 그래서 투영과 같은 술어(`is_projected`)를 쓴다. 저장 문서의 edge 를 통째로 세면
+            # `superseded`·민감 파생까지 들어가 사용자가 본 적 없는 수가 나간다(REQ-PGRAPH-076 [HARD]).
+            visible_edges = (
+                sum(1 for edge in document.edges if is_projected(edge)) if document else 0
+            )
+            internal = await store.purge_personal_data(str(user_id))
             turns = await _delete_transcripts(user_id)
             # 진행 중인 이 초기화의 키는 남긴다 — 지우면 아래 `complete` 가 쓴 표식이 사라져
             # 초기화 재전송이 다시 실행된다.
             await invalidate_ledger(user_id=user_id, keep=key)
-            payload = {"graphVersion": after, "purged": {**purged, "conversationTurns": turns}}
+            # `purge_personal_data` 가 돌려주는 `{facts, summary, buffers}` 는 **와이어에 나가지
+            # 않는다** — api-spec §3.9.4 의 `purged` 는 정확히 2키다. 사용자가 만든 적 없는 내부
+            # 구조를 세어 보여줄 이유가 없다(v0.32.0 이 5키 → 2키로 줄인 근거).
+            logger.info(
+                "profile_graph_reset_internal_counts",
+                extra={"actorFp": identifier_fingerprint(str(user_id)), **internal},
+            )
+            payload = {
+                "graphVersion": after,
+                "purged": {"edges": visible_edges, "transcriptTurns": turns},
+            }
             # 문서 교체 **전에** 의도를 남긴다 — 교체 뒤 끊기면 재개가 이 값으로 응답을 재구성한다.
             await record_intent(key, token, payload)
             await store.set_graph(
@@ -1199,7 +1374,9 @@ async def reset_graph(
                 mutation_key=key,
             )
             await complete(key, token, payload)
-            return GraphMutationResult(graph_version=after, replayed=False)
+            return GraphMutationResult(
+                graph_version=after, replayed=False, purged=payload["purged"]
+            )
         except GraphMutationError:
             raise
         except Exception as exc:
@@ -1262,17 +1439,59 @@ async def _delete_transcripts(user_id: int) -> int:
         return 0
 
 
-def _request_fingerprint(action: str, predicate: str | None, node: GraphNode | None) -> str | None:
+def _projected_edge(document: GraphDocument, edge_id: str | None, *, settings) -> dict | None:
+    """원장에 보관할 **와이어 항목** — I-33 재전송이 최초 응답을 그대로 돌려주게 한다 (#360).
+
+    삭제(`edge_id_after is None`)는 실을 것이 없다. 지연 임포트인 이유는 `graph_projection` 이
+    `graph_merge` 를 거쳐 이 모듈로 돌아오기 때문이다(같은 파일의 다른 지연 임포트와 같은 근거).
+    """
+    if edge_id is None:
+        return None
+    from app.agents.profile.graph_projection import project_edge
+
+    view = project_edge(document, edge_id, settings=settings)
+    return view.model_dump(by_alias=True) if view is not None else None
+
+
+def _find_edge(document: GraphDocument | None, edge_id: str) -> GraphEdge | None:
+    """변경의 **대상**이 될 수 있는 edge — 잠금 아래에서 읽은 문서에서만 찾는다 (#360).
+
+    **조회에 안 나오는 edge 는 "없는 것"이다**(`is_projected`, PR #562 리뷰) — 대상 경계와 노출
+    경계가 다르면 사용자가 볼 수 없는 것을 고치거나 지울 수 있게 되고, `200`/`404` 차이가 그
+    존재를 알려주는 오라클이 된다.
+
+    이 필터는 **변경 대상 조회에만** 걸린다. `graph_mutations` 의 병합 대상 조회
+    (`apply_correction` 의 `target = _find(document, new_id)`)는 숨겨진 edge 도 봐야 한다 —
+    거기서 못 찾으면 관측 근거를 잃고 `merged` 가 거짓이 된다.
+    """
+    if document is None:
+        return None
+    return next(
+        (edge for edge in document.edges if edge.edge_id == edge_id and is_projected(edge)), None
+    )
+
+
+def _request_fingerprint(
+    action: str, predicate: str | None, spec: "ObjectSpec | None"
+) -> str | None:
     """요청 본문의 지문 — 같은 파생 키·다른 본문을 가르는 재료.
 
     `edgeDelete` 는 본문이 없어(경로에 신원과 대상이 전부 있다) `None` 이다 — 같은 키면 같은
-    요청이 맞다. `edgeUpdate` 만 `(predicate, nodeId)` 로 지문을 만든다. 라벨이 아니라
-    `node_id` 를 쓰는 것은 그것이 이미 정규화된 값이라 표기 변형이 다른 지문을 만들지 않기
-    때문이다.
+    요청이 맞다.
+
+    **[#360] `edgeUpdate` 는 요청 *원문*에서 만든다.** 확정된 노드로 만들면 두 가지가 깨진다:
+    (a) 대상 해석이 락 안으로 들어가 지문 계산이 replay 판정보다 늦어지고, (b) **부분 변경**은
+    생략한 쪽을 문서에서 채우므로 같은 요청이 문서 상태에 따라 다른 지문을 얻는다. 라벨은
+    `normalize_label` 로 정규화해 표기 변형이 다른 지문을 만들지 않게 한다(`node_id` 를 쓰던
+    구 구현이 노리던 성질을 원문 단계에서 확보한다).
     """
-    if action != "edgeUpdate" or predicate is None or node is None:
+    if action != "edgeUpdate":
         return None
-    return identifier_fingerprint(f"{predicate}|{node.node_id}")
+    spec = spec or ObjectSpec()
+    label = normalize_label(spec.label) if spec.label else ""
+    return identifier_fingerprint(
+        f"{predicate or ''}|{spec.node_id or ''}|{spec.node_type or ''}|{label}"
+    )
 
 
 async def _replay_if_completed(
@@ -1295,6 +1514,11 @@ async def _replay_if_completed(
         edge_id=payload.get("edgeId"),
         merged=bool(payload.get("merged")),
         suppressed=bool(payload.get("suppressed")),
+        # 재전송은 **최초 응답 본문 그대로**다(REQ-PGRAPH-043). 이 시점에는 이미 다 지워져
+        # 있어 다시 세면 전부 0 이므로, 원장이 든 값을 그대로 돌려줘야 한다. `edge` 도 같은
+        # 이유다 — 그 사이 삭제됐으면 현재 문서로는 재구성할 수 없다.
+        purged=payload.get("purged"),
+        edge=payload.get("edge"),
     )
 
 
@@ -1309,22 +1533,50 @@ async def _apply_claimed(
     request_id: str,
     now: str,
     predicate: str | None,
-    node: GraphNode | None,
+    object_spec: ObjectSpec | None,
     key: str,
     token: str,
     settings,
     resume_payload: dict | None = None,
 ) -> GraphMutationResult:
-    """claim 을 쥔 상태의 본체 — 실패 경로마다 반드시 claim 을 푼다."""
+    """claim 을 쥔 상태의 본체 — 실패 경로마다 반드시 claim 을 푼다.
+
+    **[#360] 대상 해석과 `editable` 판정이 여기 있는 이유**는 둘 다 **잠금 아래에서 읽은 문서**를
+    봐야 하기 때문이다. 순서는 `404`(위에서 원장과 함께) → `editable`(409) → `object` 해석(400)
+    → `revision` CAS 다. CAS 앞에 두는 것은 **재조회로 결과가 바뀌지 않는 사실을 먼저 알리기**
+    위해서다(api-spec §3.9.1 v0.32.7).
+    """
     if action == "edgeDelete":
         mutate = lambda doc: apply_suppression(doc, edge_id=edge_id, now=now)  # noqa: E731
     else:
-        if predicate is None or node is None:
-            await release(key, token)
-            raise ValueError("edgeUpdate requires predicate and node")
-        mutate = lambda doc: apply_correction(  # noqa: E731
-            doc, edge_id=edge_id, predicate=predicate, node=node, now=now, settings=settings
-        )
+        current = _find_edge(document, edge_id)
+        if current is None:
+            # 문서에 대상이 없는데 여기까지 왔다 = **원장에 흔적이 있다**(404 판정이 원장과 함께
+            # 이뤄졌다). 즉 이미 적용된 재개다 — 해석할 대상이 없으니 no-op 변형을 쓰고 아래
+            # resume 분기가 남은 단계만 마저 한다.
+            mutate = lambda doc: (doc, MutationOutcome(changed=False))  # noqa: E731
+        else:
+            if current.predicate == "purchased":
+                # 구매 파생은 수정 불가 — 와이어 `editable: false` 와 같은 술어다(api-spec §3.9.1).
+                await release(key, token)
+                raise GraphEdgeNotEditable(edge_id)
+            node = await resolve_user_object(
+                object_spec, document=document, current=current, settings=settings, now=now
+            )
+            if node is None:
+                # 어휘 밖 라벨·형식 불일치·그래프 밖 `nodeId` — 추측해서 붙이지 않는다.
+                await release(key, token)
+                raise GraphObjectUnknown(edge_id)
+            # 생략한 쪽은 대상 edge 의 현재 값으로 채운다(api-spec §3.9.1).
+            effective_predicate = predicate or current.predicate
+            mutate = lambda doc: apply_correction(  # noqa: E731
+                doc,
+                edge_id=edge_id,
+                predicate=effective_predicate,
+                node=node,
+                now=now,
+                settings=settings,
+            )
 
     if resume_payload is not None:
         # **크래시 재개** (§7.2, PR #540 리뷰). 이전 시도가 의도를 적어 뒀다는 뜻이다.
@@ -1369,6 +1621,11 @@ async def _apply_claimed(
         "edgeId": outcome.edge_id_after,
         "merged": outcome.merged,
         "suppressed": action == "edgeDelete",
+        # **투영된 edge 를 원장에 보관한다** (#360). 재전송은 "최초 응답 본문을 그대로"인데
+        # (REQ-PGRAPH-043), 그 사이 이 edge 가 삭제됐으면 **현재 문서로는 재구성할 수 없다** —
+        # 수정 성공 → 삭제 → 원래 `If-Match` 로 온 네트워크 재시도(원장 TTL 24h 내)가 그 창이다.
+        # 지연 임포트로 순환을 끊는다(`graph_projection` → `graph_merge` → … → 이 모듈).
+        "edge": _projected_edge(updated, outcome.edge_id_after, settings=settings),
     }
     # **문서를 쓰기 전에 의도를 남긴다** (§7.2 저널 선행 기록). 문서 쓰기와 완료 표시는 서로
     # 다른 저장소라 한 트랜잭션에 못 묶이므로, 그 사이에 끊기면 재개가 "무엇을 만들려 했는지"를
@@ -1403,6 +1660,7 @@ async def _apply_claimed(
         edge_id=outcome.edge_id_after,
         merged=outcome.merged,
         suppressed=action == "edgeDelete",
+        edge=payload["edge"],
     )
 
 
@@ -1413,7 +1671,11 @@ def _result_from(
     return GraphMutationResult(
         graph_version=payload.get("graphVersion", ""),
         replayed=True,
-        edge_id=payload.get("edgeId", fallback_edge_id),
+        # `.get(key, default)` 이 아니라 `or` 인 이유: 삭제 성공의 `edgeId` 는 **키가 있고 값이
+        # None** 이라 기본값이 발동하지 않는다(`apply_suppression` 이 `edge_id_after=None`).
+        edge_id=payload.get("edgeId") or fallback_edge_id,
         merged=bool(payload.get("merged")),
         suppressed=bool(payload.get("suppressed", action == "edgeDelete")),
+        purged=payload.get("purged"),
+        edge=payload.get("edge"),
     )

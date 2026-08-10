@@ -27,3 +27,9 @@ CREATE INDEX IF NOT EXISTS idx_conversation_turns_sequence
 -- session(접속) 내 thread(방)별 턴 조회용. 기존 볼륨의 과거 행은 NULL을 허용한다.
 CREATE INDEX IF NOT EXISTS idx_conversation_turns_thread
     ON conversation_turns (conversation_id, thread_id);
+
+-- 보존 스윕(이슈 #321) 의 `WHERE created_at < ...` 조회용 — 신규 볼륨도 기존 볼륨과 같은
+-- 인덱스를 갖도록 app/core/conversation.py::PgConversationStore.setup() 의 멱등 마이그레이션과
+-- 짝을 맞춘다.
+CREATE INDEX IF NOT EXISTS idx_conversation_turns_created_at
+    ON conversation_turns (created_at);

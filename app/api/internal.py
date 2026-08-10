@@ -58,9 +58,11 @@ async def home_recommendations(
     # requestId 는 errors.request_context_middleware 가 부여한 값 — §2.4 오류 봉투·응답 헤더
     # (X-Request-Id)와 상관되어 Spring 쪽 실패 로그와 트레이스를 맞댈 수 있다(chat.py 와 동일 관례,
     # PR #470 리뷰).
+    # [이슈 #140] provenance `requestId` 와 같은 값을 재사용한다 — 두 번 만들지 않는다.
+    request_id = get_request_id(http_request)
     trace = start_request_trace_safely(
         name="home_recommendation",
-        request_id=get_request_id(http_request),
+        request_id=request_id,
         conversation_id=str(request.member_id),
         thread_id="",
         lane="home",
@@ -75,7 +77,7 @@ async def home_recommendations(
     )
     with bind_request_trace(trace):
         try:
-            response = await rank_home(request)
+            response = await rank_home(request, request_id=request_id)
         except HTTPException as exc:
             code = (
                 exc.detail.get("code", "INTERNAL") if isinstance(exc.detail, dict) else "INTERNAL"
