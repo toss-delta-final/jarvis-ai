@@ -99,7 +99,10 @@ def derived_key(action: str, user_id: int | str, scope_id: str, if_match: str) -
     `{userId}` 는 **원문**이다 — 지문화하면 pepper 회전 시 TTL 내 모든 원장 히트가 증발해
     재전송이 중복 부작용을 낸다. raw userId 금지는 감사 레코드(`actor_fp`)에만 걸린 조항이다.
 
-    `{scopeId}`: edge 2종 = `edgeId`, `graphReset` = `"ALL"`, `personalizationToggle` = 빈 값.
+    `{scopeId}`: edge 2종 = `edgeId`, `graphReset` = `"ALL"`,
+    `personalizationToggle` = **대상 상태**(`"true"`/`"false"`, #360 — 구 계약은 빈 값이었다).
+    토글은 그래프 문서를 안 바꿔 `graphVersion` 이 고정이라, scope 를 비우면 끄기와 켜기가 같은
+    키가 되어 **재개가 중지 응답을 재생**한다(원장 TTL 동안 프라이버시 스위치가 잠긴다).
     `If-Match` 는 `"g42"` 와 `g42` 가 동등하므로(api-spec §3.9) 따옴표를 벗겨 정규화한다 —
     안 그러면 같은 선행조건이 두 개의 키가 되어 멱등이 성립하지 않는다.
     """
@@ -1067,7 +1070,14 @@ async def set_personalization(
     if if_match is not None and normalize_if_match(if_match) != current:
         raise GraphVersionConflict(current)
 
-    key = derived_key("personalizationToggle", user_id, "", if_match) if if_match else None
+    # **파생 키에 대상 상태를 싣는다** (#360). 이 경로는 그래프 문서를 건드리지 않아
+    # `graphVersion` 이 변하지 않으므로, 끄기와 켜기가 **정상적으로 같은 `If-Match`** 를
+    # 지참한다. scope 가 비면 두 요청이 같은 키가 되어 **켜기가 끄기 응답을 재생**하고,
+    # 원장 TTL(`graph_idempotency_ttl_h`, 기본 24h) 동안 프라이버시 스위치가 잠긴다.
+    # 본문 지문(`request_fp`)으로 막는 것은 틀린 해법이다 — `LedgerRequestMismatch` → `409` 가
+    # 되어 정본 I-37 이 금지한 "충돌로 끄기가 실패하는 상황"을 그대로 만든다.
+    scope = "true" if enabled else "false"
+    key = derived_key("personalizationToggle", user_id, scope, if_match) if if_match else None
     token = None
     try:
         if key is not None:
@@ -1075,7 +1085,7 @@ async def set_personalization(
             if replayed is not None:
                 return replayed
             token = await claim(
-                key, user_id=user_id, scope_id=None, lease_s=settings.session_end_claim_ttl_s
+                key, user_id=user_id, scope_id=scope, lease_s=settings.session_end_claim_ttl_s
             )
             if token is None:
                 raise GraphVersionConflict(current)
