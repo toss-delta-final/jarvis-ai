@@ -47,6 +47,12 @@ CONDITION_ONLY_GROUP = "condition_only"
 # wishlist_view)에서 새 의도가 남의 것을 훔치지 않는지를 재는 그룹. 양성 3발화 + 음성 대조
 # 3발화로 구성되며 음성 대조의 기대 intent 는 `wishlist_view` 가 **아닌** 값이다.
 WISHLIST_VIEW_GROUP = "wishlist_view"
+# [#443] 상품군을 명시한 첫 턴(무프라이어)에서 decompose 가 `categoryQueries` leg 을 실제로
+# 채우는지 재는 그룹 — `CONDITION_ONLY_GROUP`(#344, 조건만 말하고 상품군은 없는 턴이 leg 을
+# 비우는지)과 **정반대 방향**이다. 허용 컨텍스트가 `none` 하나뿐인 이유도 같다: 이 축의 정의가
+# "무프라이어 컨텍스트에서 상품군을 명시한 첫 턴"이라 다른 컨텍스트(직전 추천·장바구니 등)가
+# 섞이면 "첫 턴"이라는 전제가 깨진다.
+NAMED_CATEGORY_GROUP = "named_category"
 GROUPS = frozenset(
     {
         "cart_control",
@@ -59,6 +65,7 @@ GROUPS = frozenset(
         SCREEN_GROUP,
         CONDITION_ONLY_GROUP,
         WISHLIST_VIEW_GROUP,
+        NAMED_CATEGORY_GROUP,
     }
 )
 # [#313] group → 허용 컨텍스트 매핑. "이 축이 무엇을 재는가"의 선언 그 자체다 — 여기 한 줄이
@@ -82,6 +89,9 @@ GROUP_ALLOWED_CONTEXTS: dict[str, frozenset[str]] = {
     # [#386] 찜 목록 조회는 지칭 해소 대상이 없어 컨텍스트가 라우팅을 가르지 않는다 —
     # `none` 하나로 둔다(`condition_only` 와 같은 이유).
     WISHLIST_VIEW_GROUP: frozenset({"none"}),
+    # [#443] 이 축의 정의가 "무프라이어(none) 컨텍스트에서 상품군을 명시한 첫 턴"이므로
+    # 허용 컨텍스트는 `none` 하나뿐이다(`condition_only` 와 같은 이유 — [#344 라운드 3]).
+    NAMED_CATEGORY_GROUP: frozenset({"none"}),
 }
 INTENTS = (
     "recommend",
@@ -146,12 +156,17 @@ CONDITION_ONLY_AXIS_IDS = frozenset({"conditionOnlyNoCategoryQuery"})
 WISHLIST_VIEW_AXIS_IDS = frozenset(
     {"wishlistViewPositive", "wishlistViewNoSteal", "wishlistViewRouting"}
 )
+# [#443] 상품군 명시 첫 턴 축 — 커밋된 기준선 어디에도 **존재하지 않는다.** 반대 방향 축
+# `conditionOnlyNoCategoryQuery`(#344)와 정의가 정확히 거울이다: 한쪽은 "leg 0개가 정답"
+# (조건만 말한 턴), 이쪽은 "leg 1개 이상이 정답"(상품군을 명시한 턴).
+NAMED_CATEGORY_AXIS_IDS = frozenset({"namedCategoryHasLeg"})
 AXIS_IDS = (
     LEGACY_AXIS_IDS
     | CATEGORY_ACTION_AXIS_IDS
     | SCREEN_AXIS_IDS
     | CONDITION_ONLY_AXIS_IDS
     | WISHLIST_VIEW_AXIS_IDS
+    | NAMED_CATEGORY_AXIS_IDS
 )
 # [#300, F-2] productIdRule → 그 규칙이 재는 컴포넌트 축. `screenResolution`(합계 축)은 모든
 # screen 발화가 공통으로 선언해야 하므로 이 맵에는 넣지 않는다 —
@@ -588,6 +603,37 @@ class Utterance(CamelModel):
                 f"{self.utterance_id}: {sorted(declared & WISHLIST_VIEW_AXIS_IDS)} 는 "
                 f"group='{WISHLIST_VIEW_GROUP}' 발화만 선언할 수 있습니다 "
                 "— 다른 그룹이 섞이면 신규 축의 분모가 정의(찜 조회 6발화)와 어긋납니다"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _named_category_group_is_isolated(self) -> "Utterance":
+        """[#443] 상품군 명시 첫 턴 축도 기존 축과 표본을 섞지 않는다 — 앞의 네 검증자와 같은
+        이유(`_condition_only_group_is_isolated` 와 특히 같은 모양 — 반대 방향 축이다).
+        """
+        declared = set(self.axes)
+        if self.group == NAMED_CATEGORY_GROUP:
+            others = sorted(
+                declared
+                & (
+                    LEGACY_AXIS_IDS
+                    | CATEGORY_ACTION_AXIS_IDS
+                    | SCREEN_AXIS_IDS
+                    | CONDITION_ONLY_AXIS_IDS
+                    | WISHLIST_VIEW_AXIS_IDS
+                )
+            )
+            if others:
+                raise ValueError(
+                    f"{self.utterance_id}: 상품군 명시 발화는 기존 축 {others} 를 선언할 수 "
+                    "없습니다 — 새 셀이 기존 축의 분모를 늘리면 커밋된 기준선과 그 축을 비교할 "
+                    "수 없게 됩니다"
+                )
+        elif declared & NAMED_CATEGORY_AXIS_IDS:
+            raise ValueError(
+                f"{self.utterance_id}: {sorted(declared & NAMED_CATEGORY_AXIS_IDS)} 는 "
+                f"group='{NAMED_CATEGORY_GROUP}' 발화만 선언할 수 있습니다 "
+                "— 다른 그룹이 섞이면 신규 축의 분모가 정의(상품군 명시 6발화)와 어긋납니다"
             )
         return self
 

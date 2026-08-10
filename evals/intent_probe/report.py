@@ -174,6 +174,10 @@ def render_report(results: dict[str, Any]) -> str:
         f"{results['diagnostics']['screenResolverOverrideCount']}",
         f"- 화면 지시어: 두 목록 밖 productId 확정(위험한 실패, 0 이어야 함): "
         f"{results['diagnostics']['screenOutOfListConfirmCount']}",
+        f"- 상품군 명시 첫 턴: leg 0개(공백) 표본 수: "
+        f"{results['diagnostics']['namedCategoryEmptyLegsCount']}",
+        f"- 상품군 명시 첫 턴: case=3 판정 표본 수: "
+        f"{results['diagnostics']['namedCategoryCase3Count']}",
         "",
         "## 셀별 intent 분포",
         "",
