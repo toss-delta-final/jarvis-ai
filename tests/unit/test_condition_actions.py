@@ -845,6 +845,71 @@ async def test_restored_category_removal_logs_no_op_false_and_restoration_flag(
     assert _LEG_C not in serialized
 
 
+async def test_unmatched_category_value_does_not_trigger_multi_leg_fanout(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """[이슈 #434 라운드4, PR #566 Claude 리뷰] 저장 집합이 다건(A·B·C)이어도 지목한 value 가
+    **어느 것과도 매칭되지 않으면** 관대 무시(no-op)여야 한다 — 대표 1개만 검색하던 일반 carry
+    턴이 저장 집합 전체로 멀티 leg fan-out 하면 안 된다(이 PR 이 명시적으로 기각한 "일반 승계의
+    멀티 leg 화"가 미매칭 경로로 새어 들어오는 결함).
+
+    옛 게이트(`if remaining:`)는 "남은 게 있는가"만 봐서, 교집합이 전혀 없어
+    `remaining == stored_categories`(변화 0)여도 비어 있지 않다는 이유로 통과했다."""
+    identity = _member()
+    await _collect(
+        _run_buyer_turn(
+            BuyerChatRequest.model_validate(_buyer_payload(message="유럽여행 준비물 추천")),
+            identity,
+            llm=FakeLLM(),
+            search=_RecordingSearch(),
+            push_fn=_push_ok,
+            map_categories=_three_leg_mapper(),
+        )
+    )
+    remove_request = BuyerChatRequest.model_validate(
+        {
+            "sessionId": "s1",
+            "threadId": "t1",
+            "conditionActions": [{"op": "remove", "field": "category", "value": "무관한 값"}],
+        }
+    )
+    search = _RecordingSearch()
+    with caplog.at_level(logging.INFO, logger="app.agents.buyer.graph"):
+        events = await _collect(
+            _run_buyer_turn(
+                remove_request,
+                identity,
+                llm=_refine_llm(),
+                search=search,
+                push_fn=_push_ok,
+            )
+        )
+
+    # 1. 다음 검색이 단일 leg(대표 카테고리 1개)다.
+    assert [filters.category for filters in search.filters] == [_LEG_A]
+    # 2. conditions 카테고리 칩이 1개다(여러 개로 재구성되지 않는다).
+    chips = next(event for event in events if event["type"] == "conditions")["data"]["chips"]
+    cat_chips = [chip for chip in chips if chip["field"] == "category"]
+    assert [chip["value"] for chip in cat_chips] == [_LEG_A]
+    # 3. 이 턴은 저장 집합을 [A, B, C] → 뭔가 지워진 것처럼 훼손하지 않는다 — 값 지정 제거
+    # 블록 자체는 아무것도 다시 쓰지 않는다(길이 비교 게이트가 조기 반환한다, 이번 수정의
+    # 핵심). 다만 이 턴은 검색을 대표 1개(A)로만 했으므로, **라운드2의 별개·불변 메커니즘**
+    # ("매 턴 무조건 덮어쓴다" — `_prepare_recommendation`, 이번 수정 범위 밖)이 턴 끝에
+    # 저장 집합을 "이번 턴이 실제로 검색한 것"(=A 하나)으로 다시 정규화한다. 이것은 결함이
+    # 아니라 그 메커니즘이 원래 하는 일이다(오래된 값이 부활하지 않게) — B·C 는 사라진 게
+    # 아니라 다음에 그 카테고리를 다시 fan-out 해야 값 지정 제거 대상으로 복귀한다.
+    thread_key = await _thread_key(remove_request, identity)
+    stored = await (await get_thread_store()).get_chip_categories(thread_key)
+    assert stored == [_LEG_A]
+    # 4. 로그 — 실제 결과 기준(예측식 아님): 복원 안 됨, no_op, 미매칭 1건.
+    records = _graph_records(caplog, "condition_actions_applied")
+    assert len(records) == 1
+    extra = records[0].__dict__
+    assert extra["category_legs_restored"] is False
+    assert extra["no_op"] is True
+    assert extra["unmatched_values"] == 1
+
+
 async def test_value_scoped_category_removal_to_empty_clears_axis() -> None:
     """마지막 값까지 제거 → `filters.category is None`(축 제거, 종전 degrade 동작 불변)."""
     identity = _member()

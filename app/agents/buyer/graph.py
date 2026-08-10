@@ -861,14 +861,29 @@ async def run_buyer_turn(
                     if isinstance(action.value, str)
                 }
                 remaining = [c for c in stored_categories if _strip_unsafe(c) not in targets]
-                prior = prior.model_copy(update={"category": remaining[0] if remaining else None})
-                # 즉시 갱신 — 다음 턴(추천 아닌 intent 로 라우팅돼도)이 이미 뺀 값을 다시 보지
-                # 않게 한다(§3.1, 위 filters 즉시 영속과 같은 이유).
-                await thread_store.put_chip_categories(thread_key, remaining)
-                if remaining:
-                    restored_category_legs = [(c, None) for c in remaining][
-                        : settings.category_fanout_max
-                    ]
+                # [이슈 #434 라운드4, PR #566 Claude 리뷰] 게이트는 **"남은 게 있는가"가 아니라
+                # "실제로 뭔가 지워졌는가"** 여야 한다 — `targets` 가 `stored_categories` 와
+                # 교집합이 전혀 없으면(FE 가 이미 사라진 칩 값·오타를 보낸 경우) `remaining ==
+                # stored_categories`(변화 0)인데도 비어 있지 않아 옛 게이트(`if remaining:`)가
+                # 통과했다. 그러면 원래 대표 1개만 검색했을 일반 carry 턴이 저장 집합 전체로
+                # 멀티 leg fan-out 을 했다 — 이 PR 이 명시적으로 기각한 "일반 승계의 멀티
+                # leg 화"가 미매칭 경로로 새어 들어온 것과 같다. 길이 비교로 충분하다(리스트
+                # 필터링 결과라 원소가 그대로 보존되므로 길이가 같으면 내용도 같다).
+                if len(remaining) != len(stored_categories):
+                    prior = prior.model_copy(
+                        update={"category": remaining[0] if remaining else None}
+                    )
+                    # 즉시 갱신 — 다음 턴(추천 아닌 intent 로 라우팅돼도)이 이미 뺀 값을 다시
+                    # 보지 않게 한다(§3.1, 위 filters 즉시 영속과 같은 이유).
+                    await thread_store.put_chip_categories(thread_key, remaining)
+                    if remaining:
+                        restored_category_legs = [(c, None) for c in remaining][
+                            : settings.category_fanout_max
+                        ]
+                # else: 아무것도 안 지워졌다 — prior·저장 집합을 그대로 둔다(같은 값을 다시
+                # 쓰는 pg 왕복만 아낀다, 동작은 변하지 않는다). restored_category_legs 는 None
+                # 그대로라 아래 로그·`_prepare_recommendation` 승계 분기가 오늘과 동일하게
+                # 단일 leg 강등으로 처리한다.
 
         cleared_fields = [
             field_name
