@@ -170,6 +170,39 @@ _BARE_NUMBER = re.compile(
 )
 
 
+def mentions_screen_reference(message: str, settings) -> bool:
+    """발화가 화면을 가리키려 **시도**했는지 — 그 시도가 실제로 확정 가능한지와는 무관하다
+    (이슈 #440, 라운드 8 리뷰 F21 신설(`mentions_screen_position`) → 라운드 11 리뷰 F29 로
+    확장·개명).
+
+    `resolve_screen_reference` 가 이미 쓰는 네 정규식(`_COORD`·`_COLUMN_FIRST`·`_ROW_ONLY`·
+    `_ORDINAL`) **또는** `settings.screen_deictic_markers`(`"이거"`류 지시대명사, 그 해소기가
+    화면 참조로 처리하는 것과 같은 목록 — 새 마커 목록을 만들지 않는다) 중 하나라도 걸리면
+    발화가 화면을 가리키려 한 것이다(확정에 성공했는지, `columns` 가 없어 거부됐는지, 범위를
+    벗어났는지는 이 함수가 볼 일이 아니다 — 그건 `resolve_screen_reference` 의 반환값이 답한다).
+
+    **[라운드 11 리뷰 F29] 왜 숫자 위치만으로는 부족한가** — 옛 `mentions_screen_position`
+    은 좌표·순번 정규식만 봐서 `"이거 찜에서 빼줘"`(지시대명사, 화면을 명시적으로 가리킴)를
+    "위치 미언급"으로 오독했다. 화면 1건이 501 로 확정됐고 그게 찜 목록에 없어도, 위치
+    미언급으로 오독되면 규칙 3(목록 1건 자동)이 그 확정과 무관한 다른 항목을 지웠다(재현,
+    파괴적). `resolve_screen_reference` 자체가 지시대명사를 화면 참조로 처리하는데
+    (`deictic_markers` 인자), 이 헬퍼가 그 사실을 몰랐던 게 원인이다.
+
+    **왜 필요한가**: `buyer/graph.py` 의 `screen_refused`(#440 라운드 4 리뷰 F12, 라운드 6
+    리뷰 F18)는 원래 "화면이 있고(pending 이거나 해소기가 거부했다)"라는 **대리값**을 썼는데,
+    발화가 화면을 **가리키지도 않은** 턴까지 거부로 오인해 이 이슈의 핵심 양성("찜한 거
+    빼줘")을 되물음으로 퇴화시켰다(라운드 8 리뷰 F21 재현). 필요한 것은 "시도했는가"와 "그
+    시도가 확정됐는가"를 각각 직접 보는 것이지, 화면 존재·pending 여부라는 대리 신호가 아니다.
+    """
+    return bool(
+        _COORD.search(message)
+        or _COLUMN_FIRST.search(message)
+        or _ROW_ONLY.search(message)
+        or _ORDINAL.search(message)
+        or any(marker and marker in message for marker in settings.screen_deictic_markers)
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class ScreenResolution:
     """코드가 확정한 담기 대상. `product_id=None` 은 **되물음 강제**다(임의 확정 금지)."""

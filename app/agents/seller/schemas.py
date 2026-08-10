@@ -296,6 +296,20 @@ class DraftChange(BaseModel):
     field: ProductField = Field(description="변경 대상 필드 — update_product 인자와 동일 8종")
     before: str = Field(description="변경 전 값 — list_my_products 조회값 그대로, create 는 ''")
     after: str = Field(description="변경 후 값 — 수치도 문자열")
+    # [#524] 옵션별 재고 — stock_quantity 변경에만 쓰는 선택 필드(그 외 필드는 null).
+    # LLM 은 option_name 만 채운다(조회 목록의 옵션명 그대로) — optionId 는 코드가
+    # 실행 시점에 I-9 stocks 로 해소한다(이름은 표시·의도, id 는 실행 — 계약값은 코드).
+    option_name: str | None = Field(
+        default=None,
+        description=(
+            "재고 변경 대상 옵션명 — 조회 목록의 옵션명 그대로(줄여 쓰지 않는다). "
+            "옵션 없는 상품·재고 외 필드는 null"
+        ),
+    )
+    option_id: int | None = Field(
+        default=None,
+        description="코드 전용 — LLM 은 채우지 않는다(실행 시점에 I-9 로 해소)",
+    )
 
 
 class DraftProposal(BaseModel):
@@ -322,7 +336,7 @@ class DraftProposal(BaseModel):
     )
     changes: list[DraftChange] = Field(
         default_factory=list,
-        description="변경 목록 — delete 는 status ON_SALE→HIDDEN 1건으로 표현(soft delete 가시화)",
+        description="변경 목록 — delete 는 status <조회값>→DELETED 1건으로 표현(soft delete 가시화). DELETED 는 HIDDEN(숨김)과 다른 상태이며 되돌릴 수 없다",
     )
     summary: str = Field(description="diff 카드 보조 한 줄 요약(예: '가격 12,900원으로 인하')")
     clarification: str = Field(

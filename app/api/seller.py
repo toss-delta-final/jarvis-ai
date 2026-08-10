@@ -21,6 +21,8 @@ MVP 범위(api-spec v0.14.0 §3.2, 결정 20 개정): 통계 Q&A + 상세 수정
   ①.5 추천 적용 선판정(parse_apply_message "N번 적용해줘", LLM 0회) →
      _apply_stream: 이력 recommendations[N-1] → draft 변환(4-3 §6.3).
   ② scope 선차단(check_scope, LLM 0회).
+  ②.5 차트 요청 선판정(wants_chart_keyword, LLM 0회, #531) → _analysis_stream 직행:
+     차트 좌표는 analysis 레인의 report 이벤트에만 실린다(경로 B).
   ③ supervisor 라우팅(route_question — 장애 시 general 폴백은 함수 내부).
 분기: analysis → run_analysis_pipeline(emit 큐 중계, 예외 2경우만 사과+error) /
 product → draft 검증(validate_draft)·checkpoint 저장(start_draft)·draft emit /
@@ -44,7 +46,7 @@ from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessageChunk, HumanMessage, SystemMessage
 from pydantic.alias_generators import to_camel
 
-from app.agents.seller import category_catalog, draft_session
+from app.agents.seller import category_catalog, category_resolver, draft_session
 from app.agents.seller import period_confirm as seller_period_confirm
 from app.agents.seller import thread as seller_thread
 from app.agents.seller.checkpoint import get_checkpointer
@@ -73,6 +75,7 @@ from app.agents.seller.pipeline import (
     format_general_input,
     parse_apply_message,
     split_report_summary,
+    wants_chart_keyword,
 )
 from app.agents.seller.prompts import PENDING_DRAFT_GATE_PROMPT
 from app.agents.seller.schemas import DraftChange, DraftProposal, PendingDraftAction
@@ -233,7 +236,9 @@ def _llm_unavailable(
 #   · done(panel)  : 종료 시 패널 조치를 확정한다 — replace(패널 교체)/keep(유지)/refresh(재조회).
 # analysis 진행 상태는 최종 답변이 아니므로 token 이 아니라 progress 로 분리한다.
 
-# 레인(meta.lane) — supervisor 3분기 + 코드 선판정 3종.
+# 레인(meta.lane) — supervisor 3분기 + 코드 선판정 4종(confirm·apply·scope·chart).
+# [#531] chart 선판정(②.5)은 새 lane 을 만들지 않고 analysis 를 재사용한다 —
+# 좌표를 싣는 report 이벤트가 그 레인의 것이라 목적지가 같다.
 Lane = Literal["analysis", "product", "general", "confirm", "apply", "refused"]
 # 패널 조치(done.panel) — 우측 패널을 어떻게 할지 FE 에 지시.
 Panel = Literal["replace", "keep", "refresh"]
@@ -671,6 +676,55 @@ def _category_candidates(
     return list(merged.values())[:k]
 
 
+async def _ensure_draft_category(
+    proposal: DraftProposal,
+    *,
+    message: str,
+    analysis: ProductImageAnalysis | None,
+    pending: draft_session.PendingCreate | None,
+) -> DraftProposal:
+    """[#506 후속] create 초안의 카테고리를 코드가 책임지고 채운다.
+
+    BE `categoryId` 는 필수라 카테고리 없는 create 초안은 승인해도 등록되지 않는다.
+    에이전트가 못 골랐거나(후보가 애매) 목록 밖 값을 적었으면 여기서 세 단계로 복구한다:
+
+      ① 수정 턴이면 **기존 초안의 카테고리**를 되살린다("가격만 바꿔줘" 턴에서
+         확정해 둔 카테고리가 조용히 사라지는 사고를 막는다).
+      ② 넓힌 후보로 LLM 택1(category_resolver) — 판매자가 대충 말한 상품군을 실제
+         카테고리 id 로 확정하는 지점이다.
+      ③ 그래도 못 고르면 그대로 둔다 — validate_draft 가 카테고리를 되묻는다.
+
+    잘못 배정하느니 되묻는다: 카테고리는 등록 후 변경할 수 없다(preview 경고와 동일,
+    BE I-11 에는 category 필드 자체가 없다).
+    """
+    if proposal.op != "create":
+        return proposal
+    current = next((c.after for c in proposal.changes if c.field == "category"), None)
+    if current is not None and category_catalog.get(current) is not None:
+        return proposal
+
+    resolved: str | None = None
+    if pending is not None and (kept := pending.changes.get("category")):
+        if category_catalog.get(kept) is not None:
+            resolved = kept
+    if resolved is None:
+        hint = analysis.category_hint if analysis is not None else None
+        entry = await category_resolver.resolve_category(message, hint=hint)
+        resolved = entry.id if entry is not None else None
+    if resolved is None:
+        # 목록 밖 값이 남아 있으면 걷어낸다 — validate_draft 의 "누락" 안내가
+        # "잘못된 값" 안내보다 판매자에게 할 일을 정확히 알려준다.
+        if current is not None:
+            return proposal.model_copy(
+                update={"changes": [c for c in proposal.changes if c.field != "category"]}
+            )
+        return proposal
+
+    changes = [c for c in proposal.changes if c.field != "category"]
+    changes.append(DraftChange(field="category", before="", after=resolved))
+    return proposal.model_copy(update={"changes": changes})
+
+
 def _product_agent_input(
     request: SellerChatRequest,
     *,
@@ -818,6 +872,13 @@ async def _product_stream(
         yield _done("keep")
         return
 
+    # [#506 후속] 카테고리 복구 — 선검증 **전**에 돈다. validate_draft 는 카테고리
+    # 누락을 되묻기로 바꾸므로, 복구 기회를 그 앞에 두지 않으면 판매자가 이미 충분히
+    # 말한 상품군인데도 한 번 더 묻게 된다(LLM 호출은 실패한 턴에만 1회 추가).
+    proposal = await _ensure_draft_category(
+        proposal, message=request.message, analysis=analysis, pending=pending
+    )
+
     # 코드 선검증(4-2) — 실행 불가능한 draft 는 FE 에 보여주기 전에 되묻는다.
     record, problem = validate_draft(
         proposal, seller_id=context.seller_id, brand_id=context.brand_id
@@ -942,6 +1003,10 @@ def _masked_preview(preview: dict) -> dict:
         "originalPriceText",
         "stockText",
         "categoryPath",
+        # [#541] 카테고리 2칸 표기도 같은 마스킹을 탄다 — 표시 키를 늘릴 때 이 목록을
+        # 같이 늘리지 않으면 그 키만 마스킹을 비껴간다(#524 lesson "입구를 전부 센다").
+        "categoryMajor",
+        "categorySubPath",
         "summary",
         "description",
     ):
@@ -990,6 +1055,13 @@ def _draft_event(record: DraftRecord, *, preview: dict | None = None) -> str:
             "changes": [
                 {
                     "field": to_camel(c.field),
+                    # [#524] 옵션별 재고 change 에만 실리는 추가 전용 키 — FE 는 모르는
+                    # 키를 무시한다(§3.2 확장 규칙). 값은 표시용 옵션명이다.
+                    **(
+                        {"optionName": mask_output(_strip_unsafe(c.option_name))}
+                        if c.option_name
+                        else {}
+                    ),
                     "before": _wire_value(c.field, c.before),
                     "after": _wire_value(c.field, c.after),
                 }
@@ -1467,10 +1539,52 @@ async def _seller_stream(
         yield _done("keep")
         return
 
-    # ③ 대화 스레드 최근 턴 1회 조회(실패는 [] degrade) → supervisor 라우팅 —
-    # 장애 시 general 폴백은 route_question 내부(4-1a). 맥락은 supervisor 입력과
-    # analysis planner 입력에 주입되고, general 은 스레드 자체를 물고 있어 불필요.
+    # 대화 스레드 최근 턴 1회 조회(실패는 [] degrade) — 아래 ②.5·③ 이 공유한다.
+    # 맥락은 supervisor 입력과 analysis planner 입력에 주입되고, general 은 스레드
+    # 자체를 물고 있어 불필요.
     recent_turns = await seller_thread.load_recent_turns(context, request.thread_id)
+
+    # ②.5 [#531] 차트 요청 코드 선판정 (LLM 0회) — supervisor 라우팅 **앞**에 둔다.
+    #
+    # 차트 좌표는 report 이벤트 charts[] 로만 나가고 그 이벤트는 analysis 레인에만 있다
+    # (general 은 meta/token/done 뿐 — _general_stream 참조). 그런데 SUPERVISOR_PROMPT 는
+    # "이번달 매출 그래프 보여줘"에 해석 신호가 없으니 general 을 고른다("의도 신호가
+    # 없으면 general 이 기본값") — 프롬프트대로 정확히 동작한 결과 좌표가 나갈 자리 자체가
+    # 사라지고, general_agent 가 ASCII 아트를 token 으로 그린다. #504 의 chart_only 경로도
+    # planner 에 도달하지 못해 죽은 코드였다. 프롬프트에 예외를 끼우면 "조회=general" 축이
+    # 흔들리므로(경계 예시 다수가 그 축에 의존) 코드로 결정론적으로 막는다.
+    #
+    # [위치 근거 — 순서가 이 판정의 전부다]
+    # · ①(초안 대기 게이트)보다 뒤: 초안 대기 중 "그래프 보여줘"는 offtopic 분기가 초안을
+    #   지켜야 한다(동시 생존 draft 차단).
+    # · ①.7(기간 확인 대기)보다 뒤: 앞에 두면 승인이 아닌 발화의 대기 폐기가 건너뛰어져
+    #   stale pending 이 남는다.
+    # · image_urls 직행(#506)보다 뒤: 사진을 실은 발화의 목적지는 등록 초안뿐이다.
+    # · ②(scope)보다 뒤: 앞에 두면 "경쟁사 매출 그래프 보여줘" 같은 도메인 밖 요청이
+    #   analysis 레인으로 새어 타 판매자 데이터를 조회하려 든다.
+    # · load_recent_turns 뒤: 이미 실은 맥락을 그대로 넘기고 라우팅 LLM 1회만 아낀다.
+    #
+    # 로그를 선판정 안에서도 남기는 이유: 빼면 차트 턴이 seller_routed 집계에서 통째로
+    # 사라져 레인 분포에 구멍이 생긴다. 라우터가 고른 것과 같은 필드로 찍는다.
+    if wants_chart_keyword(request.message):
+        _seller_log(
+            logging.INFO,
+            "seller_routed",
+            context=context,
+            thread_id=request.thread_id,
+            action="analysis",
+            status="ROUTED",
+        )
+        async for line in _analysis_stream(
+            request,
+            context,
+            recent_turns,
+            request_id=request_id,
+        ):
+            yield line
+        return
+
+    # ③ supervisor 라우팅 — 장애 시 general 폴백은 route_question 내부(4-1a).
     try:
         with trace_span("seller.routing", "chain"):
             decision = await route_question(

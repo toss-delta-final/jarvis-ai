@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 import json
 from types import SimpleNamespace
 
@@ -259,12 +260,34 @@ async def _run_recommend_needs_expansion(thread_id: str) -> list[dict]:
     )
 
 
+async def _run_recommend_with_retry_signal(thread_id: str) -> list[dict]:
+    """#406 — 본검색이 실제 재시도 진입을 알린 턴의 retrying 문구 driver."""
+    from app.services import spring_client
+
+    async def _search(filters, exclude_product_ids=None):  # noqa: ANN001
+        spring_client.notify_search_retry()
+        return ProductSearchResult(
+            products=list(DEFAULT_PRODUCTS), total_count=len(DEFAULT_PRODUCTS)
+        )
+
+    return await _collect(
+        run_buyer_turn(
+            _req("무선 이어폰 추천해줘", thread_id),
+            _member(),
+            llm=FakeLLM(decompose=DEFAULT_DECOMPOSE),
+            search=_search,
+            push_fn=_RecordingPush(),
+        )
+    )
+
+
 _NEW_STAGE_DRIVERS = {
     "mapping": _run_recommend_with_mapping,
     "searching": _run_recommend_with_mapping,
     "reranking": _run_recommend_with_mapping,
     "publishing": _run_recommend_with_mapping,
     "relaxing": _run_recommend_needs_relaxation,
+    "retrying": _run_recommend_with_retry_signal,
     "expanding": _run_recommend_needs_expansion,
 }
 
@@ -321,29 +344,27 @@ _PROGRESS_STAGES = (
     "mapping",
     "expanding",
     "searching",
+    "retrying",
     "relaxing",
     "reranking",
     "publishing",
 )
 
 
-def test_progress_data_accepts_all_seven_registered_stages() -> None:
-    """#396 — 계약(§3.1 v0.27.0)이 확정한 어휘 7종 전부를 `ProgressData` 가 받아들인다."""
+def test_progress_data_accepts_all_eight_registered_stages() -> None:
+    """#406 — 계약(§3.1 v0.32.4)이 확정한 어휘 8종 전부를 `ProgressData` 가 받아들인다."""
     for stage in _PROGRESS_STAGES:
         assert ProgressData(stage=stage).stage == stage
 
 
 def test_progress_data_rejects_unregistered_stage() -> None:
-    """R7-1 — `stage` 는 `Literal`(7종)이라 계약(§3.1)에 없는 값은 생성 자체가 거부된다.
+    """R7-1 — `stage` 는 `Literal`(8종)이라 계약(§3.1)에 없는 값은 생성 자체가 거부된다.
 
-    `retrying`은 비범위로 못박혀(#396) 어휘에 등재되지 않았고, `bogus`는 임의의 미등재 값이다.
-    계약이 확정한 어휘를 코드가 강제한다는 요지를 고정한다 — 어휘를 넓히려면 §3.1 개정과
-    이 `Literal`을 함께 고쳐야 한다.
+    `retrying`은 #406으로 §3.1 v0.32.4에 등재돼 어휘가 8종이 됐다. 계약이 확정한 어휘를
+    코드가 강제한다는 요지를 고정한다 — 어휘를 넓히려면 §3.1 개정과 이 `Literal`을 함께 고친다.
     """
     from pydantic import ValidationError
 
-    with pytest.raises(ValidationError):
-        ProgressData(stage="retrying")
     with pytest.raises(ValidationError):
         ProgressData(stage="bogus")
 
@@ -641,6 +662,7 @@ async def test_progress_mapping_absent_when_turn_has_no_category_signal(
         ("mapping", "progress_mapping_message"),
         ("expanding", "progress_expanding_message"),
         ("searching", "progress_searching_message"),
+        ("retrying", "progress_retrying_message"),
         ("relaxing", "progress_relaxing_message"),
         ("reranking", "progress_reranking_message"),
         ("publishing", "progress_publishing_message"),
@@ -654,6 +676,8 @@ async def test_progress_message_key_absent_for_new_stage_when_config_empty(
     (기존 `analyzing` 테스트와 같은 규약 — `test_progress_message_key_absent_when_config_message_empty`.)
     """
     monkeypatch.setattr(get_settings(), "progress_events_enabled", True)
+    if stage == "retrying":
+        monkeypatch.setattr(get_settings(), "spring_max_retries", 1)
     monkeypatch.setattr(get_settings(), message_field, "")
     events = await _NEW_STAGE_DRIVERS[stage](f"empty-msg-{stage}-289")
     frame = next(e for e in events if e["type"] == "progress" and e["data"]["stage"] == stage)
@@ -825,10 +849,16 @@ def test_seller_analysis_progress_unaffected_by_buyer_progress_flag(
     F-3 리뷰 반영: 종전에는 general 레인(`progress` 자체가 없는 레인)만 돌려
     `"progress" not in off_types`를 단언했는데, 이는 이 PR 과 무관하게 항상 참이라 회귀가
     나도 깨지지 않는 단언이었다. analysis 레인을 직접 돌려 판매자의 실제 `progress` 프레임을
-    검증한다.
+    검증한다. 초 경계의 `report.generatedAt` 차이로 바이트 동일성 검증이 흔들리지 않도록 시계를
+    고정한다.
     """
     from app.agents.seller.orchestrator import PipelineResult
     from app.agents.seller.schemas import RouteDecision
+
+    class _FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 8, 9, 12, 0, 0, tzinfo=tz)
 
     hitl.set_checkpointer(InMemorySaver())
     try:
@@ -844,6 +874,8 @@ def test_seller_analysis_progress_unaffected_by_buyer_progress_flag(
             await emit("매출 이상 분석 중…")
             return PipelineResult(kind="report", text="6월 매출 보고서 본문")
 
+        monkeypatch.setattr(seller_api, "datetime", _FixedDateTime)
+
         def _run() -> list[str]:
             monkeypatch.setattr(seller_api, "route_question", _route_stub)
             monkeypatch.setattr(seller_api, "run_analysis_pipeline", fake_pipeline)
@@ -853,6 +885,7 @@ def test_seller_analysis_progress_unaffected_by_buyer_progress_flag(
 
             return asyncio.run(_drive())
 
+        monkeypatch.setattr(get_settings(), "progress_events_enabled", False)
         off_lines = _run()
         monkeypatch.setattr(get_settings(), "progress_events_enabled", True)
         on_lines = _run()
@@ -889,7 +922,7 @@ def test_progress_events_enabled_succeeds_startup_in_jwks_mode() -> None:
 
 
 def test_progress_events_disabled_succeeds_startup_in_jwks_mode() -> None:
-    """가드는 정상 운영 설정(플래그 off)까지 막지 않는다."""
+    """progress 롤백은 재시도 0회와 짝지으면 jwks 모드에서 정상 기동한다."""
     from app.core.config import Settings
 
     Settings(
@@ -898,8 +931,27 @@ def test_progress_events_disabled_succeeds_startup_in_jwks_mode() -> None:
         pii_hash_pepper="p",
         internal_api_token="tok",
         google_api_key="k",
+        spring_max_retries=0,
         progress_events_enabled=False,
     )  # ok
+
+
+def test_progress_events_disabled_rejects_startup_with_retries_enabled() -> None:
+    """progress off + 재시도 1회는 미룬 I-1 직렬 12s로 first-token 가드가 거절한다."""
+    import pytest
+    from pydantic import ValidationError
+    from app.core.config import Settings
+
+    with pytest.raises(ValidationError, match="STREAM_FIRST_TOKEN_TIMEOUT_S"):
+        Settings(
+            auth_mode="jwks",
+            jwks_url="http://x",
+            pii_hash_pepper="p",
+            internal_api_token="tok",
+            google_api_key="k",
+            spring_max_retries=1,
+            progress_events_enabled=False,
+        )
 
 
 def test_progress_events_enabled_succeeds_startup_in_staging_even_with_dev_auth() -> None:

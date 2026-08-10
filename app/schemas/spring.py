@@ -57,7 +57,7 @@ class ProductSearchFilters(CamelModel):
     limit 은 **AI 후보 상한(rerank 입력 top-K)**. 정렬은 rerank(LLM) 소관이라 별도 필드가 없다(#100 P2).
     excludeProductIds 원천 = GET /orders/recent(§4.7), 게스트는 빈 배열.
     [2026-07-23, BE 합의] size 제거로 limit 은 더 이상 Spring 요청 size 가 아니다(§4.6) — Spring 은
-    전량 반환하고, limit 은 search_catalog 가 top-K 절단에 쓴다.
+    전량 반환하고, limit 은 search_catalog 가 top-K 절단에 쓴다. [#395, 2026-08-07] 재도입 폐지 확정.
     """
 
     category: str | None = None
@@ -111,6 +111,8 @@ class SpringProduct(CamelModel):
     # Layer2 속성(소재·핏 등, #100 P0) — 유연매칭(#101). 값 타입은 dict[str, object](비-str 관대):
     # BE 가 {"방수": true} 등 bool·숫자를 주면 dict[str, str] 은 후보 1건이 ValidationError 로
     # 검색 전체를 무너뜨린다(PR#127 리뷰). 소비는 #101 이라 지금 값 타입을 강제하지 않는다.
+    # [#395, api-spec §4.6] BE 가 2026-08-08 배포로 `_extra`·`_source_pid`·`_domain`·`_category`
+    # 를 더 이상 싣지 않는다 — 값 타입 관대 수신 규약은 그대로 유지된다.
     attributes: dict[str, object] | None = None
     price: int | None = None  # 판매가 — AI 계산용(예산·maxPrice·rerank, #100 P1), 표시 아님
     rating: float | None = None  # 조회 시 집계(DDL D9) — AI 계산용(평점필터·rerank, #100 P0)
@@ -370,8 +372,11 @@ class AddToCartResult(CamelModel):
 
 # 구매 가능 상태 — I-18(§4.9) · I-28(§4.16) 공용. 겹치면 HIDDEN 우선(서버가 정해서 내린다).
 # 둘 다 상품 단위 판정이되 성격이 다르다: HIDDEN 은 status != ON_SALE 이라 옵션과 무관하게
-# 상품 전체가 판매 종료이고, SOLD_OUT 은 재고가 product.stock_quantity 하나로 옵션 전체에
-# 공유되므로(product_option 에 재고 컬럼 없음) "옵션 중 하나라도 살 수 있으면 AVAILABLE" 이다.
+# 상품 전체가 판매 종료이고, SOLD_OUT 은 "옵션 중 하나라도 살 수 있으면 AVAILABLE" 이다.
+# ⚠️ [#524/#508] 구 주석의 근거였던 "재고가 product.stock_quantity 하나로 옵션 전체에 공유
+# (product_option 에 재고 컬럼 없음)" 은 **BE 옵션별 재고 전환(02 D33 — product_stock 신설)
+# 이후 사실이 아니다.** 판정 규칙(하나라도 살 수 있으면 AVAILABLE)은 그대로지만 근거가
+# "공유 재고" 에서 "옵션별 재고의 OR" 로 바뀐다. 구매자 레인 동작 정합은 #508 소관.
 PurchaseState = Literal["AVAILABLE", "SOLD_OUT", "HIDDEN"]
 
 # 상태 → 안내용 한국어 라벨. **전사(全射) 매핑을 의도한다**(ORDER_ITEM_STATUS_TEXT 와 같은 형태).
@@ -566,6 +571,11 @@ class ProductChange(CamelModel):
 
     콘텐츠 필드는 enrichment·search_doc 조립 입력 — AI 는 저장하지 않고 산출물 생성에만 사용.
     미정의 status 는 페이지 전체 계약 위반으로 거부해 해당 페이지 artifact·커서를 보존한다.
+
+    **`DELETED`(BE 02 D41)를 여기 추가하지 않는다** — Spring 이 `!= ON_SALE` 을 전부
+    `"HIDDEN"` 으로 실어 보내므로(`ProductChangesResponse.Item.hidden()`) 삭제·숨김이
+    AI 에겐 같은 신호(생성물 제거)이고 동작이 동일하다. 3값으로 넓히면 위 fail-closed
+    규약과 충돌해 정상 페이지가 전량 실패한다.
     """
 
     product_id: (
@@ -959,15 +969,36 @@ class AccountEventsResult(SellerAggregateModel):
 # ── I-9 자사 상품 목록 (§4.5) ──
 
 
+class SellerStockRow(CamelModel):
+    """I-9 rows[].stocks[] 항목 (#524) — 에이전트가 I-11 에 넣을 optionId 의 원천.
+
+    판매자용이라 품절(quantity 0) 옵션도 그대로 내려온다. option_id null 은 옵션 없는
+    상품의 유일한 재고 행이다. 구(stockQuantity 단일) BE 는 이 배열을 보내지 않으므로
+    수신은 관대하게 — 빈 목록이 기본값이다.
+    """
+
+    option_id: int | None = None
+    option_name: str | None = None
+    quantity: int = 0
+
+
 class SellerProductRow(CamelModel):
     """I-9 rows[] 항목. originalPrice 는 구매자 SpringProduct.listPrice 와 필드명이 달라
-    별도 모델로 유지한다(§2.4)."""
+    별도 모델로 유지한다(§2.4).
+
+    `status` 는 `ON_SALE`|`HIDDEN` 만 온다 — `DELETED` 는 BE 가 목록에서 제외한다(§4.5).
+
+    [#524] stocks 는 옵션별 재고 — BE PR B 배포 후에만 채워진다(그 전엔 빈 목록).
+    stockQuantity 는 그 시점부터 "옵션 재고 합계(파생)" 로 의미가 바뀌지만 필드는 유지된다.
+    빈 목록은 "옵션이 없다"가 아니라 **"BE 가 아직 구버전"** 이다(hitl._stocks_mode_ready).
+    """
 
     product_id: int
     name: str
     price: int
     original_price: int | None = None
     stock_quantity: int = 0
+    stocks: list[SellerStockRow] = Field(default_factory=list)
     status: str = "ON_SALE"  # ON_SALE | HIDDEN
     displayed_sales_count: int | None = None
     category: str | None = None
@@ -984,29 +1015,69 @@ class SellerProductList(CamelModel):
 # ── I-10/I-11/I-12 상품 쓰기 (§4.5, product_agent 전용, HITL 승인 후 호출) ──
 
 
+class StockEntry(CamelModel):
+    """I-10/I-11 요청 `stocks[]` 한 줄 (#524) — 옵션 없는 상품은 optionId null 한 줄.
+
+    quantity 음수는 BE 422 INVALID_STOCK — 여기서 ge=0 으로 선차단한다. optionId 가
+    그 상품의 옵션이 아니어도 INVALID_STOCK 인데, 그 검증은 hitl 이 I-9 stocks 로
+    선해소하므로(resolve_stock_option) 정상 경로에서는 발생하지 않는다.
+
+    직렬화 주의: 클라이언트가 exclude_none 으로 본문을 만들므로 optionId null 은
+    **키 자체가 빠져** 나간다 — Jackson 은 키 누락을 null 로 바인딩하니(record) 계약상
+    "optionId: null 한 줄"과 동등하다. BE 가 키 존재를 강제하게 되면 여기를 고친다.
+    """
+
+    option_id: int | None = None
+    quantity: int = Field(ge=0)
+
+
 class ProductCreate(CamelModel):
-    """I-10 POST 요청 본문 — name/price/stockQuantity 필수(price ≤ originalPrice)."""
+    """I-10 POST 요청 본문 — name/price/stockQuantity/categoryId 필수(price ≤ originalPrice).
+
+    [2026-08-09 정정] `category`(자유 문자열) → `categoryId`(Long). BE
+    `SellerProductCreateRequest` 는 `categoryId: Long` 만 받고 소분류(leaf)인지까지
+    검증한다(`Category.isRoot()` → PRODUCT_CATEGORY_INVALID). 구 구현이 보내던
+    `category` 키는 BE 가 조용히 버렸고, 남은 categoryId 누락으로 등록이 항상
+    실패했다 — 판매자에게는 "등록 중 오류"로만 보였다.
+
+    필수지만 타입은 `int | None` 이다: 누락은 여기서 500 을 만들지 말고 상위
+    (hitl.validate_draft)가 되묻기로 전환해야 한다. 전송은 exclude_none 이므로
+    None 이면 키 자체가 빠지고 BE 가 422 MISSING_FIELD 로 응답한다.
+    """
 
     name: str
     price: int
     original_price: int | None = None
-    stock_quantity: int = Field(0, ge=0)
-    category: str | None = None
+    # [#524 듀얼모드] 재고는 wire_mode 에 따라 정확히 한 필드만 채운다(다른 쪽 None →
+    # exclude_none 으로 본문에서 빠진다). quantity 모드=stock_quantity(현행 BE),
+    # stocks 모드=stocks(PR B 이후). 등록 시점엔 옵션이 없어 stocks 는 optionId null 한 줄.
+    stock_quantity: int | None = Field(default=None, ge=0)
+    stocks: list[StockEntry] | None = None
+    category_id: int | None = None
     description: str | None = None
     image_url: str | None = None
 
 
 class ProductUpdate(CamelModel):
-    """I-11 PATCH 요청 본문 — 바꿀 필드만(전 필드 Optional). 재고도 이 API로 통합."""
+    """I-11 PATCH 요청 본문 — 바꿀 필드만(전 필드 Optional). 재고도 이 API로 통합.
+
+    ⚠️ `category` 는 BE `SellerProductUpdateRequest` 에 **없는 필드**다(2026-08-09 실측)
+    — Jackson 이 모르는 키로 버리므로 카테고리 수정 요청은 조용히 무시된다. I-10 등록
+    시에만 정할 수 있는 값이라는 뜻이고, preview 의 "카테고리는 등록 후 변경할 수
+    없습니다" 경고와도 일치한다. BE 가 필드를 열기 전까지 여기 남는 값은 전송돼도
+    효과가 없다 — 수정 흐름에서 카테고리를 다루려면 별도 이슈로 BE 를 먼저 연다."""
 
     name: str | None = None
     price: int | None = None
     original_price: int | None = None
+    # [#524 듀얼모드] ProductCreate 와 동일 — 정확히 한 재고 필드만 채운다.
+    # stocks 는 부분 수정이다: 배열에 실린 옵션만 갱신되고 나머지는 그대로다(05 §I-11).
     stock_quantity: int | None = Field(default=None, ge=0)
+    stocks: list[StockEntry] | None = None
     category: str | None = None
     description: str | None = None
     image_url: str | None = None
-    status: str | None = None  # ON_SALE | HIDDEN
+    status: str | None = None  # ON_SALE | HIDDEN — DELETED 는 BE 가 거부(삭제는 I-12 전용)
 
 
 class ProductCreateResult(SellerAggregateModel):
@@ -1023,10 +1094,13 @@ class ProductUpdateResult(SellerAggregateModel):
 
 
 class ProductDeleteResult(SellerAggregateModel):
-    """I-12 200 응답 — soft delete, {productId, status:"HIDDEN"}."""
+    """I-12 200 응답 — soft delete, {productId, status:"DELETED"} (§4.5, 정본 Notion I-12).
+
+    `HIDDEN`(숨김·판매정지)이 아니다 — 숨김은 판매자 목록에 남고 삭제는 목록에서도 빠진다.
+    """
 
     product_id: int
-    status: str = "HIDDEN"
+    status: str = "DELETED"
 
 
 # ── I-29/I-30/I-31 판매자 주문·리뷰 (§4.18~§4.20, 이슈 #297 — 🔶 초안, BE 협의 전) ──
@@ -1092,14 +1166,26 @@ class OrderItemStatusResult(SellerAggregateModel):
 
 
 class SellerReviewRow(SellerAggregateModel):
-    """I-31 rows[] 항목 — VISIBLE 리뷰만(P-3 와 동일한 진실). authorNickname 은 공개 정보."""
+    """I-31 rows[] 항목 — VISIBLE 리뷰만(P-3 와 동일한 진실). authorNickname 은 공개 정보.
+
+    [#518] content·authorNickname 은 **nullable**이다 — DDL 이 `content TEXT NULL` 이고
+    별점만 남기는 리뷰가 실제로 존재한다. 구 `str = ""` 기본값은 키 **결측**만 흡수하고
+    명시적 `null` 은 못 먹어서(pydantic 은 기본값과 무관하게 `str` 에 `None` 을 거부),
+    rows 한 행만 content 가 null 이어도 `_validate` → ValidationError →
+    SpringUnavailableError 로 **리뷰 조회 전체가** degrade 됐다. 부분 결측이 전량 실패로
+    번지는 것을 막는 게 요지이며, `SellerAggregateModel` 의 `extra="allow"` 는 여분 필드만
+    다루지 이 경로를 구제하지 못한다(#489 의 `extra="ignore"` 건과 층위가 다르다).
+
+    표시 폴백은 여기서 하지 않는다 — 스키마는 와이어 값을 보존하고, 결측 문구는 tools 가
+    정한다(#495 에서 churnRate 를 두고 세운 것과 같은 규약).
+    """
 
     review_id: int
     product_id: int | None = None
     product_name: str = ""
     rating: int = 0
-    content: str = ""
-    author_nickname: str = ""
+    content: str | None = None
+    author_nickname: str | None = None
     created_at: str = ""
 
 
@@ -1128,7 +1214,8 @@ class SellerReviewStats(SellerAggregateModel):
     by_product: list[SellerReviewProductStat] = Field(default_factory=list)
 
 
-# ── 7. 장바구니 삭제 · 찜 (이슈 #116·#117, I-24~I-28 — 확정 2026-08-05, Spring 구현 진행 중) ──
+# ── 7. 장바구니 삭제 · 찜 (이슈 #116·#117, I-24~I-28 — 확정 2026-08-05, Spring 구현됨) ──
+# [#285] BE `jarvis-backend` main 실측(2026-08-08, BE PR #92·#93) — api-spec §4.12~4.16 v0.31.3.
 
 
 class AddWishlistRequest(CamelModel):
@@ -1177,3 +1264,31 @@ class WishlistView(CamelModel):
     """I-28 응답(확정 2026-08-05). 찜 0건도 200 + items:[](404 아님, get_cart 와 같은 규약)."""
 
     items: list[WishlistItem] = Field(default_factory=list)
+
+
+# ── 8. 장바구니 수량 변경 (I-25, §4.13 — 확정 2026-08-05, Spring 구현됨 · AI 구현 착수 #285) ──
+
+
+class ChangeCartQuantityRequest(CamelModel):
+    """I-25 PATCH /internal/cart/items/{cartItemId} 요청 본문(확정 2026-08-05).
+
+    quantity 하나뿐 — **1~99 치환값**(합산 아님)이다. "3개로 바꿔줘"류 발화가 이 계약을 쓰고,
+    "하나 더 담아줘"류(합산)는 이 계약이 아니라 I-2(§4.1) 재호출이다 — 두 발화를 섞지 않는다.
+    범위는 `decompose`(`CartIntent.quantity`)가 이미 1~99 로 클램프하지만, 어댑터에 들어오는
+    값이 그 경로만은 아니므로 `add_to_cart`(`AddToCartRequest.quantity`)와 같은 관례로
+    스키마에서도 강제한다.
+    """
+
+    quantity: int = Field(..., ge=1, le=99)
+
+
+class ChangeCartQuantityResult(CamelModel):
+    """I-25 200 성공 응답(확정 2026-08-05) — {success, data:{cartItemId, quantity}}.
+
+    삭제(I-24)와 달리 **응답에 값이 있다** — `quantity` 가 BE 가 반영한 최종 수량이다(치환
+    요청값과 같아야 정상이지만, AI 는 요청값이 아니라 이 응답값을 신뢰해 emit 한다).
+    """
+
+    success: bool
+    cart_item_id: int | None = None  # 숫자(BIGINT, cart_item.id)
+    quantity: int | None = None

@@ -10,6 +10,7 @@ MVP 개발을 위한 실행 문서 모음. 계약 정본(api-spec)은 기획 저
 | [lessons.md](lessons.md) | **실수 기록** — 재발 방지 러닝 로그 (작업 전 훑기, 오류 시 추가) |
 | [api-spec.md](api-spec.md) | **API 계약 명세 v0.7.0** — 정본(기획 저장소)의 동기화 사본 |
 | [specs/](specs/) | **소유 SPEC 사본** — RECOMMEND-001 · PROFILE-001 · CATALOG-DATA-001 (그래프 로직 상세) |
+| [proposals/285-cart-wishlist-internal.md](proposals/285-cart-wishlist-internal.md) | **#285 검증 기록** — 장바구니 삭제·찜 추가/해제/목록(I-24~I-28) 계약·AI 코드·BE 3자 대조 |
 
 ## 원칙
 

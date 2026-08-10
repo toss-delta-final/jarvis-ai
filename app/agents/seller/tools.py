@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 from collections.abc import Awaitable, Callable
@@ -23,9 +24,10 @@ from typing import Any
 from langchain.tools import ToolRuntime
 from langchain_core.tools import BaseTool, tool
 
-from app.agents.seller import calc
+from app.agents.seller import calc, period
 from app.agents.seller.analysis import outliers, proportions, segmentation, timeseries
 from app.agents.seller.context import SellerContext
+from app.agents.seller.stock_options import stock_lines_text
 from app.core.config import get_settings
 from app.core.tracing import trace_span
 from app.schemas.spring import (
@@ -38,6 +40,8 @@ from app.services.spring_client import (
     OrderAlreadyShipped,
     OrderInvalidTransition,
     OrderItemNotFound,
+    ProductAlreadyDeleted,
+    ProductDeletedNotEditable,
     SpringUnavailableError,
     get_spring_client,
 )
@@ -75,6 +79,12 @@ def _period_arg_error(from_date: str | None, to_date: str | None) -> str | None:
     되묻기가 아니라 "Error:" 인 이유: 이 시점은 이미 스트림 안이라 되묻기로 되돌아갈 수
     없고, 도구 실패 문자열은 프롬프트의 degrade 규약(§3.4)이 이미 다루는 어휘다.
     None(기간 미지정)은 통과 — get_orders·get_reviews 는 기간이 선택 인자다.
+
+    [#512] 파싱 성공만으로는 부족하다 — `date.fromisoformat` 은 `"20260801"`(기본형)·
+    `"2026W311"`(주 표기) 같은 비정규 ISO 도 받는다. 그 **원문**이 도구 안에서 문자열
+    비교 필터의 경계값이 되면(`get_sales_timeseries` 의 `p.date >= from_date`) 사전식
+    비교가 어긋나 전 포인트가 탈락하고 "총매출 0원" 이 오류 없이 나간다. 정규형
+    (YYYY-MM-DD)과 글자까지 같은 값만 통과시킨다 — 조용한 0 을 만들 문자열은 여기서 끊는다.
     """
     if from_date is None or to_date is None:
         return None
@@ -82,6 +92,8 @@ def _period_arg_error(from_date: str | None, to_date: str | None) -> str | None:
         start = date.fromisoformat(from_date)
         end = date.fromisoformat(to_date)
     except (TypeError, ValueError):
+        start = end = None
+    if start is None or end is None or start.isoformat() != from_date or end.isoformat() != to_date:
         return (
             f"Error: 기간 형식이 올바르지 않습니다(from_date={from_date!r}, "
             f"to_date={to_date!r}). 입력에 주어진 기간을 YYYY-MM-DD 그대로 쓰세요."
@@ -188,23 +200,30 @@ async def get_sales_timeseries(
     Args:
         from_date: 조회 시작일(YYYY-MM-DD).
         to_date: 조회 종료일(YYYY-MM-DD).
-        granularity: daily/weekly/monthly/summary 중 하나(기본 daily).
+        granularity: daily/weekly/monthly 중 하나(기본 daily).
     """
+    # [#512] summary 는 응답 shape 이 다르다(`series` 없음, I-6 §4.4) — SalesResult 는
+    # `series` 만 알고 extra="allow" 라 ValidationError 도 degrade 도 없이 series=[] 로
+    # 파싱돼 **언제나 "총매출 0원"** 을 낸다. 정상값과 구별되지 않는 0 을 내보내느니
+    # 명시적으로 거절한다. summary shape 수신은 명세 개정(§4.4 I-6) 후 별도 주제다.
+    if granularity == "summary":
+        return (
+            "Error: summary 집계는 아직 지원되지 않습니다 — "
+            "granularity=daily/weekly/monthly 로 조회하세요."
+        )
     brand_id = runtime.context.brand_id  # 검증된 JWT 클레임 유래 — LLM 이 만들 수 없다.
     settings = get_settings()
     # [#290] daily 는 요청 기간 앞에 lookback 을 붙여 조회한다 — STL(period 7)은
     # 최소 2주기 이력이 있어야 계절 성분을 추정한다. 요약·상세 나열은 요청 기간 내만
     # 쓰고, lookback 구간은 이상 감지 학습에만 쓴다(판매자에게 요청 밖 수치 미노출).
+    # [#512] 형식은 `_guard_period_args` 가 정규형(YYYY-MM-DD)으로 이미 보장한다 —
+    # 종전의 `except ValueError: pass`(형식 오류를 삼키고 Spring 파서의 관대함에
+    # 안전을 걸던 경로)는 제거했다. 여기 도달했다면 파싱은 반드시 성공한다.
     fetch_from = from_date
     if granularity == "daily":
-        try:
-            parsed_from = date.fromisoformat(from_date)
-        except ValueError:
-            pass  # 형식 오류는 확장 없이 그대로 — Spring 검증/오류 경로에 맡긴다.
-        else:
-            fetch_from = (
-                parsed_from - timedelta(days=settings.seller_analysis_lookback_days)
-            ).isoformat()
+        fetch_from = (
+            date.fromisoformat(from_date) - timedelta(days=settings.seller_analysis_lookback_days)
+        ).isoformat()
     try:
         result = await get_spring_client().get_sales(brand_id, fetch_from, to_date, granularity)
     except SpringUnavailableError as exc:
@@ -256,7 +275,7 @@ async def get_sales_timeseries(
         # [#290] SMA 편차 → S-H-ESD(STL 잔차 + robust GESD) 교체. 요일 효과를 분해로
         # 걷어내 "주말이라 원래 낮음"을 급락으로 오탐하지 않는다(worker-papers.md).
         try:
-            anomalies = timeseries.detect_seasonal_anomalies(
+            detection = timeseries.detect_seasonal_anomalies(
                 [p.date for p in result.series],
                 [float(p.sales) for p in result.series],
                 period=settings.seller_stl_period,
@@ -270,20 +289,7 @@ async def get_sales_timeseries(
             _log.warning("이상 감지 판정 불가 — 분석 설정 오류: %s", exc)
             anomaly_note = " 이상 감지 판정 불가(분석 설정 오류)."
         else:
-            # lookback 구간에서 검출된 이상은 요청 밖이라 보고하지 않는다(질문 범위 준수).
-            flagged = [_format_seasonal_anomaly(a) for a in anomalies if a.date >= from_date]
-            seasonal_adjusted = len(result.series) >= settings.seller_min_history_for_stl
-            method_note = (
-                "STL 계절조정·GESD"
-                if seasonal_adjusted
-                else f"robust 판정 — 이력 {len(result.series)}일"
-                f"<{settings.seller_min_history_for_stl}일이라 계절 미조정"
-            )
-            anomaly_note = (
-                f" 이상 감지 {len(flagged)}건({method_note}): " + ", ".join(flagged) + "."
-                if flagged
-                else f" 이상 감지 없음({method_note})."
-            )
+            anomaly_note = _format_anomaly_note(detection, from_date, settings)
     else:
         anomaly_note = ""
     return (
@@ -292,6 +298,34 @@ async def get_sales_timeseries(
         f"{granularity} 상세: {detail_lines}{omitted_note}.{anomaly_note} "
         f"{_reference_note(from_date, to_date)}"
     )
+
+
+def _format_anomaly_note(detection, from_date: str, settings) -> str:
+    """[#512] 이상 감지 결과 → 요약 문구. **판정 보류 / 이상 없음 / 이상 N건** 3갈래다.
+
+    빈 목록 하나로 "표본 부족이라 못 정했다"와 "검정했고 이상 0건"을 동시에 뜻하던
+    종전 구조가 표본 2개짜리 확정적 all-clear 를 판매자에게 내보내고 있었다 —
+    워커 프롬프트가 금지하는 것("판정 보류는 이상 없음과 다르다"). 보류 어휘는
+    같은 파일의 Tukey 경로(`_summarize_ratio_outliers`)와 맞춘다.
+    """
+    if not detection.decided:
+        return (
+            f" 이상 감지 판정 보류(표본 {detection.sample_size}개"
+            f" < 최소 {detection.min_samples}개)."
+        )
+    # lookback 구간에서 검출된 이상은 요청 밖이라 보고하지 않는다(질문 범위 준수).
+    flagged = [_format_seasonal_anomaly(a) for a in detection.anomalies if a.date >= from_date]
+    # [#512] 계절조정 여부는 판정 모듈이 실제로 탄 분기를 그대로 받는다 — 호출부가
+    # 임계를 재계산하면 모듈 내부와 조용히 어긋날 수 있다.
+    method_note = (
+        "STL 계절조정·GESD"
+        if detection.seasonal_adjusted
+        else f"robust 판정 — 이력 {detection.sample_size}일"
+        f"<{settings.seller_min_history_for_stl}일이라 계절 미조정"
+    )
+    if not flagged:
+        return f" 이상 감지 없음({method_note})."
+    return f" 이상 감지 {len(flagged)}건({method_note}): " + ", ".join(flagged) + "."
 
 
 def _format_seasonal_anomaly(anomaly) -> str:
@@ -1402,7 +1436,8 @@ async def list_my_products(
     사용한다(§4.5 — 구 I-7 상세 읽기 대체).
 
     Args:
-        status: ON_SALE/HIDDEN 중 하나로 좁힐 때(선택).
+        status: ON_SALE/HIDDEN 중 하나로 좁힐 때(선택). DELETED 는 BE 가 목록에서
+            제외하므로 지정해도 빈 결과다(§4.5).
         q: 상품명 검색어(선택).
         limit: 반환 상한(선택, 미지정 시 설정 기본값).
         offset: 페이지 오프셋(선택).
@@ -1419,9 +1454,12 @@ async def list_my_products(
         return f"Error: 상품 목록을 불러오지 못했습니다({exc})."
     if not result.rows:
         return "상품이 없습니다."
+    # [#524] 옵션별 재고(stocks 채워짐)는 옵션명·수량을 펼친다 — product 에이전트가
+    # 재고 변경 change 의 option_name 을 여기서 그대로 옮겨 적는다(stock_options 참조).
+    # 구 BE(단일 stockQuantity) 응답은 stocks 가 비어 있어 기존 표기 그대로다.
     lines = [
-        f"[{row.product_id}] {row.name} 가격 {row.price:,}원 재고 {row.stock_quantity}건 "
-        f"상태 {row.status}"
+        f"[{row.product_id}] {row.name} 가격 {row.price:,}원 "
+        f"{stock_lines_text(row.stock_quantity, row.stocks)} 상태 {row.status}"
         for row in result.rows
     ]
     # 상한만큼 꽉 찼으면 더 있을 수 있음을 고지 — LLM 이 offset 으로 이어서 조회 가능.
@@ -1516,6 +1554,117 @@ async def get_orders(
 # 값은 BE 400 VALIDATION_ERROR. 도구가 호출 전 선검증한다(#496, _ACCOUNT_EVENTS_GROUP_BY 패턴).
 _REVIEW_SORT = ("latest", "ratingAsc")
 
+# [#518] 감성 구간 — I-31 distribution(P-3 형태, 키는 문자열 "1"~"5") 위에서만 센다.
+# 별점은 BE 가 준 집계라 워커가 원문을 읽어 세는 것보다 정확하고, 숨김 리뷰·표본 절단의
+# 영향을 받지 않는다. 3점을 중립으로 떼는 것은 이슈 #518 이 정한 경계다.
+_REVIEW_NEGATIVE_STARS = ("1", "2")
+_REVIEW_NEUTRAL_STARS = ("3",)
+_REVIEW_POSITIVE_STARS = ("4", "5")
+
+
+def _review_sentiment_note(distribution: dict[str, int], total: int) -> str:
+    """별점 분포 → 긍정·중립·부정 건수와 비율 한 문장.
+
+    비율까지 **도구가** 계산해 내보내는 이유: verifier F2(check_evidence_grounded)가
+    finding 의 유의 수치를 도구 출력 문자열과 대조한다. 건수만 주면 워커가 "긍정 62%"
+    라고 쓰는 순간 그 숫자가 도구 출력에 없어 근거 없는 수치로 잡히고, 피하려면 워커가
+    calculate 를 추가로 불러야 해 seller_tool_call_limit(8)을 갉아먹는다. 숫자는 도구가,
+    해석은 LLM 이 맡는다는 #518 의 분리 원칙과도 같은 방향이다.
+
+    합계는 distribution 이 아니라 인자로 받은 total(totalCount)로 나눈다 — BE 가 분포에
+    없는 별점을 총계에만 반영하는 경우 자체 합산은 100%를 넘는 비율을 만든다.
+    """
+    if total <= 0:
+        return ""
+    segments = []
+    for label, stars in (
+        ("긍정(4-5점)", _REVIEW_POSITIVE_STARS),
+        ("중립(3점)", _REVIEW_NEUTRAL_STARS),
+        ("부정(1-2점)", _REVIEW_NEGATIVE_STARS),
+    ):
+        count = sum(distribution.get(star, 0) for star in stars)
+        segments.append(f"{label} {count}건 {round(count * 100 / total, 1)}%")
+    return " 감성: " + ", ".join(segments) + "."
+
+
+async def _get_reviews_bucketed(
+    brand_id: int,
+    *,
+    from_date: str,
+    to_date: str,
+    product_id: int | None,
+    rating: str | None,
+    unit: str,
+    max_buckets: int,
+) -> str:
+    """[#518] 기간을 버킷으로 나눠 I-31 집계를 구간별로 조회한다(추이).
+
+    팬아웃을 **도구 안**에 두는 이유: 워커가 구간마다 get_reviews 를 부르면 12구간짜리
+    추이 하나가 seller_tool_call_limit(8)을 통째로 넘긴다. 여기서 한 번에 처리하면
+    도구 호출은 1회로 유지되고, 왕복도 순차 12회(최악 36s, 판매자 스트림 상한 90s 를
+    잠식)가 아니라 동시 1회분으로 끝난다.
+
+    부분 실패는 그 구간만 '조회 실패' 로 적고 나머지는 살린다(§3.4 degrade 규약).
+    실패 구간을 '0건' 으로 적지 않는 것이 핵심이다 — 리뷰가 없는 구간과 못 본 구간은
+    다른 사실이고, 뭉개면 워커가 없는 급락을 서술한다(I-16 averageRating null 규칙과
+    같은 결).
+    """
+    try:
+        spans = period.split_buckets(
+            date.fromisoformat(from_date),
+            date.fromisoformat(to_date),
+            unit,
+            max_buckets=max_buckets,
+        )
+    except ValueError as exc:
+        return f"Error: {exc}. 더 넓은 단위(daily→weekly→monthly)나 좁은 기간을 쓰세요."
+
+    client = get_spring_client()
+    results = await asyncio.gather(
+        *(
+            client.get_review_stats(
+                brand_id,
+                from_=start.isoformat(),
+                to=end.isoformat(),
+                product_id=product_id,
+                rating=rating,
+            )
+            for start, end in spans
+        ),
+        return_exceptions=True,
+    )
+
+    lines: list[str] = []
+    failed = 0
+    for (start, end), outcome in zip(spans, results, strict=True):
+        label = f"{start.isoformat()}~{end.isoformat()}"
+        if isinstance(outcome, BaseException):
+            failed += 1
+            lines.append(f"{label} 조회 실패")
+            continue
+        if outcome.total_count == 0:
+            lines.append(f"{label} 0건")
+            continue
+        avg = (
+            f" 평균 {outcome.average_rating}점"
+            if outcome.average_rating is not None
+            else " 평균 산정 불가"
+        )
+        negative = sum(outcome.distribution.get(star, 0) for star in _REVIEW_NEGATIVE_STARS)
+        positive = sum(outcome.distribution.get(star, 0) for star in _REVIEW_POSITIVE_STARS)
+        lines.append(f"{label} {outcome.total_count}건{avg}(부정 {negative}건·긍정 {positive}건)")
+
+    if failed == len(spans):
+        return "Error: 리뷰 추이 조회에 실패했습니다(전 구간 조회 실패)."
+    rating_scope = f"(별점 {rating} 한정)" if rating else ""
+    failed_note = f" {failed}개 구간은 조회하지 못했습니다 — 0건과 다릅니다." if failed else ""
+    unit_label = {"daily": "일별", "weekly": "주별", "monthly": "월별"}[unit]
+    return (
+        f"리뷰 추이{rating_scope}({unit_label}, {len(spans)}구간): "
+        + "; ".join(lines)
+        + f".{failed_note} {_reference_note(from_date, to_date)}"
+    )
+
 
 @tool
 @_traced_tool("tool.get_reviews")
@@ -1528,14 +1677,15 @@ async def get_reviews(
     rating: str | None = None,
     sort: str | None = None,
     stats: bool = False,
+    bucket: str | None = None,
     limit: int | None = None,
     offset: int | None = None,
 ) -> str:
     """자사 상품 리뷰(VISIBLE 만)를 조회한다(I-31, api-spec §4.20).
 
     기간을 생략하면 최근 7일이 기본 적용된다(서버 규칙). stats=True 면 목록 대신
-    집계(총건수·평균·별점 분포·상품별)만 반환한다 — 전반 요약은 집계를 먼저 보고,
-    문제 리뷰 원문이 필요할 때 rating 필터로 목록을 조회하는 순서를 권장한다.
+    집계(총건수·평균·별점 분포·상품별·긍부정 감성 비율)만 반환한다 — 전반 요약은 집계를
+    먼저 보고, 문제 리뷰 원문이 필요할 때 rating 필터로 목록을 조회하는 순서를 권장한다.
 
     Args:
         from_date: 조회 시작일 YYYY-MM-DD(선택 — 생략 시 최근 7일).
@@ -1547,6 +1697,9 @@ async def get_reviews(
         sort: latest(기본)/ratingAsc — ratingAsc 는 낮은 별점부터(문제 파악용, 선택).
             ratingDesc 는 존재하지 않는다 — 높은 별점은 rating="4,5" 필터로 얻는다.
         stats: True 면 집계 모드(총건수/평균/분포/상품별) — 목록 대신 통계만.
+        bucket: daily/weekly/monthly — 기간을 나눠 구간별 집계 추이를 한 번에 조회한다
+            (선택, stats=True 이고 from_date·to_date 를 둘 다 준 경우만).
+            "주별 추이" 질문에 이 인자를 쓰면 구간마다 따로 호출할 필요가 없다.
         limit: 반환 상한(선택, 서버 기본 20·최대 100).
         offset: 페이지 오프셋(선택).
     """
@@ -1557,6 +1710,23 @@ async def get_reviews(
         if from_date and to_date
         else "(기준: 최근 7일 기본 적용)"
     )
+    if bucket is not None:
+        # bucket 은 stats 전용이다 — 목록 모드로 열어 주면 구간 수 × limit 만큼 원문이
+        # 쏟아져 워커 입력을 덮고, 어차피 추이는 집계로만 읽힌다. 기간도 필수다:
+        # 서버 기본 7일은 요청마다 오늘이 달라져 버킷 경계를 고정할 수 없다.
+        if not stats:
+            return "Error: bucket 은 stats=True 집계 모드에서만 쓸 수 있습니다."
+        if not (from_date and to_date):
+            return "Error: bucket 을 쓰려면 from_date·to_date 를 모두 지정해야 합니다."
+        return await _get_reviews_bucketed(
+            brand_id,
+            from_date=from_date,
+            to_date=to_date,
+            product_id=product_id,
+            rating=rating,
+            unit=bucket,
+            max_buckets=settings.seller_review_bucket_max,
+        )
     if stats:
         # [#494] rating 은 집계에도 적용되는 필터다(I-31) — 안 넘기면 전 별점 합산
         # byProduct 가 돌아오는데 에러도 경고도 없어, 워커가 그것을 '저평점이 몰린
@@ -1589,9 +1759,13 @@ async def get_reviews(
             for p in agg.by_product
         )
         by_product_note = f" 상품별: {by_product}." if by_product else ""
+        # [#518] 감성 요약은 rating 미지정일 때만 붙인다 — 별점을 걸고 온 집계에 긍부정
+        # 비율을 얹으면 분모가 그 별점 범위라 "부정 100%" 같은 자명한 수가 나오고,
+        # #494 가 세운 rating 지정 경로의 출력도 회귀한다.
+        sentiment_note = "" if rating else _review_sentiment_note(agg.distribution, agg.total_count)
         return (
             f"리뷰 집계{rating_scope}: 총 {agg.total_count}건, {avg_note}. 분포: {dist_note}."
-            f"{by_product_note} {period_note}"
+            f"{by_product_note}{sentiment_note} {period_note}"
         )
     # [#496] sort 화이트리스트 선검증 — BE 도 400 VALIDATION_ERROR 로 거부하지만(api-spec
     # §4.20), 폐기된 구 어휘 `rating` 은 LLM 이 여전히 낼 수 있고 왕복 1회(3s 타임아웃
@@ -1618,9 +1792,14 @@ async def get_reviews(
     if not result.rows:
         return f"조회 조건에 해당하는 리뷰가 없습니다. {period_note}"
     shown = result.rows[: settings.seller_summary_max_reviews]
+    # [#518] content·authorNickname 은 nullable 이다(별점만 남기는 리뷰가 실재한다).
+    # f-string 에 그대로 넣으면 판매자 화면에 "None" 이 찍히고, 그보다 나쁘게는 워커가
+    # 그 행을 불만 유형 분류에 집어넣는다 — 내용이 **없다**는 사실을 문구로 세워
+    # 프롬프트가 분류 대상에서 뺄 수 있게 한다(#495 의 '라벨없음' 과 같은 규약).
     lines = [
         f"[리뷰 {row.review_id}] {row.product_name}(productId={row.product_id}) "
-        f"★{row.rating} {row.created_at[:10]} {row.author_nickname}: {row.content}"
+        f"★{row.rating} {row.created_at[:10]} {row.author_nickname or '익명'}: "
+        f"{row.content or '(내용 없음)'}"
         for row in shown
     ]
     omitted = len(result.rows) - len(shown)
@@ -1735,7 +1914,8 @@ async def update_product(
         description: 변경할 상세 설명(선택).
         category: 변경할 카테고리(선택).
         image_url: 변경할 대표 이미지 URL(선택).
-        status: ON_SALE/HIDDEN 중 하나로 변경(선택).
+        status: ON_SALE/HIDDEN 중 하나로 변경(선택). DELETED 는 지정할 수 없다
+            — 삭제는 I-12 전용 전이라 BE 가 거부한다(§4.5).
         stock_quantity: 변경할 재고 수량(절대값, 선택).
     """
     brand_id = runtime.context.brand_id
@@ -1751,6 +1931,9 @@ async def update_product(
             stock_quantity=stock_quantity,
         )
         result = await get_spring_client().update_product(brand_id, product_id, patch)
+    except ProductDeletedNotEditable:
+        # 재시도가 무의미한 "안 되는 일" — 장애 문구로 뭉개면 에이전트가 재시도를 권한다.
+        return f"Error: 이미 삭제된 상품이라 수정할 수 없습니다(productId={product_id})."
     except SpringUnavailableError as exc:
         return f"Error: 상품 수정에 실패했습니다({exc})."
     return f"수정됨: productId={result.product_id}"
@@ -1759,7 +1942,10 @@ async def update_product(
 @tool
 @_traced_tool("tool.delete_product")
 async def delete_product(runtime: ToolRuntime[SellerContext], product_id: int) -> str:
-    """상품을 삭제(숨김)한다(I-12, api-spec §4.5). 물리 삭제 없음 — HITL 승인 후 호출.
+    """상품을 삭제한다(I-12, api-spec §4.5). status=DELETED 전환 — HITL 승인 후 호출.
+
+    물리 삭제는 없지만 숨김(HIDDEN)과 다른 상태다 — 숨김은 판매자 목록에 남아 되돌릴 수
+    있고, 삭제는 목록에서도 빠지며 되돌릴 수 없다. 잠시 내릴 목적이면 I-11 로 HIDDEN 을 쓴다.
 
     Args:
         product_id: 대상 상품 식별자.
@@ -1767,9 +1953,12 @@ async def delete_product(runtime: ToolRuntime[SellerContext], product_id: int) -
     brand_id = runtime.context.brand_id
     try:
         result = await get_spring_client().delete_product(brand_id, product_id)
+    except ProductAlreadyDeleted:
+        # 멱등 200 이 아니다 — "이미 된 일"과 "방금 한 일"을 구분해야 거짓 성공을 막는다.
+        return f"Error: 이미 삭제된 상품입니다(productId={product_id})."
     except SpringUnavailableError as exc:
         return f"Error: 상품 삭제에 실패했습니다({exc})."
-    return f"삭제(숨김)됨: productId={result.product_id} (status={result.status})"
+    return f"삭제됨: productId={result.product_id} (status={result.status})"
 
 
 @tool

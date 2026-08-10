@@ -12,13 +12,18 @@ SearchBackend로 구현해 골든셋 비교. [2026-08-03 #32] 방식2를 확정�
 
 from __future__ import annotations
 
+import json
 import math
 import os
 from functools import lru_cache
-from typing import Literal, NamedTuple
+from typing import Annotated, Literal, NamedTuple
 
 from pydantic import Field, SecretStr, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+# 모델 단가표 기본값의 단일 출처(#437) — model_pricing 은 최상단에서 config 를 import 하지
+# 않으므로 여기서 최상단 import 해도 순환이 생기지 않는다.
+from app.core.model_pricing import DEFAULT_MODEL_PRICE_IN_PER_1K, DEFAULT_MODEL_PRICE_OUT_PER_1K
 
 # I-21 계약 하드 상한(api-spec §4.2) — 노출 개수 설정이 계약을 넘지 못하게 묶는 기준.
 # 계약 값의 단일 출처는 스키마다(app/schemas/spring.py) — 여기서 숫자를 다시 적지 않는다.
@@ -54,13 +59,15 @@ ROUTE_INTENTS = frozenset(
         "wishlist_add",
         "wishlist_remove",
         "wishlist_view",
+        "cart_quantity",
     }
 )
 
 
 class RescueStageCounts(NamedTuple):
-    """구매자 30s 예산 안에서 도는 Spring I-1 호출의 이론적 최악 단 수 — 억제 스코프별로
-    나눈다 (#427 D7, PR #452 리뷰 R3 로 재정의).
+    """구매자 30s 예산 안에서 도는 Spring I-1 호출의 이론적 최악 단 수 — 런타임 좁히기가
+    "남은 단 수"를 세는 단위로 나눈다 (#427 D7, PR #452 리뷰 R3 로 재정의, #306 으로 억제
+    스코프 구분 소멸).
 
     DESIGN-SHARED-BUDGET-384 §3 D7 이 요구하는 **단일 계수 원천**이다. 기동 검증기
     (`_require_search_retry_within_stream_budget`)와 런타임 좁히기(D4, "남은 단 수" 계산,
@@ -142,7 +149,6 @@ def _rescue_chain_serial_budget_s(
     counts: RescueStageCounts,
     search_timeout_s: float,
     spring_max_retries: int,
-    search_retry_on_deferred_conditions: bool,
 ) -> float:
     """첫 `conditions` 앞 직렬 Spring 구간(본검색 + F-1/#343 재검색 + 자동완화 probe) 직렬
     최악 벽시계 (#427 D7).
@@ -151,56 +157,24 @@ def _rescue_chain_serial_budget_s(
     본검색 제외)이 아니라 본검색을 포함한 넓은 "첫 conditions 앞 직렬 Spring 구간"이다
     (DESIGN-SHARED-BUDGET-384 §2 용어 정의 F2).
 
-    §1(d) 각주①의 억제 스코프 비대칭을 반영한다 — `search_retry_on_deferred_conditions=False`
-    (기본값)일 때 F-1/#343 재검색(`counts.rescue`)은 `graph.py::stream_recommendation` 의
-    `suppress_search_retry()` 컨텍스트 **밖**에서 돌아 재시도가 억제되지 않는다
-    (`spring_client.py::search_products` 의 `attempts` 계산이 그 블록 안에서만 1회로
-    강제된다). 나머지(본검색·자동완화 probe)만 억제된다. `True` 면 억제 산출부
-    (`suppress_deferred_search_retry`) 자체가 항상 False 라 세 항 모두 재시도 예산을 쓴다.
+    **[#306] 세 항의 값 매김은 균일하다.** 종전에는 미룬 턴(`may_auto_relax=True`)의
+    본검색·자동완화 probe 만 `suppress_search_retry()` 로 재시도가 억제되고 F-1/#343 재검색은
+    그 블록 밖이라 혼자 재시도 전액을 쓰는 비대칭이 있었고(§1(d) 각주①), 이 함수는 턴별 판정을
+    할 수 없어 억제되는 턴/안 되는 턴 두 상한의 `max` 를 냈다(PR #452 R4). #306 이 억제 기구를
+    제거해 **모든 단이 `spring_max_retries` 를 그대로 쓰므로** 그 분기와 비대칭이 함께 사라졌고,
+    남는 것은 `단 수 × 단가` 곱셈 하나다. `spring_client.py::search_products` 의
+    `attempts = spring_max_retries + 1` 과 글자 그대로 같은 규칙이다.
 
-    [PR #452 리뷰 R4] **OFF 분기(`search_retry_on_deferred_conditions=False`)는 억제가 실제로
-    걸리는 턴과 안 걸리는 턴, 상호배타인 두 유형의 `max` 다.** `suppress_deferred_search_retry
-    = may_auto_relax and not search_retry_on_deferred_conditions`(`graph.py`)이고
-    `may_auto_relax` 는 **턴별**(그 턴의 `underspecified`·실제 완화 후보 유무)이라, 이 함수는
-    (config 만 보는 순수 함수라 `underspecified` 를 모른다, R3 의 `_rescue_chain_stage_counts`
-    docstring 과 같은 이유) 어느 쪽이 이 턴에 해당하는지 판정하지 않고 **두 유형의 상한을 모두
-    재서 큰 쪽을 쓴다**:
-
-    - **A. 억제가 걸리는 턴**(`may_auto_relax=True`) — `main`·`auto_relax` 는 억제된 1회분
-      (`search_timeout_s`), `rescue` 는 억제 밖이라 재시도 전액(`retried_budget`):
-      `(main + auto_relax) * search_timeout_s + rescue * retried_budget`.
-    - **B. 억제가 안 걸리는 턴**(`may_auto_relax=False`) — `main`·`rescue` 모두 재시도 전액
-      (`retried_budget`), 그리고 **`auto_relax` 는 0 단이다** — 자동완화 루프는
-      `relaxation_auto_fields` 후보가 있어야 돌고 그 후보 유무가 정확히 `may_auto_relax` 를
-      가르는 조건이라(`build_relaxation_candidates`·`graph.py` 의 `may_auto_relax` 판정),
-      `auto_relax` 후보가 있는데 `may_auto_relax=False` 인 턴은 존재할 수 없다:
-      `(main + rescue) * retried_budget`.
-
-    `main` 은 항상 1(R3)이라 `A - B = search_timeout_s * (auto_relax - spring_max_retries)`
-    라는 정확한 식이 성립한다(`rescue` 항은 상쇄돼 사라진다) — 부호로 어느 쪽이 최악인지
-    바로 읽힌다: `auto_relax > spring_max_retries` 면 A, `auto_relax < spring_max_retries` 면
-    B, 같으면 둘이 정확히 같다. **오늘 기본값(`auto_relax=1`)은 `spring_max_retries` 가 취할
-    수 있는 두 값(0·1, `le=1` 필드 제약) 모두에서 `auto_relax >= spring_max_retries` 라 A 가
-    최악이거나 A=B 다** — 그래서 `max(A, B)` 로 바꿔도 오늘 기본값에서 결과값은 항상 A(=이
-    함수를 R4 이전으로 되돌렸을 때의 값)와 같다. `auto_relax == 0`(`RELAXATION_MAX_ROUNDS=0`
-    또는 자동/칩 교집합 공집합)으로 낮추고 `spring_max_retries=1` 을 켜야만(`auto_relax(0) <
-    retries(1)`) B 가 A 를 넘어선다 — R3 가 이 함수의 30s·observe 꼬리 예약 비교를 미룸과
-    무관하게 상시 적용하도록 넓혀서, 그 조합에서 A 만 쓰던 종전 값매김이 실제 최악 벽시계를
-    과소평가하는 결함으로 드러났다(R3 가 열어 준 검증 범위가 아니었다면 드러나지 않았을
-    내부 불일치).
+    이 값은 **이론 상한**이지 실집행값이 아니다 — `rescue_budget_mode` 가 `narrow` 이상이면
+    런타임 좁히기(D4)가 각 단에 잔여 턴 예산을 남은 단 수로 나눠 주므로 실제 소요는 이보다
+    작다. 기동 검증은 그 좁히기가 없어도(=`observe`) 설정 자체가 안전한지를 본다.
 
     기동 검증(`_require_search_retry_within_stream_budget`)과 런타임 좁히기(D4, 그래프의
     "남은 단 수" 계산) **둘 다** 이 함수 하나만 호출한다 — 한쪽만 고쳐지는 드리프트를
     막는다(#383 이 고친 것과 같은 실패 모드, D7).
     """
     retried_budget = search_timeout_s * (spring_max_retries + 1)
-    if search_retry_on_deferred_conditions:
-        return (counts.main + counts.rescue + counts.auto_relax) * retried_budget
-    scenario_a_suppressed = (
-        counts.main + counts.auto_relax
-    ) * search_timeout_s + counts.rescue * retried_budget
-    scenario_b_unsuppressed = (counts.main + counts.rescue) * retried_budget
-    return max(scenario_a_suppressed, scenario_b_unsuppressed)
+    return (counts.main + counts.rescue + counts.auto_relax) * retried_budget
 
 
 def _deferred_first_event_i1_calls(
@@ -225,10 +199,8 @@ def _deferred_first_event_i1_calls(
 
     [PR #452 리뷰 R6] #383(PR #414)이 "구제 폴백 항만 떼는" 자매 함수(rescue-only 추출기)를
     별도로 뒀던 이유는, 그 시절 검증기가 억제된 항(1 회분)과 구제 폴백 항(`budget = 검색예산 ×
-    (재시도+1)`)을 항목별로 직접 조립했기
-    때문이다 — **F-1/#343 재검색은 `suppress_search_retry()` 블록 밖이라 억제 여부와 무관하게
-    항상 `spring_max_retries` 만큼 재시도한다**(#383 의 핵심 발견, 그 사실 근거는 이제
-    `_rescue_chain_serial_budget_s` docstring 이 갖고 있다). R2 이후 그 항목별 조립은
+    (재시도+1)`)을 항목별로 직접 조립했기 때문이다(#306 이 그 억제를 없애 항목별 값 매김
+    자체가 균일해졌다 — `_rescue_chain_serial_budget_s` docstring 참조). R2 이후 그 항목별 조립은
     `_rescue_chain_serial_budget_s` 안으로 옮겨져 `counts.rescue` 를 함수 내부에서 직접
     곱하므로, 별도 추출기가 더 이상 필요 없어져 R6 가 삭제했다 — 운영 소비처가 이미 0곳이었고
     (D7 이 막으려는 "같은 계수의 두 번째 미사용 추출기" 드리프트 미끼), 카테고리 토글이
@@ -310,11 +282,39 @@ class Settings(BaseSettings):
     # 바꾸면 목록에서 빼는 것으로 원복된다. 매칭은 접두사 — 날짜 스냅샷 ID도 함께 걸린다.
     openai_tool_reasoning_incompatible_models: list[str] = ["gpt-5.6-luna"]
     openai_tool_reasoning_effort_override: str = "none"
-    # 요청 단위 비용 관측 단가(USD / 1,000 tokens). 운영 값은 환경변수 JSON으로 주입한다.
-    # 빈 기본값은 임의 가격을 코드에 박지 않기 위한 fail-visible 설정이며, 미등록 모델은
-    # observability가 비용 0 + 경고로 처리한다.
-    model_price_in_per_1k: dict[str, float] = Field(default_factory=dict)
-    model_price_out_per_1k: dict[str, float] = Field(default_factory=dict)
+    # 요청 단위 비용 관측 단가(USD / 1,000 tokens). 운영 env 주입 경로(deploy.yml)가 아직
+    # 배선되지 않아 빈 기본값이면 운영 costUsd 가 항상 0 이었다(#437). 그래서 기본값을
+    # `app/core/model_pricing.py`(단일 출처, evals/model_eval/pricing_manifest.json 과 동일)의
+    # 코드 내장 단가로 바꾼다 — env 주입은 **표 전체를 치환**한다(병합이 아니다). 미등록 모델은
+    # 여전히 observability 가 비용 0 + `MODEL_PRICE_MISSING` 경고로 처리한다.
+    # `default_factory` 로 매 인스턴스 새 dict 복사본을 만든다 — 공유 가변 기본값이면 한
+    # `Settings()` 인스턴스에서의 변형이 다음 인스턴스를 오염시킨다.
+    model_price_in_per_1k: Annotated[dict[str, float], NoDecode] = Field(
+        default_factory=lambda: dict(DEFAULT_MODEL_PRICE_IN_PER_1K)
+    )
+    model_price_out_per_1k: Annotated[dict[str, float], NoDecode] = Field(
+        default_factory=lambda: dict(DEFAULT_MODEL_PRICE_OUT_PER_1K)
+    )
+
+    @field_validator("model_price_in_per_1k", "model_price_out_per_1k", mode="before")
+    @classmethod
+    def _empty_model_price_table_uses_default(cls, value: object, info) -> object:
+        # deploy.yml 은 미설정 vars 를 빈 문자열로 env 파일에 쓴다. 우리가 운영자에게 이 두
+        # 키를 deploy.yml 에 추가하라고 안내하므로, 빈 문자열이 JSON 파싱 실패로 기동을 죽이는
+        # 경로를 우리가 만들어 두는 셈이 된다(2026-08-05 APP_ENVIRONMENT 빈 값 부팅 실패와
+        # 같은 함정). 빈 문자열(공백만인 경우 포함)은 필드 기본값으로 해석한다.
+        # ⚠️ 이 필드는 `default_factory` 를 쓰므로 `cls.model_fields[name].default` 는
+        # `PydanticUndefined` 다 — `default_factory()` 를 호출해 기본값을 얻는다.
+        # ⚠️ dict 는 pydantic-settings 가 "복합 타입"으로 분류해 필드 검증기가 값을 보기도
+        # 전에 env 문자열을 JSON 디코드한다 — 빈 문자열은 그 디코드 단계에서 이미
+        # `SettingsError` 로 죽어 이 validator 에 도달조차 못한다(실측 확인). `NoDecode` 로
+        # 자동 디코드를 끄고 여기서 직접 `json.loads` 해야 빈 문자열을 가로챌 수 있다.
+        if isinstance(value, str):
+            if value.strip() == "":
+                default_factory = cls.model_fields[info.field_name].default_factory
+                return default_factory()
+            return json.loads(value)
+        return value
 
     # ── Google 임베딩 API (MVP, §4.8 배치 + 임베딩 검색) ──
     # [2026-07-20 결정 6 개정, v0.15.14] 셀프호스트 torch → Google gemini-embedding-001 API.
@@ -447,6 +447,18 @@ class Settings(BaseSettings):
     # off — 운영은 `deploy.yml` env 로 켠다(미등록 시 빈 문자열 폴백은 위와 동일).
     color_synonym_array_contract_ready: bool = False
 
+    # ── 브랜드 법인 표기 확장 (#466, `app.pipelines.brand_aliases`) ──
+    # 색상과 달리 **기본 on** 이다. 색상 확장은 DB 사전을 읽어야 해서 DB 없는 환경에서 연결
+    # 시도만 남지만(위), 브랜드 확장은 순수 함수라 의존이 없다. 그리고 이 플래그가 고치는 것은
+    # 결함이다 — 운영 시드 실측으로 "삼성" 발화가 78건 중 7건(9.0%), "LG" 가 38건 중 1건(2.6%)
+    # 에만 닿는다. 하방은 유계다: 확장은 **가산적**이고 exact IN 이라 미존재 이름은 BE 가 무시
+    # 한다(api-spec §4.6). off 로 두면 와이어가 바이트 단위로 종전과 같다.
+    brand_alias_expansion_enabled: bool = True
+    # `brandName` 반복 파라미터 개수 상한 — 계약에 상한은 없지만(§4.6) URL 길이는 유계여야
+    # 한다. 사용자 원문이 **먼저** 채워지므로 상한에 걸려도 종전 동작을 잃지 않는다
+    # (`brand_aliases.expand_brands`). 0 이면 확장 없이 원문으로 검색한다.
+    brand_alias_max_values: int = Field(default=12, ge=0)
+
     @field_validator(
         "color_synonym_expansion_enabled", "color_synonym_array_contract_ready", mode="before"
     )
@@ -574,6 +586,11 @@ class Settings(BaseSettings):
     # 서버 페이지 상한(limit≤100)과 별개인 "도구 응답 상세도" 상한이다.
     seller_summary_max_orders: int = 10  # I-29 주문 rows 상세 나열 상한(건)
     seller_summary_max_reviews: int = 10  # I-31 리뷰 rows 상세 나열 상한(건)
+    # [#518] get_reviews(bucket=) 팬아웃 상한 — 버킷 1개당 I-31 왕복 1회다. 상한이
+    # 없으면 731일(seller_period_max_days) × daily = 731 회가 판매자 스트림 상한
+    # 90s(§2.9 c) 안에서 동시에 나간다. 12 는 "주별 3개월"·"월별 1년"이 한 번에
+    # 들어오는 값이며, 초과 요청은 조회 전에 거절하고 더 넓은 단위를 안내한다.
+    seller_review_bucket_max: int = 12  # I-31 bucket 팬아웃 구간 수 상한
 
     # ── 판매자 분석 계산 층 (이슈 #290, app/agents/seller/analysis/ 주입) ──
     # 근거 논문·산식은 docs/worker-papers.md — 아래 기본값은 논문 권장값이다.
@@ -618,11 +635,26 @@ class Settings(BaseSettings):
     seller_vision_timeout_s: float = 20.0
     # 카테고리 스냅샷(#506) — BE 조회 없이 AI 가 로컬 JSON 으로 보유한다.
     # 파일 교체 = 배포(정합 리스크는 스냅샷 meta.version 으로 추적).
+    # 파일은 손으로 고치지 않는다 — scripts/build_seller_category_snapshot.py 가 정본
+    # DB(category 테이블)에서 생성한다. id 가 실 DB 와 어긋나면 등록이 통째로 죽는다.
     seller_category_snapshot_path: str = "app/data/seller_categories.json"
-    seller_category_candidates_k: int = 5  # 초안 에이전트에 주입할 카테고리 후보 수
-    # confirm 시 Spring I-10 `category`(자유 문자열)에 쓸 값 — BE 와 맞출 유일한 지점.
-    # leaf(말단 명칭) | path("A > B > C") | id(스냅샷 id 그대로).
-    seller_category_write_mode: Literal["leaf", "path", "id"] = "leaf"
+    # 초안 에이전트에 주입할 카테고리 후보 수 — 실 스냅샷이 1,000건대라 5개로는
+    # 동의어(셔츠/남방·티셔츠)가 잘려 에이전트가 카테고리를 포기하는 일이 잦다.
+    seller_category_candidates_k: int = 8
+    # 폴백(LLM 택1) 때 후보를 몇 배로 넓힐지 — 같은 폭으로 다시 물으면 의미가 없다.
+    seller_category_fallback_k_factor: int = 3
+    # 카테고리 LLM 택1 상한 — 에이전트가 카테고리를 못 고른 턴에만 1회 추가된다.
+    seller_category_resolve_timeout_s: float = 12.0
+    # NOTE: 구 `seller_category_write_mode`(leaf|path|id)는 폐기했다(2026-08-09).
+    # BE `SellerProductCreateRequest.categoryId` 는 **Long 필수**라 이름·경로 문자열을
+    # 받는 필드가 없다 — 고를 여지가 애초에 없었고, 기본값 leaf 가 등록 실패의 원인이었다.
+    # ── 옵션별 재고 와이어 모드 (#524, blocked:spring) ──────────────────────────
+    # I-10/I-11 재고를 어느 형식으로 보낼지. BE 마이그레이션 순서(1단계 expand SQL →
+    # PR B 배포 → 2단계 contract SQL)에 AI 배포가 물리지 않도록 코드가 두 형식을 다 안다.
+    #   quantity: 구 계약 stockQuantity(정수) — 현재 배포된 BE 가 받는 유일한 형식.
+    #   stocks:   신 계약 stocks[{optionId,quantity}] — BE PR B 배포 확인 후 이 값으로 전환.
+    # quantity 모드에서 옵션별 재고 발화는 반영하지 않고 안내한다(BE 가 저장할 곳이 없다).
+    seller_stock_wire_mode: Literal["quantity", "stocks"] = "quantity"
     # 초안 대기 게이트(수정/승인안내/취소/딴주제 분류) LLM 상한 — 실패 시 일반 흐름 폴백.
     seller_pending_gate_timeout_s: float = 8.0
     # 4-2 HITL 실행(hitl.py): confirm 시점 I-9 재조회(stale 검증)의 페이지 순회 상한 —
@@ -1184,11 +1216,12 @@ class Settings(BaseSettings):
         "거로",
     ]
 
-    # ── 장바구니 삭제 · 찜 (이슈 #116·#117, I-24~I-28 — 확정 2026-08-05, Spring 구현 진행 중) ──
+    # ── 장바구니 삭제 · 찜 (이슈 #116·#117, I-24~I-28 — 확정 2026-08-05, Spring 구현됨) ──
+    # [#285] BE `jarvis-backend` main 실측(2026-08-08, BE PR #92·#93) — api-spec §4.12~4.16 v0.31.3.
     # [라운드 23] 삭제·찜 흐름의 온/오프를 가리던 두 설정 필드(기본 False)를 삭제했다(사용자
     # 지시 — 플래그를 두지 말고 항상 켜라) — 계약이 확정됐으니 판정이 나오면 항상 해당 흐름으로
-    # 위임한다. Spring 이 아직 배포 전이라 실호출은 실패로 degrade하지만(§4.12~4.16), 그 실패는
-    # AI 쪽 설정이 아니라 상대 서버 상태의 문제라 AI 코드에 게이트를 둘 이유가 없다.
+    # 위임한다. 상대 서버(Spring)가 일시 장애를 겪어 실호출이 실패로 degrade하는 경우가 있어도,
+    # 그 실패는 AI 쪽 설정이 아니라 상대 서버 상태의 문제라 AI 코드에 게이트를 둘 이유가 없다.
     # 삭제 발화 표지 — "빼" 같은 짧은 조각은 오탐(빼곡·빼고·뺴빼로)이 흔해 쓰지 않는다. 어미까지
     # 포함한 동작 구만 잡는다("하나 빼고 담아줘"의 "빼고"는 여기 없음 — 삭제 지시가 아니다).
     # [라운드 2 리뷰] 제거해줘·빼 주세요·지워 주세요 추가 — 흔한 변형이면서 전부 어미까지 갖춘
@@ -1202,6 +1235,27 @@ class Settings(BaseSettings):
         "제거해줘",
         "빼 주세요",
         "지워 주세요",
+    ]
+    # [#285, I-25 §4.13 — 1단계] 수량 변경(치환) 표지. 여기 튜너블은 아직 아무 코드도 읽지
+    # 않는다(2단계가 decompose/intent_guard 에서 소비) — "튜너블 하드코딩 금지" 규칙 때문에
+    # 소비 로직보다 먼저 config.py 에 넣어 둔다.
+    # `cart_remove_markers` 와 같은 이유로 짧은 조각을 뺐다 — "바꿔" 단독은 "색상 바꿔줘"·
+    # "다른 걸로 바꿔줘"(둘 다 수량과 무관) 오탐 표면이 커서 어미까지 갖춘 동작 구만 담는다.
+    cart_quantity_markers: list[str] = [
+        "개로 바꿔",
+        "개로 변경",
+        "개로 해줘",
+        "수량 바꿔",
+        "수량 변경",
+    ]
+    # I-25 는 **치환**이라 "더 담아"류(합산)는 이 계약이 아니라 I-2(§4.1) 재호출이다 — 2단계가
+    # 이 표지를 보고 수량 변경으로 가지 않게 막는 용도. `cart_add_markers`("담아")와 겹치는
+    # 어휘("담아")를 단독으로 넣지 않는 이유도 같다 — 여기 목록은 "더/추가로 + 담다" 조합만
+    # 어미까지 갖춰 닫는다.
+    cart_quantity_increment_markers: list[str] = [
+        "더 담아",
+        "하나 더",
+        "추가로 담아",
     ]
     # 담기 표지 — 삭제/찜 표지와 같은 발화에 함께 있으면 담기가 강한 신호로 우선한다(§4.1
     # "찜한 거 담아줘"·"하나 빼고 담아줘" — 강한 신호는 약한 신호로 덮지 않는다, docs/lessons.md).
@@ -1232,23 +1286,177 @@ class Settings(BaseSettings):
     # ⚠️ "찜 빼줘"는 cart_remove_markers 의 "빼줘"도 부분 문자열로 동시에 매칭한다 —
     # classify_cart_utterance 의 판정 순서(찜 해제 → 찜 추가 → 삭제 → 담기)가 이 충돌을
     # 해소한다(찜 해제를 삭제보다 먼저 본다). 표지 목록 자체는 겹침을 허용하고 순서로 정리한다.
+    # [라운드 3 리뷰 F8] "찜 취소"(어미 없는 명사형)를 여기서 뺐다 — 왼쪽 경계만으로는
+    # "찜 취소는 어떻게 해?"·"찜 취소선 그어줘" 같은 조회·질문까지 명령으로 읽혔다(실측,
+    # 파괴적). `wishlist_remove_noun_markers`(아래)로 옮겨 왼쪽 경계 + 명사형 종결 규칙을
+    # 함께 받게 했다 — "장바구니 억제를 받지 않는다"는 이 목록의 규약은 그쪽도 그대로 유지한다.
     wishlist_remove_markers: list[str] = [
         "찜 빼줘",
         "찜 해제해줘",
         "찜에서 빼줘",
-        "찜 취소",
         "찜에서 지워",
     ]
+    # 어미 없는 명사형 찜 해제 표지(#440, 라운드 3 리뷰 F8) — `wishlist_remove_markers` 와
+    # 같은 사다리 1번 단계에서 보되, 오른쪽에 `_noun_ending_match_end`(발화 끝 또는 용언 어미 직결)를
+    # 추가로 요구한다(`intent_guard.has_wishlist_remove_evidence`·`classify_cart_utterance`
+    # 참조). `"찜 취소해줘, 장바구니는 그대로 두고"` 처럼 이 목록도 장바구니 억제를 받지
+    # 않는다 — 그 규약은 `wishlist_remove_markers` 와 공유한다.
+    wishlist_remove_noun_markers: list[str] = ["찜 취소", "찜 해제"]
     # 찜 지시 표지 — "찜한 거 담아줘"·"찜해둔 이어폰 담아줘"류에서 찜은 지시 대상을 수식할 뿐
     # 동작이 아니다. 이 표지가 있으면 찜 판정에 개입하지 않는다(그 발화의 동사는 담기다).
+    # [라운드 1 리뷰 F4] 이 4개는 아래 `wishlist_target_markers`(#440 인접 결합 head 축)의
+    # **부분집합이어야 한다** — 지시 수식어는 전부 인접 결합의 head 도 될 수 있어야 하기
+    # 때문이다("찜해뒀던 거 빼줘"처럼 여기에 새 수식어를 추가하면 그 낱말도 head 로 인식돼야
+    # 한다). `set(wishlist_reference_markers) <= set(wishlist_target_markers)` 를
+    # `tests/unit/test_wishlist_remove_resolution.py` 가 테스트로 고정한다 — 한쪽만 고쳐지는
+    # "같은 개념이 두 곳에 각자 있다가 한쪽만 고쳐진다" 재발(`negation.py` 상단 docstring)을
+    # 막는다. 한쪽에 낱말을 추가하면 반드시 `wishlist_target_markers` 도 함께 고쳐라.
     wishlist_reference_markers: list[str] = ["찜한", "찜해둔", "찜해 놓은", "찜했던"]
-    # ⚠️ [#440] **찜 조회/해제를 가르는 표지 목록은 두지 않는다.** #386 에서 두 번 시도했다가
-    # 둘 다 뺐다 — 조회 표지 목록은 조회 표현을 전수로 알아야 성립해 `"내 찜 뭐야"` 류에서 뚫렸고,
-    # 반대로 "찜 명사 + 해제 동사" 결합은 짧은 표지가 다른 낱말에 묻혀(`"찜"` ⊂ `찜닭`,
-    # `"빼"` ⊂ `빼고`) `"찜닭 빼고 보여줘"` 를 해제 근거로 오인했다. 바로 위
-    # `cart_remove_markers` 주석이 이미 경고한 그 함정이다. 어절 경계가 없는 한국어에서
-    # 부분 문자열만으로 이 둘을 가르려면 인접성 판정이 필요하고, 그건 `negation.py`·`remove.py`
-    # 와 얽힌 별도 작업이라 #440 으로 옮겼다.
+    # ⚠️ [#440] **해결됨 — 인접 결합(pair) 판정으로 조회/해제를 가른다.** #386 은 두 접근을
+    # 시도했다가 둘 다 되돌렸다 — ① 조회 표지 전수화는 목록 밖 표현("내 찜 뭐야")에서 뚫렸고,
+    # ② "찜 명사 + 해제 동사" 부분 문자열 결합은 짧은 표지가 다른 낱말에 묻혀(`"찜"` ⊂ `찜닭`·
+    # `갈비찜`·`찜질방`, `"빼"` ⊂ `빼고`) `"찜닭 빼고 보여줘"` 를 해제 근거로 오인했다(바로 위
+    # `cart_remove_markers` 주석이 이미 경고한 그 함정). #440 은 `negation.matches_pair_unnegated`
+    # (어절 경계 + **닫힌 어휘 브리지**, 라운드 3 리뷰 F7 — 거리(창)는 "같은 명령"을 보장하지
+    # 못해 브리지로 교체했다)로 이 둘을 가른다 — 아래 튜너블이 그 판정의 head·tail·브리지 축이다.
+    # 찜 지시 명사(#440) — 인접 결합 판정의 head 축. 어절 경계 검사를 통과한 출현만 센다
+    # (`negation.matches_pair_unnegated`) — 그래서 `찜닭`·`갈비찜`·`찜질방` 의 "찜" 은 걸리지 않는다.
+    # [라운드 1 리뷰 F4] 위 `wishlist_reference_markers` 4개를 문자 그대로 포함한다 — 그쪽이
+    # 이 목록의 부분집합이어야 한다는 불변식은 여기 말고 그 필드 주석에 적었다. 새 지시 수식어를
+    # 여기 추가하면 `wishlist_reference_markers` 도 같이 고쳐라(반대 방향도 마찬가지).
+    # [라운드 1 리뷰 F1-(c)] "찜목록"(붙여쓰기) 추가 — "찜 목록"은 이미 bare "찜"+공백으로
+    # 걸리지만, 붙여쓴 "찜목록에서 빼줘"는 bare "찜" 뒤가 "목"이라(의존명사도 조사도 경계문자도
+    # 아니다) 오른쪽 경계 검사에서 죽는다. 별도 head 로 등록해 그 붙여쓰기 자체를 지시 명사로 센다.
+    wishlist_target_markers: list[str] = [
+        "찜",
+        "찜한",
+        "찜해둔",
+        "찜해 놓은",
+        "찜했던",
+        "위시리스트",
+        "찜목록",
+    ]
+
+    # 찜 해제 동작 구(#440) — 인접 결합 판정의 tail 축. 전부 어미까지 갖춘 동작 구만 담는다
+    # (발화 전체 부분 문자열 검색이 아니라, head 뒤 브리지 바로 그 자리에서만 본다).
+    # [라운드 1 리뷰 F1-(b)] 지워주세요·없애줘·없애 줘·없애주세요·없애 주세요 추가 — 전부
+    # 어미까지 갖춘 동작 구라 오탐 표면이 없다. "지워주세요" 붙여쓰기가 `cart_remove_markers`
+    # (위)에 없는 건 기존 구멍이지만 그쪽은 이 이슈 범위 밖이라 건드리지 않는다 — 여기 tail
+    # 목록에만 보강한다.
+    # [라운드 3 리뷰 F8] "해제"·"취소"(어미 없는 명사형)를 여기서 뺐다 — 오른쪽 경계 없이
+    # 어미 동작구와 같은 자리에서 보면 "찜 해제 방법 보여줘"·"찜 취소 수수료 알려줘" 같은
+    # 조회·질문이 명령으로 읽힌다(실측, 파괴적). `wishlist_remove_action_nouns`(아래)로 옮겨
+    # 명사형 종결 규칙(`negation._noun_ending_match_end`)을 따로 받게 했다.
+    wishlist_remove_action_markers: list[str] = [
+        "빼줘",
+        "빼주세요",
+        "빼 줘",
+        "빼 주세요",
+        "지워줘",
+        "지워주세요",
+        "지워 주세요",
+        "삭제해줘",
+        "제거해줘",
+        "없애줘",
+        "없애 줘",
+        "없애주세요",
+        "없애 주세요",
+    ]
+
+    # 어미 없는 명사형 tail(#440, 라운드 3 리뷰 F8) — head 뒤 브리지 자리에서 보되, 오른쪽에
+    # `_noun_ending_match_end`(발화 끝이거나 아래 `utterance_action_verb_suffixes` 로 바로 이어질 때만)
+    # 를 추가로 요구한다. 위 `wishlist_remove_action_markers` 와 분리하는 이유: 그 목록은 전부
+    # 어미까지 갖춰 뒤에 다른 낱말이 붙는 구조가 아니지만, 이 명사형은 뒤에 조사·다른 낱말이
+    # 자유롭게 붙을 수 있어(취소는·취소선·취소 수수료) 오른쪽 검사가 반드시 필요하다.
+    wishlist_remove_action_nouns: list[str] = ["해제", "취소"]
+
+    # 앵커 스캔 전용 해제 동작 어간(#440 라운드 13 리뷰 F31) — `"빼지 말고"` 의 `"빼"` 처럼
+    # 부정 어미가 붙어 활용된 동작구를 **왼쪽 앵커가 소비**하기 위해서만 쓴다.
+    # ⚠️ 이 목록은 **명령의 근거로 절대 쓰지 마라** — 짧은 조각이라 `"빼"` ⊂ `빼고`·`빼곡` 같은
+    # 오탐이 그대로 있다(`cart_remove_markers` 주석 참조). 앵커는 "이 조각을 알고 있다"만 판정하고,
+    # 명령 여부는 끝의 완성형 tail + 종결 조건이 따로 증명한다 — 그래서 여기서만 안전하다.
+    wishlist_remove_action_stems: list[str] = ["빼", "지워", "삭제", "제거", "해제", "취소", "없애"]
+
+    # 위 명사형 뒤에 바로 이어지면 유효한 **요청 완성형** 용언 어미(#440, 라운드 3 리뷰 F8) —
+    # `wishlist_remove_noun_markers`(사다리 1-a 명사형)와 `wishlist_remove_action_nouns`
+    # (1-b tail) 가 함께 쓴다. "취소해줘"·"취소해 주세요"류를 살리고 "취소는"·"취소선"·"취소
+    # 수수료"는 죽인다.
+    # [라운드 4 리뷰 F10] **맨 어간("해"·"할"·"했"·"시켜")은 절대 넣지 마라** — 어간은 명령형만
+    # 만들지 않는다. "할"이 있으면 "할 방법"·"할 수 있는지"·"할까"가, "해"가 있으면 "해도 돼"가,
+    # "했"이 있으면 "했는지"가 전부 통과해 조회·질문이 삭제 명령으로 읽힌다(실측, 파괴적). 심지어
+    # 어간으로 **시작하는 다른 낱말**도 통과했다("찜 해제해당 여부 알려줘"의 "해당"이 "해"로
+    # 시작한다는 이유만으로 삭제까지 실행됐다, 재현 확인) — `"찜"` ⊂ `찜닭`, `"빼"` ⊂ `빼고` 와
+    # 같은 함정(짧은 조각이 다른 말에 묻힌다)의 **세 번째 재발**이다. 목록은 반드시 요청을
+    # 완성하는 형태(뒤에 다른 활용이 이어질 수 없는 종결형)만 담는다.
+    # [라운드 5 리뷰 F14] **"할래"·"할게" 를 뺐다** — 1인칭 의지형이라 `negation._noun_ending_match_end`
+    # 의 종결 검사를 통과해도 그 자체가 질문의 주제가 될 수 있다("찜 취소할게 맞지?"가 삭제로
+    # 읽혔다, 재현). 요청형(상대에게 해 달라고 하는 형태)만 남긴다 — 어간 다음은 짧은 조각이
+    # 다른 말에 묻히는 이 이슈의 **네 번째** 함정이었다(`_noun_ending_match_end` 가 접두 매칭만
+    # 하던 결함, 그 함수 docstring 참조).
+    utterance_action_verb_suffixes: list[str] = [
+        "해줘",
+        "해 줘",
+        "해주세요",
+        "해 주세요",
+        "해줄래",
+        "해 줄래",
+        "시켜줘",
+        "시켜 줘",
+        "해라",
+    ]
+
+    # 찜 head 와 해제 tail 사이에 올 수 있는 낱말(#440, 라운드 3 리뷰 F7) — **닫힌 어휘만**.
+    # `utterance_name_trailing_filler_words`(그쪽은 뜻 없는 부사·수량사)와 함께 쓰인다
+    # (`intent_guard._matches_wishlist_remove_pair` 가 호출부에서 합친다 — 새로 베끼지 않는다).
+    # 여기엔 찜 목록을 가리키는 일반명사만 둔다 — **상품명이 될 수 있는 말은 절대 금지**.
+    # 하나라도 실질명사가 들어가면 "찜 보고 이거 빼줘"·"찜한 상품 중에 이어폰 빼줘" 류가 다시
+    # 결합돼 사용자가 요청하지 않은 항목이 삭제된다(실측, 파괴적 — 라운드 3 리뷰 F7 재현).
+    wishlist_remove_bridge_words: list[str] = ["목록", "리스트", "상품", "거", "것", "게", "걸"]
+
+    # 찜 해제 명령 **앞**에 올 수 있는 낱말(#440, 라운드 9 리뷰 F22) — **닫힌 어휘만**.
+    # 관형사·지시대명사·소유 표현처럼 대상을 가리키기만 하는 말이다. **실질명사(상품명이 될 수
+    # 있는 말)는 절대 금지** — 하나라도 열면 `"다음 문구를 영어로 번역해줘: '찜 해제해줘'"`
+    # 처럼 해제 문구를 **인용한** 발화가 다시 명령으로 읽힌다(실측, 파괴적).
+    # `wishlist_remove_bridge_words` 와 `utterance_name_trailing_filler_words`·
+    # `utterance_name_boundary_particles` 도 함께 허용한다(같은 성격의 닫힌 어휘라 목록을 새로
+    # 베끼지 않는다 — `intent_guard.wishlist_remove_known_words` 가 호출부에서 합친다, 라운드
+    # 13 리뷰 F33 부터 규칙 1·2·3 이 이 한 함수의 결과를 그대로 공유한다).
+    # `negation._name_left_anchor_reachable` 가 발화 시작부터 이 합집합만으로 head **또는**
+    # 이름 시작에 도달하는지 검사한다 — 규칙 2·3(`intent_guard.has_wishlist_remove_evidence`)
+    # 은 head 자리에, 규칙 1(`negation.matches_name_unnegated_as_command`)은 상품명 자리에
+    # **같은 함수·같은 어휘**로 같은 앵커를 건다(라운드 11 리뷰 F28 — 상품명 **자체**가 닫힌
+    # 어휘일 필요는 없다, 그 **앞**이 닫힌 접두여야 한다는 뜻이라 두 규칙에 같은 앵커를 걸 수
+    # 있다. 라운드 9(F22)는 규칙 1을 별도의 라우팅급 게이트로 뒀었는데 그 분리가 두 라운드
+    # 연속 구멍을 냈다 — `wishlist.py` 상단 docstring "라운드 11 리뷰 F28" 문단 참조. 라운드
+    # 13 리뷰 F33 이전엔 규칙 2·3 의 앵커 어휘가 이 4개뿐이라 규칙 1의 더 넓은 목록과 실제로는
+    # **다른 앵커**였다 — 지금은 `wishlist_remove_known_words` 하나로 글자 그대로 같다).
+    wishlist_remove_prefix_words: list[str] = [
+        "내",
+        "제",
+        "내가",
+        "제가",
+        "그",
+        "이",
+        "저",
+        "우리",
+        "그거",
+        "이거",
+        "저거",
+    ]
+
+    # [#440 라운드 10 리뷰 F26 → 라운드 11 리뷰 F28] 인용·삽입 부호 목록(`utterance_quote_
+    # open_chars`)은 여기 있었다가 **삭제됐다** — "부호가 있으면 무효"라는 거부 목록은
+    # `"사용자가 말한 건 이어폰 찜 빼줘"`(부호 없는 간접화법)를 못 가른다. 규칙 1도 규칙 2·3
+    # 과 같은 **전체 왼쪽 앵커**(`negation.matches_name_unnegated_as_command` 의 `prefix_words`)
+    # 를 받게 되면서, 그 앵커가 부호 유무와 무관하게 "닫힌 접두가 아니면 전부 무효"로 더 강하게
+    # 덮는다 — 이 필드는 이제 필요 없다.
+
+    # 의존명사(#440, 라운드 1 리뷰 F1-(a)) — 인접 결합 head 의 오른쪽 경계에서 조사와 같은
+    # 자격으로 소비한다. "찜한 거"와 "찜한거"는 같은 말인데 공백 유무로 기능이 갈리면 안 된다
+    # (데이터 의존적 결함, `negation.py` 라운드 20 의 "받침 유무로 결과가 갈리던" 것과 같은 부류).
+    # **상품명이 될 수 있는 말은 절대 넣지 마라** — `찜닭`의 `"닭"`처럼 실질명사를 넣는 순간
+    # 어절 경계 검사가 무력화돼 이 이슈가 고친 거짓양성이 통째로 되살아난다.
+    utterance_dependent_nouns: list[str] = ["거", "것", "게", "걸"]
     # 부정·유보 표지(2차 리뷰 지적 1·2·3, `intent_guard.py::_matches_unnegated`) — 표지 출현
     # 바로 뒤 짧은 창 안에 이 표지 중 하나가 오면 그 표지 출현은 없는 것으로 친다("장바구니에
     # 넣지는 마" 의 담기 표지 무효화, "빼줘야 할까"의 삭제 표지 무효화). 이 규칙은 **개입을
@@ -1261,6 +1469,17 @@ class Settings(BaseSettings):
     # 찜 빼줘"에서 "이어폰" 뒤 8자 창 "은 찜 빼지 말"에 "말고"는 안 들어와도 "지 말"은 들어온다).
     # 하지 마: 위 표지가 못 잡는 "동사 없이 하지 마"류 보강. 말고: "A 말고 B" 대조·배제(표지가
     # 이름 바로 뒤에 오는 경우). 야 할/야 될: "~해야 할까?" 류 의문·유보.
+    # [라운드 4 리뷰 F11 → 라운드 5 리뷰 F13 되돌림] F11 은 "야 하"·"야 되"·"도 될"·"도 돼"·
+    # "도 되" 를 여기 넣으라고 했으나 **틀렸다** — 이 목록은 `intent_guard` 의 담기·찜 추가
+    # 판정과 `remove.py` 도 함께 쓴다. 여기서 표지가 걸려 판정이 "무효화"되면 그건 개입을
+    # 줄이는 게 아니라 **사다리 기본값(`cart_add`)으로 떨어져 다른 자원에 실제 변경이 난다**
+    # (실측: `"이거 찜해줘. 배송도 돼?"` 가 찜 대신 장바구니에 담겼다 — wishlist_add 가 무효화
+    # 되면 그 자리를 cart_add 가 대신 채운다). `remove.py` 에서도 `"전부 빼줘, 환불도 되는지
+    # 알려줘"` 가 정상 전체 삭제에서 되물음으로 바뀌었다(회귀). "넓히면 오탐해도 안전하다"는
+    # 전제는 **모든 호출부의 fallback 이 무해할 때만** 성립하는데, 이 목록은 공유 목록이라 한
+    # 호출부만 보고 판단할 수 없다 — 넓히려면 그 목록을 쓰는 경로 전용으로 분리해야 한다
+    # (`utterance_hedge_connectives`·`utterance_quotative_markers` 참조 — 라운드 6 리뷰 F16 이
+    # 목록 나열 자체를 그 두 필드로 대체했다).
     utterance_negation_markers: list[str] = [
         "지 마",
         "지는 마",
@@ -1270,6 +1489,29 @@ class Settings(BaseSettings):
         "말고",
         "야 할",
         "야 될",
+    ]
+    # [라운드 6 리뷰 F16] `wishlist_remove_hedge_markers`(라운드 5 리뷰 F13)를 **삭제하고**
+    # 구조 판정으로 바꿨다 — "도 될"·"도 돼"·"도 되"를 나열했더니 "도 괜찮"·"도 상관없"·
+    # "도 무방" 이 다음 라운드에 다시 뚫렸다(실측). 한국어 유보·허가 표현은 **열린 집합**이라
+    # 나열로 끝나지 않는다. 그 앞에 붙는 **연결어미**("도"·"야")는 유한하다 — `negation.
+    # tail_is_command` 가 "동작구 tail 바로 뒤에 연결어미가 오고 그 뒤가 더 있으면 명령이
+    # 아니다"로 판정한다. `intent_guard` 의 찜 해제 경로(`_matches_wishlist_remove_pair`,
+    # `wishlist_remove_markers`·`wishlist_remove_noun_markers` 매칭)에서만 쓴다 — 라운드 5(F13)
+    # 의 교훈대로 담기·찜 추가·`remove.py` 판정은 건드리지 않는다.
+    utterance_hedge_connectives: list[str] = ["도", "야"]
+    # 인용 조사(#440 라운드 6 리뷰 F16) — 동작구를 **말 자체로 인용**하는 문법 부류. 연결어미와
+    # 같은 이유로 유한하다. `"찜 취소해줘라는 말이 뭐야?"`(표현을 묻는 발화가 삭제 명령으로
+    # 읽히던 것)를 `negation.tail_is_command` 가 이 목록으로 막는다.
+    utterance_quotative_markers: list[str] = [
+        "라는",
+        "라고",
+        "이라는",
+        "이라고",
+        "란",
+        "냐는",
+        "냐고",
+        "라며",
+        "라니",
     ]
     # 부정·유보 표지를 찾는 창 크기(문자 수) — 표지 출현 끝 위치부터 이 길이만큼만 본다.
     # "장바구니에 넣지는 마"(담기 표지 뒤 "지는 마"까지 4자)·"빼줘야 할까"(삭제 표지 뒤 "야
@@ -1429,6 +1671,15 @@ class Settings(BaseSettings):
     # 계약을 바꾸는 일이고 측정 가능한 회귀를 만든 전례가 있어(#198 rerank 3/3 -> 1/3, #115 앵커
     # 12건 중 11건 오분류) 롤백 경로를 남긴다(OPEN-G8).
     profile_graph_delta_enabled: bool = True
+
+    # ── 그래프 저장 안전장치 보존 기간 (이슈 #358, SPEC-PROFILE-GRAPH-149 §11) ──
+    # 멱등 원장(profile_graph_idempotency) 보존. 재전송이 최초 응답을 찾을 수 있는 창이다.
+    # **두 값 모두 🔴 C-23 잔여(정책·법무 미정)라 잠정값**이며, 만료 행을 실제로 지우는 스윕 잡은
+    # #358 범위 밖이다 — 지금 이 값들이 바꾸는 동작은 아래 REQ-PGRAPH-044 기동 검증뿐이다.
+    graph_idempotency_ttl_h: float = Field(default=24.0, gt=0.0)
+    # 변경 감사(profile_graph_audit) 보존. **전체 초기화가 지우지 않는다**(REQ-PGRAPH-062) —
+    # 파괴 동작이 추적 불가가 되면 안 되므로, 여기 남는 것은 "무엇을" 이 아니라 "언제" 다.
+    graph_audit_retention_days: float = Field(default=90.0, gt=0.0)
 
     # ── 프로필 개인화 강도 (이슈 #119, SPEC-PROFILE-001 §5.1 v0.6.0 · REQ-REC-005-A) ──
     # 프로필을 **어느 소비처에** 주입할지. 기본 rerank_only 인 근거: decompose(fast tier, 한 호출에
@@ -1662,27 +1913,31 @@ class Settings(BaseSettings):
     # **상한이 1인 이유(PR #235 리뷰)**: backoff 가 구현에 없다. 2·3 을 허용하면 "1 을 넘기려면
     # backoff 가 필요하다"고 적어 둔 위험을 설정 한 줄로 열어 주는 셈이라, **현재 구현이 감당하는
     # 값만** 받는다. 더 올리려면 backoff 를 먼저 만들고 이 상한을 함께 푼다.
-    # [#394 한시적 조치] 기본값을 1→0 으로 내린다. 운영 실측(2026-08-06): I-1 이 SEARCH_FAILED 로
-    # 떨어진 두 건 모두 Spring 은 200 을 줬다 — 실패가 아니라 3s 예산을 넘긴 지연이었다. 그 상태에서
-    # 재시도는 성공했을 쿼리를 backoff 없이 즉시 한 번 더 돌려 Spring 부하만 2배로 만들고, 사용자는
-    # 6초 뒤 실패를 받는다. **원복 조건**: BE 검색 쿼리 개선(리뷰 집계 비정규화, BE #395)이 배포되면
-    # 재검토한다. 구매자 progress 이벤트(#289)로 first-token 관문이 풀릴 때도 함께 재검토한다.
-    # `=1` 로 되돌리면 이 필드가 원래 규정하던 재시도 동작(위 주석)으로 완전히 복귀한다.
-    spring_max_retries: int = Field(default=0, ge=0, le=1)
-    # [#277] conditions 를 검색 뒤로 미룬 턴은 첫 이벤트 앞에 I-1 이 최대 2회 직렬이라,
-    # 재시도까지 얹으면 first-token 상한을 넘어 이벤트 0건·504가 될 수 있다. 한 번의 일시
-    # 지연을 살리는 대가가 턴 전체의 침묵이므로 기본값은 그 턴만 재시도를 끈다.
-    # 원복 전제(구매자 progress 계약 등재 + 플래그 on)는 #396 으로 충족됐다. 그래도 원복은
-    # 하지 않는다 — #394(커밋 2168e9b)가 이미 다른 이유(Spring 부하 실측)로 `spring_max_retries`
-    # 기본값을 1→0 으로 내렸고, 이 필드의 원복 여부는 그 조치와 함께 판단해야 하는 별도
-    # 결정이다. #396 이슈 본문도 이를 비범위로 못박았다.
-    search_retry_on_deferred_conditions: bool = False
+    # [#394 원복] 2026-08-06 운영 실측에서 I-1 이 SEARCH_FAILED 로 떨어진 두 건은 Spring 이 모두
+    # 200 을 준 3s 예산 초과 지연이었다. backoff 없는 재시도는 Spring 부하만 2배로 만들고 사용자는
+    # 6초 뒤 실패를 받아 기본값을 1→0 으로 내렸었다. 이제 **사람의 명시 지시**로 위 주석이 규정한
+    # 재시도 동작을 완전히 복귀한다. #394 의 원복 조건은 충족됐다: BE PR #133 커버링 인덱스와
+    # `attributes` 4키 축소가 모두 배포됐고, 후자는 2026-08-09 라이브 응답 실측에서 4키 부재 및
+    # 항목당 약 1,780B→1,052B로 확인됐다(크기·필드 구성만 근거; 로컬 소요시간은 인용하지 않음).
+    # `size` 상한은 폐지됐다. 최악 구제 체인이 꼬리 예약 창을 넘지 않게 DESIGN-SHARED-BUDGET-384 §4에 따라
+    # `rescue_budget_mode=narrow`도 함께 올린다. 다시 끄려면 `SPRING_MAX_RETRIES=0`을 설정한다.
+    spring_max_retries: int = Field(default=1, ge=0, le=1)
+    # [#306] `SEARCH_RETRY_ON_DEFERRED_CONDITIONS` 는 폐지됐다 — #277 이 미룬 턴만 I-1 재시도를
+    # 끄고 그 롤백 손잡이로 두었던 필드다. 그 스킵의 근거(미룬 턴의 첫 SSE 가 검색 뒤라
+    # 재시도가 first-token 상한을 먹는다)는 #396 이 `progress` 를 검색 **앞**으로 보내며
+    # 사라졌고, 이제 폭주 방지는 `rescue_budget_mode` 의 런타임 좁히기가 맡는다. 재시도를
+    # 끄려면 `SPRING_MAX_RETRIES=0`, 미루기를 끄려면 `RELAXATION_MAX_ROUNDS=0` 을 쓴다.
     # [#427, DESIGN-SHARED-BUDGET-384 §3 D7] 구제 체인(F-1/#343/자동완화 probe) 예산 집행
-    # 강도 — observe: 판정만 계산·로그(반사실), 실제 집행 없음(기본, 오늘 동작 불변).
+    # 강도 — observe: 판정만 계산·로그(반사실), 실제 집행 없음.
     # narrow: 잔여 예산이 모자란 단의 타임아웃을 좁혀 시도한다(건너뛰지 않는다). narrow_skip:
     # narrow 로도 부족한(최소 하한 미만) 단은 건너뛴다. §4 Lv0~Lv2 등급의 런타임 스위치이며,
-    # #394(spring_max_retries) 원복은 이 값을 narrow 이상으로 함께 올려야 한다(§4 결론).
-    rescue_budget_mode: Literal["observe", "narrow", "narrow_skip"] = "observe"
+    # #394(spring_max_retries) 원복과 함께 narrow로 올렸다(§4 결론). narrow는 잔여 예산이 모자란
+    # 단의 타임아웃을 좁혀도 시도하며 건너뛰지 않고, narrow_skip은 채택하지 않았다.
+    # [#306] **observe 로 되돌리려면 `SPRING_MAX_RETRIES=0` 을 함께 지정해야 한다** — 미룬 턴
+    # 재시도 억제가 사라져 직렬 합이 `3 × 3.0 × 2 = 18.0` 이 됐고, observe 는 꼬리 예약을 뺀
+    # 창(30.0-15.0=15.0)과도 비교하므로 기동이 거절된다(narrow 이상은 런타임이 그 예약을 실제로
+    # 집행하므로 이 비교를 건너뛴다).
+    rescue_budget_mode: Literal["observe", "narrow", "narrow_skip"] = "narrow"
     # 구제 체인 한 단에 줄 수 있는 최소 타임아웃 — 미만이면 시도해도 성공 가망이 없다고 보고
     # narrow_skip 모드에서 그 단을 건너뛴다(본검색 제외, 본검색은 항상 시도한다). 실측(#385)
     # 전 잠정값 — DESIGN-SHARED-BUDGET-384 §3 D7 "예: 0.5"를 그대로 채택한다.
@@ -1799,10 +2054,15 @@ class Settings(BaseSettings):
     personalization_eval_clean_noisy_drop_margin: float = 0.03
     # 현행 0.15를 중심으로 0~4배 범위를 대칭적이지 않은 실용 구간으로 탐색한다.
     personalization_eval_weight_sweep: tuple[float, ...] = (0.0, 0.075, 0.15, 0.30, 0.60)
+    # [#484] 케이스 파생 선호를 마크다운으로 렌더할 때의 (강, 중) 임계. 정규화 가중치는
+    # "정답 안에서 몇 번 나왔나"라 1회짜리 꼬리 브랜드가 최상위와 같은 줄에 나열되면 LLM이
+    # 둘을 동급으로 읽는다. 수치는 노출하지 않고 강도만 자연어로 구분한다(§5.1 결정 16).
+    personalization_eval_profile_strength_bands: tuple[float, float] = (0.7, 0.5)
 
     # ── 구매자 progress 이벤트 (이슈 #396, 계약 등재 완료 — 기본 on) ──
     # 정본(Notion CH-2)·api-spec §3.1 v0.21.0 등재와 FE 구현 완료(2026-08-06)로 전제가
-    # 충족돼 기본 on 으로 해제했다(#289 후속). 되돌리려면 PROGRESS_EVENTS_ENABLED=false.
+    # 충족돼 기본 on 으로 해제했다(#289 후속). 되돌리려면 PROGRESS_EVENTS_ENABLED=false와
+    # SPRING_MAX_RETRIES=0을 함께 설정한다. 그렇지 않으면 미룬 I-1 직렬 재시도가 first-token 상한을 넘어 거절된다.
     progress_events_enabled: bool = True
     # 빈 문자열이면 프레임 `data`에 `message` 키 자체를 싣지 않는다(app/agents/buyer/_frames.py).
     progress_analyzing_message: str = "요청을 확인하고 있어요"
@@ -1810,6 +2070,7 @@ class Settings(BaseSettings):
     progress_mapping_message: str = "카테고리를 찾고 있어요"
     progress_expanding_message: str = "어떤 상품이 필요한지 넓혀 보고 있어요"
     progress_searching_message: str = "상품을 검색하고 있어요"
+    progress_retrying_message: str = "검색이 지연돼 다시 시도하고 있어요"
     progress_relaxing_message: str = "조건을 조금 넓혀 다시 찾고 있어요"
     progress_reranking_message: str = "가장 잘 맞는 걸 고르고 있어요"
     progress_publishing_message: str = "추천 목록을 준비하고 있어요"
@@ -2008,6 +2269,9 @@ class Settings(BaseSettings):
             raise ValueError(
                 "개인화 평가 weight sweep은 [0,1]의 오름차순 고유 값이며 0.15를 포함해야 합니다"
             )
+        high, mid = self.personalization_eval_profile_strength_bands
+        if not (math.isfinite(high) and math.isfinite(mid)) or not 0 < mid < high <= 1:
+            raise ValueError("개인화 평가 강도 임계는 0 < 중 < 강 <= 1 이어야 합니다")
         return self
 
     @model_validator(mode="after")
@@ -2291,7 +2555,7 @@ class Settings(BaseSettings):
         단 상한(`stage_cap = spring_search_timeout_s * attempts`)으로 다시 씌운다(R5). 그
         상한 clamp 가 의미를 가지려면 하한이 **어떤 단에서도** 상한보다 작아야 한다 —
         `attempts >= 1` 이라 `stage_cap` 의 최솟값은 `spring_search_timeout_s`
-        (attempts=1, 억제되는 단)다. 그래서 `rescue_stage_min_timeout_s <
+        (attempts=1, 즉 `SPRING_MAX_RETRIES=0` 배포)다. 그래서 `rescue_stage_min_timeout_s <
         spring_search_timeout_s` 하나만 확인하면 모든 단에서 하한이 상한 아래임이 보장된다.
 
         이 부등식이 깨지면(`RESCUE_STAGE_MIN_TIMEOUT_S >= SPRING_SEARCH_TIMEOUT_S`) 상한
@@ -2392,17 +2656,18 @@ class Settings(BaseSettings):
 
         **이 식은 단일 I-1 호출 예산만 본다**(#277). 종전의 배타성 전제는 실측으로 반증됐다:
         본 검색이 1 차 타임아웃 뒤 2 차에 0 건으로 성공하면 재시도를 쓰고도 완화 probe 가 돈다.
-        기본 설정은 미룬 턴의 재시도를 건너뛰어 첫 이벤트 앞 직렬 합을
-        `3 * spring_search_timeout_s`(9s, #383 보정 후)로 묶는다. `SEARCH_RETRY_ON_DEFERRED_
-        CONDITIONS=true`로 종전 동작을 되살리면 세 호출이 각각 재시도해 최대 18s가 되고, #277의
-        이벤트 0건·504 조합도 다시 열린다.
+        [#306] 미룬 턴 재시도 억제가 제거돼 세 호출이 **모두** 재시도하므로 직렬 합은
+        `3 * spring_search_timeout_s * (spring_max_retries + 1)`(기본값 18s)이다 — 종전
+        비대칭(12s)은 사라졌다. #277 의 이벤트 0건·504 조합이 다시 열리지 않는 이유는 이
+        검증식이 아니라 `rescue_budget_mode=narrow` 의 런타임 좁히기다(미룬 턴 본검색을
+        `(30 - 꼬리 예약 - 경과)/남은 단 수` ≈ 4.8s 로 묶는다).
 
         **직렬 합 계산은 `_rescue_chain_stage_counts`/`_rescue_chain_serial_budget_s`
         (#427 D7) 로 위임한다** — 런타임 좁히기(`app/agents/buyer/recommendation/
         graph.py::stream_recommendation`)와 이 기동 검증이 **같은 함수**에서 계수를 얻어야
         한쪽만 고쳐지는 드리프트(#383 이 고친 것과 같은 실패 모드)를 구조적으로 막는다. 계수
-        정의(각 항의 출처·§1(d) 각주①의 억제 스코프 비대칭·"오늘 기본값에서 3"인 근거)는 그
-        두 함수의 docstring 참조 — 여기서 다시 적지 않는다(드리프트 방지 원칙 그대로).
+        정의(각 항의 출처·"오늘 기본값에서 3"인 근거)는 그 두 함수의 docstring 참조 —
+        여기서 다시 적지 않는다(드리프트 방지 원칙 그대로).
 
         [PR #452 리뷰 R3] **게이트(=`deferred_calls == 0`, `graph.py`의 `may_auto_relax`가
         False)는 first-token 비교에만 적용한다** — 구매자 30s 상한·observe 꼬리 예약 비교는
@@ -2429,9 +2694,13 @@ class Settings(BaseSettings):
         `observe` 는 아무것도 집행하지 않으므로 설정 자체가 안전해야 한다. **집행이 런타임에
         있거나 기동에 있거나, 둘 중 하나는 항상 있다.**
 
-        **계약 무변경**: 이 검증은 내부 기동 로직이고 AI→Spring 3s 규약과 미룬 턴 재시도
-        스킵은 api-spec §2.9(c)(v0.20.2)에 이미 등재돼 있다 — 이 변경으로 와이어·명세를
-        건드리지 않는다(`spring_search_timeout_s` 기본값도 3.0 이라 오늘 값은 그대로다).
+        [#306] **`observe` 로 되돌리려면 `SPRING_MAX_RETRIES=0` 을 함께 지정해야 한다** —
+        억제 제거로 직렬 합이 18.0 이 되어 위 꼬리 예약 비교(30.0-15.0=15.0)를 넘기 때문이다.
+        `PROGRESS_EVENTS_ENABLED=false` 도 같은 짝 규칙을 따른다(#406 이 먼저 만든 제약).
+
+        **계약 무변경**: 이 검증은 내부 기동 로직이고 AI→Spring 3s 규약은 api-spec §2.9(c)에
+        이미 등재돼 있다 — 이 변경으로 와이어를 건드리지 않는다(#306 이 갱신한 것은 같은 절의
+        BE 관측 포인트 수치 서술이다, v0.32.5).
         """
         budget = self.spring_search_timeout_s * (self.spring_max_retries + 1)
         if budget >= self.stream_total_timeout_buyer_s:
@@ -2464,12 +2733,6 @@ class Settings(BaseSettings):
             counts=counts,
             search_timeout_s=self.spring_search_timeout_s,
             spring_max_retries=self.spring_max_retries,
-            search_retry_on_deferred_conditions=self.search_retry_on_deferred_conditions,
-        )
-        recovery_prefix = (
-            "disable SEARCH_RETRY_ON_DEFERRED_CONDITIONS, "
-            if self.search_retry_on_deferred_conditions
-            else ""
         )
         # [PR #452 리뷰 G3] 아래 두 recovery 문구는 서로 다른 검사를 향한다 — 섞어 쓰면 R3 가
         # 코드에서 없앤 혼동(미루지 않는 설정인데 "deferred"·"disable deferral" 오류가 뜬다)을
@@ -2479,8 +2742,8 @@ class Settings(BaseSettings):
         # RELAXATION_MAX_ROUNDS=0/RELAXATION_AUTO_FIELDS=[] 는 검사를 통째로 없애지 않고
         # auto_relax 항 하나만 뺀다(main·rescue 항은 그대로 남는다, R3 이후).
         recovery_physical = (
-            recovery_prefix
-            + "lower SPRING_SEARCH_TIMEOUT_S (the per-call budget), drop the auto-relax term "
+            "lower SPRING_MAX_RETRIES, lower SPRING_SEARCH_TIMEOUT_S (the per-call budget), "
+            "drop the auto-relax term "
             "with RELAXATION_MAX_ROUNDS=0 or RELAXATION_AUTO_FIELDS=[] (this only removes the "
             "auto-relax stage — the main search and, if enabled, the rescue fallback still "
             "count), or drop the rescue-fallback term with CATEGORY_EXPAND_ENABLED=false"
@@ -2489,8 +2752,8 @@ class Settings(BaseSettings):
         # (`may_auto_relax=False` 턴은 이 체인이 `conditions` 뒤라 검증 대상이 아니다)
         # "disable deferral" 표현이 정확하다.
         recovery_deferred = (
-            recovery_prefix
-            + "lower SPRING_SEARCH_TIMEOUT_S, disable deferral with RELAXATION_MAX_ROUNDS=0 "
+            "lower SPRING_MAX_RETRIES, lower SPRING_SEARCH_TIMEOUT_S, disable deferral with "
+            "RELAXATION_MAX_ROUNDS=0 "
             "or RELAXATION_AUTO_FIELDS=[], or drop the rescue-fallback call with "
             "CATEGORY_EXPAND_ENABLED=false"
         )
@@ -2726,6 +2989,16 @@ class Settings(BaseSettings):
             raise ValueError(
                 "PROFILE_IDLE_CLAIM_TTL_S must exceed the two-stage LLM timeout budget "
                 "for all configured batch waves"
+            )
+        # REQ-PGRAPH-044 — 멱등 원장은 감사 로그보다 오래 살면 안 된다. 원장이 더 오래 살면
+        # 재전송이 최초 응답을 재생하는데 그 변경의 감사 근거는 이미 사라진 구간이 생긴다.
+        # SPEC §11 이 "두 값의 대소로 정확성을 맞추려는 설정은 금지한다"고 못박았으므로 런타임
+        # 보정이 아니라 기동 시점 fail-fast 다. 경계는 포함(같은 길이는 허용) — 배타로 재면
+        # 24h == 1day 인 정상 구성이 죽는다.
+        if self.graph_idempotency_ttl_h * 3600 > self.graph_audit_retention_days * 86400:
+            raise ValueError(
+                "GRAPH_IDEMPOTENCY_TTL_H must not exceed GRAPH_AUDIT_RETENTION_DAYS "
+                "(replay must always find its audit record)"
             )
         if self.state_store_pool_min_size < 0:
             raise ValueError("STATE_STORE_POOL_MIN_SIZE must be non-negative")

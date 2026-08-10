@@ -13,7 +13,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
-from app.agents.seller import hitl
+from app.agents.seller import category_catalog, hitl
 from app.agents.seller.schemas import DraftChange, DraftProposal
 from app.schemas.spring import (
     OrderItemStatusResult,
@@ -22,11 +22,17 @@ from app.schemas.spring import (
     ProductUpdateResult,
     SellerProductList,
     SellerProductRow,
+    SellerStockRow,
 )
 from app.services.spring_client import (
+    InvalidStock,
     OrderAlreadyShipped,
     OrderInvalidTransition,
     OrderItemNotFound,
+    ProductAlreadyDeleted,
+    ProductCategoryInvalid,
+    ProductDeletedNotEditable,
+    ProductFieldMissing,
     SpringUnavailableError,
     set_spring_client,
 )
@@ -67,17 +73,30 @@ class _StubSpring:
         start = offset or 0
         return SellerProductList(rows=self.rows[start : start + (limit or 20)])
 
+    # [#524] I-10 422 INVALID_STOCK 주입용 — update_error 와 같은 규약.
+    create_error: Exception | None = None
+
     async def create_product(self, brand_id, payload):
         self.calls.append(("create", brand_id, payload))
+        if self.create_error is not None:
+            raise self.create_error
         return ProductCreateResult(productId=999, status="ON_SALE")
+
+    # [#511] I-11/I-12 409 전용 예외 주입 — "안 되는 일"이 장애로 뭉개지지 않는지 검증한다.
+    update_error: Exception | None = None
+    delete_error: Exception | None = None
 
     async def update_product(self, brand_id, product_id, patch):
         self.calls.append(("update", brand_id, product_id, patch))
+        if self.update_error is not None:
+            raise self.update_error
         return ProductUpdateResult(productId=product_id)
 
     async def delete_product(self, brand_id, product_id):
         self.calls.append(("delete", brand_id, product_id))
-        return ProductDeleteResult(productId=product_id, status="HIDDEN")
+        if self.delete_error is not None:
+            raise self.delete_error
+        return ProductDeleteResult(productId=product_id, status="DELETED")
 
     # [#297] I-30 발송 — ship_error 로 코드별 실패(409/400/404)를 주입한다.
     ship_error: Exception | None = None
@@ -106,6 +125,26 @@ def _proposal(**kwargs) -> DraftProposal:
     )
     base.update(kwargs)
     return DraftProposal(**base)
+
+
+def _category_id() -> str:
+    """저장소 스냅샷의 실제 카테고리 id 하나 — 하드코딩하면 스냅샷 교체 때 깨진다.
+
+    create 초안은 카테고리가 필수다(BE `categoryId` 필수) — 픽스처도 실제 값을 써야
+    validate_draft·spring_category_id 를 정직하게 통과한다.
+    """
+    return category_catalog.all_entries()[0].id
+
+
+def _create_changes(*extra: DraftChange) -> list[DraftChange]:
+    """I-10 필수 4종(name/price/stock_quantity/category)이 채워진 create changes."""
+    return [
+        DraftChange(field="name", before="", after="한라봉청"),
+        DraftChange(field="price", before="", after="20000"),
+        DraftChange(field="stock_quantity", before="", after="50"),
+        DraftChange(field="category", before="", after=_category_id()),
+        *extra,
+    ]
 
 
 def _record(proposal: DraftProposal | None = None, **kwargs) -> hitl.DraftRecord:
@@ -178,7 +217,7 @@ def test_validate_draft_update_requires_changes() -> None:
 
 
 def test_validate_draft_create_requires_mandatory_fields() -> None:
-    """I-10 필수(name/price/stockQuantity) 누락 create 는 되묻기."""
+    """I-10 필수(name/price/stockQuantity/categoryId) 누락 create 는 되묻기."""
     record, problem = hitl.validate_draft(
         _proposal(
             op="create",
@@ -189,7 +228,47 @@ def test_validate_draft_create_requires_mandatory_fields() -> None:
         brand_id=3,
     )
     assert record is None
-    assert "price" in problem and "stock_quantity" in problem
+    assert "가격" in problem and "재고 수량" in problem and "카테고리" in problem
+
+
+def test_validate_draft_create_requires_category() -> None:
+    """[2026-08-09] 카테고리 누락 create 는 되묻기 — BE categoryId 가 필수다.
+
+    구 구현은 카테고리 없이도 초안을 통과시켰고, 판매자가 승인 버튼을 누른 뒤에야
+    BE 가 거부해 "등록 중 오류"로만 보였다. 되물을 기회는 초안 단계뿐이다.
+    """
+    record, problem = hitl.validate_draft(
+        _proposal(
+            op="create",
+            product_id=None,
+            changes=[
+                DraftChange(field="name", before="", after="한라봉청"),
+                DraftChange(field="price", before="", after="20000"),
+                DraftChange(field="stock_quantity", before="", after="50"),
+            ],
+        ),
+        seller_id=7,
+        brand_id=3,
+    )
+    assert record is None
+    assert "카테고리" in problem
+    # 이미 말한 상품명·가격까지 다시 묻지 않는다 — 되물을 것은 카테고리뿐이다.
+    assert "상품명" not in problem
+
+
+def test_validate_draft_create_rejects_unknown_category_id() -> None:
+    """스냅샷 밖 카테고리 값(경로·이름·환각 id)은 되묻기로 전환한다(이중 방어)."""
+    record, problem = hitl.validate_draft(
+        _proposal(
+            op="create",
+            product_id=None,
+            changes=_create_changes()[:3]
+            + [DraftChange(field="category", before="", after="남성의류 > 셔츠")],
+        ),
+        seller_id=7,
+        brand_id=3,
+    )
+    assert record is None and "카테고리" in problem
 
 
 def test_validate_draft_create_allows_image_url() -> None:
@@ -202,12 +281,9 @@ def test_validate_draft_create_allows_image_url() -> None:
         _proposal(
             op="create",
             product_id=None,
-            changes=[
-                DraftChange(field="name", before="", after="한라봉청"),
-                DraftChange(field="price", before="", after="20000"),
-                DraftChange(field="stock_quantity", before="", after="50"),
-                DraftChange(field="image_url", before="", after="http://x/img.png"),
-            ],
+            changes=_create_changes(
+                DraftChange(field="image_url", before="", after="http://x/img.png")
+            ),
         ),
         seller_id=7,
         brand_id=3,
@@ -243,12 +319,7 @@ def test_validate_draft_create_rejects_presigned_or_long_image_url() -> None:
         _proposal(
             op="create",
             product_id=None,
-            changes=[
-                DraftChange(field="name", before="", after="한라봉청"),
-                DraftChange(field="price", before="", after="20000"),
-                DraftChange(field="stock_quantity", before="", after="50"),
-                DraftChange(field="image_url", before="", after=presigned),
-            ],
+            changes=_create_changes(DraftChange(field="image_url", before="", after=presigned)),
         ),
         seller_id=7,
         brand_id=3,
@@ -258,15 +329,7 @@ def test_validate_draft_create_rejects_presigned_or_long_image_url() -> None:
 
 def test_validate_draft_create_nullifies_product_id() -> None:
     """create 인데 LLM 이 product_id 를 넣어도 관용 — null 로 정규화(F2)."""
-    record = _record(
-        op="create",
-        product_id=777,
-        changes=[
-            DraftChange(field="name", before="", after="한라봉청"),
-            DraftChange(field="price", before="", after="20000"),
-            DraftChange(field="stock_quantity", before="", after="50"),
-        ],
-    )
+    record = _record(op="create", product_id=777, changes=_create_changes())
     assert record.product_id is None
 
 
@@ -482,13 +545,13 @@ def test_confirm_missing_product_is_stale() -> None:
 
 
 def test_confirm_delete_maps_to_i12() -> None:
-    """delete draft → I-12 soft delete — 결과에 HIDDEN 명시(물리 삭제 아님)."""
+    """delete draft → I-12 soft delete — 결과는 DELETED 이고 "숨김"이라 말하지 않는다(§4.5)."""
     spring = _StubSpring()
     set_spring_client(spring)
     record = _record(
         op="delete",
-        changes=[DraftChange(field="status", before="ON_SALE", after="HIDDEN")],
-        summary="상품 숨김",
+        changes=[DraftChange(field="status", before="ON_SALE", after="DELETED")],
+        summary="상품 삭제",
     )
 
     async def run():
@@ -498,8 +561,103 @@ def test_confirm_delete_maps_to_i12() -> None:
     outcome = asyncio.run(run())
 
     assert outcome.status == "executed"
-    assert "HIDDEN" in outcome.text
+    assert "DELETED" in outcome.text
+    # 삭제를 숨김으로 안내하면 판매자가 되돌릴 수 있는 조작으로 오인한 채 승인한다.
+    assert "숨김(판매정지)과 달리" in outcome.text
     assert spring.write_calls() == [("delete", 3, 101)]
+
+
+# ── [#511] 삭제 상태 분리(BE 02 D41 · Notion I-12 2026-08-05) ────────────────────
+
+
+def test_delete_draft_rejects_hidden_as_after() -> None:
+    """delete 초안의 after 는 DELETED 뿐 — HIDDEN 은 되돌릴 수 있는 다른 상태다."""
+    record, problem = hitl.validate_draft(
+        _proposal(
+            op="delete",
+            changes=[DraftChange(field="status", before="ON_SALE", after="HIDDEN")],
+        ),
+        seller_id=7,
+        brand_id=3,
+    )
+    assert record is None and problem is not None
+
+
+def test_update_draft_rejects_deleted_status() -> None:
+    """삭제는 I-12 전용 전이 — DELETED 가 I-11 본문으로 새어나가면 BE 가 400 이다."""
+    record, problem = hitl.validate_draft(
+        _proposal(
+            op="update",
+            changes=[DraftChange(field="status", before="ON_SALE", after="DELETED")],
+        ),
+        seller_id=7,
+        brand_id=3,
+    )
+    assert record is None and problem is not None
+
+
+def test_confirm_delete_of_hidden_product_is_not_stale() -> None:
+    """숨겨둔 상품도 삭제된다 — HIDDEN→DELETED 는 정상 전이라 status 를 stale 비교하지 않는다.
+
+    초안 작성 시점 ON_SALE 이던 상품을 판매자가 숨긴 뒤 승인해도 삭제가 막히면 안 된다
+    (구 계약의 409 `ALREADY_HIDDEN` 이 만들던 것과 같은 증상).
+    """
+    hidden_row = _ROW.model_copy(update={"status": "HIDDEN"})
+    spring = _StubSpring(rows=[hidden_row])
+    set_spring_client(spring)
+    record = _record(
+        op="delete",
+        changes=[DraftChange(field="status", before="ON_SALE", after="DELETED")],
+        summary="상품 삭제",
+    )
+
+    async def run():
+        await hitl.start_draft(record)
+        return await hitl.confirm_draft(record.draft_id, seller_id=7, brand_id=3)
+
+    outcome = asyncio.run(run())
+
+    assert outcome.status == "executed"
+    assert spring.write_calls() == [("delete", 3, 101)]
+
+
+def test_confirm_delete_already_deleted_reports_already_done() -> None:
+    """I-12 409 ALREADY_DELETED — 거짓 성공도, "재시도하세요"도 아니다(멱등 200 금지)."""
+    spring = _StubSpring()
+    spring.delete_error = ProductAlreadyDeleted("ALREADY_DELETED")
+    set_spring_client(spring)
+    record = _record(
+        op="delete",
+        changes=[DraftChange(field="status", before="HIDDEN", after="DELETED")],
+        summary="상품 삭제",
+    )
+
+    async def run():
+        await hitl.start_draft(record)
+        return await hitl.confirm_draft(record.draft_id, seller_id=7, brand_id=3)
+
+    outcome = asyncio.run(run())
+
+    assert outcome.status == "already_done"
+    assert "이미 삭제된 상품" in outcome.text
+    assert "다시 시도해도 결과가 같습니다" in outcome.text
+
+
+def test_confirm_update_on_deleted_product_reports_already_done() -> None:
+    """I-11 409 PRODUCT_DELETED — 삭제 상품은 챗봇이 되살릴 수 없다."""
+    spring = _StubSpring()
+    spring.update_error = ProductDeletedNotEditable("PRODUCT_DELETED")
+    set_spring_client(spring)
+    record = _record()
+
+    async def run():
+        await hitl.start_draft(record)
+        return await hitl.confirm_draft(record.draft_id, seller_id=7, brand_id=3)
+
+    outcome = asyncio.run(run())
+
+    assert outcome.status == "already_done"
+    assert "이미 삭제된 상품이라 수정할 수 없습니다" in outcome.text
 
 
 def test_confirm_create_maps_to_i10_without_image() -> None:
@@ -513,6 +671,7 @@ def test_confirm_create_maps_to_i10_without_image() -> None:
             DraftChange(field="name", before="", after="한라봉청"),
             DraftChange(field="price", before="", after="20,000"),
             DraftChange(field="stock_quantity", before="", after="50"),
+            DraftChange(field="category", before="", after=_category_id()),
             DraftChange(field="description", before="", after="제주 한라봉청"),
         ],
         summary="한라봉청 신규 등록",
@@ -529,6 +688,48 @@ def test_confirm_create_maps_to_i10_without_image() -> None:
     assert (payload.name, payload.price, payload.stock_quantity) == ("한라봉청", 20000, 50)
     assert payload.image_url is None
     assert spring.calls[0][0] == "create"  # create 는 I-9 재조회(stale) 생략
+
+
+def test_confirm_create_sends_numeric_category_id() -> None:
+    """[2026-08-09] I-10 는 `categoryId`(Long)를 받는다 — leaf 명칭 문자열이 아니다.
+
+    구 구현은 `category="셔츠"` 를 보냈고 BE 는 모르는 키를 버린 뒤 categoryId 누락으로
+    등록을 거부했다. 와이어 키 이름과 타입이 이 회귀의 유일한 방어선이다.
+    """
+    spring = _StubSpring()
+    set_spring_client(spring)
+    category_id = _category_id()
+    record = _record(op="create", product_id=None, changes=_create_changes())
+
+    async def run():
+        await hitl.start_draft(record)
+        return await hitl.confirm_draft(record.draft_id, seller_id=7, brand_id=3)
+
+    outcome = asyncio.run(run())
+
+    assert outcome.status == "executed"
+    payload = spring.write_calls()[0][2]
+    assert payload.category_id == int(category_id)
+    body = payload.model_dump(by_alias=True, exclude_none=True)
+    assert body["categoryId"] == int(category_id)
+    assert "category" not in body
+
+
+def test_confirm_create_stale_category_does_not_call_spring() -> None:
+    """초안 승인과 실행 사이에 스냅샷이 갈리면 등록하지 않고 재초안을 안내한다."""
+    spring = _StubSpring()
+    set_spring_client(spring)
+    record = _record(op="create", product_id=None, changes=_create_changes())
+    record.changes[3].after = "999999999999999999"  # 스냅샷에 없는 id
+
+    async def run():
+        await hitl.start_draft(record)
+        return await hitl.confirm_draft(record.draft_id, seller_id=7, brand_id=3)
+
+    outcome = asyncio.run(run())
+
+    assert outcome.status == "stale" and "카테고리" in outcome.text
+    assert spring.write_calls() == []
 
 
 def test_confirm_spring_down_keeps_draft_retryable() -> None:
@@ -727,3 +928,336 @@ def test_confirm_ship_ownership_mismatch_blocked() -> None:
 
     assert outcome.status == "not_found"
     assert spring.write_calls() == []
+
+
+# ── [#524] 옵션별 재고 듀얼모드 (seller_stock_wire_mode) ───────────────────────
+
+
+def _stock_mode(monkeypatch, mode: str) -> None:
+    """hitl 이 보는 wire_mode 만 바꾼다 — 나머지 설정은 실값 그대로."""
+    real = hitl.get_settings()
+    monkeypatch.setattr(
+        hitl, "get_settings", lambda: real.model_copy(update={"seller_stock_wire_mode": mode})
+    )
+
+
+_OPTIONED_ROW = SellerProductRow(
+    productId=101,
+    name="감귤청",
+    price=15000,
+    stockQuantity=5,
+    stocks=[
+        {"optionId": 10, "optionName": "블랙/M", "quantity": 5},
+        {"optionId": 11, "optionName": "블랙/L", "quantity": 0},
+        {"optionId": None, "optionName": None, "quantity": 0},
+    ],
+    status="ON_SALE",
+)
+
+
+def _run_confirm(record):
+    async def run():
+        await hitl.start_draft(record)
+        return await hitl.confirm_draft(record.draft_id, seller_id=7, brand_id=3)
+
+    return asyncio.run(run())
+
+
+def test_quantity_mode_create_sends_stock_quantity_only(monkeypatch) -> None:
+    """[회귀 고정] quantity 모드(기본)의 I-10 본문은 오늘 배포된 BE 계약 그대로다."""
+    _stock_mode(monkeypatch, "quantity")
+    spring = _StubSpring()
+    set_spring_client(spring)
+    record = _record(op="create", product_id=None, changes=_create_changes())
+    outcome = _run_confirm(record)
+    assert outcome.status == "executed"
+    body = spring.write_calls()[0][2].model_dump(by_alias=True, exclude_none=True)
+    assert body["stockQuantity"] == 50
+    assert "stocks" not in body
+
+
+def test_stocks_mode_create_sends_null_option_row(monkeypatch) -> None:
+    """stocks 모드 I-10 — 등록 시점엔 옵션이 없으므로 optionId null 한 줄(04 §I-10)."""
+    _stock_mode(monkeypatch, "stocks")
+    spring = _StubSpring()
+    set_spring_client(spring)
+    record = _record(op="create", product_id=None, changes=_create_changes())
+    outcome = _run_confirm(record)
+    assert outcome.status == "executed"
+    body = spring.write_calls()[0][2].model_dump(by_alias=True, exclude_none=True)
+    # exclude_none 직렬화라 optionId null 은 키 누락으로 나간다 — Jackson 은 누락을
+    # null 로 바인딩하므로(record) "optionId: null 한 줄" 계약과 동등하다(StockEntry docstring).
+    assert body["stocks"] == [{"quantity": 50}]
+    assert "stockQuantity" not in body
+
+
+def test_quantity_mode_update_unchanged(monkeypatch) -> None:
+    """[회귀 고정] quantity 모드 I-11 — 구 계약 stockQuantity 정수 하나."""
+    _stock_mode(monkeypatch, "quantity")
+    spring = _StubSpring()
+    set_spring_client(spring)
+    record = _record(
+        changes=[DraftChange(field="stock_quantity", before="100", after="80")],
+        summary="재고 80건",
+    )
+    outcome = _run_confirm(record)
+    assert outcome.status == "executed"
+    body = spring.write_calls()[0][3].model_dump(by_alias=True, exclude_none=True)
+    assert body == {"stockQuantity": 80}
+
+
+def test_quantity_mode_rejects_per_option_intent(monkeypatch) -> None:
+    """quantity 모드에서 옵션 지정 재고는 반영하지 않는다 — BE 에 저장할 곳이 없다.
+
+    합계로 뭉개면 "보여준 것 ≠ 실행하는 것"이 된다(카테고리 사고와 같은 유형).
+    """
+    _stock_mode(monkeypatch, "quantity")
+    spring = _StubSpring()
+    set_spring_client(spring)
+    record = _record(
+        changes=[DraftChange(field="stock_quantity", before="5", after="10", option_name="블랙/M")],
+        summary="블랙/M 재고 10건",
+    )
+    outcome = _run_confirm(record)
+    assert outcome.status == "stale"
+    assert spring.write_calls() == []
+
+
+def test_stocks_mode_update_resolves_option_name(monkeypatch) -> None:
+    """stocks 모드 I-11 — option_name 을 confirm 시점 I-9 stocks 로 optionId 해소."""
+    _stock_mode(monkeypatch, "stocks")
+    spring = _StubSpring(rows=[_OPTIONED_ROW])
+    set_spring_client(spring)
+    record = _record(
+        changes=[
+            DraftChange(field="stock_quantity", before="5", after="10", option_name="블랙/M"),
+            DraftChange(field="stock_quantity", before="0", after="3", option_name="블랙/L"),
+            DraftChange(field="price", before="15000", after="14000"),
+        ],
+        summary="옵션 재고 보충",
+    )
+    outcome = _run_confirm(record)
+    assert outcome.status == "executed"
+    body = spring.write_calls()[0][3].model_dump(by_alias=True, exclude_none=True)
+    assert body["stocks"] == [
+        {"optionId": 10, "quantity": 10},
+        {"optionId": 11, "quantity": 3},
+    ]
+    assert body["price"] == 14000
+    assert "stockQuantity" not in body
+
+
+def test_stocks_mode_ambiguous_option_reasks_without_write(monkeypatch) -> None:
+    """ "블랙" 은 블랙/M·블랙/L 둘 다 — 실행하지 않고 되묻는다(INVALID_STOCK 선차단)."""
+    _stock_mode(monkeypatch, "stocks")
+    spring = _StubSpring(rows=[_OPTIONED_ROW])
+    set_spring_client(spring)
+    record = _record(
+        changes=[DraftChange(field="stock_quantity", before="5", after="10", option_name="블랙")],
+        summary="재고",
+    )
+    outcome = _run_confirm(record)
+    assert outcome.status == "stale" and "블랙/M" in outcome.text
+    assert spring.write_calls() == []
+
+
+def test_stocks_mode_optionless_product_sends_null_option(monkeypatch) -> None:
+    """옵션 없는 상품 — stocks 모드에서도 optionId null 한 줄로 나간다."""
+    _stock_mode(monkeypatch, "stocks")
+    row = _ROW.model_copy(update={"stocks": [SellerStockRow(optionId=None, quantity=100)]})
+    spring = _StubSpring(rows=[row])
+    set_spring_client(spring)
+    record = _record(
+        changes=[DraftChange(field="stock_quantity", before="100", after="70")],
+        summary="재고 70건",
+    )
+    outcome = _run_confirm(record)
+    assert outcome.status == "executed"
+    body = spring.write_calls()[0][3].model_dump(by_alias=True, exclude_none=True)
+    assert body["stocks"] == [{"quantity": 70}]  # optionId null = 키 누락(위 테스트와 동일 관용)
+
+
+def test_stocks_mode_duplicate_option_reasks(monkeypatch) -> None:
+    _stock_mode(monkeypatch, "stocks")
+    spring = _StubSpring(rows=[_OPTIONED_ROW])
+    set_spring_client(spring)
+    record = _record(
+        changes=[
+            DraftChange(field="stock_quantity", before="5", after="10", option_name="블랙/M"),
+            DraftChange(field="stock_quantity", before="5", after="12", option_name="블랙/M"),
+        ],
+        summary="중복",
+    )
+    outcome = _run_confirm(record)
+    assert outcome.status == "stale"
+    assert spring.write_calls() == []
+
+
+def test_validate_draft_clears_llm_option_id_and_foreign_option_name() -> None:
+    """option_id 는 코드 전용(LLM 산물 불신), option_name 은 재고 change 에만 남는다."""
+    record = _record(
+        changes=[
+            DraftChange(
+                field="price", before="15000", after="12900", option_name="블랙/M", option_id=99
+            ),
+            DraftChange(
+                field="stock_quantity", before="5", after="10", option_name="블랙/M", option_id=99
+            ),
+        ],
+    )
+    by_field = {c.field: c for c in record.changes}
+    assert by_field["price"].option_name is None and by_field["price"].option_id is None
+    assert by_field["stock_quantity"].option_name == "블랙/M"
+    assert by_field["stock_quantity"].option_id is None
+
+
+# ── [#524] stocks 모드 전제 가드 · 재고 변동 안내 · INVALID_STOCK ────────────────
+
+
+def test_stocks_mode_refuses_when_be_not_ready(monkeypatch) -> None:
+    """stocks 모드인데 I-9 가 stocks 를 안 주면 = BE 구버전 → 쓰기 없이 중단한다.
+
+    구 BE 는 stocks 키를 버리므로, 그대로 보내면 같은 본문의 price 만 반영되고 재고는
+    그대로인 채 "반영했습니다" 가 나간다(조용한 부분 실패). 그게 이 가드의 이유다.
+    """
+    _stock_mode(monkeypatch, "stocks")
+    row = _ROW.model_copy(update={"stocks": []})  # 구 BE 응답
+    spring = _StubSpring(rows=[row])
+    set_spring_client(spring)
+    record = _record(
+        changes=[
+            DraftChange(field="price", before="15000", after="14000"),
+            DraftChange(field="stock_quantity", before="100", after="70"),
+        ],
+        summary="가격·재고 조정",
+    )
+    outcome = _run_confirm(record)
+    assert outcome.status == "stale"
+    assert spring.write_calls() == []  # 가격만 반영되는 부분 성공을 만들지 않는다
+
+
+def test_stocks_mode_passes_when_no_stock_change(monkeypatch) -> None:
+    """재고를 안 건드리는 update 는 stocks 계약과 무관 — 빈 stocks 여도 통과한다."""
+    _stock_mode(monkeypatch, "stocks")
+    row = _ROW.model_copy(update={"stocks": []})
+    spring = _StubSpring(rows=[row])
+    set_spring_client(spring)
+    record = _record(
+        changes=[DraftChange(field="price", before="15000", after="14000")],
+        summary="가격 인하",
+    )
+    outcome = _run_confirm(record)
+    assert outcome.status == "executed"
+    body = spring.write_calls()[0][3].model_dump(by_alias=True, exclude_none=True)
+    assert body == {"price": 14000}
+
+
+def test_stock_drift_note_names_each_changed_option(monkeypatch) -> None:
+    """옵션 2건이 동시에 변동하면 **둘 다** 옵션명과 함께 안내에 실린다(누적)."""
+    _stock_mode(monkeypatch, "stocks")
+    spring = _StubSpring(rows=[_OPTIONED_ROW])  # 블랙/M=5, 블랙/L=0
+    set_spring_client(spring)
+    record = _record(
+        changes=[
+            DraftChange(field="stock_quantity", before="9", after="10", option_name="블랙/M"),
+            DraftChange(field="stock_quantity", before="9", after="3", option_name="블랙/L"),
+        ],
+        summary="옵션 재고 보충",
+    )
+    outcome = _run_confirm(record)
+    assert outcome.status == "executed"
+    assert "블랙/M 5건" in outcome.text and "블랙/L 0건" in outcome.text
+
+
+def test_stock_drift_note_wording_unchanged_for_optionless(monkeypatch) -> None:
+    """옵션 없는 상품의 변동 안내는 기존 문구 그대로 — 옵션명이 붙지 않는다(회귀 고정)."""
+    _stock_mode(monkeypatch, "stocks")
+    row = _ROW.model_copy(update={"stocks": [SellerStockRow(optionId=None, quantity=100)]})
+    spring = _StubSpring(rows=[row])
+    set_spring_client(spring)
+    record = _record(
+        changes=[DraftChange(field="stock_quantity", before="80", after="70")],
+        summary="재고 70건",
+    )
+    outcome = _run_confirm(record)
+    assert outcome.status == "executed"
+    assert " 참고: 초안 작성 후 재고가 100건으로 변동되어 있었습니다(주문 처리 등)." in outcome.text
+
+
+def test_stocks_mode_partial_update_omits_untouched_option(monkeypatch) -> None:
+    """I-11 부분 수정 — 초안에 없는 옵션은 본문 stocks 에 **실리지 않는다**(생략=불변)."""
+    _stock_mode(monkeypatch, "stocks")
+    spring = _StubSpring(rows=[_OPTIONED_ROW])  # optionId 10·11 + null 3행
+    set_spring_client(spring)
+    record = _record(
+        changes=[DraftChange(field="stock_quantity", before="5", after="10", option_name="블랙/M")],
+        summary="블랙/M 재고 10건",
+    )
+    outcome = _run_confirm(record)
+    assert outcome.status == "executed"
+    body = spring.write_calls()[0][3].model_dump(by_alias=True, exclude_none=True)
+    assert body["stocks"] == [{"optionId": 10, "quantity": 10}]
+    assert [entry.get("optionId") for entry in body["stocks"]] == [10]  # 11·null 없음
+
+
+def test_update_invalid_stock_stops_without_success_report(monkeypatch) -> None:
+    """I-11 422 INVALID_STOCK(옵션 변경 레이스) — 성공 보고 없이 재초안을 권한다."""
+    _stock_mode(monkeypatch, "stocks")
+    spring = _StubSpring(rows=[_OPTIONED_ROW])
+    spring.update_error = InvalidStock("INVALID_STOCK")
+    set_spring_client(spring)
+    record = _record(
+        changes=[DraftChange(field="stock_quantity", before="5", after="10", option_name="블랙/M")],
+        summary="블랙/M 재고 10건",
+    )
+    outcome = _run_confirm(record)
+    assert outcome.status == "stale"
+    assert "옵션이 변경되어" in outcome.text
+    assert "반영했습니다" not in outcome.text
+
+
+def test_create_invalid_stock_stops_without_success_report() -> None:
+    """I-10 422 INVALID_STOCK — 등록도 성공 보고 없이 중단한다."""
+    spring = _StubSpring()
+    spring.create_error = InvalidStock("INVALID_STOCK")
+    set_spring_client(spring)
+    record = _record(op="create", product_id=None, changes=_create_changes())
+    outcome = _run_confirm(record)
+    assert outcome.status == "stale"
+    assert "등록했습니다" not in outcome.text
+
+
+# ── [#541] I-10 카테고리·필수값 거부가 "일시적 오류" 로 뭉개지지 않는다 ────────────
+
+
+def test_create_category_invalid_guides_new_draft_not_retry() -> None:
+    """400 PRODUCT_CATEGORY_INVALID — 스냅샷이 낡아 서버가 카테고리를 거부한 경우.
+
+    같은 초안을 다시 confirm 해도 결과가 같으므로 재시도가 아니라 **카테고리를 다시
+    말해 새 초안**을 권해야 한다. 매핑 전에는 SpringUnavailableError 로 낙성돼
+    "일시적인 오류(재시도 가능)"가 나갔고, 판매자는 원인을 알 길이 없었다.
+    """
+    spring = _StubSpring()
+    spring.create_error = ProductCategoryInvalid("PRODUCT_CATEGORY_INVALID")
+    set_spring_client(spring)
+    record = _record(op="create", product_id=None, changes=_create_changes())
+    outcome = _run_confirm(record)
+    assert outcome.status == "stale"
+    assert "카테고리" in outcome.text
+    assert "등록했습니다" not in outcome.text
+
+
+def test_create_missing_field_does_not_promise_retry() -> None:
+    """422 MISSING_FIELD — 와이어 형식 불일치(#524 stocks 선전환 등).
+
+    판매자가 초안을 고쳐서 풀 수 있는 문제가 아니라 담당자 확인이 필요하다. 그래서
+    다른 stale 분기와 달리 "다시 요청해 주세요"(_STALE_RETRY_GUIDE)를 붙이지 않는다.
+    """
+    spring = _StubSpring()
+    spring.create_error = ProductFieldMissing("MISSING_FIELD")
+    set_spring_client(spring)
+    record = _record(op="create", product_id=None, changes=_create_changes())
+    outcome = _run_confirm(record)
+    assert outcome.status == "stale"
+    assert "등록했습니다" not in outcome.text
+    assert hitl._STALE_RETRY_GUIDE not in outcome.text

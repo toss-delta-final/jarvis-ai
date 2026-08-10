@@ -20,8 +20,6 @@ from app.schemas.spring import (
     CartView,
     CartViewItem,
     WishlistAddResult,
-    WishlistItem,
-    WishlistView,
 )
 
 
@@ -171,8 +169,10 @@ def test_classify_negation_only_suppresses_the_negated_occurrence() -> None:
         # 0-a(cart_add_markers)는 순서 변경과 무관하게 여전히 맨 앞이다(회귀 방지).
         ("찜해둔 이어폰 담아줘", "cart_add"),
         ("찜한 거 장바구니에 담아줘", "cart_add"),
-        # 명시적 찜 동작 표지가 없으면(순수 지시 수식어만) 알려진 거짓음성이 그대로 유지된다.
-        ("찜한 거 빼줘", "cart_add"),
+        # [#440] 예전엔 "명시적 찜 동작 표지가 없으면(순수 지시 수식어만) 알려진 거짓음성"으로
+        # cart_add 에 떨어졌다 — 이제 사다리 1-b(인접 결합)가 이 발화를 직접 잡는다. 전체 표는
+        # tests/unit/test_wishlist_remove_resolution.py §4-A 참조.
+        ("찜한 거 빼줘", "wishlist_remove"),
         # 부정 검사는 순서를 옮긴 뒤에도 그대로 적용된다.
         ("찜 취소하지 마", "cart_add"),
     ],
@@ -347,20 +347,26 @@ async def test_stream_cart_add_wishlist_add_delegation_forwards_has_last_reco() 
 
 async def test_stream_cart_add_wishlist_remove_intent_delegates_to_wishlist_flow() -> None:
     """찜 해제 판정 → `stream_wishlist_remove` 로 위임된다(라운드 23, 위 함수와 같은 사실).
-    `add_fn`(담기)은 한 번도 안 불린다."""
+    `add_fn`(담기)은 한 번도 안 불린다.
+
+    **[#440 라운드 9 리뷰 F24]** 이 위임은 이제 `has_wishlist_remove_evidence`(발화 **전체**
+    앵커, F22)를 요구한다 — "이어폰 찜 빼줘"는 상품명("이어폰")이 `wishlist_remove_prefix_
+    words` 같은 닫힌 어휘가 아니라서 그 근거를 통과하지 못한다(규칙 1 전용 라우팅급 게이트
+    `is_wishlist_remove_command_context` 는 통과하지만, 그건 `_resolve_wishlist_remove_
+    target` **안에서** 이름이 매칭됐을 때만 쓰는 게이트지 이 위임 자체의 게이트가 아니다).
+    위임하지 않으면 결정론 규칙이 LLM 의 `cart_add` 판단을 확신 없이 덮어쓰지 않는다는 뜻이라
+    담기 흐름의 안전한 기본 동작(상품을 특정 못 했다는 재질문)으로 남는다 — 파괴적이지 않다."""
 
     store = CartStateStore()
 
     async def add_fn(req):
-        raise AssertionError("wishlist 판정인데 add_fn(담기) 이 호출됐다")
+        raise AssertionError("담기 대상이 없어 add_fn(담기) 자체가 호출되면 안 된다")
 
     async def get_wishlist_fn(user_id):
-        return WishlistView(
-            items=[WishlistItem(product_id=1, name="이어폰", purchase_state="AVAILABLE")]
-        )
+        raise AssertionError("근거가 없어 위임되지 않아야 하는데 get_wishlist_fn 이 호출됐다")
 
     async def remove_wishlist_fn(product_id, *, user_id):
-        return None
+        raise AssertionError("근거가 없어 위임되지 않아야 하는데 remove_wishlist_fn 이 호출됐다")
 
     events = await _collect(
         stream_cart_add(
@@ -376,8 +382,8 @@ async def test_stream_cart_add_wishlist_remove_intent_delegates_to_wishlist_flow
             remove_wishlist_fn=remove_wishlist_fn,
         )
     )
-    action = next(e for e in events if e["type"] == "action")["data"]
-    assert action["type"] == "WISHLIST_REMOVED"
+    assert "action" not in [e["type"] for e in events]
+    assert [e["type"] for e in events] == ["token", "done"]
 
 
 async def test_stream_cart_add_wishlist_reference_marker_still_adds() -> None:
@@ -503,3 +509,77 @@ async def test_stream_cart_add_wishlist_intent_clears_pending() -> None:
         )
     )
     assert await store.get_pending(thread_key) is None
+
+
+# ─────────── classify_cart_utterance — #285 I-25 §4.13 수량 변경(사다리 4-a) ───────────
+
+
+@pytest.mark.parametrize(
+    "message,expected",
+    [
+        # 함정 2 — 치환(cart_quantity) vs 합산(cart_add). 합산 표지가 있으면 cart_quantity 로
+        # 가지 않는다(대개 "담아"를 포함해 0-a 에서 이미 걸리지만, 표지 자체를 직접 확인한다).
+        ("3개로 바꿔줘", "cart_quantity"),
+        ("수량 2개로 변경해줘", "cart_quantity"),
+        ("수량 바꿔줘", "cart_quantity"),
+        ("하나 더 담아줘", "cart_add"),
+        ("추가로 담아줘", "cart_add"),
+        # 0-a(담기)가 여전히 4-a 보다 강하다 — "담아"가 걸리면 그 자리에서 cart_add 로 확정되고
+        # cart_quantity 후보로도 내려가지 않는다(intent_guard.py 사다리 4-a 문단 참조).
+        ("3개로 바꿔서 담아줘", "cart_add"),
+        # 회귀 없음 — 기존 삭제·찜 판정은 그대로.
+        ("빼줘", "cart_remove"),
+        ("찜해줘", "wishlist_add"),
+    ],
+)
+def test_classify_cart_utterance_quantity_ladder(message: str, expected: str) -> None:
+    assert classify_cart_utterance(message, get_settings()) == expected
+
+
+def test_classify_cart_utterance_quantity_negation_suppresses_marker() -> None:
+    """[함정 2 회귀 — 부정] 표지가 실제로 매칭된 뒤에도(정적 목록 "수량 바꿔") 짧은 창 안의
+    부정 표지("하지 마")가 뒤따르면 무효화된다 — `"수량 바꾸지 마"` 는 애초에 정적 표지("수량
+    바꿔")와 문자열이 달라 무신호로 빠지므로, 실제로 표지가 매칭된 경우로 검증한다(변이 시험:
+    `_matches_unnegated` 를 단순 `in` 검사로 바꾸면 이 테스트가 깨진다)."""
+    settings = get_settings()
+    assert classify_cart_utterance("수량 바꿔달라고 하지 마", settings) == "cart_add"
+    # 대조 — 같은 표지가 부정 없이 오면 그대로 cart_quantity.
+    assert classify_cart_utterance("수량 바꿔줘", settings) == "cart_quantity"
+
+
+def test_classify_cart_utterance_quantity_literal_negation_phrase_stays_cart_add() -> None:
+    """패킷이 명시한 회귀 문구 그대로 — "수량 바꾸지 마"는 cart_add(부정)여야 한다."""
+    assert classify_cart_utterance("수량 바꾸지 마", get_settings()) == "cart_add"
+
+
+async def test_stream_cart_add_quantity_intent_delegates_to_quantity_change() -> None:
+    """`stream_cart_add` 의 `classify_cart_utterance` 2선 방어가 `cart_quantity` 를 돌려주면
+    `stream_cart_quantity_change` 로 위임돼 CART_QUANTITY_CHANGED 가 나가야 한다(cart_remove
+    2선 경로와 대칭 — `cart/graph.py` 위임 분기 참조)."""
+    store = CartStateStore()
+
+    async def get_cart_fn(*, user_id=None, guest_id=None):
+        return CartView(items=[CartViewItem(cart_item_id=1, product_id=10, product_name="이어폰")])
+
+    class _Result:
+        success = True
+        quantity = 3
+
+    async def change_quantity_fn(cart_item_id, quantity, *, user_id=None, guest_id=None):
+        return _Result()
+
+    events = await _collect(
+        stream_cart_add(
+            identity=_member(),
+            cart=CartIntent(target_quantity=3),
+            cart_store=store,
+            thread_key="m:t-2nd-line-quantity",
+            settings=get_settings(),
+            message="이어폰 3개로 바꿔줘",
+            get_cart_fn=get_cart_fn,
+            change_quantity_fn=change_quantity_fn,
+        )
+    )
+    actions = [e["data"] for e in events if e["type"] == "action"]
+    assert actions[0]["type"] == "CART_QUANTITY_CHANGED"
+    assert actions[0]["quantity"] == 3

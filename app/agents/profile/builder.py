@@ -199,10 +199,15 @@ async def consolidate(user_id: str, *, llm, settings) -> ConsolidationResult:
         facts = await store.get_fact_records(user_id)
         if not facts:
             return ConsolidationResult.NO_WORK
-        existing = await store.get_graph(user_id) or empty_document(now)
+        existing = await store.get_graph(user_id) or await _bootstrap_document(user_id, now)
         document = build_graph_document(facts, existing=existing, settings=settings, now=now)
         await store.set_graph(user_id, document)
         summary_input = _summary_input(document, facts)
+        # **LLM 왕복 전에** 요약 seq 를 읽어 둔다 (#323 잔여, #358). 아래 `set_summary` 는 락을
+        # 놓고 수 초 뒤에 실행되므로, 그 창에서 사용자가 요약을 고치면 이 낡은 스냅샷이 그
+        # 편집을 덮는다 — 두 쓰기가 시간상 겹치지 않아 잠금으로는 안 닫히는 갭이다.
+        observed = await store.get_summary(user_id)
+        expected_seq = observed.seq if observed else 0
 
     if not summary_input:
         # **기존 요약을 지우지 않는다.** 빈 문자열로 덮으면 마이페이지·rerank 는 취향을 잃는데
@@ -224,14 +229,44 @@ async def consolidate(user_id: str, *, llm, settings) -> ConsolidationResult:
     markdown = (raw or "").strip()[: settings.profile_summary_max_chars]
     if not markdown:
         return ConsolidationResult.FAILED
-    await store.set_summary(user_id, markdown, now)
+    if not await store.set_summary(user_id, markdown, now, expected_seq=expected_seq):
+        # 그 사이 사용자가 요약을 고쳤다 — 낡은 스냅샷으로 덮지 않고 물러난다. 다음 배치가
+        # 새 상태를 읽고 다시 만든다. 그래프는 이미 갱신됐으므로 실패가 아니라 no-op 이다.
+        return ConsolidationResult.NO_WORK
     return ConsolidationResult.UPDATED
+
+
+async def _bootstrap_document(user_id: str, now: str) -> GraphDocument:
+    """문서가 없을 때 시작점 — **`revision` 을 되돌리지 않는다** (REQ-PGRAPH-042).
+
+    `get_graph` 는 스키마가 깨진 문서를 조용히 `None` 으로 돌려준다(배치를 죽이지 않으려고).
+    그때 `empty_document()` 를 그대로 쓰면 revision 이 0 이 되고, 이미 발급된 `If-Match: "g43"`
+    이 다른 상태를 가리키게 된다 — 같은 토큰이 서로 다른 문서를 뜻하는 순간 낙관적 동시성이
+    무너진다. 감사 하한(#358)은 초기화·손상 어느 쪽으로도 사라지지 않으므로 거기서 이어받는다.
+
+    감사 조회가 실패해도 배치를 죽이지 않는다 — 개인화가 멈추는 것보다 낫다. 그 경우에만
+    revision 0 으로 시작하며, 사용자 편집 경로는 CAS 로 자기 방어한다.
+    """
+    from app.agents.profile import graph_journal
+
+    document = empty_document(now)
+    try:
+        floor = await graph_journal.next_revision(user_id=int(user_id), existing=None)
+    except (ValueError, TypeError):
+        return document  # 게스트 등 숫자가 아닌 신원 — 감사 대상이 아니다
+    except Exception:
+        logger.warning("profile_graph_revision_floor_unavailable")
+        return document
+    return document.model_copy(update={"revision": max(0, floor - 1)})
 
 
 def _summary_input(document: GraphDocument, facts: list[FactRecord]) -> list[str]:
     """요약 LLM 입력 = 살아 있는 취향의 근거 fact + 트리플이 없는 fact.
 
-    `suppressed`·`superseded` edge 는 **즉시 제외**한다(REQ-PGRAPH-022). 그 edge 가 근거로 삼은
+    **사용자가 지운 취향(tombstone)과 `superseded` edge 는 즉시 제외**한다(REQ-PGRAPH-022).
+    삭제된 edge 는 문서에서 물리 삭제되므로(#499) `edges` 조회로는 잡히지 않는다 — 그러면
+    "문서에 없는 edge_key 는 통과"라는 아래 규칙에 걸려 **지운 취향이 요약으로 되돌아온다.**
+    그래서 `document.tombstones` 를 별도로 본다. 그 edge 가 근거로 삼은
     fact 원문도 함께 뺀다 — 원문이 잔여 fact 로 새어 들어가면 edge 만 숨기고 내용은 그대로
     요약되는 셈이라 억제가 무의미해진다. 한 fact 가 여러 취향을 담고 그중 하나만 지워졌어도
     **통째로** 뺀다: 그 원문에는 지운 취향이 그대로 적혀 있어 살리면 되살아난다(삭제가 이긴다).
@@ -246,11 +281,15 @@ def _summary_input(document: GraphDocument, facts: list[FactRecord]) -> list[str
     폭주 방지용 상한이 개인화 내용을 결정해서는 안 된다 — 상한 값을 바꾸면 요약이 함께 바뀐다.
     """
     status_by_key = {edge.edge_key: edge.status for edge in document.edges}
+    tombstoned = {tombstone.edge_id for tombstone in document.tombstones}
 
     selected: list[str] = []
     for record in facts:
         # 문서에 없는 edge_key(절단 등)는 삭제 신호가 아니므로 통과시킨다 — 저장 한계가
-        # 개인화 내용을 줄이지 않게 하는 것이 위 규칙과 같은 취지다.
+        # 개인화 내용을 줄이지 않게 하는 것이 위 규칙과 같은 취지다. **단 tombstone 은 다르다** —
+        # "문서에 없음"이 저장 한계가 아니라 사용자 삭제라는 사실이라, 여기서 갈라야 한다.
+        if any(triple.get("edge_id") in tombstoned for triple in record.graph_triples):
+            continue
         statuses = (
             status_by_key.get(triple.get("edge_key"), "active") for triple in record.graph_triples
         )

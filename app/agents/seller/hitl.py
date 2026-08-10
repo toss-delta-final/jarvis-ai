@@ -41,6 +41,7 @@ from pydantic import BaseModel, Field
 from app.agents.seller import category_catalog
 from app.agents.seller import checkpoint as seller_checkpoint
 from app.agents.seller.schemas import DraftChange, DraftProposal
+from app.agents.seller.stock_options import resolve_stock_option
 from app.core.config import get_settings
 from app.core.text import _strip_unsafe, _strip_unsafe_multiline
 from app.core.tracing import trace_span
@@ -49,11 +50,17 @@ from app.schemas.spring import (
     ProductCreate,
     ProductUpdate,
     SellerProductRow,
+    StockEntry,
 )
 from app.services.spring_client import (
+    InvalidStock,
     OrderAlreadyShipped,
     OrderInvalidTransition,
     OrderItemNotFound,
+    ProductAlreadyDeleted,
+    ProductCategoryInvalid,
+    ProductDeletedNotEditable,
+    ProductFieldMissing,
     get_spring_client,
 )
 
@@ -63,7 +70,11 @@ logger = logging.getLogger(__name__)
 
 # after(str) → 정수 캐스팅 대상 필드(ProposedChange "수치도 문자열" 계약의 역변환 지점).
 _INT_FIELDS = frozenset({"price", "original_price", "stock_quantity"})
-_STATUS_VALUES = frozenset({"ON_SALE", "HIDDEN"})
+# I-10 등록·I-11 수정으로 지정할 수 있는 status. 삭제(`DELETED`)는 **I-12 전용 전이**라
+# 여기 넣지 않는다 — 넣으면 update 본문으로 새어나가 BE 가 400 으로 막는다(api-spec §4.5).
+_UPDATE_STATUS_VALUES = frozenset({"ON_SALE", "HIDDEN"})
+# delete draft 의 표시용 after — I-12 는 본문이 없어 실행에 실리지 않는다(diff 카드 전용).
+_DELETE_STATUS_VALUE = "DELETED"
 # 도구 출력("가격 15,000원 재고 100건")을 옮겨적은 값 관용 처리용 단위 접미사.
 _INT_SUFFIXES = ("원", "건", "개")
 # status 는 create 지정 불가 — I-10 이 ON_SALE 로 발급한다.
@@ -71,7 +82,17 @@ _INT_SUFFIXES = ("원", "건", "개")
 # 싣는다(검증은 validate_draft: http(s) + seller_image_url_max_len ≤ 500, DB VARCHAR).
 _CREATE_FORBIDDEN_FIELDS = frozenset({"status"})
 # I-10 필수 본문(api-spec §4.5) — 누락 draft 는 등록 자체가 불가하므로 되묻기.
-_CREATE_REQUIRED_FIELDS = frozenset({"name", "price", "stock_quantity"})
+# [2026-08-09] category 추가 — BE `SellerProductCreateRequest.categoryId` 가 필수다.
+# 없이 보내면 422(MISSING_FIELD)로 되돌아오는데, 그때는 이미 판매자가 승인 버튼을
+# 누른 뒤라 "등록 중 오류"로만 보인다. 초안 단계에서 막아야 되묻기가 가능하다.
+_CREATE_REQUIRED_FIELDS = frozenset({"name", "price", "stock_quantity", "category"})
+# 되묻기 문구는 필드마다 다르다 — "category" 를 그대로 노출하면 판매자가 못 알아본다.
+_CREATE_FIELD_LABELS = {
+    "name": "상품명",
+    "price": "가격",
+    "stock_quantity": "재고 수량",
+    "category": "카테고리",
+}
 # [#297] I-30 MVP 허용 전이는 ORDERED→SHIPPING 하나뿐(§4.19) — toStatus 를 코드가
 # 고정한다(LLM 산물 아님). 전이 어휘가 늘면 여기와 validate_draft 만 확장한다.
 _SHIP_TO_STATUS = "SHIPPING"
@@ -108,14 +129,21 @@ def _parse_int(raw: str) -> int:
     return int(text)
 
 
-def _typed_after(change: DraftChange) -> int | str:
-    """changes[].after(str) → I-10/11 본문 타입. 실패는 ValueError 전파(호출부 되묻기)."""
+def _typed_after(change: DraftChange, *, op: str = "update") -> int | str:
+    """changes[].after(str) → I-10/11 본문 타입. 실패는 ValueError 전파(호출부 되묻기).
+
+    status 허용값이 op 별로 갈린다: 삭제 초안은 `DELETED` 뿐(표시용 — I-12 는 본문이 없다)
+    이고 등록·수정은 `ON_SALE`/`HIDDEN` 뿐이다. 한 집합으로 합치면 삭제 값이 I-10·I-11
+    본문으로 새어나가 BE 가 400 으로 막는 요청을 보내게 된다(api-spec §4.5).
+    """
     if change.field in _INT_FIELDS:
         return _parse_int(change.after)
     if change.field == "status":
         value = change.after.strip()
-        if value not in _STATUS_VALUES:
-            raise ValueError(f"status 는 ON_SALE/HIDDEN 만 가능합니다: {change.after!r}")
+        allowed = {_DELETE_STATUS_VALUE} if op == "delete" else _UPDATE_STATUS_VALUES
+        if value not in allowed:
+            allowed_text = _DELETE_STATUS_VALUE if op == "delete" else "ON_SALE/HIDDEN"
+            raise ValueError(f"status 는 {allowed_text} 만 가능합니다: {change.after!r}")
         return value
     return change.after
 
@@ -161,7 +189,16 @@ def validate_draft(
                     _strip_unsafe_multiline(change.after)
                     if change.field == "description"
                     else _strip_unsafe(change.after)
-                )
+                ),
+                # [#524] option_name 은 재고(stock_quantity) 변경에만 유효한 LLM 필드 —
+                # 다른 필드에 실려 오면 잡음이므로 버린다. option_id 는 코드 전용이라
+                # LLM 산물을 신뢰하지 않고 항상 비운다(실행 시점에 I-9 로 해소).
+                "option_name": (
+                    _strip_unsafe(change.option_name)
+                    if change.field == "stock_quantity" and change.option_name
+                    else None
+                ),
+                "option_id": None,
             }
         )
         for change in proposal.changes
@@ -184,9 +221,18 @@ def validate_draft(
             )
         missing = _CREATE_REQUIRED_FIELDS - fields
         if missing:
+            labels = [_CREATE_FIELD_LABELS.get(field, field) for field in sorted(missing)]
+            if missing == {"category"}:
+                # 카테고리만 비었으면 판매자가 다시 적을 것은 카테고리뿐이다 —
+                # 상품명·가격까지 되물으면 이미 말한 값을 또 입력하게 된다.
+                return None, (
+                    "어느 카테고리에 등록할지 확정하지 못했습니다. "
+                    "'남성 셔츠', '강아지 사료'처럼 상품 종류를 알려주시면 "
+                    "카테고리를 찾아 초안에 반영하겠습니다."
+                )
             return None, (
-                "상품 등록에는 상품명·가격·재고 수량이 필요합니다. "
-                f"누락된 항목({', '.join(sorted(missing))})을 알려주세요."
+                "상품 등록에는 상품명·가격·재고 수량·카테고리가 필요합니다. "
+                f"누락된 항목({', '.join(labels)})을 알려주세요."
             )
         # [#506] image_url 값 검증 — 2차 방어(1차는 요청 스키마·FE 서버 라우트).
         # presigned URL 이 저장되면 만료 시점에 상품 이미지가 조용히 죽는다(FE 계약 §2.3).
@@ -212,7 +258,7 @@ def validate_draft(
             )
     for change in changes:
         try:
-            _typed_after(change)
+            _typed_after(change, op=proposal.op)
         except ValueError:
             return None, (
                 f"'{change.field}' 값 '{change.after}' 을(를) 해석하지 못했습니다. "
@@ -232,6 +278,82 @@ def validate_draft(
     return record, None
 
 
+# [#524] stocks 모드 전제가 서버에 없을 때의 안내 — 판매자에게는 "지금은 안 된다"까지만
+# 알린다(설정·배포 사정은 내부 사정이라 표면에 내지 않는다).
+_STOCKS_MODE_NOT_READY = (
+    "재고 시스템 전환이 서버에 아직 반영되지 않아 재고 변경을 중단했습니다. "
+    "가격·설명 등 다른 항목은 정상 반영됩니다."
+)
+
+
+def _stocks_mode_ready(row: SellerProductRow) -> bool:
+    """stocks 모드 전제 확인 — I-9 응답이 신 계약을 아는지 본다 (#524).
+
+    PR B 이후 I-9 는 **옵션 없는 상품에도 `optionId: null` 한 줄**을 반드시 내린다
+    (BE 04 §I-9). 그래서 빈 배열은 "옵션이 없다"가 아니라 **"BE 가 아직 구버전"** 이다.
+
+    이 확인 없이 설정만 믿으면 조용한 부분 실패가 난다: 구 BE 에 `stocks` 를 보내면
+    Jackson 이 모르는 키를 버리고, 같은 본문의 price 는 반영되므로 **재고만 안 바뀐 채
+    "반영했습니다"** 가 나간다. #506 카테고리 사고(`category` 키를 버려 등록이 실패하던
+    것)와 같은 유형이고, 이쪽은 실패가 아니라 부분 성공이라 더 안 보인다.
+    """
+    return bool(row.stocks)
+
+
+def _build_update_patch(
+    changes: list[DraftChange], row: SellerProductRow
+) -> tuple[ProductUpdate | None, str | None]:
+    """I-11 PATCH 본문 조립 (#524 듀얼모드) — (patch, 되묻기 문구) 중 정확히 한쪽.
+
+    quantity 모드(현행 BE): 구 계약 그대로 stock_quantity 정수 하나. 이 모드에서
+    옵션 지정 재고 발화(option_name)나 재고 change 복수 건은 반영할 곳이 없다 —
+    조용히 합계로 뭉개면 "보여준 것 ≠ 실행하는 것"이므로 반영하지 않고 안내한다.
+
+    stocks 모드(PR B 이후): 재고 change 마다 option_name 을 confirm 시점의 I-9
+    stocks 로 해소해 stocks[{optionId, quantity}] 부분 수정으로 보낸다. 배열에 실린
+    옵션만 갱신된다(05 §I-11). 해소 실패·중복 옵션은 실행하지 않고 되묻는다 —
+    INVALID_STOCK 422 를 승인 이후에 받는 것보다 여기서 멈추는 편이 낫다.
+
+    stocks 모드는 **BE 가 실제로 그 계약을 아는지**를 I-9 응답으로 확인하고 나서야
+    쓴다(_stocks_mode_ready) — 설정만 믿으면 조용한 부분 실패가 난다.
+    """
+    stock_changes = [c for c in changes if c.field == "stock_quantity"]
+    other_fields = {c.field: _typed_after(c) for c in changes if c.field != "stock_quantity"}
+
+    if get_settings().seller_stock_wire_mode != "stocks":
+        if any(c.option_name for c in stock_changes) or len(stock_changes) > 1:
+            return None, (
+                "옵션별 재고 반영은 재고 시스템 전환 후에 열립니다. 지금은 상품 전체 "
+                "재고 수량 하나만 바꿀 수 있어 반영을 중단했습니다."
+            )
+        if stock_changes:
+            other_fields["stock_quantity"] = _typed_after(stock_changes[0])
+        return ProductUpdate(**other_fields), None
+
+    if not stock_changes:
+        # 재고를 안 건드리는 update 는 stocks 계약과 무관하다 — 가드 대상이 아니다.
+        return ProductUpdate(**other_fields), None
+
+    if not _stocks_mode_ready(row):
+        return None, _STOCKS_MODE_NOT_READY
+
+    entries: list[StockEntry] = []
+    seen: set[int | None] = set()
+    for change in stock_changes:
+        matched, problem = resolve_stock_option(change.option_name, row.stocks)
+        if problem is not None:
+            return None, problem
+        option_id = matched.option_id if matched is not None else None
+        if option_id in seen:
+            return None, (
+                "같은 옵션의 재고 변경이 초안에 두 번 실려 있어 반영을 중단했습니다. "
+                "옵션별로 한 번씩만 말씀해 주세요."
+            )
+        seen.add(option_id)
+        entries.append(StockEntry(option_id=option_id, quantity=int(_typed_after(change))))
+    return ProductUpdate(**other_fields, stocks=entries), None
+
+
 # ── stale 검증 (S-5 병존 — confirm 시점 I-9 재조회 대조) ─────────────────────────
 
 # 주문 재고 차감(F6)으로 판매자 행위 없이 변하는 필드 — 비교 제외(2026-07-20 확정).
@@ -239,16 +361,23 @@ _STALE_EXEMPT_FIELDS = frozenset({"stock_quantity"})
 
 
 def find_stale_changes(
-    row: SellerProductRow, changes: list[DraftChange]
+    row: SellerProductRow, changes: list[DraftChange], *, op: str = "update"
 ) -> list[tuple[str, str, str]]:
     """draft.changes 의 before 를 현재 상품값과 대조 — 불일치 (field, before, current) 목록.
 
     int 필드는 표기 차이("15,000" vs "15000")로 인한 오탐을 막기 위해 정수 비교,
     문자열 필드는 strip 후 비교한다. stock_quantity 는 제외(모듈 docstring 3).
+
+    **삭제(op="delete")는 `status` 를 비교하지 않는다** — `ON_SALE`·`HIDDEN` 어느 쪽에서든
+    `DELETED` 로 가는 것이 정상 전이라(api-spec §4.5) 초안 작성 후 판매자가 상품을 숨겼다는
+    이유로 삭제를 막을 근거가 없다. 비교하면 BE 가 열어준 "숨겼다가 나중에 지운다" 흐름이
+    AI 쪽에서 다시 막힌다(구 계약의 409 `ALREADY_HIDDEN` 이 만들던 것과 같은 증상).
     """
     mismatches: list[tuple[str, str, str]] = []
     for change in changes:
         if change.field in _STALE_EXEMPT_FIELDS:
+            continue
+        if op == "delete" and change.field == "status":
             continue
         current = getattr(row, change.field, None)
         current_str = "" if current is None else str(current)
@@ -345,29 +474,80 @@ async def _execute_draft(record: DraftRecord) -> tuple[str, str]:
     if record.op == "create":
         values = {c.field: _typed_after(c) for c in record.changes}
         # [#506] category 는 changes 에 **스냅샷 id** 로 실려 있다(validate_draft 선검증).
-        # I-10 에 쓸 값은 카탈로그가 결정한다(seller_category_write_mode — leaf/path/id).
+        # I-10 에 쓸 값은 카탈로그가 만든다 — BE 는 `categoryId`(Long)만 받는다.
         # 스냅샷 교체(배포) 사이에 id 가 사라진 draft 는 실행하지 않고 되묻는다 —
         # 보여준 카테고리와 다른 값이 저장되는 것보다 재초안이 낫다.
-        category_value: str | None = None
+        category_id: int | None = None
         if "category" in values:
-            category_value = category_catalog.spring_write_value(str(values["category"]))
-            if category_value is None:
-                return (
-                    "stale",
-                    "초안의 카테고리가 더 이상 유효하지 않습니다(카테고리 목록 갱신). "
-                    "변경 내용을 다시 말씀해 주시면 새 초안을 만들어 드리겠습니다.",
-                )
+            category_id = category_catalog.spring_category_id(str(values["category"]))
+        if category_id is None:
+            # validate_draft 가 create 의 category 를 필수로 막지만, 그 검증을 통과한
+            # 뒤 스냅샷이 교체될 수 있다. 여기서도 확인해야 BE 422 대신 안내가 나간다.
+            return (
+                "stale",
+                "초안의 카테고리가 더 이상 유효하지 않습니다(카테고리 목록 갱신). "
+                "등록할 상품 종류를 다시 말씀해 주시면 새 초안을 만들어 드리겠습니다.",
+            )
+        # [#524 듀얼모드] 재고는 wire_mode 가 정한 딱 한 필드로 나간다. 등록 시점엔
+        # 옵션이 없으므로(#506 create 흐름) stocks 모드는 optionId null 한 줄이다.
+        #
+        # update 와 달리 여기엔 _stocks_mode_ready 가드를 두지 않는다 — 등록은 조회하는
+        # 상품 자체가 없어 I-9 로 BE 버전을 확인할 길이 없고, 확인하려면 create 흐름에
+        # 없는 조회를 새로 넣어야 한다. 그럴 필요도 없다: stocks 모드 create 는
+        # stockQuantity 를 아예 안 실으므로 구 BE 는 **422 MISSING_FIELD 로 시끄럽게
+        # 실패**한다(조용한 부분 성공이 나는 update 와 실패 양상이 반대다).
+        create_stock = int(values["stock_quantity"])
+        stocks_mode = get_settings().seller_stock_wire_mode == "stocks"
         payload = ProductCreate(
             name=str(values["name"]),
             price=int(values["price"]),
-            stock_quantity=int(values["stock_quantity"]),
+            stock_quantity=None if stocks_mode else create_stock,
+            stocks=[StockEntry(option_id=None, quantity=create_stock)] if stocks_mode else None,
             original_price=(int(values["original_price"]) if "original_price" in values else None),
-            category=category_value,
+            category_id=category_id,
             description=str(values["description"]) if "description" in values else None,
             # [#506] 이미지 기반 등록 — validate_draft 가 canonical URL(≤500자)을 보장.
             image_url=str(values["image_url"]) if "image_url" in values else None,
         )
-        created = await client.create_product(record.brand_id, payload)
+        try:
+            created = await client.create_product(record.brand_id, payload)
+        except InvalidStock:
+            # [#524] 등록 재고는 _parse_int 가 음수를 선차단하므로 정상 경로에선 안 온다.
+            # 여기 오면 계약 해석이 어긋난 것이라 재시도를 권하지 않는다.
+            return (
+                "stale",
+                "재고 수량이 서버에서 거부되어 등록을 중단했습니다. "
+                f"재고를 다시 확인해 말씀해 주세요. {_STALE_RETRY_GUIDE}",
+            )
+        except ProductCategoryInvalid:
+            # [#541] 위 spring_category_id 선검증은 **스냅샷 기준**이라 스냅샷이 정본 DB
+            # 보다 낡으면 통과한 id 가 서버에서 거부된다. 안내를 위 stale 분기와 같은
+            # 문안으로 맞춘다 — 판매자에게는 같은 사건("카테고리가 더 이상 유효하지 않다")
+            # 이고, 어느 쪽이 먼저 걸렸는지는 판매자가 알 필요도 구분할 방법도 없다.
+            logger.warning(
+                "seller create rejected category snapshot_id=%s — 스냅샷 재생성 필요",
+                values.get("category"),
+            )
+            return (
+                "stale",
+                "초안의 카테고리가 서버에서 거부되어 등록을 중단했습니다(카테고리 목록 갱신). "
+                "등록할 상품 종류를 다시 말씀해 주시면 새 초안을 만들어 드리겠습니다.",
+            )
+        except ProductFieldMissing:
+            # [#541] validate_draft 가 필수 4종을 모두 강제하므로 값 누락으로는 오지
+            # 않는다 — 여기 오면 **와이어 형식이 서버와 어긋난 것**이다(대표적으로
+            # seller_stock_wire_mode 를 BE 배포보다 먼저 켠 경우). 판매자가 초안을
+            # 고쳐서 풀 수 있는 문제가 아니므로 재시도·재초안을 권하지 않는다.
+            logger.error(
+                "seller create rejected MISSING_FIELD — 와이어 형식 불일치 의심 "
+                "(stock_wire_mode=%s)",
+                get_settings().seller_stock_wire_mode,
+            )
+            return (
+                "stale",
+                "서버가 등록 요청을 받아들이지 않아 등록을 중단했습니다(필수 항목 누락). "
+                "같은 내용으로 다시 시도해도 결과가 같아 담당자 확인이 필요합니다.",
+            )
         return (
             "executed",
             f"상품을 등록했습니다 (productId={created.product_id}, status={created.status}).",
@@ -379,10 +559,11 @@ async def _execute_draft(record: DraftRecord) -> tuple[str, str]:
         return (
             "stale",
             f"대상 상품(productId={record.product_id})을 상품 목록에서 찾을 수 없어 "
-            f"반영을 중단했습니다. 삭제되었거나 변경된 것 같습니다. {_STALE_RETRY_GUIDE}",
+            "반영을 중단했습니다. 이미 삭제되었거나(삭제한 상품은 목록에서 빠집니다) "
+            f"다른 브랜드로 옮겨진 것 같습니다. {_STALE_RETRY_GUIDE}",
         )
 
-    mismatches = find_stale_changes(row, record.changes)
+    mismatches = find_stale_changes(row, record.changes, op=record.op)
     if mismatches:
         lines = [
             f"- {field}: 초안 기준 '{before}' → 현재 '{current}'"
@@ -396,7 +577,11 @@ async def _execute_draft(record: DraftRecord) -> tuple[str, str]:
         )
 
     # stock 은 stale 비교 제외 대신 변동 사실을 결과 안내에 표기(2026-07-20 확정).
-    stock_note = ""
+    # [#524] 옵션별 재고(row.stocks 채워짐)면 해당 옵션의 현재 수량과 비교하고 **어느
+    # 옵션인지 밝힌다** — 합계와 비교하면 다른 옵션의 주문 차감까지 "변동"으로 오보하고,
+    # 옵션명을 빼면 판매자가 무엇이 변했는지 알 수 없다. 변동 건은 **누적**한다: 대입으로
+    # 두면 옵션 여러 개가 동시에 변해도 마지막 하나만 남아 나머지가 조용히 사라진다.
+    stock_notes: list[str] = []
     for change in record.changes:
         if change.field != "stock_quantity":
             continue
@@ -404,22 +589,63 @@ async def _execute_draft(record: DraftRecord) -> tuple[str, str]:
             before_stock: int | None = _parse_int(change.before) if change.before.strip() else None
         except ValueError:
             before_stock = None
-        if before_stock != row.stock_quantity:
-            stock_note = (
-                f" 참고: 초안 작성 후 재고가 {row.stock_quantity}건으로 변동되어 "
-                "있었습니다(주문 처리 등)."
+        current_stock = row.stock_quantity
+        option_label: str | None = None
+        if row.stocks:
+            matched, _problem = resolve_stock_option(change.option_name, row.stocks)
+            if matched is not None:
+                current_stock = matched.quantity
+                # 옵션 없는 상품(option_id null)은 라벨을 붙이지 않는다 — 붙일 이름도
+                # 없고, 기존(단일 재고) 안내 문구를 글자 그대로 유지해 회귀를 막는다.
+                option_label = matched.option_name if matched.option_id is not None else None
+        if before_stock != current_stock:
+            stock_notes.append(
+                f"{option_label} {current_stock}건" if option_label else f"{current_stock}건"
             )
+    stock_note = (
+        f" 참고: 초안 작성 후 재고가 {' · '.join(stock_notes)}으로 변동되어 "
+        "있었습니다(주문 처리 등)."
+        if stock_notes
+        else ""
+    )
 
     if record.op == "delete":
-        deleted = await client.delete_product(record.brand_id, record.product_id)
+        try:
+            deleted = await client.delete_product(record.brand_id, record.product_id)
+        except ProductAlreadyDeleted:
+            return (
+                "already_done",
+                f"이미 삭제된 상품입니다 (productId={record.product_id}) — 중복 실행하지 "
+                "않았습니다. 삭제는 되돌릴 수 없어 다시 시도해도 결과가 같습니다.",
+            )
         return (
             "executed",
-            f"상품을 삭제(숨김) 처리했습니다 (productId={deleted.product_id}, "
-            f"status={deleted.status}). 물리 삭제는 아니며 노출만 중단됩니다.",
+            f"상품을 삭제했습니다 (productId={deleted.product_id}, status={deleted.status}). "
+            "숨김(판매정지)과 달리 판매자 상품 목록에서도 빠지며 되돌릴 수 없습니다. "
+            "다만 물리 삭제는 아니라 기존 주문 내역·매출 통계는 그대로 남습니다.",
         )
 
-    patch = ProductUpdate(**{c.field: _typed_after(c) for c in record.changes})
-    updated = await client.update_product(record.brand_id, record.product_id, patch)
+    patch, stock_problem = _build_update_patch(record.changes, row)
+    if patch is None:
+        return ("stale", f"{stock_problem} {_STALE_RETRY_GUIDE}")
+    try:
+        updated = await client.update_product(record.brand_id, record.product_id, patch)
+    except ProductDeletedNotEditable:
+        # [#511] 삭제된 상품은 수정 대상이 아니다 — 재시도해도 결과가 같다.
+        return (
+            "already_done",
+            f"이미 삭제된 상품이라 수정할 수 없습니다 (productId={record.product_id}). "
+            "삭제는 되돌릴 수 없으니 같은 상품이 필요하시면 새로 등록해 주세요.",
+        )
+    except InvalidStock:
+        # [#524] hitl 이 음수·타 상품 옵션을 모두 선차단하므로, 여기 오는 건 confirm
+        # 시점 I-9 재조회와 이 PATCH 사이에 옵션이 삭제·변경된 레이스뿐이다. 같은 초안을
+        # 다시 보내도 결과가 같으므로 재confirm 이 아니라 **재조회 후 새 초안**을 권한다.
+        return (
+            "stale",
+            "재고를 반영하는 사이에 상품 옵션이 변경되어 반영을 중단했습니다. "
+            f"{_STALE_RETRY_GUIDE}",
+        )
     summary_part = f" {record.summary}" if record.summary else ""
     return (
         "executed",

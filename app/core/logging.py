@@ -6,9 +6,10 @@ MVP 단계에서는 표준 logging 구성만 제공한다. 구조화 로깅(JSON
 
 from __future__ import annotations
 
-import logging
 import hashlib
 import hmac
+import json
+import logging
 
 from app.core.config import get_settings
 
@@ -24,6 +25,15 @@ def configure_logging(level: int = logging.INFO) -> None:
 def get_logger(name: str) -> logging.Logger:
     """모듈별 로거 획득 헬퍼."""
     return logging.getLogger(name)
+
+
+def log_structured(logger: logging.Logger, event: str, /, **fields: object) -> None:
+    """구조화 이벤트를 JSON message와 LogRecord extra에 함께 남긴다."""
+    logger.info(
+        json.dumps({"event": event, **fields}, ensure_ascii=False, default=str),
+        extra={"event": event, **fields},
+        stacklevel=2,
+    )
 
 
 def safe_fingerprint(value: str | None) -> str | None:
