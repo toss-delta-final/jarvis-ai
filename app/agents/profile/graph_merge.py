@@ -540,6 +540,11 @@ def _edge_sort_key(edge: GraphEdge) -> tuple:
     )
 
 
+# [#360] 와이어 투영이 **같은 전순서**를 쓴다 — 두 곳에 3키를 적으면 한쪽만 고치는 순간
+# 저장 순서와 화면 순서가 갈린다. 재구현이 아니라 재사용이라는 것을 이름으로 드러낸다.
+edge_sort_key = _edge_sort_key
+
+
 @dataclass(frozen=True)
 class _Descending:
     """문자열을 내림차순으로 정렬하기 위한 래퍼(reverse=True 는 앞 키까지 뒤집는다)."""
