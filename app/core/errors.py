@@ -15,6 +15,14 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from app.agents.profile.graph_errors import (
+    GraphEdgeNotEditable,
+    GraphEdgeNotFound,
+    GraphMutationError,
+    GraphObjectUnknown,
+    GraphStoreUnavailable,
+    GraphVersionConflict,
+)
 from app.core.logging import get_logger
 from app.core.session_context import (
     SessionActive,
@@ -34,6 +42,10 @@ _STATUS_CODE_MAP: dict[int, str] = {
     400: "BAD_REQUEST",
     401: "TOKEN_INVALID",
     403: "FORBIDDEN",
+    # [#360] §2.5 가 등재한 기본 코드. edge 케이스는 `_GRAPH_ERROR_MAP` 이 덮는다 — 이 값은
+    # 그 핸들러를 안 타는 다른 404 의 안전망이다. `412` 는 채택하지 않았으므로 채우지 않는다.
+    404: "NOT_FOUND",
+    # ⚠️ 이 기본값은 채팅 표면(§2.9 a)의 것이다 — 그래프 표면은 전용 핸들러가 덮는다.
     409: "STREAM_IN_PROGRESS",
     429: "RATE_LIMITED",
     500: "INTERNAL",
@@ -51,6 +63,29 @@ _DEFAULT_MESSAGE: dict[int, str] = {
     500: "서버 내부 오류",
     503: "상류(LLM/저장소) 일시 이용 불가",
     504: "상류(LLM/Spring) 응답 지연",
+}
+
+# api-spec §3.9 실패표와 1:1 (#360). `graph_errors` 상단 매핑표의 실제 구현이다.
+#
+# **라우터는 도메인 예외만 던진다.** 상태 코드·code 를 라우터가 매번 기억하게 하면 한 곳만
+# 빠뜨려도 계약이 깨지는데, 그 결함은 **정상 경로 테스트로 잡히지 않는다** — 특히 `409` 의
+# 기본 코드가 `STREAM_IN_PROGRESS` 라 코드 지정을 빠뜨리면 FE 에 "스트림 진행 중"이 나간다
+# (§3.9 구현 노트 1). 누락은 `tests/unit/test_graph_error_mapping.py` 가 잡는다.
+_GRAPH_ERROR_MAP: dict[type[GraphMutationError], tuple[int, str, str]] = {
+    GraphObjectUnknown: (400, "BAD_REQUEST", "요청한 대상을 확인할 수 없습니다"),
+    # **남의 edge 든 미존재든 동일 응답**이어야 열거가 막힌다 — 메시지에 식별자를 싣지 않는다.
+    GraphEdgeNotFound: (404, "PROFILE_EDGE_NOT_FOUND", "대상 취향 항목을 찾을 수 없습니다"),
+    GraphVersionConflict: (
+        409,
+        "PROFILE_VERSION_CONFLICT",
+        "프로필이 그 사이에 변경되었습니다. 다시 조회한 뒤 시도해 주세요.",
+    ),
+    GraphEdgeNotEditable: (
+        409,
+        "PROFILE_EDGE_NOT_EDITABLE",
+        "구매 기록에서 만들어진 항목은 수정할 수 없습니다.",
+    ),
+    GraphStoreUnavailable: (503, "UPSTREAM_UNAVAILABLE", "상류(저장소) 일시 이용 불가"),
 }
 
 _SESSION_ERROR_MAP: dict[type[SessionContextError], tuple[int, str, str]] = {
@@ -76,9 +111,22 @@ def get_request_id(request: Request) -> str:
     return rid
 
 
-def error_envelope(code: str, message: str, request_id: str) -> dict[str, Any]:
-    """§2.5 오류 봉투 dict."""
-    return {"error": {"code": code, "message": message, "requestId": request_id}}
+def error_envelope(
+    code: str, message: str, request_id: str, *, detail: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """§2.5 오류 봉투 dict.
+
+    **[HARD] 확장은 `error.detail`(중첩 object)로만 한다** — `error` 와 나란한 최상위 형제 필드를
+    추가하지 않는다(§2.5). 현행 용례는 `PROFILE_VERSION_CONFLICT` 의 `graphVersion`(§3.9)이고,
+    Spring 은 이 위치를 그대로 유지해 FE 에 전달한다.
+
+    `detail` 은 **실을 것이 있을 때만** 붙는다 — 빈 객체를 습관적으로 내보내면 소비자가 존재
+    여부로 분기할 수 없다. 키워드 전용이라 기존 호출부(위치 인자 3개)는 그대로 동작한다.
+    """
+    body: dict[str, Any] = {"code": code, "message": message, "requestId": request_id}
+    if detail is not None:
+        body["detail"] = detail
+    return {"error": body}
 
 
 def _resolve(status_code: int, detail: Any) -> tuple[str, str]:
@@ -145,6 +193,31 @@ async def _session_context_exception_handler(
     )
 
 
+async def _graph_mutation_exception_handler(
+    request: Request, exc: GraphMutationError
+) -> JSONResponse:
+    """그래프 변경 도메인 예외 → §3.9 실패표 (#360).
+
+    라우터가 상태 코드를 몰라도 되게 하는 자리다. `PROFILE_VERSION_CONFLICT` 만 최신 버전을
+    `error.detail.graphVersion` 에 싣는다 — 그게 없으면 FE 가 재조회 없이 재시도할 수 없다.
+
+    **메시지는 맵의 고정 문구다.** 예외 문자열을 그대로 쓰면 `edgeId` 가 응답으로 새어 나가
+    "남의 edge 든 미존재든 동일 응답"(열거 방지)이 깨진다.
+    """
+    status_code, code, message = _GRAPH_ERROR_MAP[type(exc)]
+    rid = get_request_id(request)
+    detail = (
+        {"graphVersion": exc.latest_graph_version}
+        if isinstance(exc, GraphVersionConflict)
+        else None
+    )
+    return JSONResponse(
+        status_code=status_code,
+        content=error_envelope(code, message, rid, detail=detail),
+        headers={REQUEST_ID_HEADER: rid},
+    )
+
+
 async def request_context_middleware(request: Request, call_next: Any) -> Any:
     """요청마다 requestId 를 부여하고 응답 헤더로 노출한다 (로그 상관관계)."""
     rid = new_request_id()
@@ -159,5 +232,6 @@ def install_error_handling(app: FastAPI) -> None:
     app.add_exception_handler(StarletteHTTPException, _http_exception_handler)
     app.add_exception_handler(RequestValidationError, _validation_exception_handler)
     app.add_exception_handler(SessionContextError, _session_context_exception_handler)
+    app.add_exception_handler(GraphMutationError, _graph_mutation_exception_handler)
     app.add_exception_handler(Exception, _unhandled_exception_handler)
     app.middleware("http")(request_context_middleware)

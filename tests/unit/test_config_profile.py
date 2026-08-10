@@ -293,3 +293,36 @@ def test_graph_retention_boundary_is_inclusive() -> None:
 def test_graph_retention_tunables_reject_nonpositive(field: str, value: float) -> None:
     with pytest.raises(ValidationError):
         Settings(_env_file=None, **{field: value})
+
+
+# ─────────── 그래프 API 응답 예산 (#360, api-spec §3.8·§3.9) ───────────
+
+
+def test_graph_api_budgets_are_injected_not_hardcoded() -> None:
+    """예산이 config 에 있어야 실측 후 코드 수정 없이 재조정된다 (CLAUDE.md — 튜너블 하드코딩 금지).
+
+    기본값은 **제안이며 실측이 아니다** — api-spec §2.9 (c) 기준표에 행이 없는 이유가 그것이고,
+    구현 후 실측해 등재하는 것이 #360 완료 조건이다.
+    """
+    settings = Settings(_env_file=None)
+
+    assert settings.profile_graph_read_budget_s == 2.0
+    assert settings.profile_graph_write_budget_s == 3.0
+
+
+def test_the_read_budget_must_stay_under_the_write_budget() -> None:
+    """조회가 변경보다 오래 걸리는 예산은 계약(§3.8 2s / §3.9 3s)을 뒤집는다 — 기동을 막는다."""
+    with pytest.raises(ValidationError, match="must stay under the write budget"):
+        Settings(_env_file=None, profile_graph_read_budget_s=4.0)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("profile_graph_read_budget_s", 0),
+        ("profile_graph_write_budget_s", 0),
+    ],
+)
+def test_graph_api_budgets_reject_nonpositive(field: str, value: float) -> None:
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, **{field: value})
