@@ -375,6 +375,66 @@ AXES: tuple[AxisSpec, ...] = (
         components=("wishlistViewPositive", "wishlistViewNoSteal"),
         not_comparable_with=("커밋된 모든 기준선 (wishlist_view intent 자체가 없던 런)",),
     ),
+    # [#440] 찜 해제 대상 해소 축. 프롬프트는 이 이슈에서 안 바뀐다(#443/#465 소유) — 이 축은
+    # "프롬프트 계층이 이 발화를 어디로 보내는가"의 기록이고, 실제 정답 보증은 결정론 계층
+    # (`intent_guard.has_wishlist_remove_evidence` + `wishlist.py` 해소 근거 게이트)이 맡는다.
+    # `wishlistViewPositive`/`NoSteal`/`Routing` 과 같은 3분할 구조를 그대로 따른다.
+    AxisSpec(
+        axis_id="wishlistRemovePositive",
+        title="찜 해제 발화 → wishlist_remove",
+        numerator='"찜한 거 빼줘"류 발화에서 intent == wishlist_remove 인 표본 수',
+        denominator="찜 해제 양성 2발화 × none 컨텍스트 × N (N=8 이면 16)",
+        predicate=_intent_matches,
+        not_comparable_with=("커밋된 모든 기준선 (이 축이 존재하지 않던 런)",),
+    ),
+    AxisSpec(
+        axis_id="wishlistRemoveNoSteal",
+        title="찜 해제 규칙이 남의 발화를 훔치지 않음",
+        numerator="음성 대조 발화에서 기대 intent(wishlist_remove 가 **아닌** 값)와 일치한 표본 수 "
+        '— "찜닭 빼줘"는 음식명이라 cart_remove, "장바구니에서 빼줘"는 장바구니 삭제라 cart_remove',
+        denominator="찜 해제 음성 대조 2발화 × none 컨텍스트 × N (N=8 이면 16)",
+        predicate=_intent_matches,
+        not_comparable_with=("커밋된 모든 기준선 (이 축이 존재하지 않던 런)",),
+    ),
+    AxisSpec(
+        axis_id="wishlistRemoveRouting",
+        title="찜 해제 라우팅 종합",
+        numerator="wishlistRemovePositive·wishlistRemoveNoSteal 두 축의 합",
+        denominator="찜 해제 4발화 × none 컨텍스트 × N (N=8 이면 32)",
+        predicate=_intent_matches,
+        components=("wishlistRemovePositive", "wishlistRemoveNoSteal"),
+        not_comparable_with=("커밋된 모든 기준선 (이 축이 존재하지 않던 런)",),
+    ),
+    # [#285, I-25 §4.13 — 4단계] 장바구니 수량 변경 라우팅 축. combo_matrix 는 build_decompose_json
+    # 으로 intent 를 강제 주입해 라우팅을 재지 않기로 결정했다(evals/combo_matrix/axes.json 의
+    # cart_quantity_not_generated excludes 규칙) — 그래서 라우팅 회귀는 여기서만 잰다.
+    # `wishlistViewPositive`/`NoSteal`/`Routing` 과 같은 3분할 구조를 그대로 따른다.
+    AxisSpec(
+        axis_id="cartQuantityPositive",
+        title="수량 변경 발화 → cart_quantity",
+        numerator='"3개로 바꿔줘"류 발화에서 intent == cart_quantity 인 표본 수',
+        denominator="수량 변경 양성 3발화 × none 컨텍스트 × N (N=8 이면 24)",
+        predicate=_intent_matches,
+        not_comparable_with=("커밋된 모든 기준선 (cart_quantity intent 자체가 없던 런)",),
+    ),
+    AxisSpec(
+        axis_id="cartQuantityNoSteal",
+        title="수량 변경 규칙이 남의 발화를 훔치지 않음",
+        numerator="음성 대조 발화에서 기대 intent(cart_quantity 가 **아닌** 값)와 일치한 표본 수 "
+        '— "하나 더 담아줘"(합산)는 cart_add, "이어폰 빼줘"는 cart_remove, "장바구니 보여줘"는 cart_view',
+        denominator="수량 변경 음성 대조 3발화 × none 컨텍스트 × N (N=8 이면 24)",
+        predicate=_intent_matches,
+        not_comparable_with=("커밋된 모든 기준선 (cart_quantity intent 자체가 없던 런)",),
+    ),
+    AxisSpec(
+        axis_id="cartQuantityRouting",
+        title="수량 변경 라우팅 종합",
+        numerator="cartQuantityPositive·cartQuantityNoSteal 두 축의 합",
+        denominator="수량 변경 6발화 × none 컨텍스트 × N (N=8 이면 48)",
+        predicate=_intent_matches,
+        components=("cartQuantityPositive", "cartQuantityNoSteal"),
+        not_comparable_with=("커밋된 모든 기준선 (cart_quantity intent 자체가 없던 런)",),
+    ),
 )
 
 AXES_BY_ID = {spec.axis_id: spec for spec in AXES}

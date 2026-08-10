@@ -47,6 +47,18 @@ CONDITION_ONLY_GROUP = "condition_only"
 # wishlist_view)에서 새 의도가 남의 것을 훔치지 않는지를 재는 그룹. 양성 3발화 + 음성 대조
 # 3발화로 구성되며 음성 대조의 기대 intent 는 `wishlist_view` 가 **아닌** 값이다.
 WISHLIST_VIEW_GROUP = "wishlist_view"
+# [#440] 찜 해제 대상 해소(조회 ↔ 해제 인접 결합 판정) 축 — `WISHLIST_VIEW_GROUP`(#386) 과 정확히
+# 같은 패턴이다. 프롬프트는 이 이슈에서 안 바뀌므로(범위 밖, #443/#465 소유) 이 셀들은 "프롬프트
+# 계층이 이 발화를 어디로 보내는가"의 기록일 뿐이고, 실제 정답 보증은 결정론 계층
+# (`intent_guard.has_wishlist_remove_evidence` + `wishlist.py` 해소 근거 게이트)이 맡는다.
+WISHLIST_REMOVE_GROUP = "wishlist_remove"
+# [#285, I-25 §4.13 — 4단계] 장바구니 수량 변경(치환) 라우팅 축 — `WISHLIST_VIEW_GROUP`(#386) 과
+# 같은 패턴이다. combo_matrix 는 build_decompose_json 으로 intent 를 강제 주입해 라우팅을 재지
+# 않기로 결정했으므로(evals/combo_matrix/axes.json 의 `cart_quantity_not_generated` excludes 규칙
+# 참조), 라우팅 회귀는 여기서만 잰다. 양성(치환 표현 → cart_quantity)과 음성(합산·삭제·조회 —
+# cart_quantity 가 남의 발화를 훔치지 않는가)을 갈라서 센다 — 가장 중요한 대조는 "하나 더
+# 담아줘"(합산, cart_add) 다(패킷 함정 2 와 같은 축).
+CART_QUANTITY_GROUP = "cart_quantity"
 GROUPS = frozenset(
     {
         "cart_control",
@@ -59,6 +71,8 @@ GROUPS = frozenset(
         SCREEN_GROUP,
         CONDITION_ONLY_GROUP,
         WISHLIST_VIEW_GROUP,
+        WISHLIST_REMOVE_GROUP,
+        CART_QUANTITY_GROUP,
     }
 )
 # [#313] group → 허용 컨텍스트 매핑. "이 축이 무엇을 재는가"의 선언 그 자체다 — 여기 한 줄이
@@ -82,6 +96,16 @@ GROUP_ALLOWED_CONTEXTS: dict[str, frozenset[str]] = {
     # [#386] 찜 목록 조회는 지칭 해소 대상이 없어 컨텍스트가 라우팅을 가르지 않는다 —
     # `none` 하나로 둔다(`condition_only` 와 같은 이유).
     WISHLIST_VIEW_GROUP: frozenset({"none"}),
+    # [#440] 찜 해제 대상 해소도 지칭 해소 대상이 없다 — `none` 하나로 둔다
+    # (`wishlist_view`/`condition_only` 와 같은 이유). 실제 셀 4개도 전부 `contexts: ["none"]`
+    # 이라 [라운드 1 리뷰 F2] `lastRecommendations` 는 아무도 안 쓰는 허용이었다 — 이 매핑은
+    # "이 축이 무엇을 재는가"의 선언 그 자체(#313)라, 안 쓰는 값을 열어 두면 다음 사람이 그
+    # 축에 다른 컨텍스트 셀을 얹어 분모를 흔들 수 있다.
+    WISHLIST_REMOVE_GROUP: frozenset({"none"}),
+    # [#285, I-25 §4.13] 수량 변경도 지칭 해소 대상이 없다 — `none` 하나로 둔다(`wishlist_view`/
+    # `wishlist_remove` 와 같은 이유). 대상 항목 해소는 결정론 계층(`quantity.py::
+    # _resolve_quantity_target`)이 장바구니 조회 결과에서 하지, decompose 컨텍스트가 가르지 않는다.
+    CART_QUANTITY_GROUP: frozenset({"none"}),
 }
 INTENTS = (
     "recommend",
@@ -89,10 +113,17 @@ INTENTS = (
     "cart_view",
     "order_status",
     "general",
-    # [#386] 찜 조회 축을 신설하며 추가. 나머지 찜·삭제 intent(`wishlist_add`·
-    # `wishlist_remove`·`cart_remove`)는 여전히 이 프로브의 정의역 밖이다 — 각자 별건(#116/#117)
-    # 이고, 여기 넣으면 재지 않는 값이 정답지에 생긴다.
+    # [#386] 찜 조회 축을 신설하며 추가.
     "wishlist_view",
+    # [#440] 찜 해제 대상 해소 축을 신설하며 추가 — `wishlist_remove`(찜 해제 양성)와
+    # `cart_remove`(잠식 대조, "장바구니에서 빼줘")가 이 축의 대조 표현에 필요하다. 나머지
+    # `wishlist_add` intent 는 여전히 이 프로브의 정의역 밖이다(#116/#117 별건, 여기 넣으면
+    # 재지 않는 값이 정답지에 생긴다).
+    "wishlist_remove",
+    "cart_remove",
+    # [#285, I-25 §4.13 — 4단계] 수량 변경 축을 신설하며 추가. 음성 대조에 `cart_add`·
+    # `cart_remove`·`cart_view`(전부 이미 위에 있음)가 필요하다.
+    "cart_quantity",
 )
 CATEGORY_ACTIONS = ("carry", "clear", "replace")
 # [#300] screen 셀의 productIdRule 3종. 이슈 본문은 "2종"이라 했지만 실제 셀은 세 모양이다 —
@@ -146,12 +177,31 @@ CONDITION_ONLY_AXIS_IDS = frozenset({"conditionOnlyNoCategoryQuery"})
 WISHLIST_VIEW_AXIS_IDS = frozenset(
     {"wishlistViewPositive", "wishlistViewNoSteal", "wishlistViewRouting"}
 )
+# [#440] 찜 해제 대상 해소 축 — `WISHLIST_VIEW_AXIS_IDS` 와 같은 3분할이다:
+#   · `wishlistRemovePositive` — 찜 해제 발화(인접 결합이 필요한 부류 포함)가 실제로
+#     `wishlist_remove` 로 가는가
+#   · `wishlistRemoveNoSteal`  — 음식명·시설명·다른 intent(cart_remove) 를 훔치지 않는가(음성 대조)
+#   · `wishlistRemoveRouting`  — 위 둘의 합계
+WISHLIST_REMOVE_AXIS_IDS = frozenset(
+    {"wishlistRemovePositive", "wishlistRemoveNoSteal", "wishlistRemoveRouting"}
+)
+# [#285, I-25 §4.13 — 4단계] 장바구니 수량 변경 축 — `WISHLIST_VIEW_AXIS_IDS` 와 같은 3분할이다.
+# 커밋된 기준선 어디에도 **존재하지 않는다**(그 시점엔 intent 자체가 없었다):
+#   · `cartQuantityPositive` — 치환 표현("N개로 바꿔줘")이 실제로 cart_quantity 로 가는가
+#   · `cartQuantityNoSteal`  — 합산·삭제·조회(cart_add/cart_remove/cart_view) 를 훔치지 않는가
+#     (음성 대조 — 가장 중요한 대조는 "하나 더 담아줘" → cart_add, 패킷 함정 2 와 같은 축)
+#   · `cartQuantityRouting`  — 위 둘의 합계
+CART_QUANTITY_AXIS_IDS = frozenset(
+    {"cartQuantityPositive", "cartQuantityNoSteal", "cartQuantityRouting"}
+)
 AXIS_IDS = (
     LEGACY_AXIS_IDS
     | CATEGORY_ACTION_AXIS_IDS
     | SCREEN_AXIS_IDS
     | CONDITION_ONLY_AXIS_IDS
     | WISHLIST_VIEW_AXIS_IDS
+    | WISHLIST_REMOVE_AXIS_IDS
+    | CART_QUANTITY_AXIS_IDS
 )
 # [#300, F-2] productIdRule → 그 규칙이 재는 컴포넌트 축. `screenResolution`(합계 축)은 모든
 # screen 발화가 공통으로 선언해야 하므로 이 맵에는 넣지 않는다 —
@@ -292,7 +342,18 @@ class Expected(CamelModel):
     """이 발화의 정답. productIdRule 은 cart.productId 채점 규칙이다."""
 
     intent: Literal[
-        "recommend", "cart_add", "cart_view", "order_status", "general", "wishlist_view"
+        "recommend",
+        "cart_add",
+        "cart_view",
+        "order_status",
+        "general",
+        "wishlist_view",
+        # [#440] wishlist_remove 축 신설로 추가 — cart_remove 는 그 축의 잠식 대조("장바구니에서
+        # 빼줘")에 필요하다.
+        "wishlist_remove",
+        "cart_remove",
+        # [#285, I-25 §4.13 — 4단계] cart_quantity 축 신설로 추가.
+        "cart_quantity",
     ]
     option_id: int | None = None
     product_id_rule: Literal[
@@ -588,6 +649,65 @@ class Utterance(CamelModel):
                 f"{self.utterance_id}: {sorted(declared & WISHLIST_VIEW_AXIS_IDS)} 는 "
                 f"group='{WISHLIST_VIEW_GROUP}' 발화만 선언할 수 있습니다 "
                 "— 다른 그룹이 섞이면 신규 축의 분모가 정의(찜 조회 6발화)와 어긋납니다"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _wishlist_remove_group_is_isolated(self) -> "Utterance":
+        """[#440] 찜 해제 대상 해소 축도 기존 축과 표본을 섞지 않는다 — 앞의 네 검증자와 같은
+        이유(`_wishlist_view_group_is_isolated` 참조)."""
+        declared = set(self.axes)
+        if self.group == WISHLIST_REMOVE_GROUP:
+            others = sorted(
+                declared
+                & (
+                    LEGACY_AXIS_IDS
+                    | CATEGORY_ACTION_AXIS_IDS
+                    | SCREEN_AXIS_IDS
+                    | CONDITION_ONLY_AXIS_IDS
+                    | WISHLIST_VIEW_AXIS_IDS
+                )
+            )
+            if others:
+                raise ValueError(
+                    f"{self.utterance_id}: 찜 해제 발화는 기존 축 {others} 를 선언할 수 없습니다 "
+                    "— 새 셀이 기존 축의 분모를 늘리면 커밋된 기준선과 그 축을 비교할 수 없게 됩니다"
+                )
+        elif declared & WISHLIST_REMOVE_AXIS_IDS:
+            raise ValueError(
+                f"{self.utterance_id}: {sorted(declared & WISHLIST_REMOVE_AXIS_IDS)} 는 "
+                f"group='{WISHLIST_REMOVE_GROUP}' 발화만 선언할 수 있습니다 "
+                "— 다른 그룹이 섞이면 신규 축의 분모가 정의(찜 해제 4발화)와 어긋납니다"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _cart_quantity_group_is_isolated(self) -> "Utterance":
+        """[#285, I-25 §4.13 — 4단계] 장바구니 수량 변경 축도 기존 축과 표본을 섞지 않는다 —
+        앞의 다섯 검증자와 같은 이유(`_wishlist_view_group_is_isolated` 참조)."""
+        declared = set(self.axes)
+        if self.group == CART_QUANTITY_GROUP:
+            others = sorted(
+                declared
+                & (
+                    LEGACY_AXIS_IDS
+                    | CATEGORY_ACTION_AXIS_IDS
+                    | SCREEN_AXIS_IDS
+                    | CONDITION_ONLY_AXIS_IDS
+                    | WISHLIST_VIEW_AXIS_IDS
+                    | WISHLIST_REMOVE_AXIS_IDS
+                )
+            )
+            if others:
+                raise ValueError(
+                    f"{self.utterance_id}: 수량 변경 발화는 기존 축 {others} 를 선언할 수 없습니다 "
+                    "— 새 셀이 기존 축의 분모를 늘리면 커밋된 기준선과 그 축을 비교할 수 없게 됩니다"
+                )
+        elif declared & CART_QUANTITY_AXIS_IDS:
+            raise ValueError(
+                f"{self.utterance_id}: {sorted(declared & CART_QUANTITY_AXIS_IDS)} 는 "
+                f"group='{CART_QUANTITY_GROUP}' 발화만 선언할 수 있습니다 "
+                "— 다른 그룹이 섞이면 신규 축의 분모가 정의(수량 변경 6발화)와 어긋납니다"
             )
         return self
 

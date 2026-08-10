@@ -21,6 +21,8 @@ MVP 범위(api-spec v0.14.0 §3.2, 결정 20 개정): 통계 Q&A + 상세 수정
   ①.5 추천 적용 선판정(parse_apply_message "N번 적용해줘", LLM 0회) →
      _apply_stream: 이력 recommendations[N-1] → draft 변환(4-3 §6.3).
   ② scope 선차단(check_scope, LLM 0회).
+  ②.5 차트 요청 선판정(wants_chart_keyword, LLM 0회, #531) → _analysis_stream 직행:
+     차트 좌표는 analysis 레인의 report 이벤트에만 실린다(경로 B).
   ③ supervisor 라우팅(route_question — 장애 시 general 폴백은 함수 내부).
 분기: analysis → run_analysis_pipeline(emit 큐 중계, 예외 2경우만 사과+error) /
 product → draft 검증(validate_draft)·checkpoint 저장(start_draft)·draft emit /
@@ -73,6 +75,7 @@ from app.agents.seller.pipeline import (
     format_general_input,
     parse_apply_message,
     split_report_summary,
+    wants_chart_keyword,
 )
 from app.agents.seller.prompts import PENDING_DRAFT_GATE_PROMPT
 from app.agents.seller.schemas import DraftChange, DraftProposal, PendingDraftAction
@@ -233,7 +236,9 @@ def _llm_unavailable(
 #   · done(panel)  : 종료 시 패널 조치를 확정한다 — replace(패널 교체)/keep(유지)/refresh(재조회).
 # analysis 진행 상태는 최종 답변이 아니므로 token 이 아니라 progress 로 분리한다.
 
-# 레인(meta.lane) — supervisor 3분기 + 코드 선판정 3종.
+# 레인(meta.lane) — supervisor 3분기 + 코드 선판정 4종(confirm·apply·scope·chart).
+# [#531] chart 선판정(②.5)은 새 lane 을 만들지 않고 analysis 를 재사용한다 —
+# 좌표를 싣는 report 이벤트가 그 레인의 것이라 목적지가 같다.
 Lane = Literal["analysis", "product", "general", "confirm", "apply", "refused"]
 # 패널 조치(done.panel) — 우측 패널을 어떻게 할지 FE 에 지시.
 Panel = Literal["replace", "keep", "refresh"]
@@ -998,6 +1003,10 @@ def _masked_preview(preview: dict) -> dict:
         "originalPriceText",
         "stockText",
         "categoryPath",
+        # [#541] 카테고리 2칸 표기도 같은 마스킹을 탄다 — 표시 키를 늘릴 때 이 목록을
+        # 같이 늘리지 않으면 그 키만 마스킹을 비껴간다(#524 lesson "입구를 전부 센다").
+        "categoryMajor",
+        "categorySubPath",
         "summary",
         "description",
     ):
@@ -1530,10 +1539,52 @@ async def _seller_stream(
         yield _done("keep")
         return
 
-    # ③ 대화 스레드 최근 턴 1회 조회(실패는 [] degrade) → supervisor 라우팅 —
-    # 장애 시 general 폴백은 route_question 내부(4-1a). 맥락은 supervisor 입력과
-    # analysis planner 입력에 주입되고, general 은 스레드 자체를 물고 있어 불필요.
+    # 대화 스레드 최근 턴 1회 조회(실패는 [] degrade) — 아래 ②.5·③ 이 공유한다.
+    # 맥락은 supervisor 입력과 analysis planner 입력에 주입되고, general 은 스레드
+    # 자체를 물고 있어 불필요.
     recent_turns = await seller_thread.load_recent_turns(context, request.thread_id)
+
+    # ②.5 [#531] 차트 요청 코드 선판정 (LLM 0회) — supervisor 라우팅 **앞**에 둔다.
+    #
+    # 차트 좌표는 report 이벤트 charts[] 로만 나가고 그 이벤트는 analysis 레인에만 있다
+    # (general 은 meta/token/done 뿐 — _general_stream 참조). 그런데 SUPERVISOR_PROMPT 는
+    # "이번달 매출 그래프 보여줘"에 해석 신호가 없으니 general 을 고른다("의도 신호가
+    # 없으면 general 이 기본값") — 프롬프트대로 정확히 동작한 결과 좌표가 나갈 자리 자체가
+    # 사라지고, general_agent 가 ASCII 아트를 token 으로 그린다. #504 의 chart_only 경로도
+    # planner 에 도달하지 못해 죽은 코드였다. 프롬프트에 예외를 끼우면 "조회=general" 축이
+    # 흔들리므로(경계 예시 다수가 그 축에 의존) 코드로 결정론적으로 막는다.
+    #
+    # [위치 근거 — 순서가 이 판정의 전부다]
+    # · ①(초안 대기 게이트)보다 뒤: 초안 대기 중 "그래프 보여줘"는 offtopic 분기가 초안을
+    #   지켜야 한다(동시 생존 draft 차단).
+    # · ①.7(기간 확인 대기)보다 뒤: 앞에 두면 승인이 아닌 발화의 대기 폐기가 건너뛰어져
+    #   stale pending 이 남는다.
+    # · image_urls 직행(#506)보다 뒤: 사진을 실은 발화의 목적지는 등록 초안뿐이다.
+    # · ②(scope)보다 뒤: 앞에 두면 "경쟁사 매출 그래프 보여줘" 같은 도메인 밖 요청이
+    #   analysis 레인으로 새어 타 판매자 데이터를 조회하려 든다.
+    # · load_recent_turns 뒤: 이미 실은 맥락을 그대로 넘기고 라우팅 LLM 1회만 아낀다.
+    #
+    # 로그를 선판정 안에서도 남기는 이유: 빼면 차트 턴이 seller_routed 집계에서 통째로
+    # 사라져 레인 분포에 구멍이 생긴다. 라우터가 고른 것과 같은 필드로 찍는다.
+    if wants_chart_keyword(request.message):
+        _seller_log(
+            logging.INFO,
+            "seller_routed",
+            context=context,
+            thread_id=request.thread_id,
+            action="analysis",
+            status="ROUTED",
+        )
+        async for line in _analysis_stream(
+            request,
+            context,
+            recent_turns,
+            request_id=request_id,
+        ):
+            yield line
+        return
+
+    # ③ supervisor 라우팅 — 장애 시 general 폴백은 route_question 내부(4-1a).
     try:
         with trace_span("seller.routing", "chain"):
             decision = await route_question(

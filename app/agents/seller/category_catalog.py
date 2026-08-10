@@ -101,6 +101,21 @@ class CategoryEntry:
         """
         return SEPARATOR.join(self.path)
 
+    @property
+    def sub_path(self) -> str:
+        """[#541] 대분류를 뺀 나머지 — 판매자가 채우는 **둘째 칸**("중분류 > 소분류").
+
+        `major` 와 이 값이 preview 의 2칸 표기이며 다음 **불변식**을 지킨다:
+
+            path_str == major + SEPARATOR + sub_path   (path 가 2칸 이상일 때)
+
+        2칸 스냅샷에서는 `leaf` 와 값이 같지만 `leaf`(= path[-1])로 만들지 **않는다** —
+        3칸짜리 낡은 스냅샷이 섞이면 중분류가 표기에서 조용히 사라져 카드가 보여준
+        카테고리와 실제 등록될 카테고리가 달라진다. 카테고리는 등록 후 변경 불가라
+        그 오차의 비용이 크다("보여준 것 == 실행하는 것", preview 모듈 docstring).
+        """
+        return SEPARATOR.join(self.path[1:])
+
     def terms(self) -> list[tuple[int, str]]:
         """(계층 가중치, 매칭어) 목록 — 검색 인덱스와 정밀 채점이 함께 쓴다."""
         items: list[tuple[int, str]] = [(_LEVEL_MINOR, self.minor)]

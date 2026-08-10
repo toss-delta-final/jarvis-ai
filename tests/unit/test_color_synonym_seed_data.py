@@ -23,8 +23,8 @@ SQL_PATH = REPO_ROOT / "db" / "catalog" / "init" / "05_color_synonyms_seed.sql"
 # 단언이 된다. 이 값은 이 이슈에서 실제로 계산·재현한 codepoint sha256 이다
 # (test_category_seed_data.py 관례, §4.7).
 EXPECTED_ROW_COUNT = 789
-EXPECTED_APPROVED_COUNT = 46
-EXPECTED_CODEPOINT_SHA256 = "e1525ab0e7afa4da5ef6f90d3ce71599051e9ff400c2584a3fc361809d332c9a"
+EXPECTED_APPROVED_COUNT = 90
+EXPECTED_CODEPOINT_SHA256 = "37d4aeffe1b62e1163b89f17af6535256ac9a972070e8a853834a5df2607ab4e"
 
 _VALID_STATUSES = frozenset({"pending_review", "approved", "rejected"})
 _VALID_PROVENANCES = frozenset({"seed_llm_assignment", "batch_embedding_unverified", "human"})
@@ -135,6 +135,10 @@ def test_anchors_are_self_canonical() -> None:
         "골드",
         "오렌지",
         "스카이블루",
+        "베이지",
+        "차콜",
+        "크림",
+        "와인",
     }
     assert anchor_terms == expected_anchors
 
@@ -215,9 +219,23 @@ def test_bootstrap_sql_contains_every_row_once() -> None:
     rows = _load_rows()
     committed = SQL_PATH.read_bytes().decode("utf-8")
     assert committed.count("INSERT INTO color_synonyms") >= 1
-    assert committed.count("ON CONFLICT (term) DO NOTHING;") >= 1
+    assert committed.count("ON CONFLICT (term) DO UPDATE SET") >= 1
     value_lines = [line for line in committed.splitlines() if line.strip().startswith("('")]
     assert len(value_lines) == len(rows)
+
+
+def test_bootstrap_sql_upsert_refreshes_seed_fields_without_embedding() -> None:
+    committed = SQL_PATH.read_bytes().decode("utf-8")
+    update_clause = (
+        "ON CONFLICT (term) DO UPDATE SET\n"
+        "    canonical = EXCLUDED.canonical,\n"
+        "    status = EXCLUDED.status,\n"
+        "    provenance = EXCLUDED.provenance,\n"
+        "    doc_count = EXCLUDED.doc_count;"
+    )
+    assert committed.count(update_clause) >= 1
+    assert "embedding = EXCLUDED.embedding" not in committed
+    assert "embedding_model = EXCLUDED.embedding_model" not in committed
 
 
 # --- 8. 대표 묶음 실측 검증 (expand_color) ------------------------------------------------
