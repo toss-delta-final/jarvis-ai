@@ -321,6 +321,8 @@ def test_route_decision_axes_are_all_classified() -> None:
         # blocking 이 계상한다 — 이 불리언을 blocking 에 넣으면 같은 사실을 두 번 세는 중복이다
         # (`category_expanded` 를 여기 둔 것과 같은 이유).
         "category_leg_injected",
+        # [#464] 후처리가 제거한 축을 나타내는 진단 필드일 뿐 판정에 관여하지 않는다.
+        "attr_conditions_suppressed_axes",
     }
 
     assert {f.name for f in fields(RouteDecision)} == (

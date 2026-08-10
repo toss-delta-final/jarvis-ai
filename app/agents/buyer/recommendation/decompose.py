@@ -25,6 +25,7 @@ from app.agents.buyer.recommendation.category_leg_injection import (
     DEFAULT_CATEGORY_LEG_INJECTION_PATH,
     inject_category_leg,
 )
+from app.agents.buyer.recommendation.attr_axis import strip_constraint_axes
 from app.agents.buyer.screen_reference import grid_position
 from app.core.llm import LLMClient, LLMError
 from app.schemas.spring import ProductSearchFilters
@@ -615,6 +616,8 @@ async def decompose(
     category_leg_injection: bool = False,
     category_leg_injection_path: str = DEFAULT_CATEGORY_LEG_INJECTION_PATH,
     category_leg_injection_min_length: int = 2,
+    attr_axis_suppression: bool = False,
+    attr_constraint_axes: frozenset[str] = frozenset(),
 ) -> RouteDecision:
     """Haiku 1회 호출로 intent(추천/담기/장바구니조회/주문상태/일반)와 필터를 산출한다.
 
@@ -694,6 +697,15 @@ async def decompose(
             data.get("repurchaseProducts"), repurchase_max
         )
         parsed_attr = _parse_attr_conditions(data.get("attrConditions"))
+        attr_conditions_suppressed_axes: list[str] = []
+        parsed_attr, parsed_suppressed_axes = strip_constraint_axes(
+            parsed_attr,
+            enabled=attr_axis_suppression,
+            constraint_axes=attr_constraint_axes,
+        )
+        for axis in parsed_suppressed_axes:
+            if axis not in attr_conditions_suppressed_axes:
+                attr_conditions_suppressed_axes.append(axis)
         # attrConditions 는 ProductSearchFilters 모델 필드가 아니므로, leg 훅보다 먼저 파싱해
         # what-축 게이트에 명시적으로 준다. 훅은 cat_signal 전이어야 폴백 플래그도 함께 뒤집힌다.
         filters.attr_conditions = parsed_attr or None
@@ -746,6 +758,14 @@ async def decompose(
         merged = {**(prior_attr or {}), **(parsed_attr or {})}
         for axis in _parse_attr_removals(data.get("attrRemovals")):
             merged.pop(axis, None)
+        merged, merged_suppressed_axes = strip_constraint_axes(
+            merged,
+            enabled=attr_axis_suppression,
+            constraint_axes=attr_constraint_axes,
+        )
+        for axis in merged_suppressed_axes:
+            if axis not in attr_conditions_suppressed_axes:
+                attr_conditions_suppressed_axes.append(axis)
         filters.attr_conditions = merged or None
         buy_all = data.get("buyAll") is True
         raw_total_budget = data.get("totalBudget")
@@ -785,6 +805,7 @@ async def decompose(
         repurchase_products=repurchase_products,
         category_queries=category_queries,
         category_leg_injected=category_leg_injected,
+        attr_conditions_suppressed_axes=attr_conditions_suppressed_axes,
         # [#113] `is True` 로 좁힌다 — 문자열 "false"·1·null 등 애매한 산출을 전부 False 로
         # 떨어뜨려 **엄격한 쪽**(원래 조건 유지)으로 기울인다. 놓치면 무해하지만 오탐하면
         # 사용자가 말한 조건이 조용히 바뀐다.

@@ -31,6 +31,8 @@ def build_underspecified_probe_manifest(
     category_fanout_max: int,
     repurchase_max: int,
     underspecified_reask_enabled: bool,
+    attr_axis_suppression: bool,
+    attr_constraint_axes: list[str],
     pacer: dict[str, Any],
     budget: dict[str, Any],
     cell_ids: list[str],
@@ -63,6 +65,8 @@ def build_underspecified_probe_manifest(
         "judgment": {
             "underspecifiedReaskEnabled": underspecified_reask_enabled,
         },
+        "attrAxisSuppression": attr_axis_suppression,
+        "attrConditionConstraintAxes": list(attr_constraint_axes),
         "seedScope": "셀 순서에만 쓴다. provider 샘플링 seed 는 강제할 수 없다.",
         # [§D10, F-3] 측정 범위와 한계 — README §측정 범위와 한계의 요약. `detect_expansion_need`
         # (게이트 판정 함수)는 진단 목적으로 매 표본 부른다 — "needs_expansion 은 부르지 않는다"는
