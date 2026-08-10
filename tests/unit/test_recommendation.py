@@ -411,6 +411,37 @@ def test_degrade_notice_cannot_be_disabled_by_empty_value() -> None:
     assert Settings(_env_file=None, dedup_skipped_notice="").dedup_skipped_notice == ""
 
 
+async def test_overall_comment_markdown_collapses_to_one_line() -> None:
+    """[이슈 #570] LLM overallComment 가 `## 제목\\n| a | b |` 처럼 마크다운·개행을 실어도
+    실제 token.text 는 개행 0개인 한 줄로 나간다 — `_strip_unsafe` 가 **공백류(개행 포함)만**
+    단일 공백으로 접을 뿐, `#`·`|`·`-` 같은 문법 문자 자체는 지우지 않는다는 것도 함께 못 박는다
+    (아래 단언의 "## 제목 …"이 그 증거 — 마크다운이 "접히는" 게 아니라 개행만 접혀 표·코드펜스
+    처럼 여러 줄이 필요한 구성만 구조적으로 성립하지 못하게 된다). api-spec §3.1 `token` 렌더링
+    방식 두 번째 불릿(LLM 자유 문장은 프롬프트로만 금지하고 결정론적으로 보장하지 않는다)의
+    근거가 되는 회귀다.
+    """
+    events = await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=FakeLLM(
+                rerank={
+                    "ranked": [
+                        {"productId": 101, "rationale": "가성비가 좋아요"},
+                        {"productId": 102, "rationale": "음질이 우수해요"},
+                    ],
+                    "overallComment": "## 제목\n| a | b |\n- 목록1\n- 목록2",
+                }
+            ),
+            search=_make_search(DEFAULT_PRODUCTS),
+            push_fn=_RecordingPush(),
+        )
+    )
+    texts = " ".join(e["data"].get("text", "") for e in events if e["type"] == "token")
+    assert "\n" not in texts
+    assert "## 제목 | a | b | - 목록1 - 목록2" in texts
+
+
 async def test_push_skipped_notice_comes_from_config(monkeypatch: pytest.MonkeyPatch) -> None:
     """push 실패 안내도 config 주입이다 — 문구 정책을 한 곳에 모은다(#133)."""
     settings = get_settings()
@@ -587,6 +618,15 @@ async def test_decompose_error_maps_to_llm_code() -> None:
         )
     )
     assert ev2[-1]["data"]["code"] == "LLM_TIMEOUT"
+
+
+def test_rerank_prompt_forbids_markdown_in_overall_comment() -> None:
+    """[이슈 #570] `overallComment` 는 4종 밖 마크다운을 실을 수 있어 시스템 프롬프트가 금지
+    문장을 담고 있어야 한다 — 누가 조용히 지우면 이 트립와이어가 깨진다."""
+    from app.agents.buyer.recommendation.rerank import _SYSTEM
+
+    assert "마크다운을 쓰지 마세요" in _SYSTEM
+    assert "overallComment" in _SYSTEM.split("마크다운을 쓰지 마세요", 1)[0].rsplit("\n", 1)[-1]
 
 
 # ─────────── rerank 후보 부분집합 / 멀티턴 ───────────
