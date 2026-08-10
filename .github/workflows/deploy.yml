@@ -98,11 +98,18 @@ jobs:
             # 리뷰)가 빈 값을 필드 기본값(off)으로 해석해 기능이 꺼진 채 정상 기동한다.
             COLOR_SYNONYM_EXPANSION_ENABLED=${{ vars.COLOR_SYNONYM_EXPANSION_ENABLED }}
             COLOR_SYNONYM_ARRAY_CONTRACT_READY=${{ vars.COLOR_SYNONYM_ARRAY_CONTRACT_READY }}
-            # [2026-08-06] 클라이언트 IP 판별 — 도메인 전환 후 실측한 값이다.
-            #   브라우저 → Cloudflare → ALB → FastAPI 경로라 XFF 가 2개
-            #   (사용자IP, Cloudflare IP)로 도착한다. 오른쪽에서 2번째가 사용자.
-            #   백엔드는 nginx 가 한 번 더 붙여 3이다(값이 서로 다른 게 정상).
-            #   ALB 는 Cloudflare IP 대역으로만 열려 있어 XFF 위조 경로는 차단됨.
+            # [2026-08-06, 2026-08-10 정정] 클라이언트 IP 판별 — 아래 값은 "실측"이 아니라
+            #   추정이었다. AI 가 그때까지 XFF 를 로그로 남긴 적이 없어 홉 수를 관측할
+            #   경로가 없었다(#134). ALB 는 Cloudflare IP 대역으로만 열려 있어 XFF 위조
+            #   경로는 차단되지만, 홉 수 자체가 맞는지는 별개 문제다.
+            #   확정 방법: 배포 후 client_ip_probe 로그의 cfMatchIndexFromRight 값을
+            #   FORWARDED_FOR_TRUSTED_HOPS 에 넣는다. hopMismatch=true 로 찍히면 현재
+            #   설정값이 틀린 것이다.
+            #   저장소/조직 변수가 미등록이면 빈 문자열이 오지만, 이제는 필드 기본값
+            #   (신뢰 off / hops=1)으로 폴백해 기동이 죽지 않는다(#134, 이전에는
+            #   ValidationError: bool_parsing 으로 크래시 루프였다) — 대신 신뢰가 꺼지면
+            #   IP 백스톱 키가 프록시(ALB) IP 하나로 뭉쳐 전체 사용자가 상한을 공유하므로
+            #   값은 계속 등록돼 있어야 한다.
             TRUST_FORWARDED_FOR=${{ vars.TRUST_FORWARDED_FOR }}
             FORWARDED_FOR_TRUSTED_HOPS=${{ vars.FORWARDED_FOR_TRUSTED_HOPS }}
             LANGSMITH_TRACING=${{ vars.LANGSMITH_TRACING }}

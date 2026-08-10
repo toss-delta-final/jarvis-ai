@@ -1062,3 +1062,24 @@ def test_trace_content_max_chars_tolerates_empty_string():
         ).langsmith_trace_content_max_chars
         == 20000
     )
+
+
+def test_forwarded_for_settings_tolerate_empty_string_from_unregistered_deploy_vars() -> None:
+    """[이슈 #134] deploy.yml 이 TRUST_FORWARDED_FOR·FORWARDED_FOR_TRUSTED_HOPS 를 무조건
+    주입하므로 조직 Variable 미등록·삭제 시 빈 문자열이 온다 — bool/int 파싱 실패로 전체
+    서비스가 기동 크래시 루프에 빠지는 사고(실증: `TRUST_FORWARDED_FOR=` →
+    `ValidationError: bool_parsing`)를 막는다. 빈 값은 필드 기본값(신뢰 off / hops=1)으로
+    폴백해야 한다(`langsmith_trace_content` 폴백과 같은 관례)."""
+    assert Settings(_env_file=None, trust_forwarded_for="").trust_forwarded_for is False
+    assert Settings(_env_file=None, trust_forwarded_for=" ").trust_forwarded_for is False
+    assert Settings(_env_file=None, forwarded_for_trusted_hops="").forwarded_for_trusted_hops == 1
+    assert Settings(_env_file=None, trust_forwarded_for="true").trust_forwarded_for is True
+    assert Settings(_env_file=None, forwarded_for_trusted_hops="3").forwarded_for_trusted_hops == 3
+
+
+def test_client_ip_probe_settings_defaults() -> None:
+    """[이슈 #134] 진단 로그는 기본 on, CF 헤더 이름은 벤더 값이 코드 기본값이다."""
+    settings = Settings(_env_file=None)
+
+    assert settings.client_ip_probe_enabled is True
+    assert settings.trusted_client_ip_header == "cf-connecting-ip"
