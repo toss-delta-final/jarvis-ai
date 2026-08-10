@@ -10,6 +10,11 @@
 ## [Unreleased]
 
 ### Added
+- **#443/#465 — `evals/intent_probe` 에 `named_category` 6앵커·`namedCategoryHasLeg` 축 신설** —
+  상품군을 **명시한** 첫 턴("과일 추천해줘" 등)에서 `categoryQueries` leg 이 비는 결함을 재는
+  축이다. `conditionOnlyNoCategoryQuery`(#465, 조건 전용 턴은 leg 이 0개여야 정답)의 반대
+  방향 축이라 같은 필드의 양쪽 끝을 한 런에서 함께 읽는다 — 한쪽만 보고 채택 판정을 내리지
+  않기 위함.
 - **#356 — consolidation 구조화 트리플 산출 + 그래프 입력 전환(OPEN-G0 해소)** —
   취향을 자유형 한국어 문장 하나가 아니라 `주어–술어–목적어` 트리플로 만들고, consolidation이
   fact 목록 대신 **그래프 문서를 입력으로 읽게** 했다. 지금까지는 지울 수 있는 단위가 없어
@@ -419,6 +424,20 @@
 - **#299 — 요청 바디 크기 상한** — 필드별 상한(`chat_message_max_chars`·`screen_products_raw_scan_max` 등)은 흩어져 있고 상한 없는 필드(`conditionActions` 등)도 계속 생기는데, 레이트 리밋(§2.8)은 요청 **건수**만 세 임의 크기 바디를 반복 전송할 수 있었다. `app/core/body_limit.py`에 `BodySizeLimitMiddleware`(순수 ASGI)를 신설해 `Content-Length` 초과는 바디를 읽기 전에, 헤더가 없는(chunked) 경우는 `receive`를 감싼 실수신 바이트 누적으로 상한(`request_body_max_bytes`, 기본 1MiB — 필드 상한이 절단 없이 받아들이는 최대 정상 페이로드의 약 4.8배)을 넘기면 거절한다. 초과 응답은 새 코드를 내지 않고 기존 `400 BAD_REQUEST` 봉투를 그대로 쓴다(§2.5에 413/`PAYLOAD_TOO_LARGE`가 없어 신설은 별도 명세 개정 대상) — 와이어 계약 변경 0. 미들웨어는 레이트 리밋 **바깥**(거대 바디가 JWT 서명 검증 비용·레이트 리밋 슬롯을 소모하지 않게)·CORS **안쪽**(400 응답에도 CORS 헤더가 실리게)에 등록한다.
 
 ### Docs
+- **#443/#465 — categoryQueries "넓은 상품군" 예시 한 줄(C5) 실측 후 기각, 프롬프트는 미변경** —
+  요인 분리 실측(`named_category` 6앵커, before 2런)으로 결함 원인을 상황 설명 유무·위치·case
+  판정이 아니라 **사용자가 말한 상품군의 추상도**로 좁혔다. 문면 후보 4종(빈 배열 2종·불릿
+  맨 앞 이동·예시 한 줄 C5)을 시도했고 전부 기각했다 — 채택 직전까지 갔던 C5 는 부분 셀
+  스크리닝에서 46/48 로 보였으나 전체 런 2회(N=8×6셀=48표본)에서 35·38/48 로 재현되지 않아
+  사전 등록 문턱(after 두 런 모두 before 최댓값 이상 + 평균 상승 ≥ +4/48) 미달로 기각했다.
+  **`decompose._SYSTEM` 은 한 글자도 바뀌지 않았다** — 계약·동작 변경 없음, `--dump-prompt`
+  sha256 앞 12자 `865ed6fd771e` 로 확인. #443/#465 양방향 실측 기준선 5런(`evals/intent_probe/
+  baselines/fast-2026-08-08-443-{before-1,before-2,cand5-1,cand5-2}`·`evals/underspecified_probe/
+  baselines/fast-2026-08-08-465-{before-1,cand5-1-partial}`)과 기각 근거는 각 디렉터리
+  README·`decompose.py` 의 `_SYSTEM` 바로 아래 주석에 남겼다. 반대 방향 비용으로 관측된
+  `categoryClear` 하락은 이미 등록된 **#463**, underspecified 재집계에서 드러난
+  `filters.attrConditions` 단독 차단은 이미 등록된 **#464** 의 소관이라 새 이슈는 만들지
+  않았다.
 - **#425 — overspecified_zero 는 완화 축이 없어 재검색이 안 돈다, 정의된 동작으로 판정** —
   combo_matrix 매트릭스가 README·`expected_behavior.jsonl` 의 `expected` 서술("0건이면 자동 완화·
   완화 칩으로 대안 제시")과 실측(combo-0031: `searchCallCount=1`·`finishReason=zero_result`,
