@@ -223,7 +223,6 @@ def test_route_decision_axes_are_all_classified() -> None:
         "category_expanded",
         "category_legs_restored",
         "scoped_to_previous",
-        "scoped_to_previous",
         "category_leg_injected",
     }
 
