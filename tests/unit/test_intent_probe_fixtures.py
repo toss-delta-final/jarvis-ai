@@ -48,6 +48,10 @@ GROUP_COUNTS = {
     # "찜한 거 담아줘"). 음성 대조가 절반인 것은 이 축의 목적이 "새 intent 가 남의 발화를
     # 훔치지 않는가" 이기 때문이다.
     "wishlist_view": 6,
+    # [#440] 찜 해제 대상 해소 — 양성 2("찜한 거 빼줘"류) · 음성 대조 2(음식명 "찜닭 빼줘",
+    # 잠식 대조 "장바구니에서 빼줘"). "찜한 거 담아줘"(#386 대조)는 wishlist-view-006 과 발화가
+    # 겹쳐 중복 셀을 만들지 않고 뺐다(기존 셀이 이미 재고 있다) — 그래서 패킷 5셀이 아니라 4셀.
+    "wishlist_remove": 4,
 }
 # [#300, D-4] #118 원본(PR #292, 이관 전 별도 프로브의 신규(screen) 그룹 — #300 이 흡수하며
 # 삭제했다)에서 **문자 단위로 옮긴** 발화 6종 — 이 목록 자체가 표본 동일성 요구사항이라
@@ -93,14 +97,14 @@ def test_screen_utterances_are_verbatim_from_issue_118() -> None:
     assert texts == SCREEN_TEXTS
 
 
-def test_cell_count_is_85_and_matches_group_context_product() -> None:
+def test_cell_count_matches_group_context_product() -> None:
     anchors = load_anchor_set("b")
     cells = build_cells(anchors)
     # 발화 × 컨텍스트: 대조군 18 + 지시대명사 12 + 옵션 4 + 전환 7 + 주문 6 + 일반 6
     # + [#84] 카테고리 15(단일 컨텍스트) + [#300] screen 6(단일 컨텍스트)
     # + [#344 라운드 2] 조건 전용 5(단일 컨텍스트)
-    # + [#386] 찜 조회 6(단일 컨텍스트) = 85
-    assert len(cells) == 85
+    # + [#386] 찜 조회 6(단일 컨텍스트) + [#440] 찜 해제 4(단일 컨텍스트) = 89
+    assert len(cells) == 89
     per_group: dict[str, int] = {}
     for cell in cells:
         per_group[cell.utterance.group] = per_group.get(cell.utterance.group, 0) + 1
@@ -115,6 +119,7 @@ def test_cell_count_is_85_and_matches_group_context_product() -> None:
         "screen": 6,
         "condition_only": 5,
         "wishlist_view": 6,
+        "wishlist_remove": 4,
     }
 
 
