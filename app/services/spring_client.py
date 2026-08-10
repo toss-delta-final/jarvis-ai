@@ -620,7 +620,8 @@ def _search_query_params(
 
     BE I-1 파라미터는 keyword/categoryName/minPrice/maxPrice/brandName/color 뿐이다(color=#100 P1).
     [2026-07-23, BE 합의] size 제거 — 라운드1은 고정필터 매칭을 전량 반환하고, 결과 수 제한(top-K)은
-    AI 쪽(search_catalog 가 filters.limit 로 절단)에서 적용한다(api-spec §4.6). brandName 은 다중 —
+    AI 쪽(search_catalog 가 filters.limit 로 절단)에서 적용한다(api-spec §4.6). [#395, 2026-08-07]
+    재도입 폐지 확정. brandName 은 다중 —
     브랜드 전량을 반복 파라미터로 실어 BE IN 필터에 맡긴다(방법 D, #100 P1, BE 배열 수용 협의 대상).
     나머지 필터(excludeProductIds·ratingMin)는 여기 싣지 않고 AI 사후필터(search_service)로 처리한다.
     정렬은 rerank(LLM) 소관(#100 P2, sort 필드 제거).
