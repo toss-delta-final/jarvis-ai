@@ -13,6 +13,16 @@ from evals.personalization.cli import main, normalize_paired_artifacts
 
 BASELINE = Path("evals/personalization/baselines/dev-v2")
 
+# Tier D 는 `provider: "scripted"` 라 LLM 을 타지 않고, 같은 플랫폼에서는 바이트 단위로 재현된다
+# (`test_personalization_run_is_deterministic_across_environment_and_clock`). 그래도 정확 일치를
+# 요구하지 않는 이유는 **플랫폼 간 libm 차이** 하나다 — `evals/metrics/metrics.py` 가 `math.log2`
+# 결과를 케이스마다 누적 합산하므로 glibc(CI)와 MSVC(로컬 Windows)의 마지막 ulp 가 다르면 미세한
+# 차가 남을 수 있다. baseline 생성 플랫폼과 CI 플랫폼이 다를 수 있는 저장소라 실제 위험이다.
+# 1e-6 은 그 노이즈를 흡수하면서 #119 가 만든 −0.288 보다 5자리 이상 엄격하다.
+# **`app/core/config.py` 에 두지 않는다** — 서빙 런타임 튜너블이 아니고, `run_manifest` 가 그
+# 파일을 sha256 해 모든 baseline 에 박으므로 상수 하나가 커밋된 provenance 를 전부 무효화한다.
+_NDCG_REL_TOLERANCE = 1e-6
+
 
 @pytest.mark.eval
 def test_personalization_run_is_deterministic_across_environment_and_clock(
@@ -93,6 +103,53 @@ def test_overreach_verdicts_match_committed_baseline(tmp_path) -> None:
     committed = json.loads((BASELINE / "overreach.json").read_text())
     for name in ("intentContradiction", "forbiddenOrRecentInclusion", "cleanNoisyDrop"):
         assert fresh[name]["verdict"] == committed[name]["verdict"]
+
+
+@pytest.mark.eval
+def test_default_weight_ndcg_matches_committed_baseline(tmp_path) -> None:
+    """[REQ-PGRAPH-114] 커밋된 baseline **수치**를 회귀시키지 않는다.
+
+    위 `test_overreach_verdicts_match_committed_baseline` 은 verdict **문자열만** 본다. 그래서
+    dev 케이스가 96 → 109 로 늘고 arm 별 nDCG 가 전부 움직인 상태를 통과시켰다(#361 에서 실측·
+    재생성). 판정 라벨은 굵어서 수치 드리프트를 못 잡는다 — 여기서 값 자체를 잠근다.
+
+    **분모를 먼저 본다.** 케이스 수가 달라진 상태의 nDCG 일치는 무회귀가 아니라 우연이고, 실제로
+    그 상태가 3일 넘게 조용히 유지됐다. `caseCount` 가 다르면 그 아래 비교는 의미가 없다.
+
+    비교 대상을 arm 별 `ndcgAtK` 전 k 와 헤드라인 meanDelta 로 한정한다 — `deltas` 배열(케이스별
+    55+ 개)은 실패 메시지가 읽히지 않고, `bootstrapCi95` 는 meanDelta 가 대표하며, `weightAblation`
+    25셀은 `test_all_arms_and_weights_preserve_hard_filters` 가 이미 소유한다.
+
+    **부수 효과**: 이 게이트가 있으면 골든셋·픽스처·스코어링을 바꿔 Tier D 수치를 움직이는 PR 이
+    baseline 재생성을 요구받는다. 그것이 의도다 — 재생성 비용(CLI 1회)을 그 PR 이 지는 대신,
+    커밋된 수치가 무엇을 설명하는지가 항상 참이 된다.
+    """
+    out = tmp_path / "run"
+    assert main(["--out", str(out)]) == 0
+    fresh = json.loads((out / "comparison.json").read_text(encoding="utf-8"))
+    committed = json.loads((BASELINE / "comparison.json").read_text(encoding="utf-8"))
+
+    assert set(fresh["defaultWeight"]) == set(committed["defaultWeight"])
+    for arm in sorted(committed["defaultWeight"]):
+        actual, expected = fresh["defaultWeight"][arm], committed["defaultWeight"][arm]
+        assert (actual["caseCount"], actual["ndcgCaseCount"]) == (
+            expected["caseCount"],
+            expected["ndcgCaseCount"],
+        ), f"{arm}: 케이스 집합이 달라졌다 — baseline 재생성이 필요하다"
+        for k in sorted(expected["ndcgAtK"]):
+            assert actual["ndcgAtK"][k] == pytest.approx(
+                expected["ndcgAtK"][k], rel=_NDCG_REL_TOLERANCE
+            ), f"{arm} nDCG@{k}"
+
+    # 헤드라인 — #119 가 파괴했던 바로 그 값(개인화가 게스트 대비 얼마나 이득인가).
+    primary = committed["primaryComparison"]
+    assert fresh["primaryComparison"] == primary
+    assert fresh["pairedComparisons"][primary]["overall"]["ndcgAtK"]["10"][
+        "meanDelta"
+    ] == pytest.approx(
+        committed["pairedComparisons"][primary]["overall"]["ndcgAtK"]["10"]["meanDelta"],
+        rel=_NDCG_REL_TOLERANCE,
+    )
 
 
 @pytest.mark.eval

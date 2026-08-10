@@ -1,0 +1,882 @@
+{
+  "verification": {
+    "crc32AllMatch": true,
+    "product26368525OldTotal": 161,
+    "product26368525NewOptionCount": 138,
+    "matchesProduction": true
+  },
+  "colorWords": [
+    "검정",
+    "흰색",
+    "회색",
+    "빨강",
+    "파랑",
+    "노랑",
+    "초록",
+    "보라",
+    "남색",
+    "분홍",
+    "블랙",
+    "화이트",
+    "그레이",
+    "레드",
+    "블루",
+    "옐로우",
+    "그린",
+    "퍼플",
+    "네이비",
+    "핑크"
+  ],
+  "perColor": {
+    "검정": {
+      "candidates": 4170,
+      "candidatesAfter": 3907,
+      "removedByFilter": 263,
+      "filterRemovalMatchesUnbuyable": true,
+      "optionBearingCandidates": 1951,
+      "buckets": {
+        "no_options": 2219,
+        "matched": 724,
+        "no_axis": 530,
+        "single_color_ok": 404,
+        "truncated_holdout": 30,
+        "unbuyable": 263
+      },
+      "unbuyableRateBeforeFilter": {
+        "numerator": 263,
+        "denominator": 1951,
+        "ratio": 0.13480266529984622
+      },
+      "unbuyableRateAfterFilter": {
+        "numerator": 0,
+        "denominator": 1688,
+        "ratio": 0.0
+      },
+      "singleColorRate": {
+        "numerator": 404,
+        "denominator": 1951,
+        "ratio": 0.2070732957457714
+      },
+      "truncatedHoldoutRate": {
+        "numerator": 30,
+        "denominator": 1951,
+        "ratio": 0.015376729882111738
+      },
+      "noAxisRate": {
+        "numerator": 530,
+        "denominator": 1951,
+        "ratio": 0.2716555612506407
+      }
+    },
+    "흰색": {
+      "candidates": 2897,
+      "candidatesAfter": 2775,
+      "removedByFilter": 122,
+      "filterRemovalMatchesUnbuyable": true,
+      "optionBearingCandidates": 1098,
+      "buckets": {
+        "no_options": 1799,
+        "matched": 314,
+        "no_axis": 530,
+        "single_color_ok": 109,
+        "truncated_holdout": 23,
+        "unbuyable": 122
+      },
+      "unbuyableRateBeforeFilter": {
+        "numerator": 122,
+        "denominator": 1098,
+        "ratio": 0.1111111111111111
+      },
+      "unbuyableRateAfterFilter": {
+        "numerator": 0,
+        "denominator": 976,
+        "ratio": 0.0
+      },
+      "singleColorRate": {
+        "numerator": 109,
+        "denominator": 1098,
+        "ratio": 0.09927140255009108
+      },
+      "truncatedHoldoutRate": {
+        "numerator": 23,
+        "denominator": 1098,
+        "ratio": 0.020947176684881604
+      },
+      "noAxisRate": {
+        "numerator": 530,
+        "denominator": 1098,
+        "ratio": 0.48269581056466304
+      }
+    },
+    "회색": {
+      "candidates": 2849,
+      "candidatesAfter": 2695,
+      "removedByFilter": 154,
+      "filterRemovalMatchesUnbuyable": true,
+      "optionBearingCandidates": 1101,
+      "buckets": {
+        "no_options": 1748,
+        "matched": 309,
+        "no_axis": 536,
+        "single_color_ok": 75,
+        "truncated_holdout": 27,
+        "unbuyable": 154
+      },
+      "unbuyableRateBeforeFilter": {
+        "numerator": 154,
+        "denominator": 1101,
+        "ratio": 0.13987284287011809
+      },
+      "unbuyableRateAfterFilter": {
+        "numerator": 0,
+        "denominator": 947,
+        "ratio": 0.0
+      },
+      "singleColorRate": {
+        "numerator": 75,
+        "denominator": 1101,
+        "ratio": 0.0681198910081744
+      },
+      "truncatedHoldoutRate": {
+        "numerator": 27,
+        "denominator": 1101,
+        "ratio": 0.02452316076294278
+      },
+      "noAxisRate": {
+        "numerator": 536,
+        "denominator": 1101,
+        "ratio": 0.4868301544050863
+      }
+    },
+    "빨강": {
+      "candidates": 2289,
+      "candidatesAfter": 2248,
+      "removedByFilter": 41,
+      "filterRemovalMatchesUnbuyable": true,
+      "optionBearingCandidates": 676,
+      "buckets": {
+        "no_options": 1613,
+        "matched": 85,
+        "no_axis": 537,
+        "single_color_ok": 2,
+        "truncated_holdout": 11,
+        "unbuyable": 41
+      },
+      "unbuyableRateBeforeFilter": {
+        "numerator": 41,
+        "denominator": 676,
+        "ratio": 0.060650887573964495
+      },
+      "unbuyableRateAfterFilter": {
+        "numerator": 0,
+        "denominator": 635,
+        "ratio": 0.0
+      },
+      "singleColorRate": {
+        "numerator": 2,
+        "denominator": 676,
+        "ratio": 0.0029585798816568047
+      },
+      "truncatedHoldoutRate": {
+        "numerator": 11,
+        "denominator": 676,
+        "ratio": 0.016272189349112426
+      },
+      "noAxisRate": {
+        "numerator": 537,
+        "denominator": 676,
+        "ratio": 0.7943786982248521
+      }
+    },
+    "파랑": {
+      "candidates": 2630,
+      "candidatesAfter": 2507,
+      "removedByFilter": 123,
+      "filterRemovalMatchesUnbuyable": true,
+      "optionBearingCandidates": 956,
+      "buckets": {
+        "no_options": 1674,
+        "matched": 248,
+        "no_axis": 532,
+        "single_color_ok": 28,
+        "truncated_holdout": 25,
+        "unbuyable": 123
+      },
+      "unbuyableRateBeforeFilter": {
+        "numerator": 123,
+        "denominator": 956,
+        "ratio": 0.12866108786610878
+      },
+      "unbuyableRateAfterFilter": {
+        "numerator": 0,
+        "denominator": 833,
+        "ratio": 0.0
+      },
+      "singleColorRate": {
+        "numerator": 28,
+        "denominator": 956,
+        "ratio": 0.029288702928870293
+      },
+      "truncatedHoldoutRate": {
+        "numerator": 25,
+        "denominator": 956,
+        "ratio": 0.02615062761506276
+      },
+      "noAxisRate": {
+        "numerator": 532,
+        "denominator": 956,
+        "ratio": 0.5564853556485355
+      }
+    },
+    "노랑": {
+      "candidates": 2277,
+      "candidatesAfter": 2246,
+      "removedByFilter": 31,
+      "filterRemovalMatchesUnbuyable": true,
+      "optionBearingCandidates": 664,
+      "buckets": {
+        "no_options": 1613,
+        "matched": 71,
+        "no_axis": 538,
+        "single_color_ok": 9,
+        "truncated_holdout": 15,
+        "unbuyable": 31
+      },
+      "unbuyableRateBeforeFilter": {
+        "numerator": 31,
+        "denominator": 664,
+        "ratio": 0.046686746987951805
+      },
+      "unbuyableRateAfterFilter": {
+        "numerator": 0,
+        "denominator": 633,
+        "ratio": 0.0
+      },
+      "singleColorRate": {
+        "numerator": 9,
+        "denominator": 664,
+        "ratio": 0.01355421686746988
+      },
+      "truncatedHoldoutRate": {
+        "numerator": 15,
+        "denominator": 664,
+        "ratio": 0.022590361445783132
+      },
+      "noAxisRate": {
+        "numerator": 538,
+        "denominator": 664,
+        "ratio": 0.8102409638554217
+      }
+    },
+    "초록": {
+      "candidates": 2411,
+      "candidatesAfter": 2338,
+      "removedByFilter": 73,
+      "filterRemovalMatchesUnbuyable": true,
+      "optionBearingCandidates": 787,
+      "buckets": {
+        "no_options": 1624,
+        "matched": 152,
+        "no_axis": 536,
+        "single_color_ok": 10,
+        "truncated_holdout": 16,
+        "unbuyable": 73
+      },
+      "unbuyableRateBeforeFilter": {
+        "numerator": 73,
+        "denominator": 787,
+        "ratio": 0.09275730622617535
+      },
+      "unbuyableRateAfterFilter": {
+        "numerator": 0,
+        "denominator": 714,
+        "ratio": 0.0
+      },
+      "singleColorRate": {
+        "numerator": 10,
+        "denominator": 787,
+        "ratio": 0.012706480304955527
+      },
+      "truncatedHoldoutRate": {
+        "numerator": 16,
+        "denominator": 787,
+        "ratio": 0.020330368487928845
+      },
+      "noAxisRate": {
+        "numerator": 536,
+        "denominator": 787,
+        "ratio": 0.6810673443456162
+      }
+    },
+    "보라": {
+      "candidates": 2257,
+      "candidatesAfter": 2231,
+      "removedByFilter": 26,
+      "filterRemovalMatchesUnbuyable": true,
+      "optionBearingCandidates": 659,
+      "buckets": {
+        "no_options": 1598,
+        "matched": 81,
+        "no_axis": 538,
+        "single_color_ok": 1,
+        "truncated_holdout": 13,
+        "unbuyable": 26
+      },
+      "unbuyableRateBeforeFilter": {
+        "numerator": 26,
+        "denominator": 659,
+        "ratio": 0.03945371775417299
+      },
+      "unbuyableRateAfterFilter": {
+        "numerator": 0,
+        "denominator": 633,
+        "ratio": 0.0
+      },
+      "singleColorRate": {
+        "numerator": 1,
+        "denominator": 659,
+        "ratio": 0.0015174506828528073
+      },
+      "truncatedHoldoutRate": {
+        "numerator": 13,
+        "denominator": 659,
+        "ratio": 0.019726858877086494
+      },
+      "noAxisRate": {
+        "numerator": 538,
+        "denominator": 659,
+        "ratio": 0.8163884673748103
+      }
+    },
+    "남색": {
+      "candidates": 2716,
+      "candidatesAfter": 2535,
+      "removedByFilter": 181,
+      "filterRemovalMatchesUnbuyable": true,
+      "optionBearingCandidates": 1011,
+      "buckets": {
+        "no_options": 1705,
+        "matched": 190,
+        "no_axis": 539,
+        "single_color_ok": 79,
+        "truncated_holdout": 22,
+        "unbuyable": 181
+      },
+      "unbuyableRateBeforeFilter": {
+        "numerator": 181,
+        "denominator": 1011,
+        "ratio": 0.17903066271018794
+      },
+      "unbuyableRateAfterFilter": {
+        "numerator": 0,
+        "denominator": 830,
+        "ratio": 0.0
+      },
+      "singleColorRate": {
+        "numerator": 79,
+        "denominator": 1011,
+        "ratio": 0.0781404549950544
+      },
+      "truncatedHoldoutRate": {
+        "numerator": 22,
+        "denominator": 1011,
+        "ratio": 0.021760633036597428
+      },
+      "noAxisRate": {
+        "numerator": 539,
+        "denominator": 1011,
+        "ratio": 0.533135509396637
+      }
+    },
+    "분홍": {
+      "candidates": 2528,
+      "candidatesAfter": 2466,
+      "removedByFilter": 62,
+      "filterRemovalMatchesUnbuyable": true,
+      "optionBearingCandidates": 865,
+      "buckets": {
+        "no_options": 1663,
+        "matched": 236,
+        "no_axis": 536,
+        "single_color_ok": 9,
+        "truncated_holdout": 22,
+        "unbuyable": 62
+      },
+      "unbuyableRateBeforeFilter": {
+        "numerator": 62,
+        "denominator": 865,
+        "ratio": 0.07167630057803469
+      },
+      "unbuyableRateAfterFilter": {
+        "numerator": 0,
+        "denominator": 803,
+        "ratio": 0.0
+      },
+      "singleColorRate": {
+        "numerator": 9,
+        "denominator": 865,
+        "ratio": 0.010404624277456647
+      },
+      "truncatedHoldoutRate": {
+        "numerator": 22,
+        "denominator": 865,
+        "ratio": 0.025433526011560695
+      },
+      "noAxisRate": {
+        "numerator": 536,
+        "denominator": 865,
+        "ratio": 0.6196531791907515
+      }
+    },
+    "블랙": {
+      "candidates": 4170,
+      "candidatesAfter": 3907,
+      "removedByFilter": 263,
+      "filterRemovalMatchesUnbuyable": true,
+      "optionBearingCandidates": 1951,
+      "buckets": {
+        "no_options": 2219,
+        "matched": 724,
+        "no_axis": 530,
+        "single_color_ok": 404,
+        "truncated_holdout": 30,
+        "unbuyable": 263
+      },
+      "unbuyableRateBeforeFilter": {
+        "numerator": 263,
+        "denominator": 1951,
+        "ratio": 0.13480266529984622
+      },
+      "unbuyableRateAfterFilter": {
+        "numerator": 0,
+        "denominator": 1688,
+        "ratio": 0.0
+      },
+      "singleColorRate": {
+        "numerator": 404,
+        "denominator": 1951,
+        "ratio": 0.2070732957457714
+      },
+      "truncatedHoldoutRate": {
+        "numerator": 30,
+        "denominator": 1951,
+        "ratio": 0.015376729882111738
+      },
+      "noAxisRate": {
+        "numerator": 530,
+        "denominator": 1951,
+        "ratio": 0.2716555612506407
+      }
+    },
+    "화이트": {
+      "candidates": 2897,
+      "candidatesAfter": 2775,
+      "removedByFilter": 122,
+      "filterRemovalMatchesUnbuyable": true,
+      "optionBearingCandidates": 1098,
+      "buckets": {
+        "no_options": 1799,
+        "matched": 314,
+        "no_axis": 530,
+        "single_color_ok": 109,
+        "truncated_holdout": 23,
+        "unbuyable": 122
+      },
+      "unbuyableRateBeforeFilter": {
+        "numerator": 122,
+        "denominator": 1098,
+        "ratio": 0.1111111111111111
+      },
+      "unbuyableRateAfterFilter": {
+        "numerator": 0,
+        "denominator": 976,
+        "ratio": 0.0
+      },
+      "singleColorRate": {
+        "numerator": 109,
+        "denominator": 1098,
+        "ratio": 0.09927140255009108
+      },
+      "truncatedHoldoutRate": {
+        "numerator": 23,
+        "denominator": 1098,
+        "ratio": 0.020947176684881604
+      },
+      "noAxisRate": {
+        "numerator": 530,
+        "denominator": 1098,
+        "ratio": 0.48269581056466304
+      }
+    },
+    "그레이": {
+      "candidates": 2849,
+      "candidatesAfter": 2695,
+      "removedByFilter": 154,
+      "filterRemovalMatchesUnbuyable": true,
+      "optionBearingCandidates": 1101,
+      "buckets": {
+        "no_options": 1748,
+        "matched": 309,
+        "no_axis": 536,
+        "single_color_ok": 75,
+        "truncated_holdout": 27,
+        "unbuyable": 154
+      },
+      "unbuyableRateBeforeFilter": {
+        "numerator": 154,
+        "denominator": 1101,
+        "ratio": 0.13987284287011809
+      },
+      "unbuyableRateAfterFilter": {
+        "numerator": 0,
+        "denominator": 947,
+        "ratio": 0.0
+      },
+      "singleColorRate": {
+        "numerator": 75,
+        "denominator": 1101,
+        "ratio": 0.0681198910081744
+      },
+      "truncatedHoldoutRate": {
+        "numerator": 27,
+        "denominator": 1101,
+        "ratio": 0.02452316076294278
+      },
+      "noAxisRate": {
+        "numerator": 536,
+        "denominator": 1101,
+        "ratio": 0.4868301544050863
+      }
+    },
+    "레드": {
+      "candidates": 2289,
+      "candidatesAfter": 2248,
+      "removedByFilter": 41,
+      "filterRemovalMatchesUnbuyable": true,
+      "optionBearingCandidates": 676,
+      "buckets": {
+        "no_options": 1613,
+        "matched": 85,
+        "no_axis": 537,
+        "single_color_ok": 2,
+        "truncated_holdout": 11,
+        "unbuyable": 41
+      },
+      "unbuyableRateBeforeFilter": {
+        "numerator": 41,
+        "denominator": 676,
+        "ratio": 0.060650887573964495
+      },
+      "unbuyableRateAfterFilter": {
+        "numerator": 0,
+        "denominator": 635,
+        "ratio": 0.0
+      },
+      "singleColorRate": {
+        "numerator": 2,
+        "denominator": 676,
+        "ratio": 0.0029585798816568047
+      },
+      "truncatedHoldoutRate": {
+        "numerator": 11,
+        "denominator": 676,
+        "ratio": 0.016272189349112426
+      },
+      "noAxisRate": {
+        "numerator": 537,
+        "denominator": 676,
+        "ratio": 0.7943786982248521
+      }
+    },
+    "블루": {
+      "candidates": 2630,
+      "candidatesAfter": 2507,
+      "removedByFilter": 123,
+      "filterRemovalMatchesUnbuyable": true,
+      "optionBearingCandidates": 956,
+      "buckets": {
+        "no_options": 1674,
+        "matched": 248,
+        "no_axis": 532,
+        "single_color_ok": 28,
+        "truncated_holdout": 25,
+        "unbuyable": 123
+      },
+      "unbuyableRateBeforeFilter": {
+        "numerator": 123,
+        "denominator": 956,
+        "ratio": 0.12866108786610878
+      },
+      "unbuyableRateAfterFilter": {
+        "numerator": 0,
+        "denominator": 833,
+        "ratio": 0.0
+      },
+      "singleColorRate": {
+        "numerator": 28,
+        "denominator": 956,
+        "ratio": 0.029288702928870293
+      },
+      "truncatedHoldoutRate": {
+        "numerator": 25,
+        "denominator": 956,
+        "ratio": 0.02615062761506276
+      },
+      "noAxisRate": {
+        "numerator": 532,
+        "denominator": 956,
+        "ratio": 0.5564853556485355
+      }
+    },
+    "옐로우": {
+      "candidates": 2277,
+      "candidatesAfter": 2246,
+      "removedByFilter": 31,
+      "filterRemovalMatchesUnbuyable": true,
+      "optionBearingCandidates": 664,
+      "buckets": {
+        "no_options": 1613,
+        "matched": 71,
+        "no_axis": 538,
+        "single_color_ok": 9,
+        "truncated_holdout": 15,
+        "unbuyable": 31
+      },
+      "unbuyableRateBeforeFilter": {
+        "numerator": 31,
+        "denominator": 664,
+        "ratio": 0.046686746987951805
+      },
+      "unbuyableRateAfterFilter": {
+        "numerator": 0,
+        "denominator": 633,
+        "ratio": 0.0
+      },
+      "singleColorRate": {
+        "numerator": 9,
+        "denominator": 664,
+        "ratio": 0.01355421686746988
+      },
+      "truncatedHoldoutRate": {
+        "numerator": 15,
+        "denominator": 664,
+        "ratio": 0.022590361445783132
+      },
+      "noAxisRate": {
+        "numerator": 538,
+        "denominator": 664,
+        "ratio": 0.8102409638554217
+      }
+    },
+    "그린": {
+      "candidates": 2411,
+      "candidatesAfter": 2338,
+      "removedByFilter": 73,
+      "filterRemovalMatchesUnbuyable": true,
+      "optionBearingCandidates": 787,
+      "buckets": {
+        "no_options": 1624,
+        "matched": 152,
+        "no_axis": 536,
+        "single_color_ok": 10,
+        "truncated_holdout": 16,
+        "unbuyable": 73
+      },
+      "unbuyableRateBeforeFilter": {
+        "numerator": 73,
+        "denominator": 787,
+        "ratio": 0.09275730622617535
+      },
+      "unbuyableRateAfterFilter": {
+        "numerator": 0,
+        "denominator": 714,
+        "ratio": 0.0
+      },
+      "singleColorRate": {
+        "numerator": 10,
+        "denominator": 787,
+        "ratio": 0.012706480304955527
+      },
+      "truncatedHoldoutRate": {
+        "numerator": 16,
+        "denominator": 787,
+        "ratio": 0.020330368487928845
+      },
+      "noAxisRate": {
+        "numerator": 536,
+        "denominator": 787,
+        "ratio": 0.6810673443456162
+      }
+    },
+    "퍼플": {
+      "candidates": 2257,
+      "candidatesAfter": 2231,
+      "removedByFilter": 26,
+      "filterRemovalMatchesUnbuyable": true,
+      "optionBearingCandidates": 659,
+      "buckets": {
+        "no_options": 1598,
+        "matched": 81,
+        "no_axis": 538,
+        "single_color_ok": 1,
+        "truncated_holdout": 13,
+        "unbuyable": 26
+      },
+      "unbuyableRateBeforeFilter": {
+        "numerator": 26,
+        "denominator": 659,
+        "ratio": 0.03945371775417299
+      },
+      "unbuyableRateAfterFilter": {
+        "numerator": 0,
+        "denominator": 633,
+        "ratio": 0.0
+      },
+      "singleColorRate": {
+        "numerator": 1,
+        "denominator": 659,
+        "ratio": 0.0015174506828528073
+      },
+      "truncatedHoldoutRate": {
+        "numerator": 13,
+        "denominator": 659,
+        "ratio": 0.019726858877086494
+      },
+      "noAxisRate": {
+        "numerator": 538,
+        "denominator": 659,
+        "ratio": 0.8163884673748103
+      }
+    },
+    "네이비": {
+      "candidates": 2716,
+      "candidatesAfter": 2535,
+      "removedByFilter": 181,
+      "filterRemovalMatchesUnbuyable": true,
+      "optionBearingCandidates": 1011,
+      "buckets": {
+        "no_options": 1705,
+        "matched": 190,
+        "no_axis": 539,
+        "single_color_ok": 79,
+        "truncated_holdout": 22,
+        "unbuyable": 181
+      },
+      "unbuyableRateBeforeFilter": {
+        "numerator": 181,
+        "denominator": 1011,
+        "ratio": 0.17903066271018794
+      },
+      "unbuyableRateAfterFilter": {
+        "numerator": 0,
+        "denominator": 830,
+        "ratio": 0.0
+      },
+      "singleColorRate": {
+        "numerator": 79,
+        "denominator": 1011,
+        "ratio": 0.0781404549950544
+      },
+      "truncatedHoldoutRate": {
+        "numerator": 22,
+        "denominator": 1011,
+        "ratio": 0.021760633036597428
+      },
+      "noAxisRate": {
+        "numerator": 539,
+        "denominator": 1011,
+        "ratio": 0.533135509396637
+      }
+    },
+    "핑크": {
+      "candidates": 2528,
+      "candidatesAfter": 2466,
+      "removedByFilter": 62,
+      "filterRemovalMatchesUnbuyable": true,
+      "optionBearingCandidates": 865,
+      "buckets": {
+        "no_options": 1663,
+        "matched": 236,
+        "no_axis": 536,
+        "single_color_ok": 9,
+        "truncated_holdout": 22,
+        "unbuyable": 62
+      },
+      "unbuyableRateBeforeFilter": {
+        "numerator": 62,
+        "denominator": 865,
+        "ratio": 0.07167630057803469
+      },
+      "unbuyableRateAfterFilter": {
+        "numerator": 0,
+        "denominator": 803,
+        "ratio": 0.0
+      },
+      "singleColorRate": {
+        "numerator": 9,
+        "denominator": 865,
+        "ratio": 0.010404624277456647
+      },
+      "truncatedHoldoutRate": {
+        "numerator": 22,
+        "denominator": 865,
+        "ratio": 0.025433526011560695
+      },
+      "noAxisRate": {
+        "numerator": 536,
+        "denominator": 865,
+        "ratio": 0.6196531791907515
+      }
+    }
+  },
+  "crossCheck": {
+    "mismatches": [],
+    "mismatchCount": 0
+  },
+  "filterProof": {
+    "candidatesTotalBefore": 54048,
+    "candidatesTotalAfter": 51896,
+    "candidatesRemovedTotal": 2152,
+    "unbuyableTotalByJudge": 2152,
+    "removedEqualsUnbuyable": true,
+    "residualUnbuyableAfterFilter": 0,
+    "identityMismatches": [],
+    "residualAfterMismatches": []
+  },
+  "aggregate": {
+    "optionBearingCandidatesTotal": 19536,
+    "unbuyableRateBeforeFilter": {
+      "numerator": 2152,
+      "denominator": 19536,
+      "ratio": 0.11015561015561015
+    },
+    "unbuyableRateAfterFilter": {
+      "numerator": 0,
+      "denominator": 17384,
+      "ratio": 0.0
+    },
+    "singleColorRate": {
+      "numerator": 1452,
+      "denominator": 19536,
+      "ratio": 0.07432432432432433
+    },
+    "truncatedHoldoutRate": {
+      "numerator": 408,
+      "denominator": 19536,
+      "ratio": 0.020884520884520884
+    },
+    "noAxisRate": {
+      "numerator": 10704,
+      "denominator": 19536,
+      "ratio": 0.547911547911548
+    },
+    "candidatesPerQueryMedian": 2579.0,
+    "candidatesPerQueryMin": 2257,
+    "candidatesPerQueryMax": 4170,
+    "candidatesPerQueryMedianAfter": 2486.5,
+    "candidatesPerQueryMinAfter": 2231,
+    "candidatesPerQueryMaxAfter": 3907,
+    "zeroGuardWouldFireColors": [],
+    "zeroGuardWouldFireRate": 0.0
+  }
+}

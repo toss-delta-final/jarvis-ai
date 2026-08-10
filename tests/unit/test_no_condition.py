@@ -311,6 +311,11 @@ def test_route_decision_axes_are_all_classified() -> None:
         # blocking 에 있으므로 그 턴은 이 필드와 무관하게 이미 트리거가 막힌다. blocking 에
         # 넣으면 같은 사실을 두 번 세는 중복이라 여기가 맞다.
         "category_expanded",
+        # [이슈 #434 라운드2] category_legs_restored 가 True 면 정의상 category_legs 가 멀티 leg
+        # 로 채워져 있다(`_prepare_recommendation` 의 승계 분기가 함께 세운다, buyer/graph.py) —
+        # category_legs 가 이미 blocking 에 있으므로 같은 이유로 여기가 맞다(category_expanded 와
+        # 동형).
+        "category_legs_restored",
         # [#443] 사전 기반 leg 보강이 **발동했는가**의 진단 표식일 뿐이다. 보강이 후보 소스를
         # 실제로 가르는 경로는 `category_queries`/`category_legs` 를 채우는 것이고 그건 이미
         # blocking 이 계상한다 — 이 불리언을 blocking 에 넣으면 같은 사실을 두 번 세는 중복이다

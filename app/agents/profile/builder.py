@@ -24,6 +24,7 @@ from app.agents.profile.store import FactRecord, get_profile_store
 from app.agents.buyer.recommendation.state import extract_json
 from app.core.config import Settings, get_settings
 from app.core.llm import LLMClient, LLMError
+from app.core.pii import contains_hard_pii
 
 logger = logging.getLogger(__name__)
 
@@ -86,11 +87,19 @@ async def record_remember(user_id: str, fact: str) -> None:
     """ "기억해" hot-path — 명시 명령은 게이트 없이 즉시 승격(REQ-PROF).
 
     발화 원문을 그대로 저장하되 config 길이 상한으로 절단한다(오탐·남용 시 무제한 누적 방어).
+
+    [이슈 #321] 하드 PII(SPEC-PROFILE-GRAPH-149 REQ-PGRAPH-071)는 절단 **이전** 원문에서
+    검사한다 — 절단이 먼저면 `010-1234-`처럼 번호가 잘려 정규식이 못 잡는다. 히트하면
+    저장하지 않고 조용히 반환한다(hot-path 500 방지 — pii.contains_hard_pii 는 예외를
+    던지지 않는다).
     """
     if not (user_id and fact):
         return
+    stripped = fact.strip()
+    if not stripped or contains_hard_pii(stripped):
+        return
     settings = get_settings()
-    cleaned = fact.strip()[: settings.profile_fact_char_cap]
+    cleaned = stripped[: settings.profile_fact_char_cap]
     if cleaned:
         store = await get_profile_store()
         await store.add_fact(user_id, cleaned, cap=settings.profile_max_facts)

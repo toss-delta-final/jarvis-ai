@@ -13,6 +13,217 @@
 
 ---
 
+## [2026-08-10] `uv run ruff format`(경로 없이)은 저장소 전체를 재포맷한다 — 바꾼 파일만 지정할 것
+- 증상: #434 라운드1 마무리에 `uv run ruff check --fix && uv run ruff format`(경로 없음)을
+  돌렸더니 32개 파일이 재포맷됐다 — 내가 손댄 건 8개뿐이었는데 `.github/scripts/`·
+  `data-analysis/`·`evals/`·`docs/research/` 등 전혀 무관한 파일까지 낡은 포맷 드리프트가
+  전부 정리돼 `git status`가 40개 파일 변경으로 부풀었다.
+- 원인: `ruff format`을 인자 없이 부르면 **프로젝트 전체**를 대상으로 잡는다. CLAUDE.md 의
+  커밋 워크플로 문구(`uv run ruff check --fix && uv run ruff format`)는 "커밋 전 린트
+  정리"라는 일반 규칙이라 경로를 명시하지 않는데, 이번처럼 다른 레인들이 아직 커밋하지 않은
+  포맷 드리프트가 저장소 여기저기 쌓여 있으면 그 명령이 전부 건드려 diff 를 오염시킨다.
+- 규칙: 작업 중간 점검이든 최종 검증이든 `ruff format`/`ruff check`는 **내가 이번 작업에서
+  실제로 바꾼 파일 경로를 지정해서** 돌린다(`uv run ruff format <path> <path> ...`). 돌린
+  뒤에는 `git status --porcelain`으로 의도한 파일 목록과 실제 변경 목록이 일치하는지 반드시
+  대조하고, 무관한 파일이 섞였으면 `git checkout -- <path>`로 되돌린 뒤 다시 확인한다.
+- 관련: #434 라운드1 최종 diff 정리(11개 파일로 스코프), `CLAUDE.md` 커밋 워크플로 2번 항목
+
+## [2026-08-10] 계약 값 표현을 바꾸면 그 값을 검증하는 **다른 파일의 테스트**부터 grep 한다
+- 증상: #434(칩 값당 분리, brand `value` 리스트→스칼라 정정)를 구현하며 `state.py`·
+  `test_condition_actions.py`·`test_fanout.py` 3파일을 계획대로 갱신했는데, 전체 스위트를
+  돌리자 `test_recommendation.py::test_general_reply_and_condition_chips_strip_unsafe_text`
+  가 `chips[1]["value"] == ["정상 브랜드"]`(구 리스트 계약)로 실패했다 — 이 파일은 "정제
+  (strip_unsafe)"를 검증하는 별도 관심사라 브랜드 칩 관련 파일 목록에서 빠져 있었다.
+- 원인: 표적 파일 3개(패킷이 명시한 `build_condition_chips`·요청 스키마·회귀 테스트 파일)만
+  갱신하고, "이 계약을 참조하는 모든 테스트"를 저장소 전체에서 grep 하지 않았다. 패킷이 짚어준
+  파일 목록은 **주 관심사** 기준이지, 그 계약 값을 부차적으로 검증하는 다른 파일까지 보장하지
+  않는다.
+- 규칙: 응답 필드의 **표현(shape)**을 바꾸는 작업(리스트→스칼라, 조인→분리 등)은 편집 전에
+  `grep -rn '"value"\] ==' tests/`처럼 그 필드의 assert 패턴으로 저장소 전체를 훑고, 편집 후
+  전체 스위트(`uv run pytest`, 표적 파일만 아님)로 마무리 확인한다. "패킷이 지목한 파일"과
+  "실제로 그 계약에 의존하는 파일"은 다를 수 있다.
+- 관련: `tests/unit/test_recommendation.py::test_general_reply_and_condition_chips_strip_unsafe_text`
+  · `app/agents/buyer/recommendation/state.py::build_condition_chips` · 이슈 #434
+
+## [2026-08-11] 판정 라벨만 비교하는 회귀 테스트는 수치 드리프트를 통과시킨다
+- 증상: #361 착수 중 개인화 평가 baseline 이 **다른 케이스 집합을 설명하고 있는 것**을 발견했다.
+  `run_manifest.datasetHash` 가 `d16eb0e9…`(dev 96건)인데 현행 골든셋은 `675520d9…`(109건)였고,
+  arm 별 nDCG@10 이 전부 움직여 있었다(clean 0.734 → 0.686, 주 비교 meanDelta 0.304 → 0.258).
+  그런데 `uv run pytest` 는 계속 초록불이었다.
+- 원인: 유일한 baseline 대조 테스트가 `overreach.json` 의 **verdict 문자열만**(`"regression"` /
+  `"pass"`) 비교했다. 판정 라벨은 굵어서 케이스가 13건 늘고 점수가 5% 움직여도 값이 안 바뀐다.
+  게다가 그 baseline 은 **더러운 워킹트리**(`dirty: true`)에서, 이 저장소 히스토리에 없는
+  `commitSha` 로 생성돼 있어 무엇을 잰 것인지 재현조차 불가능했다.
+- 규칙: **"baseline 을 회귀시키지 않는다"를 문서로 적었으면 그 수치를 비교하는 assert 를 같이
+  넣는다.** verdict·pass/fail 같은 파생 라벨만 보는 테스트는 무회귀를 집행하지 못한다.
+- 규칙(추가): **수치를 비교하기 전에 분모를 먼저 비교한다.** 케이스 수가 달라진 상태의 nDCG
+  일치는 무회귀가 아니라 우연이다. `caseCount`·`ndcgCaseCount` 를 선행 assert 로 둔다.
+- 규칙(추가): **평가 산출물은 깨끗한 워킹트리에서 생성한다.** `build_run_manifest` 가
+  `git status --porcelain` 으로 `dirty` 를 박으므로, 더러운 상태로 커밋하면 그 baseline 이
+  무엇을 잰 것인지 영원히 확정할 수 없다. 데이터셋을 바꾸는 PR 은 baseline 재생성까지가 범위다.
+- 관련: `tests/eval/test_personalization_eval.py::test_default_weight_ndcg_matches_committed_baseline` ·
+  `evals/personalization/baselines/dev-v2/README.md` · `evals/metrics/run_manifest.py:56,73` ·
+  SPEC-PROFILE-GRAPH-149 REQ-PGRAPH-114 · 이슈 #361·#474·#333
+
+## [2026-08-11] 필터를 무시하는 fake 로는 "후보가 줄지 않았다"를 증명할 수 없다
+- 증상: #361 의 `test_avoids_does_not_shrink_the_candidate_set` 이 통과했는데, 회원에게만 필터를
+  심는 변이를 넣어도 **여전히 통과**했다. 나머지 동등성 테스트 4건은 그 변이에서 정상적으로
+  실패했다.
+- 원인: 하네스가 쓰던 검색 대역(`tests/_fakes.FakeBackend` 계열)이 `filters` 를 받기만 하고
+  **무시한 채 고정 상품 3건을 돌려준다.** 그래서 후보 집합이 무슨 필터에도 항상 3건이었고,
+  "후보가 줄지 않았다"는 단언이 잴 대상 자체가 없었다.
+- 규칙: **"X 가 결과를 좁히지 않는다"를 재려면 대역이 X 를 실제로 적용해야 한다.** 좁힘을 재는
+  테스트에서 대역이 입력을 무시하면, 그 테스트는 성립하는 것이 아니라 **아무것도 재지 않는다**.
+- 규칙(추가): **회귀 테스트는 변이를 심어 실패하는 것을 보고 나서 커밋한다.** 초록불만으로는
+  "지키고 있다"와 "안 보고 있다"가 구분되지 않는다 — 이 결함도 통과 상태에서는 안 드러났고
+  변이 주입으로만 드러났다.
+- 관련: `tests/unit/test_profile_graph_filter_isolation.py::_RecordingSearch` ·
+  `tests/_graph_fixtures.py`(픽스처 값이 카탈로그와 교차해야 하는 이유도 같은 종류) · 이슈 #361
+
+## [2026-08-11] 읽기에서 숨긴 것을 쓰기에서 안 숨기면, 상태 코드가 오라클이 된다
+- 증상: I-32(GET)는 `is_projected`(`active` + 민감 파생 제외)로 걸러 `superseded`·민감 파생 edge 를
+  절대 안 보여주는데, I-33/I-34(PATCH/DELETE)의 대상 판정은 **`edge_id` 일치만** 봤다. PR 자동
+  리뷰가 잡았다.
+- 원인: **노출 경계를 읽기 경로에만 적었다.** 쓰기 경로는 "그 id 가 문서에 있나"만 물었고, 그
+  질문이 읽기 경로의 답과 다르다는 것을 아무도 확인하지 않았다.
+- 왜 위험한가 둘:
+  1. **존재 오라클** — `edge_id` 가 `sha256("{predicate}|{node_id}")` 라 **사용자별 salt 가 없는
+     콘텐츠 해시**다. 라벨만 알면 계산되므로, 숨긴 edge 에 변경을 쏴 `200`/`404` 차이로 *"이
+     취향이 추론된 적 있나"* 를 알아낼 수 있다. 민감 파생은 **존재 자체를 노출하지 않아야**
+     한다(REQ-PGRAPH-076 [HARD]) — 필드를 빼도 상태 코드가 남으면 안 뺀 것이다.
+  2. **불변식 우회** — `superseded`(병합 엔진이 상충에서 내린 패자)를 수정하면 `_pin` 이 무조건
+     `active` 로 되돌려, 같은 노드에 상충하는 active edge 가 둘 생긴다. 배치의 `_resolve_conflicts`
+     를 전혀 거치지 않는다.
+- 규칙: **읽기에서 감춘 것은 쓰기에서도 "없는 것"이어야 한다.** 노출 술어를 만들었으면 그것을
+  **대상 판정에도 같이 쓴다** — 두 경로가 다른 질문을 하면 상태 코드·지연·오류 문구 중 하나가
+  반드시 그 차이를 새어 보낸다.
+- 규칙(추가): **식별자가 내용 파생이면 "모르니까 안전하다"가 성립하지 않는다.** 결정론적
+  `edge_id` 는 tombstone 이 재파생을 막기 위한 기능 요구사항이라 포기할 수 없다 — 그러면 그
+  식별자를 **추측 가능한 공개 값**으로 보고 접근 판정을 따로 세워야 한다.
+- 규칙(추가): **같은 이름의 조회 헬퍼라도 용도가 다르면 필터를 같이 걸면 안 된다.** 리뷰는
+  `graph_mutations._find` 전부에 필터를 제안했는데, 그중 하나는 **병합 대상 조회**
+  (`apply_correction` 의 `target = _find(document, new_id)`)라 숨겨진 edge 도 봐야 한다 — 거기서
+  못 찾으면 관측 근거를 잃고 `merged` 가 거짓이 된다. 경계는 **진입점 한 곳**에 둔다.
+- 관련: `app/agents/profile/graph_journal.py::_find_edge`·`apply_edge_mutation` ·
+  `tests/unit/test_profile_graph_apply.py` · api-spec §3.8 · PR #562 리뷰
+
+## [2026-08-11] 멱등 파생 키에 "무엇을 하려는지"가 없으면 되돌리는 요청이 원래 요청을 재생한다
+- 증상: I-37 로 개인화를 끄고 **같은 `If-Match` 로 다시 켜면** 끄기 응답이 재생돼 플래그가
+  `false` 로 남았다. 원장 TTL(`graph_idempotency_ttl_h`, 기본 24시간) 동안 사용자가 프라이버시
+  스위치를 다시 켤 수 없다. 정본 I-37 은 정반대를 요구한다 — *"토글은 마지막 의사가 이긴다."*
+- 원인: 파생 키가 `{action}:{userId}:{scopeId}:{ifMatch}` 인데 토글의 `scopeId` 가 **빈 값**이었다.
+  이 경로는 그래프 문서를 건드리지 않아 **`graphVersion` 이 고정**이라, 끄기와 켜기가 **정상적으로
+  같은 선행조건**을 지참한다. 두 요청이 같은 키가 되는 것이 예외가 아니라 **정상 동작**이다.
+- 규칙: **멱등 키를 설계할 때 "그 요청이 무엇을 하려는지"가 키에 들어가는지 확인한다.**
+  특히 **선행조건이 변하지 않는 경로**(버전을 안 올리는 플래그 토글류)는 키에 대상 상태를 넣지
+  않으면 **역방향 요청이 정방향 응답을 재생**한다. 상태를 바꾸는데 버전이 안 오르는 엔드포인트를
+  보면 이 질문을 먼저 한다.
+- 규칙(추가): **본문 지문(`request_fp`)으로 막는 것은 해법이 아니다** — 같은 키·다른 본문이
+  `LedgerRequestMismatch` → `409` 로 떨어져 "끄기가 실패하는 상황"을 만든다. 두 요청이 **다른
+  일을 하는 것이면 키를 갈라야지 충돌로 막으면 안 된다.**
+- 규칙(추가): **선택 파라미터는 "주면 어떻게 되나"를 성공 경로에서도 잰다.** 기존 테스트 8건이
+  이 버그를 못 잡은 이유는 `If-Match` 를 주는 케이스가 **CAS 실패 시나리오 하나뿐**이라 원장 키가
+  아예 만들어지지 않았기 때문이다. 선택 파라미터의 테스트가 실패 경로에만 있으면, 그 파라미터가
+  여는 코드 경로는 통째로 미검증이다.
+- 관련: `app/agents/profile/graph_journal.py::set_personalization`·`derived_key` ·
+  `tests/unit/test_profile_personalization.py` · api-spec §3.9.5 · #360
+
+## [2026-08-11] 드리프트를 발견하고도 소수 쪽을 골랐다 — "더 자세히 적힌 쪽"이 정본은 아니다
+- 증상: 투영 조건을 `SPEC-PROFILE-GRAPH-149` REQ-PGRAPH-021 의 `active` + `promoted` 로 정했다.
+  그 결정을 근거로 "화면 < 추천 갭"을 진단하고 **안 B**(요약을 `promoted` 로 좁힘)를 채택해
+  `builder._summary_input` 수정 + `evals/personalization` 실측이 계획에 들어갔다. **전부
+  불필요했다** — 정본 I-32 는 `active` 만이고 *"요약 생성이 같은 규칙을 쓴다"* 로 화면=추천을
+  이미 요구하고 있었다.
+- 원인: 세 문서(노션 정본 I-32 · api-spec §3.8 · M-11)에 그 조건이 **없다는 것을 실측으로 확인해
+  놓고도**, 유일하게 조건을 적은 SPEC 을 따랐다. *"더 구체적으로 적힌 쪽이 더 정확할 것"* 이라는
+  잘못된 가중치다. 실제로는 **한 문서에만 있는 조건은 드리프트일 확률이 높다.**
+- 규칙: **드리프트를 발견하면 "어느 쪽이 더 자세한가"가 아니라 "어느 쪽이 정본인가"로 정한다.**
+  조건이 정본에 없고 사본에만 있으면 **사본이 틀린 것**이다. 반대 방향(정본에 있고 사본에 없음)
+  일 때만 사본을 채운다. `docs/` 는 전부 사본이고 정본은 노션이다 — SPEC 처럼 "내부 모델을
+  소유"하는 문서도 **와이어 조건을 인용하는 순간 사본**이다.
+- 규칙(추가): **의심스러운 필드는 소비처를 grep 한다.** `promoted` 를 필터로 읽는 코드가 0건
+  (전부 `graph_merge` 안쪽의 히스테리시스 계산)이라는 사실이 문서 대조보다 먼저 답을 줄 수
+  있었다 — 계약이 정말 그 필드로 무언가를 가른다면 **읽는 코드가 있어야 한다.**
+- 관련: `SPEC-PROFILE-GRAPH-149` REQ-PGRAPH-021 · `docs/api-spec.md` §3.8 ·
+  `app/agents/profile/graph_merge.py` · #360 코멘트(2026-08-10)
+
+---
+
+## [2026-08-10] baseline 계보를 timestamp 로 고르면 대조팔을 출고 수치로 인용한다
+- 증상: #139 문서 초안이 `intent_probe` 최신 baseline 을 `run.timestamp` 로 골라
+  `fast-2026-08-07-430-v6-merged-2`(2026-08-07T14:26:32Z)를 발표 인용 대상으로 삼았다. 그런데
+  출고판은 `…-v6-adopted-1`(13:28:00Z)·`…-v6-adopted-2`(13:46:06Z)로 **더 이른 시각**이었다.
+  수치도 다르다(`mainIntent` merged-2 238/240=0.9917 vs adopted-2 235/240=0.9792).
+- 원인: 같은 fixture(`intent-probe-anchors-b-v6`)·모델·앵커·N 으로 **두 팔을 나란히 돌린 대조
+  실험**이라 최신 timestamp 가 출고판을 뜻하지 않는다. `evals/intent_probe/README.md`의 "기준선"
+  절은 `merged-*`가 `#386`(PR #441) 병합 직후 판, `adopted-*`가 **출고판**이며 `_SYSTEM`이
+  10자만 다르다고 적어 두었지만, 초안은 디렉터리 목록의 시각만 보고 골랐다.
+- 규칙: **baseline 을 "최신 timestamp"로 고르지 마라. 하네스 README 에서 어느 계보가 출고판인지
+  먼저 확인하라.** 발표·리포트가 인용하는 수치는 출고판 계보여야 하고, 대조팔을 출고 수치로
+  쓰지 않는다. baseline 지정표를 만든다면 `계보(출고판/대조팔)` 열을 둔다.
+- 관련: `evals/intent_probe/README.md`(기준선 절) · `docs/specs/RELEASE-CLAIMS-139.md` §4
+  "최신 timestamp ≠ 출고판" 규칙·§2 C2 · 이슈 #139·#430·#386
+
+## [2026-08-10] before/after 를 한 파일에 담은 baseline 은 arm 이 어느 시점 동작인지부터 확인한다
+- 증상: #139 문서 초안이 `evals/personalization/baselines/live-v1` 의 `pairedVsGuest.clean_both`
+  nDCG@10 meanDelta **−0.2879316720443962**(CI95 [−0.4813819808647765, −0.11845955082203671],
+  0 을 배제)을 보고 "라이브에서 개인화가 품질을 **떨어뜨린다**"고 판단해, 개인화 관련 주장을
+  "반증됨"으로 분류할 뻔했다.
+- 원인: 그 baseline 은 **#119 수정 전후를 한 실행 안에 담은 회귀 자료**다. `clean_both`는
+  프로필이 decompose 하드 필터로 새던 **수정 전** 동작이고, 출고 설정은 `clean_rerank_only`
+  (`profile_injection_scope` 기본값)다. 출고 arm 수치는 meanDelta **−0.05644463392740816**로
+  CI95 **[−0.2021440745401869, 0.04957802400457049]** — **0 을 포함**(inconclusive)하고,
+  필터 유출(`axisLeakage`)은 29/31 → 1/31 로 줄어 있다. arm 이름을 동작 시점과 연결하지 않고
+  "가장 나쁜 숫자"를 대표값으로 읽은 것이 원인이다.
+- 규칙: **arm 이 여러 개인 baseline 은 각 arm 이 어느 시점·어느 설정의 동작인지부터 확정하고
+  인용하라.** `CHANGELOG`나 하네스 README 에 그 대응이 적혀 있는 경우가 많다. 특히 arm 이름에
+  `both`/`only`처럼 설정 스코프가 들어 있으면 현행 기본값이 무엇인지 `config`에서 확인한다.
+- 규칙(추가): **부호가 강한 수치를 근거로 주장을 뒤집기 전에 교차검증을 붙여라.** 이 건은
+  읽기 전용 검증자를 별도로 붙여 "반박해 보라"고 시켜서 잡았다. 혼자 읽고 결론냈으면 발표
+  자료에 정반대 주장이 들어갔을 것이다.
+- 관련: `evals/personalization/baselines/live-v1/comparison.json` · `CHANGELOG.md` #147 항목 ·
+  `docs/specs/RELEASE-CLAIMS-139.md` §2 C3·§3-2 · 이슈 #139·#119·#147
+
+---
+
+## [2026-08-10] 검증되지 않은 값을 "실측"이라고 적으면 다음 사람이 그것을 근거로 삼는다
+- 증상: #134 조사 중, `deploy.yml` 이 `TRUST_FORWARDED_FOR=true`·`FORWARDED_FOR_TRUSTED_HOPS=2`
+  를 무조건 주입하는 근거가 커밋 `44d74cef`(2026-08-06)의 "2026-08-06 실측: AI 는 nginx 를
+  거치지 않아 XFF 가 2개"라는 메시지뿐임을 발견했다. 그런데 AI 서버는 그 시점까지 XFF 를
+  로그로 남긴 적이 **한 번도 없었다** — "실측"이라 적힌 값은 실제로는 관측 경로가 없는
+  상태에서의 추정이었다. 운영은 2026-08-06 이후 4일간 근거 없는 홉 수를 신뢰해 왔고, 틀렸다면
+  IP 백스톱이 위조로 조용히 우회되는 상태였는데 아무도 몰랐다.
+- 원인: 커밋 메시지·주석의 "실측"이라는 단어는 다음 사람(운영자·리뷰어·다음 이슈 담당자)에게
+  "이미 검증됐으니 재검증 불필요"라는 신호를 준다. 그 단어를 적은 시점에 실제 관측 로그가
+  없었다면, 그 신호는 거짓이고 다음 사람은 거짓 근거 위에 결정을 쌓는다. 검증되지 않은 값에
+  확정적 어휘("실측", "확인됨")를 쓰는 것 자체가 관측 없이 신뢰를 만들어내는 행위다.
+- 규칙: 값을 관측 없이 추정했다면 "추정"·"가정"이라고 적고, 그 값을 검증할 관측 경로가
+  없다면 **그 관측 경로부터 만든다**(값을 하나 더 얹지 않는다). 확정적 어휘("실측"·"검증됨"·
+  "확인함")는 실제로 관측 로그·테스트·계측값을 가리킬 때만 쓴다. 리뷰에서 이런 단어를 보면
+  "무엇으로 관측했나"를 먼저 묻는다.
+- 관련: `app/core/client_ip.py`(`client_ip_probe` 진단 로그 — `cfMatchIndexFromRight` 로
+  실제 홉 위치를 관측), `.github/workflows/deploy.yml`(주석 정정), 이슈 #134, 커밋 `44d74cef`.
+
+---
+
+## [2026-08-10] `make_interval(days => %s)` 는 실수(float) 보존기간 설정과 못 섞는다
+- 증상: 전사록 보존 스윕(#321) SQL 이 통합 테스트에서 `psycopg.errors.UndefinedFunction:
+  function make_interval(days => double precision) does not exist` 로 죽었다.
+- 원인: `conversation_retention_days` 는 (다른 보존기간 설정들과의 일관성 때문에) `float`
+  이다. Postgres `make_interval` 의 `days` 인자는 **정수(int)** 전용 오버로드만 있어 float
+  값을 그대로 바인딩하면 매칭되는 함수가 없다. `graph_journal.py` 가 쓰는
+  `make_interval(secs => %s)` 는 `secs` 가 `double precision` 이라 같은 함수를 그대로
+  베껴 쓰면 안전해 보이지만, `days`/`hours`/`mins` 인자는 시그니처가 다르다.
+  실 pg-profile 없이 `_Connection` fake 로만 돌리는 유닛 테스트는 SQL 문자열만 보고
+  실행하지 않아 이 클래스의 버그를 못 잡는다 — 실 Postgres 를 치는 통합 테스트가 잡았다.
+- 규칙: `make_interval` 을 새로 쓸 때는 **인자별 타입을 먼저 확인**한다(`secs` 만
+  `double precision`, 나머지는 `int`). float 보존기간/윈도우를 초 단위가 아닌 다른 단위로
+  넘겨야 하면 `make_interval` 대신 `interval '1 day' * %s`(interval-스칼라 곱, float 그대로
+  받는다) 를 쓴다. SQL 리터럴을 바꾸는 변경은 fake 커넥션 유닛 테스트만으로 "통과"라고
+  보고하지 말고 실 DB 를 치는 integration 테스트로 최소 1회 실행해 확인할 것.
+- 관련: `app/core/conversation.py::PgConversationStore.purge_expired_turns`,
+  `tests/integration/test_pg_conversation_store.py`
+
 ## [2026-08-10] 새 후처리가 **다른 하네스의 설계 전제**와 충돌해 43건이 깨졌다 — 전제를 읽고 그 하네스에서만 꺼라
 - 증상: #443 사전 기반 leg 보강(발화에서 카탈로그 카테고리명을 찾아 빈 `categoryQueries` 를
   채운다)을 넣자 `.env` 없는 전체 스위트가 **43건** 깨졌다. 표적 테스트와 `ruff` 는 통과했고

@@ -11,6 +11,114 @@
 
 ## [Unreleased]
 
+### Changed
+- **#434 — `conditions` 칩·`conditionActions` 를 멀티 값 축(`category`·`brand`) 값당 1개로
+  분리하고, 값 지정 category 제거가 실제로 남은 카테고리 집합으로 재검색되게 했다**
+  (api-spec §3.1, v0.32.14). 종전에는 멀티 카테고리/브랜드를 칩 1개에 조인 문자열로 뭉쳐 "그
+  값만" 제거할 수 없었다. `build_condition_chips` 가 값마다 칩을 내고(`(field, value)` 기준
+  순서 보존 dedup), `conditionActions[].value`(선택, 스칼라)를 신설해 그 값만 지목한 제거를
+  지원한다 — **와이어 계약 추가 전용**이라 `value` 를 안 보내는 기존 FE 는 종전 동작과 100%
+  동일하다. `value` 없음은 여전히 그 field 전체 제거(하위호환)이다.
+  `brand` 는 실제 리스트라 값 지정 제거가 즉시 동작했지만, `category` 는 멀티턴 승계 상태
+  (`ProductSearchFilters.category`)에 대표 1개만 남아 값 지정 제거가 대표값 일치 판정만 하는
+  **관대 무시(no-op)** 였다 — 이슈 헤드라인인 카테고리 칩에서 기능의 절반이 비어 있었다.
+  `ThreadFilterStore` 에 이 스레드가 실제로 검색한 카테고리 집합을 담는 키(`chip_categories`)
+  를 신설해 매 추천 턴마다 무조건 덮어쓰고, 값 지정 category 제거 턴에는 그 집합에서 지목
+  값만 뺀 나머지로 재검색·재승계한다(다음 일반 리파인 턴부터는 종전처럼 대표 1개 승계로
+  되돌아간다 — 일반 승계 동작은 바뀌지 않았다). 저장 집합을 못 읽는 스레드(만료·구 스레드)는
+  대표값 일치 판정으로 강등한다. 복원 턴이 `case==3` 우연 일치로 `split_by_need`(니즈별 목록
+  분할)를 열지 않도록 `RouteDecision.category_legs_restored` 가드를 추가했다. 부수로 **`brand`
+  칩 `value` 가 리스트→스칼라로 정정**됐다(단일 값이어도) — §3.1 예시가 원래 스칼라를 명시했던
+  드리프트 해소로 FE 가시 변경이다. 호출부 로그(`condition_actions_applied`, #442)에
+  `changed_fields`(None 이 안 되는 브랜드 부분 제거 포함)·`unmatched_values`(관대 무시 건수,
+  값 자체는 미기록)를 추가하고 `no_op` 판정을 `changed_fields` 기준으로 바꿨다. 대표 카테고리가
+  안 바뀌는 복원(A·B·C 중 비대표 값 지목 제거)은 `changed_fields` 만으로는 `no_op: true`로
+  찍혀 무동작과 구분이 안 됐는데(#442 재발 형태), `category_legs_restored`(bool) 를 실제 복원
+  결과 기준으로 추가하고 `no_op` 판정에도 반영했다.
+
+### Fixed
+- **#134 — Cloudflare 뒤에서 레이트 리밋 IP 백스톱이 근거 없는 홉 수를 신뢰하던 결함을,
+  "배포된 상태가 스스로 진위를 증명"하는 구조로 고쳤다.** 이슈 본문의 전제(cloudflared
+  터널 뒤 `127.0.0.1`)는 2026-08-10 인프라 실측으로 낡았다 — 터널은 이미 제거됐고 경로는
+  Cloudflare 엣지 → ALB → AI EC2 하나뿐이며 오리진은 잠겨 있다(80/443 미개방, ALB 는
+  Cloudflare IPv4 15개 대역에서만 수신). 대신 진짜 위험이 드러났다: `deploy.yml` 이
+  `TRUST_FORWARDED_FOR`/`FORWARDED_FOR_TRUSTED_HOPS` 변수 참조(`${{ vars.… }}`)를 무조건
+  주입하며 값은 조직(Organization) Variables 로 관리된다(커밋 `44d74cef` 기준 `true`/`2` —
+  조직 변수는 권한상 이 작업에서 직접 확인하지 못했다). 그 근거("2026-08-06 실측")는 AI 가
+  그때까지 XFF 를 로그로 남긴 적이 없어 **관측된 적 없는 값**이었다 — 틀렸다면 IP 백스톱이
+  위조로 조용히 우회되는 상태였다. 신설 `app/core/client_ip.py` 가
+  클라이언트 IP 판별 우선순위(`Cf-Connecting-IP`[홉 수 개념 없는 단일 값] →
+  `X-Forwarded-For` 우측 신뢰 홉 → TCP peer)를 한 곳에 모으고, 레이트 리밋 대상 경로마다
+  `client_ip_probe` 진단 로그 1건을 낸다(원문 IP 없이 `safe_fingerprint` 만, 기본 on) —
+  핵심 필드 `cfMatchIndexFromRight`(CF 값과 일치하는 XFF 원소의 우측 1-based 위치)를 보면
+  운영 로그 한 줄만으로 `FORWARDED_FOR_TRUSTED_HOPS` 가 맞는지 확인할 수 있고,
+  `hopMismatch=true` 는 즉시 오설정 신호다. 프록시가 XFF 를 append 대신 헤더를 한 줄 더
+  추가하는 경우(`headers.getlist`)도 도착 순서대로 결합해 처리한다. 새 설정 2개
+  (`client_ip_probe_enabled` 기본 on, `trusted_client_ip_header` 기본 `cf-connecting-ip`)는
+  둘 다 기본값이 곧 운영 동작이라 `deploy.yml` 배선이 필요 없다. 부수적으로, `deploy.yml`
+  이 이 경로의 두 필드(`trust_forwarded_for`/`forwarded_for_trusted_hops`)를 무조건
+  주입하는데 빈 문자열 관용 validator 가 없어 조직 Variable 미등록·삭제 시
+  `ValidationError: bool_parsing` 으로 **전체 서비스 기동 크래시 루프**에 빠지는 잠재 사고를
+  발견해 `_empty_trace_content_settings_use_default`(#326) 관례대로 같이 막았다(폴백은
+  신뢰 off/hops=1 — 조용한 저하지만 서비스 정지보다는 낫다). 계약(api-spec) 불변 — 로그·설정
+  전용 변경이다.
+
+### Docs
+- **#139 — 1차 완료(발표) 핵심 주장 4개와 claim-evidence matrix를 확정했다.** 발표(2026-08-14)가
+  나흘 남은 시점에 `evals/` 17개 하네스에 이미 쌓인 baseline 을 엮어, 새 실행 없이 무엇을
+  증명하는지 고정했다. **C1**(에이전트 경로가 no-op 대비 nDCG@10 유의 개선,
+  paired bootstrap 95% CI 하한 +0.0632) · **C2**(컨텍스트가 있어도 의도 라우팅이 흔들리지
+  않고 화면 밖 상품을 확정하지 않음, 출고판 `mainIntent` 0.979~0.983·`screenNoHallucination`
+  1.0) · **C3**(개인화는 후보를 줄이지 않고 순서에만 반영, 하드 제약 위반 0 + #119 전후 라이브
+  필터 유출 29/31건→1/31건) · **C4**(지연·비용 공개 가능, staging 실측 전까지 `pending(#152)`)
+  4개를 채택하고, 개인화 품질 향상 주장과 파이프라인 vs 단일 LLM 우위 주장은 라이브/최신
+  골든셋에서 `inconclusive`라 정직한 negative result 로 돌려 부록에 세웠다(필요 N 재산정
+  ≈176 paired cases 포함). 판매자 품질은 전용 하네스 부재(`SELLER-FINAL-RISKS` V1
+  "provider별 실 LLM 검증 0회")를 근거로 1차 주장에서 제외했다. `evals/README.md`(#328) 8항
+  인용 규율(datasetHash 세대 혼동 금지·로컬↔운영 비혼동)을 재확인하고, `intent_probe`의
+  출고판이 `adopted-*`이지 최신 timestamp인 `merged-*`가 아니라는 함정을 baseline 지정표로
+  고정했다. release gate(G0~G4)·run manifest 필수 6항·발표 산출물 9종·P0 재검토(열린 post-mvp
+  24건 전수 판정 — #152·#154·#139만 P0 유지)를 함께 정했다. §13 에는 과정 배포 자료(「LLM Agent 프로젝트
+  가이드 v2」)의 평가 항목(기획·협업·기술난이도·완성도·발표전달력)을 이 문서의 claim·산출물에
+  연결하는 대조표도 뒀다. 계약(api-spec) 변경 없음.
+  (`docs/specs/RELEASE-CLAIMS-139.md` v1.0.0, `docs/specs/README.md` 색인)
+
+### Security
+- **#321 — "기억해" 원문의 하드 PII(전화번호·주민번호·카드번호·계좌번호·이메일·시크릿 토큰)가
+  게이트 없이 저장되던 결함을 막았다.** 신설 `app/core/pii.py`(순수·동기·무 I/O, 예외를 던지지
+  않는 결정론적 정규식 탐지기 — LLM 호출 추가 없음, 인라인 게이트가 첫 SSE 프레임 예산을 깎지
+  않게)를 저장 경계마다 다르게 배선했다: **fact 저장**(`record_remember`·`ProfileStore.add_fact`,
+  fact 뿐 아니라 개인화 그래프 triple 의 `label`/`anchorPhrase` 도 검사)과 **요약 저장**
+  (`set_summary`, `_embed_summary` 가 외부 Google API 로 나가기 직전 마지막 관문)은 히트 시
+  **전량 폐기**(SPEC-PROFILE-GRAPH-149 REQ-PGRAPH-071 — 파생 취향도 만들지 않는다), **세션 버퍼**
+  (`append_session_ctx`)와 **LangSmith 콘텐츠 트레이스**(`record_request_content`·
+  `record_llm_content`, `PII_REDACT_TRACE_CONTENT` 기본 on)는 **치환**(닫힌 어휘 placeholder —
+  버퍼 치환은 델타 추출 LLM 이 원문 숫자를 애초에 못 보게 해 fact/label/anchorPhrase 로 옮겨
+  적는 세탁 경로를 구조적으로 닫는다). `record_remember` 는 **절단 전 원문**을 검사한다 —
+  절단이 먼저면 `010-1234-` 처럼 번호가 잘려 정규식이 못 잡는다. 탐지는
+  `app/core/text.py::_security_skeleton` 위에서 해 zero-width 문자를 숫자 사이에 끼우는 우회를
+  막는다. 로그에는 이벤트명 + `safe_fingerprint(user_id)` 만 남기고 히트 클래스·매치 문자열·
+  카운트는 남기지 않는다(REQ-PGRAPH-075/076). `tracing.py` 의 기존 카나리아 검증기·면제 목록·
+  `_DELTA_SYSTEM` 계열 프롬프트는 변경하지 않았다.
+- **#321 — 대화 전사록(`conversation_turns`)에 처음으로 시간 기반 보존 정책을 도입했다**
+  (`SPEC-PROFILE-001` OPEN-P5 해소). 이 리포에 시간 기반 삭제 스윕이 없었다 —
+  `graph_audit_retention_days`(기본 90일)도 만료 행을 지우는 스윕이 없다. 신설
+  `conversation_retention_days`(기본 **90일**, `graph_audit_retention_days` 와 의도적으로
+  짝지음 — 감사 원장이 지문만 남기므로 원문 대조 상대는 전사록뿐이라, 전사록이 감사 원장보다
+  먼저 지워지면 그 사이 구간이 조사 불가능해진다)를 기동 시점 fail-fast 검증기로 강제한다.
+  삭제는 `app/pipelines/scheduler.py` 의 별도 job(`conversation_retention_sweep`, 기본 1시간
+  주기, `CONVERSATION_RETENTION_SWEEP_ENABLED` 기본 on)이 유계 배치로 수행 — `ORDER BY
+  created_at LIMIT` + `FOR UPDATE SKIP LOCKED`(동시 `finalize_assistant` UPDATE 를 건너뜀) +
+  배치당 짧은 트랜잭션 1개(장수 트랜잭션의 autovacuum 봉쇄 방지). PENDING 턴도 지운다 —
+  세션 lifecycle sweep 의 "진행 중 턴 보호" 규칙과 달리, 90일 된 PENDING 은 죽은 스트림이라
+  예외를 두면 TTL 이 지우려던 것이 정확히 그만큼 남는다. `conversation_turns (created_at)`
+  인덱스를 신설(`PgConversationStore.setup()` 멱등 마이그레이션 + `db/profile/init/`)해 스윕
+  조회가 풀스캔이 되지 않게 했다. `ConversationStoreProtocol` 에 `purge_expired_turns` 를
+  추가해 인메모리 구현도 같은 계약을 따른다(스윕 job 이 isinstance 분기 없이 양쪽을 다룬다).
+  와이어 계약(엔드포인트·SSE 이벤트·필드·오류 코드) 은 불변 — `turns_for()`/`get_turn()` 의
+  프로덕션 호출부가 없어 전사록은 감사·상관관계 조회 전용이다(`docs/api-spec.md` §3.9.4 C-23·
+  §3.9.4 OPEN-P5 서술 사본 동기화, `SPEC-PROFILE-001`·`SPEC-PROFILE-GRAPH-149` OPEN 항목 갱신).
+
 ### Fixed
 - **#443 — 정본 카탈로그 사전으로 빈 `categoryQueries` leg를 결정론 보강** — 모델이 상품군을
   말한 첫 추천 턴에서 leg를 비우던 결함을 `seller_categories.json` 스냅샷의 최장 일치로 보완한다.
@@ -19,6 +127,44 @@
 - **#553 — 운영 배포 전면 중단 복구: `deploy.yml` 설명문의 빈 Actions 표현식** — `script: |` 은 YAML 블록 스칼라라 `#` 가 주석이 아니라 리터럴이고 Actions 가 그 안의 표현식도 평가한다. #539 가 넣은 설명문의 **내용이 빈 표현식**이 문법 오류를 내 워크플로가 job 을 시작조차 못 했고(startup failure, run 2건 job 0개), 승격 #552 의 41커밋이 실서버에 반영되지 못했다. 설명문에서 표현식 리터럴을 걷어내고, 같은 블록에 "여기서는 표현식을 쓰지 않는다"는 경고를 남겼다. 로컬 YAML 파싱은 통과하므로 CI 로는 못 잡는 계열이라 `docs/lessons.md` 에 진단 단서(트리거 밖 브랜치에서도 run 생성 = startup failure)까지 기록했다.
 
 ### Fixed
+- **#454 — 장바구니 옵션 되물음 좁히기에 승인된 색상 동의어 사전을 연결해 "검정 셔츠"처럼
+  고유어로 말한 색상 조건이 옵션명("블랙")과 표기가 달라 못 좁혀지던 문제를 줄였다.** 카탈로그
+  실측(옵션 보유 상품 4,439쌍, `scripts/measure_option_color_miss_454.py` 실행 재현)에서 고유어
+  발화의 좁힘률이 **2.7% → 54.9%(+52.2%p)**, 외래어 발화는 51.1% → 54.9%(+3.8%p) — 두 표기가
+  사전으로 같은 것이 되며 수렴한다. 등가 판정은 누적 조건 매칭(R2/`by_condition`)에만 적용하고
+  이번 발화 자동 선택(R1/`by_message`, #114·#455)은 리터럴 일치만 본다(#455 리뷰 F-1 비대칭
+  유지). 좁혀지지 않은 45.1% 중 옵션명에 색상 축이 실재하는 3.3%는 "그 색은 없다/품절이다"라고
+  단정하지 않고 "찾지 못했어요"로만 안내한다 —
+  판매자가 승인 사전 밖 표기(영문·약어·미승인 색명)를 썼을 수 있어 단정할 근거가 없다. 신규
+  설정 `cart_option_color_synonym_enabled`(기본 `True`) — 사전 적재 실패·미설정은 예외 없이
+  오늘 동작으로 degrade한다. **[#508 흡수, 2026-08-10]** BE 가 옵션별 재고를 2026-08-09
+  구매자 쪽 전량 배포했다(`product.stock_quantity` → `product_stock(product_id, option_id,
+  quantity)`, 02 D33) — I-1·I-3 `options`/`optionCount` 는 품절 옵션 제외·"구매 가능한 것"
+  기준으로, I-2 는 전 옵션 품절 시 `CART_STOCK_INSUFFICIENT`(`availableStock: 0`)로,
+  I-18 은 `maxQuantity`(옵션 재고 기준) 신설로 반영했다(api-spec §4.1·§4.6·§4.9·§4.17,
+  `<!-- VERSION_TBD -->`). **2026-08-10 운영 실측으로 확인** — `product_stock` 24,390행(품절
+  3,170), I-1 `optionCount` 동일 상품 161→138(23개 품절 제외). **다만 #508 이 이 색상 표기
+  이형 문제를 대신 풀어주지 않는다** —
+  옵션이 사이즈인 상품은 색상이 상품 속성에만 있어 재고 필터가 색상별로 못 거르므로(BE 명시
+  한계), 이 PR 의 색상 동의어 좁히기는 #508 이후에도 그대로 필요하다. 상세 실측·경계는
+  `docs/specs/MEASURE-OPTION-COLOR-454.md`.
+- **#454 Phase 2 — #508(옵션별 재고) 이후에도 남는 "옵션에 그 색이 없다" 문제를 검색
+  사후필터로 줄였다.** BE 의 색상 매칭(`attributes.색상` 축)과 품절 제외(`options` 축)가 서로
+  몰라서, 속성엔 그 색이 있어도 보이는 옵션엔 그 색이 없는 후보가 그대로 반환됐다(운영 실측
+  `color=블랙`: 옵션 있는 144건 중 77건이 옵션 목록에 블랙 계열 0개, 그중 52건은 다색이라
+  판정 확실). `app.services.search_service._filter_unbuyable_color_options` 가 판정식(색상
+  조건 있음 ∧ `attributes.색상` 복수 ∧ `optionCount==len(options)`(절단 아님) ∧ 승인 동의어
+  확장 어디에도 그 색이 옵션명에 없음)을 모두 만족하는 후보만 뺀다 — D 판정은
+  `app.agents.buyer.cart.options.narrow_options`(#454 되물음 좁히기와 같은 함수, 재구현
+  아님)를 그대로 호출한다. `evals/option_color` 하네스(신규, before/after 같은 패스로 산출)
+  실측: `unbuyable_rate` 11.0%(2,152/19,536, 옵션 있는 후보 대비) → 필터 적용 시 정의상 0%,
+  `candidates_per_query` 중앙값 2,579.0 → 2,486.5(**−3.6%**, recall 손실이 크지 않음), 0건
+  가드 발동 0/20색(전량 카탈로그 스케일에서는 안 뜬다). 하네스 판정과 실제 구현이 19,536건
+  전건 일치(교차검증 0건 불일치). 신규 설정 `search_color_option_postfilter_enabled`(기본
+  `True`) — 사전 적재 실패·색상 조건 없음·제외 후 0건이면 예외 없이 무필터로 degrade한다.
+  §2-B 되물음 고지 문구는 바꾸지 않는다(단정 금지 근거가 재고와 무관해 그대로 유효). api-spec
+  §4.6 `[].options` 소비를 검색 사후필터까지 확대(`<!-- VERSION_TBD -->`). 상세는
+  `docs/specs/MEASURE-OPTION-COLOR-454.md` §7.
 - **#466 — 브랜드-only 발화에서 `filters.brand` 가 비던 결함을 고쳤다** (#430 후속, 과소지정
   오탐의 근원). `decompose` 프롬프트에는 색상 전용 규칙만 있고 **브랜드 추출 규칙이 아예
   없었다.** `- recommend:` 불릿에 브랜드 절 하나를 넣어 ① 추출 ② **발화 표기 그대로**(번안 금지)
@@ -40,6 +186,45 @@
   기본 on(하방이 유계) · `BRAND_ALIAS_MAX_VALUES` 로 개수 상한.
 
 ### Added
+- **#361 — 그래프 데이터가 검색 필터에 닿지 못하게 구조로 막았다** (INV-PGRAPH-ORDER,
+  SPEC-PROFILE-GRAPH-149 §6.12). 취향 그래프는 **rerank 순서 지시**와 **홈 프로필 벡터**에만
+  쓰이고 후보를 좁히는 데는 쓰이지 않는다. 순서로 틀리면 3위가 1위로 갈 뿐 상품은 화면에 있지만,
+  필터로 틀리면 상품이 애초에 검색 결과에 없어 하류가 복구할 수 없다 — #119 에서 회원 추천이
+  게스트보다 나빠진(nDCG@10 −0.288) 메커니즘이다. **런타임 변경 0줄** — 오늘 유출 생산자가 없으므로
+  산출물은 "생기는 순간 깨지는" 테스트다. api-spec §3.8 v0.32.0 이 `usagePolicy.filterSafe` 를
+  폐기하며 집행을 계약 문장 + 코드 구조로 옮긴 뒤(SPEC v0.3.5, #360) 그 "코드 구조"가 이것이다.
+  - **정적**(REQ-PGRAPH-110) — 그래프 모듈 19개(glob 이라 새 모듈 자동 포함)가 필터 타입을 import
+    하지 않고, 필터 모양 타입을 정의하지 않고(필드명이 검색 축과 2개 이상 겹치면 적발 — 이름이
+    아니라 구조로 판정해 다른 이름의 같은 물건도 잡는다), 공개 함수 87개가 반환형을 밝힌다.
+    와이어 `GraphEdgeView` 5필드에 필터 축이 없는지도 잠근다.
+  - **행동**(REQ-PGRAPH-112·113·115·116) — 모든 `NodeType`×`Predicate` 를 채운 그래프와 그 파생
+    요약을 **함께** 심고(그래프만 심으면 추천 경로에 소비자가 없어 `0 == 0` 을 잰다) 회원·게스트의
+    decompose 프롬프트·검색 페이로드·스레드 필터 저장소가 같은지, `avoids` 가 후보를 줄이지 않는지
+    본다. 픽스처 값은 fake 카탈로그와 **아프게** 교차시켰다 — 선호 가격대가 카탈로그 위에 있어야
+    유출 시 후보가 준다.
+  - **유효성 대조군** — `profile_injection_scope="both"` 로 #119 이전 배선을 되살리면 프롬프트가
+    실제로 갈라진다. 이게 없으면 위 초록불이 전부 공허할 수 있다. 실제로 회원에게만 필터를 심는
+    변이를 넣어 행동 테스트 5건이 전부 실패하는 것을 확인했고, 그 과정에서 fake 검색이 필터를
+    무시해 후보 비교가 무력했던 사실이 드러나 필터를 적용하도록 고쳤다.
+- **#360 — 개인화 그래프 API 표면 5종(I-32~I-37)을 붙였다** (api-spec §3.8·§3.9, v0.32.7~v0.32.8).
+  마이페이지 **"AI가 이해한 내 취향"** 화면이 이제 실제로 동작한다 — 취향을 항목 단위로 조회하고
+  고치고 지우고 통째로 초기화하고 개인화를 끌 수 있다. 저장 계층(#356·#358) 위에 얹는 마지막 층이다.
+  - **결정론적 투영** — 저장된 구조화 트리플의 파생이며 **요청 경로 LLM 0회**다. 정렬은 `predicate`
+    고정 순서 → 최근 확인 시각 → `edgeId` 3키 전순서이고 `graph_merge` 의 정렬 키를 **재사용**한다
+    (두 곳에 적으면 저장 순서와 화면 순서가 갈린다). 투영은 문서를 **다시 정렬한다** — 사용자 편집은
+    새 edge 를 리스트 뒤에 덧붙이고 끝나 편집 직후 문서는 정렬이 깨져 있다.
+  - **서버 화면 상한이 없다** — 자르면 상한 밖 항목을 사용자가 보지도 지우지도 못해 취향 관리
+    화면의 목적과 정면으로 부딪힌다. 페이지네이션도 없다.
+  - **오류 매핑을 한 곳에 모았다**(`_GRAPH_ERROR_MAP`) — 라우터는 도메인 예외만 던진다. `409` 의
+    기본 코드가 `STREAM_IN_PROGRESS` 라 코드 지정을 한 번만 빠뜨려도 FE 에 "스트림 진행 중"이 나가고
+    그 결함은 정상 경로 테스트로 안 잡힌다. `error_envelope` 에 `error.detail` 을 열어
+    `PROFILE_VERSION_CONFLICT` 가 최신 `graphVersion` 을 동봉한다.
+  - **응답 예산 실측 등재** — 조회 2s·변경 3s(§2.9 (c)). 실측 p95 는 예산의 1.5~4.3% 다.
+- **#360 — I-33 재전송이 최초 응답을 그대로 돌려준다** (REQ-PGRAPH-043). 수정 성공 뒤 그 edge 를
+  삭제하고 원래 `If-Match` 로 온 네트워크 재시도가 원장 TTL 안에 도착하면 **현재 문서로는 응답을
+  재구성할 수 없다.** 원장이 투영된 항목을 들게 했다 — #358 이 테이블을 3개로 나눈 근거가 바로
+  "원장이 드는 응답 본문에 라벨이 섞인다"였다.
+
 - **#359 — 사용자가 고친 취향을 기계 배치가 덮지 못하게 하고, 개인화 중지를 실제로 집행한다**
   (`SPEC-PROFILE-GRAPH-149` §6.4·§6.6, v0.3.3 / api-spec §3.7 v0.32.10 — **와이어 계약 불변,
   Spring·FE 무변경**). #356 이 병합 엔진을, #358 이 저장 안전장치와 중지 플래그 테이블을
@@ -133,6 +318,18 @@
   고정했다. 재현 스크립트 `scripts/measure_i1_live_395.py` 신설.
 
 ### Changed
+- **#361 — 개인화 평가 dev-v2 baseline 을 현행 골든셋으로 재생성하고, 수치 자체를 회귀 게이트로
+  세웠다** (REQ-PGRAPH-114). 커밋된 baseline 이 **다른 케이스 집합을 설명하고 있었다** —
+  `datasetHash` 가 `d16eb0e9…`(dev 96건)인데 현행은 `675520d9…`(v2.3.0, dev 109건)다. 직전 판은
+  #333 작업 도중의 더러운 워킹트리에서 생성돼(`dirty: true`, 히스토리에 없는 `commitSha`) 그 PR
+  최종 dev 집합(103건)조차 반영하지 못했고 이후 #474 가 6건을 더했다. arm 별 nDCG@10 이 전부
+  움직였다(clean 0.734220 → 0.686380, 주 비교 meanDelta 0.304398 → 0.258142). **분모가 바뀐
+  것이지 품질 저하가 아니다** — 서로 다른 케이스 집합의 nDCG 는 비교 대상이 아니다.
+  기존 eval 게이트가 **verdict 문자열만** 비교해 이 드리프트를 며칠간 놓쳤으므로, 신설
+  `test_default_weight_ndcg_matches_committed_baseline` 이 `caseCount` 를 먼저 보고(분모가
+  다르면 수치 일치는 우연이다) arm 별 `ndcgAtK` 전 k 와 헤드라인 meanDelta 를 `rel=1e-6` 으로
+  잠근다. 앞으로 골든셋·픽스처·스코어링을 바꿔 Tier D 수치를 움직이는 PR 은 baseline 재생성을
+  요구받는다 — 그 비용 대신 커밋된 수치가 무엇을 설명하는지가 항상 참이 된다.
 - **#505 — 색상 동의어 정본을 2차 사람 검수해 부분 일치로 닿지 않는 독립 색명만 확대했다.**
   `카멜→브라운`·`버건디→와인`처럼 자명한 표기 상이 40건을 승인하고, 실제 동의어 묶음이 있는
   독립 어휘 앵커 4개를
@@ -195,6 +392,22 @@
   Markdown·CSV로 남긴다.
 
 ### Fixed
+- **#360 — 개인화를 끄면 최대 24시간 다시 켤 수 없던 문제** (api-spec §3.9.5). I-37 토글의 파생 키가
+  대상 상태를 담지 않았는데, 이 경로는 그래프 문서를 안 바꿔 `graphVersion` 이 고정이라 **끄기와
+  켜기가 정상적으로 같은 선행조건을 지참한다** — 두 요청이 같은 키가 되어 켜기가 끄기 응답을
+  재생했다. 프라이버시 스위치라 영향이 크다. 파생 키 scope 에 대상 상태를 싣는다.
+- **#360 — I-33 부분 변경이 `500` 을 내던 문제** (api-spec §3.9.1). `predicate`·`object` 중 하나만
+  보내는 것은 계약이 허용하는데 조립부가 `ValueError` 를 올렸고, 그것이 저장소 장애 판정에 안 걸려
+  그대로 전파됐다. 생략한 쪽을 **잠금 아래에서 읽은 문서**로 채운다 — 미리 읽어 채우면 재전송이
+  이미 사라진 edge 를 찾다 실패해 §7.2 의 "재전송 판정이 `404` 보다 앞"이 깨진다.
+- **#360 — 전체 초기화 응답이 계약과 한 키도 안 겹치던 문제** (api-spec §3.9.4). `{facts, summary,
+  buffers, conversationTurns}` → **`{edges, transcriptTurns}`**. `edges` 는 사용자가 I-32 에서 보던
+  개수로 센다 — 술어를 `is_projected` 한 곳에 두어 화면 문구("취향 12건")와 초기화 응답이 갈리지
+  않게 했다.
+- **#360 — 구매 이력 파생 수정이 거부되지 않던 문제** — `GraphEdgeNotEditable` 이 정의만 되고 아무도
+  던지지 않았다(#358 이 "판정은 #360 소유"로 남긴 자리). 두 `409` 가 겹치면 **재조회로 결과가 바뀌지
+  않는 쪽**을 먼저 알린다 — 반대로 하면 FE 가 규약대로 재조회 후 재시도하고 그 재시도가 결국 같은
+  코드를 받아 왕복이 낭비된다.
 - **#440 후속 — 찜 해제 오분류의 역방향(장바구니 삭제 의도 증발)을 정정했다** (계약 무변경).
   `"찜닭 빼줘"`류(음식명 + 장바구니 삭제 의도)를 decompose 가 `wishlist_remove` 로 오분류하면,
   근거 게이트가 찜 삭제는 막았지만 사용자가 실제로 요청한 장바구니 삭제는 아무도 수행하지 않아
@@ -303,6 +516,14 @@
   구 G1(`verifier.run_chart_checks`)과 결정 D-4 는 폐기.
 
 ### Docs
+- **#360 — 계약 문서의 빈칸 5건과 SPEC 드리프트 5건을 정리했다** (api-spec v0.32.7·v0.32.8,
+  `SPEC-PROFILE-GRAPH-149` v0.3.3). 와이어 계약(엔드포인트·필드·오류 코드)은 **불변**이며 이미
+  있는 것들 사이의 적용 조건·우선순위를 명시한 것이다 — 두 `409` 의 우선순위 · `type`+`label`
+  정규화 실패 `400` · 부분 변경 기본값의 출처 · §3.8 투영 대상 · 중지 중 `markdown` 유지.
+  특히 **REQ-PGRAPH-021 의 `active` + `promoted` 가 정본과 어긋난 드리프트**였다 — 노션 정본 I-32
+  는 `active` 만이고 *"요약 생성이 같은 규칙을 쓴다"* 로 화면=추천을 이미 요구한다. 그 조건을
+  그대로 구현했다면 **화면에 안 보이는데 추천에는 쓰이는 취향**이 생겨 사용자가 `edgeId` 를 몰라
+  지울 수단을 잃었다. `promoted` 는 병합 엔진 내부 히스테리시스이고 필터 소비처가 0건이다(실측).
 - **#518 — api-spec §3.2 `findings[].analysisType` 표에 `"review"` 등재** (v0.32.5, 사본
   드리프트 정정). v0.25.0(#297)이 리뷰 워커를 6종째로 붙일 때 이 열거 표만 5종에 멈춰 있었다
   — 코드·실 와이어는 처음부터 6종이라 신설 협의가 아니라 문서 정정이다.

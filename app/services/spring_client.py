@@ -460,13 +460,12 @@ class CartError(Exception):
 class CartStockInsufficient(Exception):
     """I-2 담기 재고 부족(400 CART_STOCK_INSUFFICIENT) → action reason STOCK_INSUFFICIENT.
 
-    합산 수량 > 재고(2026-07-22 신설). available_stock 은
-    BE error.detail.availableStock(남은 재고) — LLM "재고가 N개뿐이에요" 안내용. 없으면 None.
-
-    ⚠️ [#524/#508] 구 주석의 "재고는 상품 단위, 옵션별 재고 없음" 은 **BE 옵션별 재고
-    전환(02 D33 — product.stock_quantity → product_stock) 이후 사실이 아니다.**
-    그 시점부터 availableStock 은 담으려는 **옵션의 재고**를 뜻한다. 구매자 레인의 안내
-    문구·판정 정합은 #508 소관이라 여기서는 서술만 바로잡고 동작은 건드리지 않는다.
+    합산 수량 > 재고. [#508, 2026-08-09 BE 배포] 재고는 **담은 옵션 단위**다 —
+    BE 가 재고 원천을 `product.stock_quantity`(상품 단위)에서 `product_stock(product_id,
+    option_id, quantity)`(옵션 단위, 02 D33)로 전환했다. available_stock 은
+    BE error.detail.availableStock — **담으려던 옵션의 남은 재고** — LLM "재고가 N개뿐이에요"
+    안내용. 없으면 None. 옵션 필수 상품에서 구매 가능한 옵션이 하나도 안 남으면
+    `CartOptionRequired` 대신 이 예외가 `available_stock=0` 으로 온다(api-spec §4.1).
     """
 
     def __init__(self, available_stock: int | None) -> None:

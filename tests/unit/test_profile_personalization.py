@@ -102,6 +102,45 @@ async def test_toggle_honours_if_match_when_given() -> None:
     assert await graph_journal.get_personalization_flag(user_id=int(USER)) is True
 
 
+async def test_re_enabling_is_not_blocked_by_the_disable_ledger_entry() -> None:
+    """껐다 켜기가 **같은 ****`If-Match`**** 를 들고 와도** 막히지 않는다 (#360, api-spec §3.9.5).
+
+    중지 경로는 그래프 문서를 건드리지 않아 `graphVersion` 이 변하지 않는다 — 그래서 끄기와
+    켜기가 **정상적으로 같은 선행조건**을 지참한다. 파생 키가 대상 상태를 담지 않으면 두 요청이
+    같은 키가 되어 **켜기가 끄기 응답을 재생**하고, 원장 TTL(`graph_idempotency_ttl_h`, 기본 24h)
+    동안 사용자가 개인화를 다시 켤 수 없다. 정본 I-37 은 정반대를 요구한다 — *"토글은 마지막
+    의사가 이기는 게 자연스럽고, 충돌로 막으면 「끄기」가 실패하는 상황이 생긴다."*
+    """
+    off = await graph_journal.set_personalization(
+        user_id=int(USER), enabled=False, request_id="req-1", now=NOW, if_match="g0"
+    )
+    assert off.replayed is False
+    assert await graph_journal.get_personalization_flag(user_id=int(USER)) is False
+
+    on = await graph_journal.set_personalization(
+        user_id=int(USER), enabled=True, request_id="req-2", now=NOW, if_match="g0"
+    )
+
+    assert on.replayed is False, "켜기가 끄기 응답의 재생으로 처리됐다"
+    assert await graph_journal.get_personalization_flag(user_id=int(USER)) is True
+
+
+async def test_resending_the_same_toggle_with_the_same_if_match_still_replays() -> None:
+    """같은 값·같은 `If-Match` 재전송은 **여전히 재생**이다 — 위 수정이 멱등을 없애지 않는다."""
+    await graph_journal.set_personalization(
+        user_id=int(USER), enabled=False, request_id="req-1", now=NOW, if_match="g0"
+    )
+
+    again = await graph_journal.set_personalization(
+        user_id=int(USER), enabled=False, request_id="req-2", now=NOW, if_match="g0"
+    )
+
+    assert again.replayed is True
+    assert await graph_journal.get_personalization_flag(user_id=int(USER)) is False
+    rows = await graph_journal.list_audit(user_id=int(USER))
+    assert [row.action for row in rows] == ["personalizationToggle"]  # 두 번째는 안 남았다
+
+
 async def test_the_toggle_never_holds_the_graph_lock() -> None:
     """중지 경로는 그래프 락을 잡지 않는다 — 잡으면 요약 락과 중첩해 advisory 풀을 이중 점유한다.
 

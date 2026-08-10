@@ -24,6 +24,8 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
 from app.agents.profile.graph_models import (
+    GraphDocument,
+    GraphEdge,
     GraphNode,
     NodeResolution,
     Predicate,
@@ -152,6 +154,112 @@ async def resolve_triple(
     edge_key = make_edge_key(predicate, node.node_id)
     return ResolvedTriple(
         node=node, predicate=predicate, edge_key=edge_key, edge_id=make_edge_id(edge_key)
+    )
+
+
+@dataclass(frozen=True)
+class ObjectSpec:
+    """I-33 요청의 `object` — **두 형태 중 하나**다 (api-spec §3.9.1).
+
+    `node_id` = 이미 확정된 노드를 가리킨다(FE 자동완성). `node_type`+`label` = 새 대상을 직접
+    입력한다. 셋 다 없으면 "대상 유지"다 — `predicate` 만 바꾸는 요청.
+    """
+
+    node_id: str | None = None
+    node_type: str | None = None
+    label: str | None = None
+
+
+async def resolve_user_object(
+    spec: ObjectSpec | None,
+    *,
+    document: GraphDocument,
+    current: GraphEdge,
+    settings: Settings,
+    now: str,
+    category_exact: Callable[..., set[str]] | None = None,
+) -> GraphNode | None:
+    """I-33 의 `object` 를 노드로 확정한다 (#360, api-spec §3.9.1). 실패는 `None`.
+
+    **배치 경로(`resolve_triple`)와 같은 정규화를 쓴다** — 갈리면 같은 취향이 두 개의 `edgeId` 를
+    얻어 하나를 지워도 다른 하나가 살아남고, 재파생 차단 표식을 비켜간다(REQ-PGRAPH-010).
+    그래서 라벨 손질도 `clean_label` 규약(공백 정리 + 상한)을 그대로 따른다 — `normalize_label`
+    을 여기서 직접 부르지 않는다(그건 `make_node_id` 안에서 일어난다).
+
+    **실패에 예외를 올리지 않는 것**은 이 모듈 규약이다. 다만 뜻은 배치와 다르다 — 배치의
+    `None` 은 "드롭하고 계속"이고 여기의 `None` 은 **`400`** 이다(호출부가 옮긴다). 사용자가
+    지목한 대상을 서버가 임의로 바꾸면 그것은 수정이 아니라 오염이라 추측하지 않는다.
+
+    **임베딩·LLM 을 타지 않는다** — I-33 은 요청 경로(예산 3s)이고 [HARD] LLM 0회다.
+    `category` 는 카탈로그 exact 조회 1회까지만 쓴다(`_resolve_user_category`).
+    """
+    if spec is None or (spec.node_id is None and spec.node_type is None and spec.label is None):
+        # **대상 유지.** 기본값의 출처는 변경 시점에 잠금 아래에서 읽은 문서여야 한다 — 미리
+        # 읽어 채우면 그 사이 값이 바뀌었을 때 사용자가 보내지 않은 변경이 적용된다(api-spec §3.9.1).
+        return next((node for node in document.nodes if node.node_id == current.node_id), None)
+
+    if spec.node_id is not None:
+        if spec.node_type is not None or spec.label is not None:
+            return None  # 두 형태 동시 지정 — 스키마가 먼저 막지만 심층 방어로 둔다
+        # **재정규화하지 않는다** — 이미 확정된 값이라 다시 돌리면 어휘·임계값 변화에 따라
+        # 사용자가 고른 것과 **다른 노드로 튄다**. 그 사용자 그래프 밖이면 새로 만들지 않는다.
+        return next((node for node in document.nodes if node.node_id == spec.node_id), None)
+
+    kind = spec.node_type
+    if kind is None or kind not in _NODE_TYPES or not spec.label:
+        return None
+    clean_label = " ".join(spec.label.split())[: settings.profile_graph_label_max_chars]
+    if not clean_label:
+        return None
+
+    # 사용자 입력에는 **발화 파생 앵커가 없다** — 빈 문자열이 정직한 값이다. 앵커의 용도가
+    # 근접 매칭 재측정(OPEN-G1)인데 이 경로는 근접 매칭을 아예 타지 않는다.
+    if kind in ("priceBand", "ratingBand"):
+        return _resolve_band(kind, clean_label, anchor_phrase="", now=now)
+    if kind == "product":
+        return _resolve_product(clean_label, anchor_phrase="", now=now)
+    if kind == "category":
+        return await _resolve_user_category(
+            clean_label, settings=settings, now=now, category_exact=category_exact
+        )
+    return _resolve_from_lexicon(kind, clean_label, anchor_phrase="", now=now, lexicon=None)
+
+
+async def _resolve_user_category(
+    label: str,
+    *,
+    settings: Settings,
+    now: str,
+    category_exact: Callable[..., set[str]] | None,
+) -> GraphNode | None:
+    """사용자 입력 카테고리 — **exact 조회만**. 근접 매칭 경로가 없다 (#360).
+
+    `_resolve_category`(배치)를 재사용하지 않고 따로 쓴 이유는 **구조로 막기 위해서**다. 그쪽은
+    exact 가 빗나가면 임베딩 최근접으로 넘어가는데, 앵커가 없으면 거기서 걸려 결과적으로는 같다 —
+    하지만 그 가드는 **다른 이슈가 앵커 기본값을 넣는 순간 조용히 열린다.** 요청 경로의 [HARD]
+    LLM 0회와 3s 예산을 우연한 조건에 맡기지 않는다.
+    """
+    if category_exact is None:
+        from app.pipelines.category_search import (  # noqa: PLC0415 - LAZY(유닛 pg 의존 회피)
+            exact_lookup,
+        )
+
+        category_exact = exact_lookup
+
+    try:
+        hits = await asyncio.to_thread(category_exact, [label], settings.catalog_db_url)
+    except Exception:  # noqa: BLE001 - 어휘 조회 장애는 거절(호출부가 400 으로 옮긴다)
+        return None
+    if label not in hits:
+        return None
+    return GraphNode(
+        node_id=make_node_id("category", label),
+        type="category",
+        label=label,
+        verified=True,
+        resolution=_resolution(
+            "exact", anchor_phrase="", now=now, lexicon_version=_CATEGORY_LEXICON
+        ),
     )
 
 

@@ -728,6 +728,14 @@ class Settings(BaseSettings):
     # 쿼리 임베딩 입력으로 씀)에서는 드롭이 품질을 급락시키므로, graph 가 search_backend!=embedding_rerank
     # 이면 이 값과 무관하게 keyword 를 유지한다(가드는 소비 지점 graph.py).
     search_drop_keyword_with_category: bool = True
+    # [이슈 #454 Phase 2] 색상 조건 검색의 사후필터 — attributes.색상 이 복수이고(옵션 축과
+    # 별개로 상품 자체가 여러 색을 가진 것으로 표기됨) optionCount==len(options)(20개 절단
+    # 아님)인데 옵션 이름 어디에도 그 색(승인 동의어 확장 포함)이 없는 후보를 뺀다
+    # (`app.services.search_service._filter_unbuyable_color_options`, 판정식 A~D). **기본값
+    # True** — 결함을 고치는 플래그는 하방이 유계면 기본 on: 사전 적재 실패·설정 off·색상
+    # 조건 없음은 예외 없이 무필터로 degrade하고, 제외 후 0건이면 제외 자체를 취소한다(0건
+    # 가드) — 둘 다 오늘 동작(무필터)으로 되돌아갈 뿐이라 하방이 유계하다.
+    search_color_option_postfilter_enabled: bool = True
     # pgvector 의미 재정렬 후 Sonnet 입력 상한(옛 "FastAPI 30" 이관처, §4.6). products[:limit] 절단이라
     # ge=0 — 음수면 slice 가 뒤에서 잘려 "<=0 이면 0개" 불변식이 깨진다(형제 category_fanout_* 규약).
     embedding_rerank_limit: int = Field(default=30, ge=0)
@@ -1254,6 +1262,15 @@ class Settings(BaseSettings):
         "걸로",
         "거로",
     ]
+    # [이슈 #454] I-2 400 옵션 되물음 좁히기(R2/`by_condition`)에 승인된 색상 동의어 사전
+    # (`app.pipelines.color_synonyms`, #258/#505 정본)을 연결할지 — 조건어 "검정"과 옵션명
+    # "블랙"처럼 표기가 다른 같은 색을 같은 것으로 본다. **기본값 True** — 결함을 고치는 플래그는
+    # 하방이 유계하면 기본 on 으로 켠다: 사전 적재 실패·미설정·타임아웃은 예외 없이 `None` 으로
+    # degrade해 **오늘 동작 그대로** 가므로(§2-A-4) 하방이 유계하다. `color_synonym_
+    # expansion_enabled` 를 재사용하지 않는 이유 — 그 플래그는 "BE 의 I-1 `color[]` 배열 계약이
+    # 배포됐다"는 신호라 계약이 안 됐으면 꺼져 있다. 장바구니 좁히기는 BE 계약과 무관하게(이미
+    # 받은 I-2 400 옵션 이름을 AI 안에서만 비교) 항상 안전하게 켤 수 있어 전제 자체가 다르다.
+    cart_option_color_synonym_enabled: bool = True
 
     # ── 장바구니 삭제 · 찜 (이슈 #116·#117, I-24~I-28 — 확정 2026-08-05, Spring 구현됨) ──
     # [#285] BE `jarvis-backend` main 실측(2026-08-08, BE PR #92·#93) — api-spec §4.12~4.16 v0.31.3.
@@ -1736,10 +1753,43 @@ class Settings(BaseSettings):
     # 멱등 원장(profile_graph_idempotency) 보존. 재전송이 최초 응답을 찾을 수 있는 창이다.
     # **두 값 모두 🔴 C-23 잔여(정책·법무 미정)라 잠정값**이며, 만료 행을 실제로 지우는 스윕 잡은
     # #358 범위 밖이다 — 지금 이 값들이 바꾸는 동작은 아래 REQ-PGRAPH-044 기동 검증뿐이다.
+    # ── 개인화 그래프 API 응답 예산 (이슈 #360, api-spec §3.8·§3.9) ──
+    # 조회 2s / 변경 3s. **Spring 타임아웃은 각각 1s 길다**(3s·4s) — 그 부등식이 깨지면 Spring 이
+    # 먼저 끊어 AI 의 `504 UPSTREAM_TIMEOUT` 을 **관측할 수 없는 죽은 계약**이 된다.
+    #
+    # 값은 **제안이며 실측이 아니다** — api-spec §2.9 (c) 기준표에 행이 없는 이유가 그것이고,
+    # 구현 후 실측해 등재하는 것이 #360 완료 조건이다.
+    #
+    # `state_store_query_timeout_s`(3.0)와의 관계: 저장소가 **즉시** 실패하면(연결 거부 →
+    # `OperationalError`) 예산 안에 잡혀 `503 UPSTREAM_UNAVAILABLE` 이고, **느리게 실패하면**
+    # (행·풀 고갈) 바깥 예산이 먼저 끊어 `504` 다. 후자를 503 으로 만들려면 그래프 전용 쿼리
+    # deadline 이 필요한데, 전역 값을 낮추면 장바구니 등 무관한 경로가 함께 짧아진다.
+    # "예산 초과 = 504" 가 계약의 뜻이므로 이 분기를 그대로 두고 §2.9 실측에서 다시 본다.
+    profile_graph_read_budget_s: float = Field(default=2.0, gt=0.0)
+    profile_graph_write_budget_s: float = Field(default=3.0, gt=0.0)
+
     graph_idempotency_ttl_h: float = Field(default=24.0, gt=0.0)
     # 변경 감사(profile_graph_audit) 보존. **전체 초기화가 지우지 않는다**(REQ-PGRAPH-062) —
     # 파괴 동작이 추적 불가가 되면 안 되므로, 여기 남는 것은 "무엇을" 이 아니라 "언제" 다.
     graph_audit_retention_days: float = Field(default=90.0, gt=0.0)
+
+    # ── 대화 전사록 보존 기간 (이슈 #321, SPEC-PROFILE-001 OPEN-P5 해소) ──
+    # 90일인 근거: 감사 원장(graph_audit_retention_days, 기본 90일)이 지문만 남기므로(REQ-PGRAPH-081)
+    # 원문 대조 상대는 전사록뿐이다. 전사록을 더 짧게 지우면 감사 행이 가리키는 원문이 없어져
+    # 조사 불가능해진다 — 두 값은 의도적 짝이다(아래 검증기가 이 관계를 기동 시점에 고정한다).
+    conversation_retention_days: float = Field(default=90.0, gt=0.0)
+    conversation_retention_batch_size: int = Field(default=500, ge=1)
+    conversation_retention_max_batches: int = Field(default=20, ge=1)
+    conversation_retention_sweep_interval_s: float = Field(default=3600.0, gt=0.0)
+    # 결함을 고치는 스위치는 기본 on — 하방(오래된 전사록이 지워짐)이 유계다. 삭제는 되돌릴 수
+    # 없으므로 롤백 경로로만 끈다(CONVERSATION_RETENTION_SWEEP_ENABLED=false).
+    conversation_retention_sweep_enabled: bool = True
+
+    # ── PII 하드 게이트 (이슈 #321) ──
+    # 정규식·placeholder 어휘·IIN 목록은 app/core/pii.py 가 모듈 상수로 소유한다(REQ-PGRAPH-070과
+    # 같은 규율 — 규칙 상수는 설정이 아니다). 여기 두 튜너블만 배포 환경별로 조정 가능하다.
+    pii_bank_account_anchor_window: int = Field(default=12, ge=0)
+    pii_redact_trace_content: bool = True
 
     # ── 프로필 개인화 강도 (이슈 #119, SPEC-PROFILE-001 §5.1 v0.6.0 · REQ-REC-005-A) ──
     # 프로필을 **어느 소비처에** 주입할지. 기본 rerank_only 인 근거: decompose(fast tier, 한 호출에
@@ -1858,6 +1908,9 @@ class Settings(BaseSettings):
     chat_message_max_chars: int = 4000
     # sessionId/threadId 길이 상한 — 불투명 키가 registry·저장소·로그에 쌓이는 남용 방어.
     chat_key_max_chars: int = 200
+    # conditionActions[].value 길이 상한 (이슈 #434, api-spec §3.1) — 칩 값은 canonical
+    # 카테고리/브랜드 문자열이라 짧다. chat_key_max_chars 와 같은 자릿수.
+    condition_action_value_max_chars: int = 200
 
     # ── 화면 맥락 screen (이슈 #118, api-spec §3.1) ──
     # screen.products 상한(정본 명시 기본값) — 초과분은 화면 순서 앞쪽만 취하고 버린다.
@@ -2048,6 +2101,36 @@ class Settings(BaseSettings):
     trust_forwarded_for: bool = False
     # 신뢰하는 프록시 홉 수(우측부터). 자사 프록시 1대면 1 = 최우측 값.
     forwarded_for_trusted_hops: int = 1
+
+    @field_validator("trust_forwarded_for", "forwarded_for_trusted_hops", mode="before")
+    @classmethod
+    def _empty_forwarded_for_settings_use_default(cls, value: object, info) -> object:
+        # `.github/workflows/deploy.yml` 이 이 두 값을 무조건 주입하는데(조직 Variables
+        # 관리), 저장소/조직 변수가 미등록·삭제되면 빈 문자열이 온다 — bool/int 파싱 실패로
+        # 전체 서비스가 기동 크래시 루프에 빠진다(레이트 리밋 정밀도 저하와 비교할 수 없는
+        # 사고, 실증: `TRUST_FORWARDED_FOR=` → `ValidationError: bool_parsing`). 빈 값은 필드
+        # 기본값(신뢰 off / hops=1)으로 해석해 기동은 항상 성공시킨다 — 대신 신뢰가 꺼지면
+        # IP 백스톱 키가 프록시(ALB) IP 하나로 뭉쳐 전체 사용자가 상한을 공유하는 동작
+        # 저하가 조용히 발생한다는 점을 알고 선택한 폴백이다(이슈 #134). `_empty_trace_
+        # content_settings_use_default`(#326)·`_empty_color_synonym_gate_settings_use_
+        # default`(#447)와 같은 관례.
+        if isinstance(value, str) and value.strip() == "":
+            # Field 선언의 기본값을 그대로 참조한다 — 값을 복제해 적으면 선언만 바꿨을 때
+            # "미설정 → 빈 문자열" 경로가 조용히 어긋난다(PR #327 리뷰에서 지적된 함정).
+            return cls.model_fields[info.field_name].default
+        return value
+
+    # 진단 로그 `client_ip_probe`(이슈 #134) 온/오프 — **기본 on**. 아무도 XFF 홉 수를
+    # 검증한 적이 없어 운영이 근거 없는 `FORWARDED_FOR_TRUSTED_HOPS` 값을 신뢰해 왔다. 하방은
+    # 유계다 — 레이트 리밋 대상 경로(채팅 전송)당 INFO 로그 1줄이고 원문 IP 는 절대 싣지
+    # 않는다(전부 safe_fingerprint). `deploy.yml` 에 주입 경로를 만들지 않는다 — 운영은 이
+    # 코드 기본값(on)으로 돈다.
+    client_ip_probe_enabled: bool = True
+    # 클라이언트 IP 로 신뢰하는 벤더 헤더 이름. Cloudflare 값을 코드에 박지 않기 위한
+    # 튜너블 — 소문자로 정규화해 비교한다(Starlette 헤더 조회는 대소문자 무시지만 설정값이
+    # 대문자로 들어와도 동작해야 한다). 빈 문자열이면 "CF 헤더 사용 안 함"으로 해석해
+    # `resolve_client_ip` 의 1단계(Cf-Connecting-IP)를 건너뛰고 XFF 규칙으로 간다.
+    trusted_client_ip_header: str = "cf-connecting-ip"
 
     # ── 벤치마크 runner (이슈 #151) ──
     # measured 30건·p99 100건의 고정 계약 하한은 evals/benchmark/runner.py(measured)와
@@ -3059,6 +3142,21 @@ class Settings(BaseSettings):
             raise ValueError(
                 "GRAPH_IDEMPOTENCY_TTL_H must not exceed GRAPH_AUDIT_RETENTION_DAYS "
                 "(replay must always find its audit record)"
+            )
+        # 전사록이 감사 원장보다 먼저 지워지면, 30~90일 구간의 감사 행이 가리키는 원문이
+        # 없어져 조사 불가능해진다(이슈 #321) — 위 멱등 원장 검사와 같은 형식의 fail-fast.
+        # 경계는 포함(같은 값은 허용, 초과일 때만 거부).
+        if self.conversation_retention_days > self.graph_audit_retention_days:
+            raise ValueError(
+                "CONVERSATION_RETENTION_DAYS must not exceed GRAPH_AUDIT_RETENTION_DAYS "
+                "(an audit record must always be able to find its transcript)"
+            )
+        # [#360] 조회가 변경보다 오래 걸리는 예산은 계약(§3.8 2s / §3.9 3s)을 뒤집는다.
+        # 조회는 문서 단일 읽기고 변경은 잠금 + 문서 재작성 + 저널 쓰기라 순서가 고정이다.
+        if self.profile_graph_read_budget_s >= self.profile_graph_write_budget_s:
+            raise ValueError(
+                "PROFILE_GRAPH_READ_BUDGET_S must stay under the write budget "
+                "(api-spec §3.8 2s vs §3.9 3s)"
             )
         if self.state_store_pool_min_size < 0:
             raise ValueError("STATE_STORE_POOL_MIN_SIZE must be non-negative")
