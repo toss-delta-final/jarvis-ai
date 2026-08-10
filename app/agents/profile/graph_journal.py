@@ -965,10 +965,21 @@ async def apply_edge_mutation(
             # 에서는 대상 edge 가 이미 사라져 있는데, 그걸 "없으니 404"로 판정하면 api-spec 이
             # ⚠️ 로 금지한 **"edge 존재 여부로 뭉뚱그리기"** 를 그대로 하는 것이다. 게다가 이
             # 판정이 원장을 안 보면 TTL 이 지나도 같은 404 라 **자가 복구도 안 된다.**
+            #
+            # **대상 판정은 조회의 노출 경계와 같다**(`is_projected`, PR #562 리뷰). `edge_id` 는
+            # `sha256("{predicate}|{node_id}")` 라 사용자별 salt 가 없는 콘텐츠 해시여서 라벨만
+            # 알면 계산된다 — `edge_id` 일치만 보면 GET 에 안 나오는 edge 가 변경 대상이 되고
+            # 두 가지가 뚫린다. (1) **존재 오라클**: `200`/`404` 차이로 민감 파생 취향이 추론된
+            # 적 있는지 알아낼 수 있다(REQ-PGRAPH-076 [HARD] "존재 자체를 노출하지 않는다").
+            # (2) **충돌 해소 우회**: `superseded`(병합 엔진이 상충에서 내린 패자)를 수정하면
+            # `_pin` 이 무조건 `active` 로 되돌려, 같은 노드에 상충하는 active edge 가 둘 생기고
+            # `_resolve_conflicts` 를 전혀 안 거친다.
+            #
+            # **반대 방향은 막지 않는다** — 보이는 edge 를 고친 결과가 숨겨진 패자와 같은 키가
+            # 되는 경우는 `apply_correction` 의 병합 경로이고 의도된 동작이다(그쪽 `_find` 는
+            # 필터하지 않는다 — 하면 관측 근거를 잃고 `merged` 가 거짓이 된다).
             pending = await lookup(key, request_fp=request_fp)
-            if pending is None and (
-                document is None or not any(e.edge_id == edge_id for e in document.edges)
-            ):
+            if pending is None and _find_edge(document, edge_id) is None:
                 # 흔적이 아예 없다 → 진짜 없는 대상이다. 원장·감사를 건드리기 전에 끝낸다.
                 raise GraphEdgeNotFound(edge_id)
 
@@ -1443,10 +1454,21 @@ def _projected_edge(document: GraphDocument, edge_id: str | None, *, settings) -
 
 
 def _find_edge(document: GraphDocument | None, edge_id: str) -> GraphEdge | None:
-    """대상 edge — **잠금 아래에서 읽은 문서**에서만 찾는다 (#360)."""
+    """변경의 **대상**이 될 수 있는 edge — 잠금 아래에서 읽은 문서에서만 찾는다 (#360).
+
+    **조회에 안 나오는 edge 는 "없는 것"이다**(`is_projected`, PR #562 리뷰) — 대상 경계와 노출
+    경계가 다르면 사용자가 볼 수 없는 것을 고치거나 지울 수 있게 되고, `200`/`404` 차이가 그
+    존재를 알려주는 오라클이 된다.
+
+    이 필터는 **변경 대상 조회에만** 걸린다. `graph_mutations` 의 병합 대상 조회
+    (`apply_correction` 의 `target = _find(document, new_id)`)는 숨겨진 edge 도 봐야 한다 —
+    거기서 못 찾으면 관측 근거를 잃고 `merged` 가 거짓이 된다.
+    """
     if document is None:
         return None
-    return next((edge for edge in document.edges if edge.edge_id == edge_id), None)
+    return next(
+        (edge for edge in document.edges if edge.edge_id == edge_id and is_projected(edge)), None
+    )
 
 
 def _request_fingerprint(
