@@ -26,8 +26,11 @@ import uuid
 
 from fastapi import HTTPException
 
+from app.agents.profile.personalization_gate import personalization_enabled
 from app.agents.profile.reader import read_profile_summary
 from app.core.config import Settings, get_settings
+from app.core.logging import safe_fingerprint
+from app.core.reco_provenance import ProvenanceItem, ProvenanceList, emit_recommendation_provenance
 from app.core.text import _strip_unsafe
 from app.core.tracing import trace_span
 from app.pipelines.artifact_store import ArtifactStore, get_catalog_store
@@ -297,11 +300,17 @@ def build_reasons(
     return out
 
 
-async def rank_home(request: HomeRecommendationRequest) -> HomeRecommendationResponse:
+async def rank_home(
+    request: HomeRecommendationRequest, *, request_id: str
+) -> HomeRecommendationResponse:
     """I-22 본체 — outcome 3종을 모두 200 으로 답한다 (§3.7).
 
     프로필 부재·후보 부족으로 예외를 던지지 않는다. fallback 판단은 Spring 이 하며, AI 는 무슨 일이
     있었는지를 `outcome` 으로만 알린다.
+
+    `request_id` 는 [이슈 #140] provenance `recommend_provenance` 로그의 `requestId` 로
+    실린다 — 호출부(`internal.py`)가 `errors.get_request_id` 로 이미 계산한 값을 그대로
+    받는다(두 번 만들지 않는다).
     """
     started = time.perf_counter()
     settings = get_settings()
@@ -321,11 +330,23 @@ async def rank_home(request: HomeRecommendationRequest) -> HomeRecommendationRes
     # 막는다 — 기본값(상한 2.0 < 예산 2.5)에서 랭킹 몫 0.5s 가 남는다. async 경로라 wait_for
     # 취소가 실제로 듣는다(_call_store 가 필요한 건 동기 스레드 호출뿐).
     # 신원은 서비스 토큰이 인가하고 memberId 는 §3.7 계약상 본문으로 온다(레인 b).
+    # [#359] 중지 플래그를 요약과 **병렬**로 읽는다 — 직렬로 붙이면 왕복이 하나 늘어 예산
+    # (store 2.0s < 전체 2.5s)을 잠식한다. 같은 pg-profile 이라 병렬이면 벽시계는 `max` 다.
+    personalization_on: bool | None = None
     try:
         # [#469] 단계 span — 트레이스 미바인딩(Noop)이면 no-op 이라 예산에 영향이 없다.
         with trace_span("home.profile", "chain"):
-            profile = await asyncio.wait_for(
-                read_profile_summary(str(request.member_id)),
+            profile, personalization_on = await asyncio.wait_for(
+                asyncio.gather(
+                    read_profile_summary(str(request.member_id)),
+                    # **3상태를 그대로 쓴다**: `None`(판정 불가)이면 아래에서 프로필 항만 빼고
+                    # 랭킹을 계속한다 — 플래그도 pg-profile 에 있어 그 실패는 api-spec §3.7
+                    # 「HOME 실패 모드」의 `profile_unavailable`(200·프로필 항만 빠짐·남은 근거로
+                    # 판정)에 해당한다. `False` 로 접어 `NO_PROFILE` 을 강제하면 그 표와 충돌한다.
+                    # 소비 fail-closed 는 여기서 "프로필을 쓰지 않는다"로 실현되며, 시그널은
+                    # Spring 이 준 별개 근거라 그것까지 버릴 근거는 중지가 **확인됐을 때**뿐이다.
+                    personalization_enabled(request.member_id, on_error=None),
+                ),
                 timeout=min(settings.home_reco_store_timeout_s, max(_remaining(), 0.001)),
             )
     except TimeoutError:
@@ -336,6 +357,26 @@ async def rank_home(request: HomeRecommendationRequest) -> HomeRecommendationRes
         # 경로와 동일 관례). #141 규약이 막는 건 와이어·외부 trace 노출이지 로컬 로그가 아니다.
         logger.exception("home_reco_profile_unavailable")
         profile = None
+
+    # [#359] **중지가 확인되면 시그널이 있어도 `NO_PROFILE`** (api-spec §3.7 v0.32.7·§3.9.5).
+    # 중지는 "프로필을 못 읽는다"가 아니라 "개인화하지 않는다"는 사용자 의사이므로, 아래
+    # `if not query_vec` 판정 기준의 **결과가 아니라 그보다 앞서는 단락**이다 — 프로필 벡터 항만
+    # 빼면 `recentlyViewed`·`cart` 시그널만으로 질의 벡터가 만들어져 `PERSONALIZED` 가 나간다.
+    # degrade 표식은 붙이지 않는다(REQ-PGRAPH-054 — 중지는 장애가 아니라 정상 동작이고, 관측
+    # 계층에서 중지 여부가 새면 안 된다).
+    if personalization_on is False:
+        return _respond(
+            "NO_PROFILE",
+            [],
+            {},
+            started=started,
+            candidates=0,
+            settings=settings,
+            request_id=request_id,
+            member_id=request.member_id,
+        )
+    if personalization_on is None:
+        profile = None  # 판정 불가 — 프로필 항만 빼고 랭킹은 계속한다
     # 미리 만들어 둔 취향 벡터(§3.7 "프로필 벡터와 가중 혼합"). 구 요약·임베딩 실패분은 None.
     # markdown 원문은 여기서 쓰지 않는다 — reason 매칭 분기는 극성(선호/회피) 문제로 제거했다
     # (build_reasons docstring).
@@ -387,6 +428,8 @@ async def rank_home(request: HomeRecommendationRequest) -> HomeRecommendationRes
             started=started,
             candidates=0,
             settings=settings,
+            request_id=request_id,
+            member_id=request.member_id,
         )
 
     exclude = set(signals.recent_purchased_product_ids)  # 가중치가 아니라 제외 필터(§3.7)
@@ -422,6 +465,8 @@ async def rank_home(request: HomeRecommendationRequest) -> HomeRecommendationRes
             started=started,
             candidates=len(ranked),
             settings=settings,
+            request_id=request_id,
+            member_id=request.member_id,
         )
 
     top = ranked[:want]
@@ -464,6 +509,8 @@ async def rank_home(request: HomeRecommendationRequest) -> HomeRecommendationRes
         started=started,
         candidates=len(ranked),
         settings=settings,
+        request_id=request_id,
+        member_id=request.member_id,
     )
 
 
@@ -475,11 +522,17 @@ def _respond(
     started: float,
     candidates: int,
     settings: Settings,
+    request_id: str,
+    member_id: int,
 ) -> HomeRecommendationResponse:
-    """응답 조립 + 관측 로그 1건.
+    """응답 조립 + 관측 로그 1건 + [이슈 #140] provenance 로그 1건.
 
     로그 key set 은 고정이며 **memberId·productId·프로필 원문·모델 식별자·토큰을 남기지 않는다**
     (§3.7 [HARD]·§6.3). 남기는 것은 무슨 일이 있었는지 판별할 유계 코드와 개수뿐이다.
+
+    provenance 로그의 `ownerFp` 는 `memberId` 를 `safe_fingerprint` 로 지문화한 값이지 원값이
+    아니다 — 위 [HARD] 규약과 같은 이유. 홈은 요청 경로에서 LLM 을 부르지 않으므로
+    `rankerModel`/`promptVersion` 은 항상 `null` 이다(§3.7 [HARD], `test_reason_never_calls_an_llm`).
     """
     # [#469] observability 관례대로 JSON 을 메시지에 직접 싣는다 — `extra` 는 기본 포맷터가
     # 출력하지 않아 outcome·개수가 실 로그에서 증발했다(운영 실측 2026-08-08).
@@ -496,7 +549,7 @@ def _respond(
             ensure_ascii=False,
         )
     )
-    return HomeRecommendationResponse(
+    response = HomeRecommendationResponse(
         outcome=outcome,  # type: ignore[arg-type]
         # 재시도 = 새 추천 실행. 멱등이 아니라 호출마다 새로 발급한다(§3.7).
         recommendation_request_id=str(uuid.uuid4()),
@@ -506,3 +559,33 @@ def _respond(
             HomeRecommendationItem(product_id=pid, reason=reasons.get(pid)) for pid in product_ids
         ],
     )
+    emit_recommendation_provenance(
+        logger,
+        settings=settings,
+        request_id=request_id,
+        recommendation_request_id=response.recommendation_request_id,
+        surface="home",
+        pipeline="home_vector",
+        prompt_version=None,
+        ranker_model=None,  # §3.7 [HARD] — 홈 표면엔 모델 식별자를 절대 싣지 않는다.
+        personalized=outcome == "PERSONALIZED",
+        deterministic=True,
+        list_type="PICK_ONE",
+        owner_fp=safe_fingerprint(str(member_id)),
+        session_fp=None,
+        lists=[
+            ProvenanceList(
+                list_id=response.list_id,
+                label=None,
+                items=[
+                    ProvenanceItem(
+                        product_id=item.product_id,
+                        rank_source="profile_vector",
+                        has_reason=item.reason is not None,
+                    )
+                    for item in response.items
+                ],
+            )
+        ],
+    )
+    return response

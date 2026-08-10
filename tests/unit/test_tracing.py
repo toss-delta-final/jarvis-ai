@@ -6,6 +6,7 @@ from collections.abc import Mapping
 
 import pytest
 
+from app.core.config import get_settings
 from app.core.logging import safe_fingerprint
 from app.core.errors import new_request_id
 from app.core.tracing import (
@@ -867,6 +868,88 @@ async def test_content_mode_records_root_llm_and_span_content_with_clipping() ->
     payloads = _build_export_payloads(nodes, project_name=None)
     validate_export_payload(payloads, allow_content=True)
     assert any(p["inputs"] for p in payloads)
+
+
+async def test_content_mode_redacts_hard_pii_from_request_and_llm_content() -> None:
+    """[이슈 #321] 콘텐츠 트레이스는 원문을 싣기 전 하드 PII 를 치환한다(기본 on)."""
+    exporter = FakeTraceExporter()
+    factory = TraceFactory(
+        exporter=exporter,
+        enabled=True,
+        sampling_rate=1.0,
+        payload_validator=lambda p: validate_export_payload(p, allow_content=True),
+        capture_content=True,
+        content_max_chars=0,
+    )
+    trace = _start_trace(factory)
+
+    trace.record_request_content(
+        input_text="제 번호는 010-0000-0000 이고 예산은 오만원",
+        output_text="tester@example.com 로 안내드렸습니다",
+    )
+    with bind_request_trace(trace):
+        with trace_span("llm.rerank", "llm"):
+            trace.record_llm_content(user="연락처는 010-0000-0000 입니다", output="응답")
+    await trace.finish(status="COMPLETED", error_type=None, terminal_reason="done")
+
+    nodes = exporter.exported[0]
+    by_name = {node.name: node for node in nodes}
+    root_input = by_name["buyer_chat_turn"].inputs["message"]
+    root_output = by_name["buyer_chat_turn"].outputs["message"]
+    llm_input = by_name["llm.rerank"].inputs["user"]
+    assert "0000" not in root_input
+    assert "[전화번호]" in root_input
+    assert "example.com" not in root_output
+    assert "[이메일]" in root_output
+    assert "0000" not in llm_input
+    assert "[전화번호]" in llm_input
+
+
+async def test_content_mode_keeps_raw_text_when_redaction_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`pii_redact_trace_content=False` 면 종전 동작(무치환)이다."""
+    monkeypatch.setattr(get_settings(), "pii_redact_trace_content", False)
+    exporter = FakeTraceExporter()
+    factory = TraceFactory(
+        exporter=exporter,
+        enabled=True,
+        sampling_rate=1.0,
+        payload_validator=lambda p: validate_export_payload(p, allow_content=True),
+        capture_content=True,
+        content_max_chars=0,
+    )
+    trace = _start_trace(factory)
+
+    trace.record_request_content(input_text="제 번호는 010-0000-0000 입니다")
+    await trace.finish(status="COMPLETED", error_type=None, terminal_reason="done")
+
+    nodes = exporter.exported[0]
+    by_name = {node.name: node for node in nodes}
+    assert "010-0000-0000" in by_name["buyer_chat_turn"].inputs["message"]
+
+
+async def test_content_mode_redaction_preserves_non_string_extra_inputs() -> None:
+    """구조화 `extra_inputs`(예: conditionActions)는 문자열이 아니면 치환 대상에서 제외한다."""
+    exporter = FakeTraceExporter()
+    factory = TraceFactory(
+        exporter=exporter,
+        enabled=True,
+        sampling_rate=1.0,
+        payload_validator=lambda p: validate_export_payload(p, allow_content=True),
+        capture_content=True,
+        content_max_chars=0,
+    )
+    trace = _start_trace(factory)
+
+    trace.record_request_content(
+        input_text="발화", extra_inputs={"conditionActions": [{"field": "priceMax"}]}
+    )
+    await trace.finish(status="COMPLETED", error_type=None, terminal_reason="done")
+
+    nodes = exporter.exported[0]
+    by_name = {node.name: node for node in nodes}
+    assert "priceMax" in by_name["buyer_chat_turn"].inputs["conditionActions"]
 
 
 def test_content_payload_is_rejected_without_allow_content() -> None:

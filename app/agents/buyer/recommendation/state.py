@@ -65,6 +65,13 @@ class CartIntent:
     product_id: int | None = None
     option_id: int | None = None
     quantity: int = 1
+    # [#285, I-25 §4.13] 수량 **치환** 목표값 — 담기(I-2)의 `quantity`(합산, 기본값 1)와 의미가
+    # 다르다. `quantity` 는 "추출 실패"에도 기본값 1이 그대로 실려 "명시적으로 1개"와 구별이
+    # 안 되지만(담기는 그래도 안전 — 최소 1개를 담는 게 무해한 기본이라서다), 수량 변경은
+    # 그 기본값을 그대로 쓰면 "수량 바꿔줘"(목표 미상)가 조용히 1개로 치환돼 장바구니를
+    # 망가뜨린다. 그래서 **`None` = 미해소 = 되물음**을 표현할 수 있는 별도 필드를 둔다 —
+    # `quantity` 필드 자체는 담기 경로가 계속 쓰므로 건드리지 않는다.
+    target_quantity: int | None = None
 
 
 @dataclass
@@ -96,6 +103,11 @@ class RouteDecision:
         "cart_remove",
         "wishlist_add",
         "wishlist_remove",
+        # [#285, I-25 §4.13] 수량 변경(치환). cart_remove 와 같은 성격 — decompose 가 직접
+        # 산출하는 경로와 classify_cart_utterance(cart_add 로 들어온 발화의 2선 방어, §4.13)가
+        # 값 집합을 공유한다(buyer/graph.py 라우팅 docstring 참조). `cart_add`(합산, I-2)와는
+        # 반대 동작이라 오분류하면 재고 판정이 조용히 달라진다(패킷 함정 2).
+        "cart_quantity",
         # [#386] 찜 목록 조회. cart_view 와 같은 성격(상태를 바꾸지 않는 조회)이라
         # classify_cart_utterance 의 값 집합에는 들어가지 않는다 — 그 판별기는 cart_add 로
         # 라우팅된 발화만 보고, 조회 발화는 애초에 거기 도달하지 않는다(intent_guard.py 참조).
@@ -143,6 +155,13 @@ class RouteDecision:
     # 조건 칩에서 카테고리를 뺀다(칩 하나로 8개 leg 을 대표할 수 없다, #51 표시=실제) — 대신
     # 확장 고지 token 으로 검색한 중분류를 알린다.
     category_expanded: bool = False
+    # [이슈 #434 라운드2] 값 지정 category 제거가 이 턴에 남은 카테고리 집합(대표 1개가 아니라
+    # 실제로 검색한 집합)을 복원해 `category_legs` 를 멀티 leg 로 채웠는가(`buyer/graph.py`
+    # `_prepare_recommendation` 의 승계 분기가 채운다). 참이면 `split_by_need`(및 그에 의존하는
+    # `buy_all_mode`)를 억제한다 — 이 멀티 leg 은 새 니즈 전개가 아니라 **복원된 집합**이라
+    # `case == 3` 우연 일치로 목록이 니즈별로 쪼개지면 "표시=실제"(#51) 원칙이 깨진다
+    # (category_expanded 가 조건 칩을 억제하는 것과 같은 이유).
+    category_legs_restored: bool = False
     # [#162] `filters.semantic_query` 가 **이번 턴 원문으로 폴백**된 값인가.
     # decompose 는 `llm_sq or cat_signal or prior_sq or query` 순으로 채우므로(decompose.py)
     # 이 필드는 **절대 비지 않는다** — 사용자가 아무 의미 신호를 주지 않아도 발화 원문이 들어온다.
@@ -186,22 +205,34 @@ def build_condition_chips(
     LLM 의 임의 conditions 출력에 의존하지 않고 확정된 필터에서 파생 — 테스트 가능·일관.
     카테고리 칩을 먼저 둔다(api-spec §3.1 (3) 예시 순).
 
-    categories 가 주어지면(fan-out 매핑 결과 canonical 전체)로 카테고리 칩을 만든다 — 멀티면
-    검색한 카테고리 전부를 조인 문자열 하나로 표시한다(api-spec §3.1 예시가 value 를 스칼라
-    문자열로 명시하므로 계약 정합을 위해 리스트가 아닌 문자열). 칩 제거 왕복은 field 단위라
-    카테고리 칩은 멀티여도 1개로 유지한다. 미지정이면 filters.category 로 파생(비-fan-out 보존).
+    [이슈 #434] 멀티 값 축(category·brand)은 **값당 칩 1개**를 낸다 — `value` 는 항상
+    스칼라다. FE 는 배열 키를 (field, value) 조합으로 잡아야 한다(같은 field 가 반복될 수
+    있다). 칩 제거(conditionActions)의 값 지정 제거가 "그 값만" 지우려면 애초에 값이 갈라져
+    있어야 하고, 값을 조인 문자열 하나로 뭉치면 되돌릴 수 없다.
+
+    categories 가 주어지면(fan-out 매핑 결과 canonical 전체) 그 값마다 카테고리 칩을 만든다.
+    미지정이면 filters.category(스칼라) 로 파생한다(비-fan-out 보존). 단일 값일 때는 종전과
+    바이트 동일(`label="카테고리 · X"`, `value="X"`).
     """
     chips: list[ConditionChip] = []
+    seen_chip_keys: set[tuple[str, str]] = set()
     # categories(fan-out canonical 전체)는 빈 리스트(매핑 결과 없음)와 None(미지정·비-fan-out)을
     # 구분한다 — 빈 리스트는 filters.category 로 폴백하지 않아 미검증 원문이 칩에 새지 않는다(#16).
     source = (
         categories if categories is not None else ([filters.category] if filters.category else [])
     )
-    cats = [c for c in source if c]
-    if cats:
-        cats = [_strip_unsafe(c) for c in cats]
-        joined = " · ".join(cats)  # 단일=그 값, 멀티=전체 조인(스칼라 문자열 — §3.1 정합)
-        chips.append(ConditionChip(field="category", label=f"카테고리 · {joined}", value=joined))
+    for raw in source:
+        if not raw:
+            continue
+        value = _strip_unsafe(raw)
+        if not value:
+            continue
+        key = ("category", value)
+        if key in seen_chip_keys:
+            # leg 매핑이 같은 canonical 을 두 번 낼 수 있다 — 정제 후 순서 보존 중복 제거(#434).
+            continue
+        seen_chip_keys.add(key)
+        chips.append(ConditionChip(field="category", label=f"카테고리 · {value}", value=value))
     if filters.price_max is not None:
         chips.append(
             ConditionChip(
@@ -214,9 +245,17 @@ def build_condition_chips(
                 field="priceMin", label=f"{filters.price_min:,}원 이상", value=filters.price_min
             )
         )
-    if filters.brand:
-        brands = [_strip_unsafe(brand) for brand in filters.brand]
-        chips.append(ConditionChip(field="brand", label=" · ".join(brands), value=brands))
+    for raw in filters.brand or []:
+        if not raw:
+            continue
+        value = _strip_unsafe(raw)
+        if not value:
+            continue
+        key = ("brand", value)
+        if key in seen_chip_keys:
+            continue
+        seen_chip_keys.add(key)
+        chips.append(ConditionChip(field="brand", label=value, value=value))
     if filters.rating_min is not None:
         chips.append(
             ConditionChip(

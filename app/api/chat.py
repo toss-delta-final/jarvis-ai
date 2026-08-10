@@ -67,7 +67,12 @@ async def chat(
         extra_inputs=(
             {
                 "conditionActions": json.dumps(
-                    [action.model_dump(by_alias=True) for action in condition_actions],
+                    # [이슈 #434] exclude_none=True — value 없는 기존 요청의 트레이스 직렬화가
+                    # 오늘과 바이트 동일하게 유지된다("value": null 이 새로 붙지 않는다).
+                    [
+                        action.model_dump(by_alias=True, exclude_none=True)
+                        for action in condition_actions
+                    ],
                     ensure_ascii=False,
                 )
             }

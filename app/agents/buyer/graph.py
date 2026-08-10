@@ -32,6 +32,7 @@ from app.agents.buyer.cart.intent_guard import (
     has_wishlist_remove_evidence,
 )
 from app.agents.buyer.cart.options import condition_terms as cart_condition_terms
+from app.agents.buyer.cart.quantity import stream_cart_quantity_change
 from app.agents.buyer.cart.remove import stream_cart_remove
 from app.agents.buyer.cart.state import get_cart_store
 from app.agents.buyer.cart.wishlist import (
@@ -63,6 +64,7 @@ from app.agents.buyer.recommendation.graph import stream_recommendation
 from app.agents.profile.builder import record_remember
 from app.agents.buyer.session_state import context_thread_key, ensure_thread_adopted
 from app.agents.profile.gate import is_remember_command
+from app.agents.profile.personalization_gate import personalization_enabled
 from app.agents.profile.reader import read_profile_summary
 from app.agents.profile.store import get_profile_store
 from app.core import pg_store
@@ -85,6 +87,12 @@ logger = logging.getLogger(__name__)
 
 _NAMESPACE_ROOT = "buyer_thread_filters_v2"
 _FILTERS_KEY = "filters"
+# [이슈 #434 라운드2] 이번 스레드가 **실제로 검색한** 카테고리 집합 — 멀티턴 승계 상태
+# (`ProductSearchFilters.category`)에는 대표 1개만 남지만, 값 지정 category 제거("B 만 빼줘")가
+# 실제로 동작하려면 원래 집합(A·B·C)이 따로 있어야 한다. `ProductSearchFilters` 에 필드를
+# 추가하지 않는다 — 그 모델은 decompose 가 PRIOR_FILTERS 프롬프트에 통째로 싣는 대상이라 새
+# 필드가 모든 프롬프트에 샌다(프롬프트 드리프트). 같은 네임스페이스에 별도 키로 둔다.
+_CHIP_CATEGORIES_KEY = "chip_categories"
 
 
 class ThreadFilterStore:
@@ -136,6 +144,38 @@ class ThreadFilterStore:
             self._store.aput((_NAMESPACE_ROOT, key), _FILTERS_KEY, filters.model_dump())
         )
 
+    async def get_chip_categories(self, key: str) -> list[str] | None:
+        """이번 스레드가 최근 추천 턴에 **실제로 검색한** 카테고리 집합(이슈 #434 라운드2).
+
+        `None` 은 "모른다"(키 없음·스키마 불일치·읽기 실패) — 값 지정 category 제거 호출부가
+        이걸 보고 **오늘 동작(대표값 일치 판정)으로 강등**한다. 빈 리스트(`[]`)는 "안다, 그리고
+        비어 있다"(확장 턴·리셋 턴 직후)는 뜻으로 `None` 과 구분한다 — `get()` 과 같은 관대
+        처리 규약(무엇으로도 못 읽으면 턴은 살린다)을 따른다.
+        """
+        item = await run_with_query_timeout(
+            self._store.aget((_NAMESPACE_ROOT, key), _CHIP_CATEGORIES_KEY)
+        )
+        if not item:
+            return None
+        try:
+            categories = item.value[_CHIP_CATEGORIES_KEY]
+        except (KeyError, TypeError) as exc:
+            logger.warning("thread_chip_categories_unreadable", extra={"reason": str(exc)})
+            return None
+        if not isinstance(categories, list) or not all(isinstance(c, str) for c in categories):
+            logger.warning("thread_chip_categories_unreadable", extra={"reason": "bad_shape"})
+            return None
+        return categories
+
+    async def put_chip_categories(self, key: str, categories: list[str]) -> None:
+        await run_with_query_timeout(
+            self._store.aput(
+                (_NAMESPACE_ROOT, key),
+                _CHIP_CATEGORIES_KEY,
+                {_CHIP_CATEGORIES_KEY: categories},
+            )
+        )
+
 
 async def get_thread_store() -> ThreadFilterStore:
     """스레드 필터 스토어 — pg-profile 공유 연결 백엔드(요청마다 얇은 래퍼 재생성)."""
@@ -147,12 +187,72 @@ def reset_thread_store() -> None:
     pg_store.reset_store()
 
 
+def _condition_action_value_matches_prior(
+    prior: ProductSearchFilters, field: str, value: str | int | float | None
+) -> bool:
+    """값 지정 제거 대상이 prior 승계 필터에 실제로 있는지 판정한다(§3.1, 이슈 #434).
+
+    칩 value 는 `_strip_unsafe` 를 거친 값이고 승계 필터는 원본이라(같은 파일 근처 주석: "SSE
+    에는 정제된 category 를 싣지만 내부 억제 키는 Spring 원본과 같아야 한다"), **양쪽 다**
+    `_strip_unsafe` 로 정규화한 뒤 비교해야 FE 가 되돌려 보낸 칩 값이 매칭된다. 문자열이 아닌
+    value(숫자 등 타입 불일치)는 그냥 불일치로 본다(관대 무시).
+    """
+    if not isinstance(value, str):
+        return False
+    normalized = _strip_unsafe(value)
+    if field == "brand":
+        return any(_strip_unsafe(brand) == normalized for brand in prior.brand or [])
+    if field == "category":
+        return bool(prior.category) and _strip_unsafe(prior.category) == normalized
+    return False
+
+
 def _remove_condition_actions(
     prior: ProductSearchFilters,
     actions: list[ConditionAction],
 ) -> ProductSearchFilters:
-    """conditionActions가 지목한 승계 필터 축을 제거한다(§3.1)."""
-    updates = {CONDITION_FIELD_TO_FILTER[action.field]: None for action in actions}
+    """conditionActions가 지목한 승계 필터 축을 제거한다(§3.1).
+
+    [이슈 #434] 축별로 액션을 모아 처리한다 — 축에 `value is None` 액션이 하나라도 있으면
+    그 축 전체를 제거한다(현행 동작, 하위호환). `value` 지정 제거는 멀티 값 축(category·brand)
+    에만 적용되고, 나머지 4축은 값을 무시하고 축 전체를 제거한다(단일 값 축이라 값 일치를
+    요구하면 FE 표기 차이로 제거가 조용히 무동작이 된다 — 얻는 것이 없다).
+
+    category 는 여기서는 **대표 1개 일치 판정만** 한다 — prior.category(승계 상태)와
+    일치하면 제거, 불일치면 관대 무시. [이슈 #434 라운드2] 이건 **강등 경로**다 — 호출부
+    (`run_buyer_turn`)가 이 스레드의 실제 검색 카테고리 집합(`ThreadFilterStore.
+    get_chip_categories`)을 읽을 수 있으면, 이 함수가 낸 category 결과를 "남은 집합에서 지목
+    값만 뺀 나머지"로 **덮어쓴다**(값이 여럿이던 축에서 그 값만 빠지는 실제 동작). 저장 집합을
+    못 읽을 때만(스레드 만료·구 스레드) 이 함수의 대표값 일치 판정이 최종 결과로 남는다 —
+    멀티 카테고리는 한 턴 fan-out leg 이고 승계 상태에는 대표 카테고리 1개만 남기 때문이다.
+    """
+    grouped: dict[str, list[ConditionAction]] = {}
+    for action in actions:
+        grouped.setdefault(action.field, []).append(action)
+
+    updates: dict[str, object] = {}
+    for chip_field, group in grouped.items():
+        attr = CONDITION_FIELD_TO_FILTER[chip_field]
+        if any(action.value is None for action in group):
+            updates[attr] = None
+            continue
+        if chip_field == "brand":
+            targets = {
+                _strip_unsafe(action.value) for action in group if isinstance(action.value, str)
+            }
+            remaining = [
+                brand for brand in prior.brand or [] if _strip_unsafe(brand) not in targets
+            ]
+            updates[attr] = remaining or None
+        elif chip_field == "category":
+            if any(
+                _condition_action_value_matches_prior(prior, chip_field, action.value)
+                for action in group
+            ):
+                updates[attr] = None
+            # 불일치는 관대 무시 — updates 에 넣지 않아 prior 값을 그대로 둔다.
+        else:
+            updates[attr] = None  # 값 무시 — 단일 값 축은 항상 축 전체 제거.
     return prior.model_copy(update=updates)
 
 
@@ -363,6 +463,7 @@ async def _prepare_recommendation(
     thread_key: str,
     out: _PrepareRecommendationOut,
     scope_free: bool | None = None,
+    restored_category_legs: list[tuple[str, str | None]] | None = None,
 ) -> AsyncIterator[str]:
     """Prepare mapped recommendation state inside the recommendation graph span."""
     # recommend — 카테고리 하이브리드 매핑(이슈 #59, 방식 A): decompose 추측을 canonical 로
@@ -401,7 +502,17 @@ async def _prepare_recommendation(
         # 직전 카테고리가 지워진다 — 리파인인데 필터가 풀려버린다(PR #73 #12).
         # 단, raw 는 null 이라도 유의미한 query 가 있으면(신규 상황형 질의) 검색 의도가 있는 것이라
         # 아래 매핑을 태워야 한다 — prior 로 하이재킹하면 fan-out 이 죽고 #59 문제가 재발(PR #73 #19).
-        decision.category_legs = [(prior.category, None)]
+        #
+        # [이슈 #434 라운드2] `restored_category_legs` 는 값 지정 category 제거가 이 턴에 남은
+        # 집합을 실제로 복원했을 때만 채워진다(호출부 run_buyer_turn 이 계산) — **일반 승계는
+        # 절대 안 바뀐다**: 그 신호가 없는 모든 턴(오늘의 모든 리파인 턴)은 아래 else 그대로
+        # 단일 leg 다. 신호가 있으면 대표 1개 대신 복원된 집합 전체로 fan-out 한다(수용 기준:
+        # "value 를 실으면 그 값만 제거된 필터로 재검색된다") — 상한 절단은 호출부가 이미 했다.
+        if restored_category_legs is not None:
+            decision.category_legs = restored_category_legs
+            decision.category_legs_restored = True
+        else:
+            decision.category_legs = [(prior.category, None)]
     elif action == "clear":
         # [#84] 카테고리-무관 리셋 — **legs 를 비운다**(→ 아래에서 `filters.category = None`,
         # #22 무필터 복원). 매핑을 태우지 않으므로 임베딩·pg 왕복도 이 턴에는 없다.
@@ -604,6 +715,14 @@ async def _prepare_recommendation(
 
     # 멀티턴 병합 필터는 추천 intent 에서만 저장(담기/조회가 덮어쓰지 않게).
     await thread_store.put(thread_key, decision.filters)
+    # [이슈 #434 라운드2] 이번 턴이 **실제로 검색한** 카테고리 집합을 매 추천 턴마다 무조건
+    # 덮어쓴다 — "확장 턴일 때만 지운다"로 하면 `replace`("이번엔 노트북")·`clear` 턴에서 낡은
+    # 집합이 살아남아 다음 리파인 턴이 죽은 카테고리를 되살린다. 확장 턴(#222)이 `[]` 인 것은
+    # R6-1 과 같은 원칙(실제로 쓰이지 않은 대표값을 영속하지 않는다).
+    await thread_store.put_chip_categories(
+        thread_key,
+        [] if decision.category_expanded else [c for c, _ in decision.category_legs],
+    )
     # 소모품 억제 되돌리기(결정 14-F) — 이번 턴 revert + 스레드 누적을 합쳐 억제 제외.
     # LLM 이 뽑은 임의 문자열을 무한 누적하지 않게 소모품 화이트리스트(억제 대상)와 대조해 통과분만 저장.
     revert_store = await get_revert_store()
@@ -698,27 +817,126 @@ async def run_buyer_turn(
                 "request_id": resolved_request_id,
             },
         )
+    # [이슈 #434 라운드2] 값 지정 category 제거가 이 턴에 "복원"을 일으켰는지 — 일으켰다면 그
+    # 남은 카테고리 집합(대표 1개가 아니라 전체)이 담긴다. `_prepare_recommendation` 의 승계
+    # 분기가 이 신호가 있는 턴에만 멀티 leg 로 검색한다(B-1: 일반 승계 턴은 절대 안 바뀐다 —
+    # 이 지역 변수는 이번 턴에만 유효하고, 다음 턴은 condition_actions 가 비므로 자동으로
+    # None 인 채 단일 leg 승계로 돌아간다).
+    restored_category_legs: list[tuple[str, str | None]] | None = None
     if prior is not None and condition_actions:
         # 값(가격·브랜드·카테고리 문자열)은 싣지 않는다 — 이 파일의 기존 규약(#119 PII), 축은
         # 계약상 6종으로 닫힌 열거값이라 이름만 실어도 안전하다.
         # "실제로 비워진 축"은 요청 필드에서 예측하지 않는다(#442) — 호출 전/후 값을 비교해서
         # 낸다. 예측식으로 짜면 _remove_condition_actions 가 통째로 죽어도 로그가 똑같이 나온다.
         requested_fields = [action.field for action in condition_actions]
+        # dedup 키가 (field, value) 로 바뀌어(#434) 같은 축에 서로 다른 값 액션이 여럿일 수
+        # 있다 — 축 단위 판정(cleared/changed)은 첫 등장 순서로 dedup 한 축 목록을 쓴다.
+        touched_fields: list[str] = []
+        for field_name in requested_fields:
+            if field_name not in touched_fields:
+                touched_fields.append(field_name)
         before = prior
-        # conditionActions 반영 — 제거된 축을 prior 에서 실제로 비운다(§3.1).
+        # conditionActions 반영 — 제거된 축을 prior 에서 실제로 비운다(§3.1). category 값 지정
+        # 제거는 여기서는 아직 대표값 일치 판정(라운드1, 저장 집합 없을 때의 강등 동작)만 한다 —
+        # 아래에서 저장된 실제 검색 집합을 읽을 수 있으면 그 결과를 덮어쓴다.
         prior = _remove_condition_actions(prior, condition_actions)
-        cleared_fields = [
-            action.field
+
+        # [이슈 #434 라운드2] category 값 지정 제거 — 대표 1개가 아니라 이 턴이 실제로 검색한
+        # 카테고리 집합(chip_categories)에서 지목 값만 뺀 나머지로 복원한다(수용 기준: "value 를
+        # 실으면 그 값만 제거된 필터로 재검색된다"). 저장 집합을 못 읽으면(스레드 만료·구
+        # 스레드·손상) 위 `_remove_condition_actions` 의 대표값 일치 판정(강등)을 그대로 둔다.
+        category_value_actions = [
+            action
             for action in condition_actions
-            if getattr(before, CONDITION_FIELD_TO_FILTER[action.field]) is not None
-            and getattr(prior, CONDITION_FIELD_TO_FILTER[action.field]) is None
+            if action.field == "category" and action.value is not None
         ]
+        normalized_stored_categories: set[str] | None = None
+        if category_value_actions:
+            stored_categories = await thread_store.get_chip_categories(thread_key)
+            if stored_categories is not None:
+                normalized_stored_categories = {_strip_unsafe(c) for c in stored_categories}
+                targets = {
+                    _strip_unsafe(action.value)
+                    for action in category_value_actions
+                    if isinstance(action.value, str)
+                }
+                remaining = [c for c in stored_categories if _strip_unsafe(c) not in targets]
+                # [이슈 #434 라운드4, PR #566 Claude 리뷰] 게이트는 **"남은 게 있는가"가 아니라
+                # "실제로 뭔가 지워졌는가"** 여야 한다 — `targets` 가 `stored_categories` 와
+                # 교집합이 전혀 없으면(FE 가 이미 사라진 칩 값·오타를 보낸 경우) `remaining ==
+                # stored_categories`(변화 0)인데도 비어 있지 않아 옛 게이트(`if remaining:`)가
+                # 통과했다. 그러면 원래 대표 1개만 검색했을 일반 carry 턴이 저장 집합 전체로
+                # 멀티 leg fan-out 을 했다 — 이 PR 이 명시적으로 기각한 "일반 승계의 멀티
+                # leg 화"가 미매칭 경로로 새어 들어온 것과 같다. 길이 비교로 충분하다(리스트
+                # 필터링 결과라 원소가 그대로 보존되므로 길이가 같으면 내용도 같다).
+                if len(remaining) != len(stored_categories):
+                    prior = prior.model_copy(
+                        update={"category": remaining[0] if remaining else None}
+                    )
+                    # 즉시 갱신 — 다음 턴(추천 아닌 intent 로 라우팅돼도)이 이미 뺀 값을 다시
+                    # 보지 않게 한다(§3.1, 위 filters 즉시 영속과 같은 이유).
+                    await thread_store.put_chip_categories(thread_key, remaining)
+                    if remaining:
+                        restored_category_legs = [(c, None) for c in remaining][
+                            : settings.category_fanout_max
+                        ]
+                # else: 아무것도 안 지워졌다 — prior·저장 집합을 그대로 둔다(같은 값을 다시
+                # 쓰는 pg 왕복만 아낀다, 동작은 변하지 않는다). restored_category_legs 는 None
+                # 그대로라 아래 로그·`_prepare_recommendation` 승계 분기가 오늘과 동일하게
+                # 단일 leg 강등으로 처리한다.
+
+        cleared_fields = [
+            field_name
+            for field_name in touched_fields
+            if getattr(before, CONDITION_FIELD_TO_FILTER[field_name]) is not None
+            and getattr(prior, CONDITION_FIELD_TO_FILTER[field_name]) is None
+        ]
+        # [#434] changed_fields — 브랜드 부분 제거처럼 None 이 안 되는 변경도 포함한다.
+        # no_op 은 이 기준으로 판정한다(cleared_fields 만 보면 부분 제거가 no_op 으로 오판된다).
+        changed_fields = [
+            field_name
+            for field_name in touched_fields
+            if getattr(before, CONDITION_FIELD_TO_FILTER[field_name])
+            != getattr(prior, CONDITION_FIELD_TO_FILTER[field_name])
+        ]
+
+        def _condition_action_value_matched(action: ConditionAction) -> bool:
+            # [이슈 #434 라운드2] category 는 저장된 실제 검색 집합을 읽었으면 그 집합 기준으로
+            # 판정한다(대표 1개만 보는 `_condition_action_value_matches_prior` 는 A·B·C 중 B 를
+            # 관측상 "불일치"로 잘못 셀 수 있다 — 대표가 A 라도 B 는 실제로 검색된 값이었다).
+            if (
+                action.field == "category"
+                and normalized_stored_categories is not None
+                and isinstance(action.value, str)
+            ):
+                return _strip_unsafe(action.value) in normalized_stored_categories
+            return _condition_action_value_matches_prior(before, action.field, action.value)
+
+        # [#434] 값 지정 제거(category·brand)가 승계 상태에 없는 값을 지목한 관대 무시 건수 —
+        # 값 자체는 싣지 않고 개수만(#119 PII) 실어 조용한 no-op 을 관측 가능하게 한다(#442).
+        unmatched_values = sum(
+            1
+            for action in condition_actions
+            if action.value is not None
+            and action.field in ("category", "brand")
+            and not _condition_action_value_matched(action)
+        )
+        # [이슈 #434 라운드3] 값 지정 category 제거가 남은 집합을 복원한 턴(#442 가 고친 것과
+        # 같은 결함의 재발 형태) — 대표 카테고리가 안 바뀌면(before.category == after.category,
+        # 예: A·B·C 중 대표 아닌 B 를 지목) `changed_fields`가 비어 `no_op: true`로 찍히지만
+        # 실제로는 leg 이 복원돼 재검색됐다. **예측식이 아니라 실제 결과**(이 턴에
+        # `restored_category_legs` 가 채워졌는지, `_prepare_recommendation` 승계 분기가 그대로
+        # 소비하는 값)로 판정한다 — 값(카테고리 문자열)은 싣지 않고 발생 여부만(#119 PII).
+        category_legs_restored = restored_category_legs is not None
         logger.info(
             "condition_actions_applied",
             extra={
                 "requested_fields": requested_fields,
                 "cleared_fields": cleared_fields,
-                "no_op": not cleared_fields,
+                "changed_fields": changed_fields,
+                "category_legs_restored": category_legs_restored,
+                "no_op": not changed_fields and not category_legs_restored,
+                "unmatched_values": unmatched_values,
                 "request_id": resolved_request_id,
             },
         )
@@ -728,9 +946,30 @@ async def run_buyer_turn(
     # 프로필 주입 (회원만, read-only) — 게스트/신규는 None(개인화 스킵, 결정 8)
     profile = None
     profile_vec = None
+    # [#359] 개인화 중지(§6.6)가 이 턴의 **수집**도 막는지. 소비는 아래 `profile`·`profile_vec`
+    # 를 비우는 것으로 끝나지만 수집 지점은 두 곳(여기의 "기억해", 아래의 세션 버퍼)이라
+    # 판정 결과를 변수로 들고 다닌다 — 턴당 플래그 조회는 **1회**여야 한다.
+    personalization_on = False
     profile_eligible = bool(not identity.is_guest and identity.user_id and not identity.seller_id)
     if profile_eligible:
-        summary = await read_profile_summary(identity.user_id)
+        # 요약 조회와 중지 플래그 조회를 **병렬**로 띄운다. 직렬로 붙이면 관문 안 직렬 합이
+        # 한 왕복만큼 늘어나는데, 아래 §관문 주석이 적었듯 그 예산은 이미 최악에서 상한을
+        # 넘긴다 — 같은 pg-profile 을 치는 두 조회라 병렬이면 벽시계는 `max` 이지 `sum` 이
+        # 아니다. `return_exceptions=True` 로 한쪽 실패가 다른 쪽을 취소해 고아 태스크를
+        # 만들지 않게 한다(이 파일의 `_cancel_scope_task` 와 같은 규율).
+        summary_result, gate_result = await asyncio.gather(
+            read_profile_summary(identity.user_id),
+            # 소비·hot-path 쓰기는 fail-closed 다 — 사용자가 껐는데 저장소 장애 동안 시스템이
+            # 몰래 개인화를 재개하는 것이 이 기능이 막으려는 상황이다(personalization_gate).
+            personalization_enabled(identity.user_id, on_error=False),
+            return_exceptions=True,
+        )
+        if isinstance(summary_result, BaseException):
+            raise summary_result
+        # 게이트는 자기 실패를 이미 `on_error` 로 흡수한다 — 여기까지 예외가 오면 프로그래밍
+        # 오류이므로 조용히 삼키지 않고 안전한 쪽(중지)으로 닫는다.
+        personalization_on = gate_result is True
+        summary = summary_result if personalization_on else None
         profile = summary.get("markdown") if summary else None
         # [#162] 요약 생성 시점에 미리 만들어 둔 취향 벡터(#148 `store._embed_summary`).
         # 종전에는 markdown 만 꺼내 쓰고 이 값을 버렸다 — 조건 없는 발화의 회원 경로가 이걸로
@@ -738,7 +977,9 @@ async def run_buyer_turn(
         profile_vec = summary.get("embedding") if summary else None
         # "기억해"류 명시 명령은 게이트 없이 즉시 승격(hot-path, REQ-PROF). intent 와 무관한
         # 명시 명령이라 라우팅 앞에 둔다 — decompose 가 실패한 턴에도 기록돼야 한다.
-        if is_remember_command(request.message):
+        # **[#359] 단 전역 중지가 개별 명시 요청보다 우선한다**(REQ-PGRAPH-052, api-spec §3.9.5
+        # "명시적 '기억해' 요청도 저장하지 않는다").
+        if personalization_on and is_remember_command(request.message):
             await record_remember(identity.user_id, request.message)
 
     # 장바구니 문맥 — 직전 추천(담기 productId 해소)·옵션 되물음 대기 상태.
@@ -1036,8 +1277,15 @@ async def run_buyer_turn(
     # 신호로도 쓰지 않는다는 판단이다.
     # [#84] 빈 발화 가드 — conditionActions 만 있고 message 가 빈 턴(계약상 허용, api-spec §3.1)은
     # 취향 신호가 0인데 버퍼(슬라이딩 윈도우)만 밀어낸다. 공백-only 도 같이 막는다.
+    # [#359] 개인화 중지면 여기도 막는다(REQ-PGRAPH-052). "기억해" 는 명시 명령이고 이쪽은 모든
+    # 발화가 지나가는 상시 경로라, 막지 않으면 중지해도 취향 원문이 계속 쌓이고 다음 배치가
+    # 그것을 델타로 뽑아 "수집 중지" 가 사후에 무너진다. 판정은 위 프로필 블록이 턴당 1회
+    # 조회해 둔 값을 재사용한다 — 여기서 다시 조회하면 왕복이 하나 늘어난다.
+    # **차단은 호출부에 둔다.** `store.append_session_ctx` 안에 넣으면 그 함수를 직접 부르는
+    # `evals/taste_probe/runner.py` 가 조용히 0건이 된다(프로덕션 함수 재사용이 그 하네스의 목적).
     if (
         profile_eligible
+        and personalization_on
         and request.message.strip()
         and decision.intent not in settings.profile_buffer_excluded_intents
     ):
@@ -1368,6 +1616,27 @@ async def run_buyer_turn(
                 yield frame
         return
 
+    # [#285, I-25 §4.13] cart_remove 분기와 같은 자리·같은 방식으로 위임한다 — decompose 가
+    # 직접 `cart_quantity` 를 내면 여기서 바로 위임하고, 여전히 `cart_add` 로 오분류하면
+    # `cart/graph.py::stream_cart_add` 안의 `classify_cart_utterance` 2선 방어(사다리 4-a)가
+    # 같은 도착지로 다시 갈라낸다(cart_remove 와 완전히 대칭 — 위 "decompose 가 cart_remove/
+    # wishlist_add/wishlist_remove 를 직접 산출하면" 문단 참조). 화면 지시어 해소(`cart_intent`)
+    # 는 이 intent 를 받지 않는다 — 대상 해소는 장바구니 내용에서 이름으로 하지 화면 순번으로
+    # 하지 않는다(cart_remove 와 같은 이유, 위 화면 해소 블록 조건에 없다).
+    if decision.intent == "cart_quantity":
+        if trace := current_request_trace():
+            trace.set_lane("cart")
+        with trace_span("buyer.graph.cart", "chain"):
+            async for frame in stream_cart_quantity_change(
+                identity=identity,
+                cart=cart_intent,
+                message=request.message,
+                settings=settings,
+                observer=observer,
+            ):
+                yield frame
+        return
+
     if decision.intent == "wishlist_add":
         if trace := current_request_trace():
             trace.set_lane("cart")
@@ -1446,6 +1715,9 @@ async def run_buyer_turn(
             # 이 값은 다른 호출에서 온 별개 신호다. 섞으면 다음 사람이 decompose 가 낸 값으로
             # 오해하고, 그 오해 위에서 프롬프트를 고치게 된다.
             scope_free=scope_free,
+            # [이슈 #434 라운드2] 값 지정 category 제거가 이 턴에 복원한 카테고리 집합(호출부가
+            # 위에서 계산) — 신호 없으면 None 이라 승계 분기는 오늘과 바이트 동일하다(B-1).
+            restored_category_legs=restored_category_legs,
         ):
             yield frame
         reverted = prepare_out.reverted

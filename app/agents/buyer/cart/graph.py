@@ -34,6 +34,7 @@ from app.agents.buyer.cart.options import (
     options_have_color_axis,
 )
 from app.agents.buyer.cart.purchase_state import state_advice_lines, state_suffix
+from app.agents.buyer.cart.quantity import stream_cart_quantity_change
 from app.agents.buyer.cart.remove import stream_cart_remove
 from app.agents.buyer.cart.state import CartStateStore, PendingAdd
 from app.agents.buyer.cart.wishlist import stream_wishlist_add, stream_wishlist_remove
@@ -394,6 +395,7 @@ async def stream_cart_add(
     add_fn=None,
     get_cart_fn=None,
     delete_fn=None,
+    change_quantity_fn=None,
     add_wishlist_fn=None,
     get_wishlist_fn=None,
     remove_wishlist_fn=None,
@@ -492,6 +494,21 @@ async def stream_cart_add(
             settings=settings,
             get_cart_fn=get_cart_fn,
             delete_fn=delete_fn,
+            observer=observer,
+        ):
+            yield frame
+        return
+    # [#285, I-25 §4.13] cart_remove 2선 경로와 대칭 — intent_guard 사다리 4-a 가 `"cart_quantity"`
+    # 를 돌려주면 여기서도 같은 도착지로 위임한다.
+    if intent == "cart_quantity":
+        await cart_store.clear_pending(thread_key)
+        async for frame in stream_cart_quantity_change(
+            identity=identity,
+            cart=cart,
+            message=message,
+            settings=settings,
+            get_cart_fn=get_cart_fn,
+            change_fn=change_quantity_fn,
             observer=observer,
         ):
             yield frame
