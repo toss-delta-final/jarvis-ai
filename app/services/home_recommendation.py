@@ -28,6 +28,8 @@ from fastapi import HTTPException
 
 from app.agents.profile.reader import read_profile_summary
 from app.core.config import Settings, get_settings
+from app.core.logging import safe_fingerprint
+from app.core.reco_provenance import ProvenanceItem, ProvenanceList, emit_recommendation_provenance
 from app.core.text import _strip_unsafe
 from app.core.tracing import trace_span
 from app.pipelines.artifact_store import ArtifactStore, get_catalog_store
@@ -297,11 +299,17 @@ def build_reasons(
     return out
 
 
-async def rank_home(request: HomeRecommendationRequest) -> HomeRecommendationResponse:
+async def rank_home(
+    request: HomeRecommendationRequest, *, request_id: str
+) -> HomeRecommendationResponse:
     """I-22 본체 — outcome 3종을 모두 200 으로 답한다 (§3.7).
 
     프로필 부재·후보 부족으로 예외를 던지지 않는다. fallback 판단은 Spring 이 하며, AI 는 무슨 일이
     있었는지를 `outcome` 으로만 알린다.
+
+    `request_id` 는 [이슈 #140] provenance `recommend_provenance` 로그의 `requestId` 로
+    실린다 — 호출부(`internal.py`)가 `errors.get_request_id` 로 이미 계산한 값을 그대로
+    받는다(두 번 만들지 않는다).
     """
     started = time.perf_counter()
     settings = get_settings()
@@ -387,6 +395,8 @@ async def rank_home(request: HomeRecommendationRequest) -> HomeRecommendationRes
             started=started,
             candidates=0,
             settings=settings,
+            request_id=request_id,
+            member_id=request.member_id,
         )
 
     exclude = set(signals.recent_purchased_product_ids)  # 가중치가 아니라 제외 필터(§3.7)
@@ -422,6 +432,8 @@ async def rank_home(request: HomeRecommendationRequest) -> HomeRecommendationRes
             started=started,
             candidates=len(ranked),
             settings=settings,
+            request_id=request_id,
+            member_id=request.member_id,
         )
 
     top = ranked[:want]
@@ -464,6 +476,8 @@ async def rank_home(request: HomeRecommendationRequest) -> HomeRecommendationRes
         started=started,
         candidates=len(ranked),
         settings=settings,
+        request_id=request_id,
+        member_id=request.member_id,
     )
 
 
@@ -475,11 +489,17 @@ def _respond(
     started: float,
     candidates: int,
     settings: Settings,
+    request_id: str,
+    member_id: int,
 ) -> HomeRecommendationResponse:
-    """응답 조립 + 관측 로그 1건.
+    """응답 조립 + 관측 로그 1건 + [이슈 #140] provenance 로그 1건.
 
     로그 key set 은 고정이며 **memberId·productId·프로필 원문·모델 식별자·토큰을 남기지 않는다**
     (§3.7 [HARD]·§6.3). 남기는 것은 무슨 일이 있었는지 판별할 유계 코드와 개수뿐이다.
+
+    provenance 로그의 `ownerFp` 는 `memberId` 를 `safe_fingerprint` 로 지문화한 값이지 원값이
+    아니다 — 위 [HARD] 규약과 같은 이유. 홈은 요청 경로에서 LLM 을 부르지 않으므로
+    `rankerModel`/`promptVersion` 은 항상 `null` 이다(§3.7 [HARD], `test_reason_never_calls_an_llm`).
     """
     # [#469] observability 관례대로 JSON 을 메시지에 직접 싣는다 — `extra` 는 기본 포맷터가
     # 출력하지 않아 outcome·개수가 실 로그에서 증발했다(운영 실측 2026-08-08).
@@ -496,7 +516,7 @@ def _respond(
             ensure_ascii=False,
         )
     )
-    return HomeRecommendationResponse(
+    response = HomeRecommendationResponse(
         outcome=outcome,  # type: ignore[arg-type]
         # 재시도 = 새 추천 실행. 멱등이 아니라 호출마다 새로 발급한다(§3.7).
         recommendation_request_id=str(uuid.uuid4()),
@@ -506,3 +526,33 @@ def _respond(
             HomeRecommendationItem(product_id=pid, reason=reasons.get(pid)) for pid in product_ids
         ],
     )
+    emit_recommendation_provenance(
+        logger,
+        settings=settings,
+        request_id=request_id,
+        recommendation_request_id=response.recommendation_request_id,
+        surface="home",
+        pipeline="home_vector",
+        prompt_version=None,
+        ranker_model=None,  # §3.7 [HARD] — 홈 표면엔 모델 식별자를 절대 싣지 않는다.
+        personalized=outcome == "PERSONALIZED",
+        deterministic=True,
+        list_type="PICK_ONE",
+        owner_fp=safe_fingerprint(str(member_id)),
+        session_fp=None,
+        lists=[
+            ProvenanceList(
+                list_id=response.list_id,
+                label=None,
+                items=[
+                    ProvenanceItem(
+                        product_id=item.product_id,
+                        rank_source="profile_vector",
+                        has_reason=item.reason is not None,
+                    )
+                    for item in response.items
+                ],
+            )
+        ],
+    )
+    return response

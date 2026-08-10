@@ -2959,6 +2959,66 @@ BE "API·ERD 변경 정리(07/17)" Part 2가 **우리(LLM팀)에게 확정을 �
 - **전체 초기화(§3.9.4)는 감사 로그를 지우지 않는다** — 초기화가 일어났다는 기록이 사라지면 파괴 동작이 추적 불가가 된다. 보존 기간은 config 주입이며 **재전송 판정 원장(§3.9 파생 키)의 보존 기간보다 짧지 않아야 한다**(재전송이 항상 최초 응답을 찾을 수 있어야 한다). 정확한 기간은 🔴 C-23.
 - 개인화 중지·재개가 **상태를 바꾸지 않는 경우(no-op)에는 감사 행을 남기지 않는다**(§3.9.5) — 같은 값 반복 전송이 이력을 오염시키지 않게 한다.
 
+#### (d) 추천 생성 provenance 로그 (이슈 #140) **[신설]**
+
+추천 실행 1회당 정확히 1건, **추천이 실제로 사용자에게 도달했을 때만**(push 성공 / 홈 I-22 응답 반환) 낸다. `recommendationRequestId`/`listId`는 push(§4.2)·홈 응답(§3.7)에 실제로 실린 값을 그대로 반영해, BE `behavior_events.recommendation_request_id`와 **결정적으로 join**된다. `requestId`는 (b) 로그·LangSmith trace와 같은 키다.
+
+**이것은 (b)와 마찬가지로 AI 서버 내부 로그이며 와이어 계약이 아니다** — 엔드포인트·SSE 이벤트·필드·오류 코드에 변경이 없다. 알고리즘·모델 버전을 응답·로그·trace 원문에 노출하지 않는 제약의 출처는 **§3.7 구현 노트의 [HARD] 한 곳뿐**이다(「프로필 원문·prompt·모델 식별자는 응답·로그·trace에 포함하지 않는다. 알고리즘·모델 버전은 AI가 자체 테이블에 보관하며 와이어에 싣지 않는다」) — 이 로그가 그 규정을 그대로 준수한다: `algorithmVersion`/`rankerModel`은 이 로그(AI 내부 구조화 로그)에만 실리고 어떤 응답 필드로도 노출되지 않으며, 홈(`surface="home"`)의 `rankerModel`은 항상 `null`이다(홈은 요청 경로에서 LLM을 호출하지 않는다). `ownerFp`/`sessionFp` 가명화는 §6.3 (b)「PII/식별자 정책」(peppered HMAC 지문·raw 식별자 금지)과 동일 기준을 따른다 — §6.3 (b)에는 알고리즘·모델 버전에 관한 [HARD]가 없다.
+
+| 필드 | 비고 |
+|---|---|
+| `requestId` | (b) 로그·오류 봉투와 동일 키 — 전 구간 상관관계 |
+| `recommendationRequestId` | push/홈 응답에 실제로 실린 값(멱등키 `(recommendationRequestId, listId)`의 그 값, §4.2) |
+| `surface` | `chat` \| `home` |
+| `algorithmVersion` | `{pipeline}@{배포 버전}` — `pipeline` ∈ `search_rerank`(채팅 메인 rerank) / `profile_vector`(채팅 무조건 프로필 경로) / `home_vector`(홈). **AI 내부 전용, 와이어에 없음** |
+| `promptVersion` | LLM 프롬프트가 순위에 관여한 경로만 값을 남기고, 그 외(rerank degrade·프로필 경로·홈)는 `null` |
+| `rankerModel` | 메인 파이프라인에서 rerank가 실제로 순위를 낸 경우만 모델 id. degrade·프로필 경로·**홈은 항상 `null`**(§3.7 [HARD]) |
+| `personalized` | 개인화 신호가 실제로 랭킹에 반영됐는가 |
+| `deterministic` | 같은 snapshot·config에서 재현 가능한 결정론 정책인가. 현재 전 경로 `true` — 탐색이 있는 로깅 정책이 아니므로 off-policy 평가용 `propensity`는 (탐색 도입 전까지는) 상수 1.0을 실어 거짓 신호를 주는 대신 이 플래그로 대체한다 |
+| `degraded` / `degradeReason` | 그 요청의 trace degrade 상태(§6.3 b `errorType`과 별개 축 — 이쪽은 랭킹 품질 저하 사유) |
+| `listType` | push의 `listType`(§4.2). 홈은 항상 `PICK_ONE` |
+| `ownerFp` / `sessionFp` | (b)와 동일한 peppered HMAC 지문. **raw `userId`/`memberId`/`sessionId` 금지.** 홈은 `sessionFp=null`(세션 개념 없음) |
+| `lists[].listId` / `lists[].label` | push/홈 응답에 실린 값 그대로(§4.2) — CH-5 조회가 인증 불필요 공개 조회라(§4.3) PII가 아니다 |
+| `lists[].items[].productId` | push/홈 응답 순서와 **정확히 일치**(§4.2 — 이 값들도 CH-5 공개 조회 대상이라 PII가 아니다) |
+| `lists[].items[].position` | 그 목록 안 0-기반 순위 — 배열 순서 자체가 권위이며 이 필드는 그 순서의 명시적 사본이다 |
+| `lists[].items[].rankSource` | 닫힌 어휘: `rerank` / `search_order`(rerank degrade) / `repurchase_pin`(#120 재구매 지목 고정) / `expose_min_fill`(니즈별 하한 보충) / `profile_vector`(프로필 경로·홈) — 수치 score가 없는 랭킹 정책에서 "무엇이 이 자리를 결정했는가"를 남긴다 |
+| `lists[].items[].hasReason` | 그 상품 근거가 push `reasons`(§4.2)에 실렸는지 여부. **근거 원문은 싣지 않는다**(판매자 입력 영향 자유 텍스트) |
+| `itemsTruncated` | 로그 방어 상한(config)에 걸려 일부 항목이 잘렸는가 — silent cap 금지, 잘리면 반드시 `true` |
+
+**로그 JSON 예제**:
+
+```json
+{
+  "event": "recommend_provenance",
+  "requestId": "0f9c1a2b3c4d5e6f7a8b9c0d1e2f3a4b",
+  "recommendationRequestId": "a63be350-ec96-4f44-b3f9-c962b6673a68",
+  "surface": "chat",
+  "algorithmVersion": "search_rerank@2026-08-10",
+  "promptVersion": "rerank-v1",
+  "rankerModel": "claude-sonnet-5",
+  "personalized": true,
+  "deterministic": true,
+  "degraded": false,
+  "degradeReason": null,
+  "listType": "PICK_ONE",
+  "ownerFp": "3f2a1c9d4e5b6a70",
+  "sessionFp": "9a8b7c6d5e4f3a21",
+  "itemsTruncated": false,
+  "lists": [
+    {
+      "listId": "9f2c1a7e4b8d43f5a0c6e1d97b3f8a24",
+      "label": null,
+      "items": [
+        {"productId": 1001, "position": 0, "rankSource": "rerank", "hasReason": true},
+        {"productId": 1002, "position": 1, "rankSource": "expose_min_fill", "hasReason": false}
+      ]
+    }
+  ]
+}
+```
+
+- **[HARD] 이 절이 정의하는 필드는 전부 AI 서버 내부 구조화 로그 전용이다** — 응답 스키마(§3.1/§3.7)·SSE 이벤트에 새 필드를 추가하지 않는다. `algorithmVersion`·`rankerModel`을 응답에 넣는 구현은 (b)/§3.7과 동일하게 계약 위반이다.
+
 ---
 
 ## 7. 후속 SPEC 동기화 개정 목록 (Follow-up SPEC Amendments)

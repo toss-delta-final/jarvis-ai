@@ -788,6 +788,21 @@ class Settings(BaseSettings):
     llm_call_limit: int = 2
     relaxation_max_rounds: int = 3
 
+    # ── 추천 실행 provenance 로그 (이슈 #140, app/core/reco_provenance.py) ──
+    # 랭킹 로직 배포 버전 — `recommend_provenance` 로그의 algorithmVersion 조립에 쓰인다
+    # (`f"{pipeline}@{reco_algorithm_version}"`). **모델 식별자를 이 값에 넣지 말 것**
+    # (§3.7 [HARD] — 알고리즘·모델 버전은 와이어에 싣지 않고 로그 전용이며, 모델 식별자는
+    # 별도 필드 `rankerModel` 로만 남긴다).
+    reco_algorithm_version: str = "2026-08-10"
+    # rerank 프롬프트 버전 — LLM 순위가 실제로 관여한 경로(메인 rerank 성공)에서만
+    # provenance `promptVersion` 에 실린다. degrade·프로필 벡터·홈 경로는 LLM 순위가 아니라
+    # `null`.
+    rerank_prompt_version: str = "rerank-v1"
+    # provenance 로그 한 줄의 방어 상한 — 자연 상한은 계약 MAX_LISTS(10) × LIST_MAX_PRODUCTS(9)
+    # = 90 이지만, 별도 방어선을 둬 초과분은 조용히 버리지 않고 `itemsTruncated=true` 로
+    # 표시한다(silent cap 금지, 저장소 관례).
+    reco_provenance_max_items: int = Field(default=128, ge=1)
+
     # ── 0건/소량 조건 완화 (#113, api-spec §3.1 suggestions.relaxation · 결정 14-D) ──
     # 필드명은 **와이어 표기(camelCase)** 다 — 그대로 `relaxation.field` 로 나가므로(§3.1) 내부
     # snake_case 와의 변환은 relaxation.py 한 곳에서만 한다.
