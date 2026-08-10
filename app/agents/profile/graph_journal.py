@@ -177,6 +177,24 @@ async def close_pool() -> None:
     await _drain_pending_cleanup(propagate_errors=True)
 
 
+async def warm_pool() -> None:
+    """기동 시 풀·스키마를 미리 준비한다 — 첫 사용자 턴이 그 비용을 물지 않도록 (#359).
+
+    `close_pool` 과 대칭이며 `app.main._lifespan` 이 부른다. 지금까지 이 풀은 열리는 자리가 없어
+    **첫 호출자가 지연 초기화 전체를 지불**했는데, 그 첫 호출자가 항상 백그라운드 sweep(사용자
+    예산 밖)이라 무해했다. #359 의 중지 게이트가 **구매자 턴**을 첫 호출자로 바꾼다 —
+    `pool.open(wait=True)`(연결 5s) + `_ensure_schema`(마이그레이션 30s, advisory 잠금 + 테이블
+    3개 + 인덱스)가 `_init_lock` 안에서 직렬화되므로, 배포 직후 첫 회원 턴이 first-token 10s
+    관문 안에서 그것을 물고 동시 턴까지 함께 막는다.
+
+    **실패해도 기동을 막지 않는다** — 호출부가 잡는다. 워밍은 최적화이지 선결 조건이 아니고,
+    실패하면 지연 초기화가 원래 하던 일을 그대로 한다(운영에서 pg-profile 이 죽어 있으면
+    `_get_pool` 이 raise 하는데, 그걸 기동 실패로 승격시키면 개인화와 무관한 구매자 턴까지 서버가
+    안 뜬다).
+    """
+    await _get_pool()
+
+
 def reset() -> None:
     """테스트 격리용 — InMemory 폴백으로 초기화(실제 연결 시도 없이 즉시 blank).
 
