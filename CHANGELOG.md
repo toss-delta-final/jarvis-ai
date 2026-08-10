@@ -9,6 +9,31 @@
 
 ## [Unreleased]
 
+### Changed
+- **#434 — `conditions` 칩·`conditionActions` 를 멀티 값 축(`category`·`brand`) 값당 1개로
+  분리하고, 값 지정 category 제거가 실제로 남은 카테고리 집합으로 재검색되게 했다**
+  (api-spec §3.1, v0.32.14). 종전에는 멀티 카테고리/브랜드를 칩 1개에 조인 문자열로 뭉쳐 "그
+  값만" 제거할 수 없었다. `build_condition_chips` 가 값마다 칩을 내고(`(field, value)` 기준
+  순서 보존 dedup), `conditionActions[].value`(선택, 스칼라)를 신설해 그 값만 지목한 제거를
+  지원한다 — **와이어 계약 추가 전용**이라 `value` 를 안 보내는 기존 FE 는 종전 동작과 100%
+  동일하다. `value` 없음은 여전히 그 field 전체 제거(하위호환)이다.
+  `brand` 는 실제 리스트라 값 지정 제거가 즉시 동작했지만, `category` 는 멀티턴 승계 상태
+  (`ProductSearchFilters.category`)에 대표 1개만 남아 값 지정 제거가 대표값 일치 판정만 하는
+  **관대 무시(no-op)** 였다 — 이슈 헤드라인인 카테고리 칩에서 기능의 절반이 비어 있었다.
+  `ThreadFilterStore` 에 이 스레드가 실제로 검색한 카테고리 집합을 담는 키(`chip_categories`)
+  를 신설해 매 추천 턴마다 무조건 덮어쓰고, 값 지정 category 제거 턴에는 그 집합에서 지목
+  값만 뺀 나머지로 재검색·재승계한다(다음 일반 리파인 턴부터는 종전처럼 대표 1개 승계로
+  되돌아간다 — 일반 승계 동작은 바뀌지 않았다). 저장 집합을 못 읽는 스레드(만료·구 스레드)는
+  대표값 일치 판정으로 강등한다. 복원 턴이 `case==3` 우연 일치로 `split_by_need`(니즈별 목록
+  분할)를 열지 않도록 `RouteDecision.category_legs_restored` 가드를 추가했다. 부수로 **`brand`
+  칩 `value` 가 리스트→스칼라로 정정**됐다(단일 값이어도) — §3.1 예시가 원래 스칼라를 명시했던
+  드리프트 해소로 FE 가시 변경이다. 호출부 로그(`condition_actions_applied`, #442)에
+  `changed_fields`(None 이 안 되는 브랜드 부분 제거 포함)·`unmatched_values`(관대 무시 건수,
+  값 자체는 미기록)를 추가하고 `no_op` 판정을 `changed_fields` 기준으로 바꿨다. 대표 카테고리가
+  안 바뀌는 복원(A·B·C 중 비대표 값 지목 제거)은 `changed_fields` 만으로는 `no_op: true`로
+  찍혀 무동작과 구분이 안 됐는데(#442 재발 형태), `category_legs_restored`(bool) 를 실제 복원
+  결과 기준으로 추가하고 `no_op` 판정에도 반영했다.
+
 ### Fixed
 - **#134 — Cloudflare 뒤에서 레이트 리밋 IP 백스톱이 근거 없는 홉 수를 신뢰하던 결함을,
   "배포된 상태가 스스로 진위를 증명"하는 구조로 고쳤다.** 이슈 본문의 전제(cloudflared

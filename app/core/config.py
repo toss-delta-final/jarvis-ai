@@ -1867,6 +1867,9 @@ class Settings(BaseSettings):
     chat_message_max_chars: int = 4000
     # sessionId/threadId 길이 상한 — 불투명 키가 registry·저장소·로그에 쌓이는 남용 방어.
     chat_key_max_chars: int = 200
+    # conditionActions[].value 길이 상한 (이슈 #434, api-spec §3.1) — 칩 값은 canonical
+    # 카테고리/브랜드 문자열이라 짧다. chat_key_max_chars 와 같은 자릿수.
+    condition_action_value_max_chars: int = 200
 
     # ── 화면 맥락 screen (이슈 #118, api-spec §3.1) ──
     # screen.products 상한(정본 명시 기본값) — 초과분은 화면 순서 앞쪽만 취하고 버린다.

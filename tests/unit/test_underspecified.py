@@ -210,7 +210,17 @@ def test_route_decision_axes_are_all_classified() -> None:
     }
     constraint_not_blocking = {"total_budget", "buy_all"}
     # [리뷰 F4] `scoped_to_previous` 는 "무관" — 첫 턴 한정 판정이라 직전 결과 지칭이 공허하다.
-    no_effect = {"intent", "case", "reply", "cart", "category_expanded", "scoped_to_previous"}
+    # [이슈 #434 라운드2] `category_legs_restored` 도 `category_expanded` 와 동형 — True 면
+    # 정의상 `category_legs` 가 이미 채워져 있어(blocking) 중복 계상이라 여기가 맞다.
+    no_effect = {
+        "intent",
+        "case",
+        "reply",
+        "cart",
+        "category_expanded",
+        "category_legs_restored",
+        "scoped_to_previous",
+    }
 
     assert {f.name for f in fields(RouteDecision)} == (
         blocking | constraint_not_blocking | no_effect

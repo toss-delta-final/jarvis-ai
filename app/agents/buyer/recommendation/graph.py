@@ -1994,11 +1994,18 @@ async def stream_recommendation(
     # 단위로 이미 번역된 턴(`expansion_grouped_by_need`)은 leaf 단위가 아니라 니즈 단위이므로
     # 이 가드에서 예외로 둔다(#168 이 의도적으로 바꾼 지점, PR #318 R12-2 고정 테스트가 예고).
     # `buy_all_mode`(아래)도 이 값을 참조하므로 니즈 단위 예산 세트(BUY_ALL)도 같이 열린다.
+    # [이슈 #434 라운드2] 복원 턴(값 지정 category 제거가 남은 집합을 멀티 leg 으로 되살린 턴,
+    # `category_legs_restored`)도 category_expanded 와 같은 이유로 니즈 경계 분할에서 뺀다 —
+    # 이 멀티 leg 은 새 니즈 전개가 아니라 사용자가 지운 뒤 **남은 조건 집합**이다(#51 표시=실제).
+    # 우연히 case==3 이 되는 턴이 와도(예: LLM 이 이번 발화를 목적형으로 오분류) 목록이 니즈별로
+    # 쪼개지면 buy_all_mode·expose_budget·need_priority_gate 까지 함께 열려 버려 사용자가 기대한
+    # "그 카테고리만 뺀 같은 목록"과 다른 결과가 나간다.
     split_by_need = (
         decision.case == 3
         and len(need_legs) > 1
         and bool(leg_of)
         and (not decision.category_expanded or expansion_grouped_by_need)
+        and not decision.category_legs_restored
     )
     buy_all_mode = settings.budget_set_enabled and decision.buy_all and split_by_need
 

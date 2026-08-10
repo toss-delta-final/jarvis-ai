@@ -1245,7 +1245,8 @@ async def test_general_reply_and_condition_chips_strip_unsafe_text() -> None:
     assert chips[0]["label"] == "카테고리 · 여행 용품"
     assert chips[0]["value"] == "여행 용품"
     assert chips[1]["label"] == "정상 브랜드"
-    assert chips[1]["value"] == ["정상 브랜드"]
+    # [이슈 #434, §3.1 v0.32.14 정정] brand 칩 value 는 스칼라다(리스트 아님) — 단일 값이어도.
+    assert chips[1]["value"] == "정상 브랜드"
 
 
 async def test_multiturn_filters_persisted_and_fed_back() -> None:
