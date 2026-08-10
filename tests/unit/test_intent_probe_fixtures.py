@@ -57,6 +57,9 @@ GROUP_COUNTS = {
     # 보여줘"). combo_matrix 는 이 intent 를 재지 않기로 결정했으므로(axes.json
     # cart_quantity_not_generated) 라우팅 회귀는 이 그룹이 전담한다.
     "cart_quantity": 6,
+    # [#443] 상품군을 명시한 첫 턴에서 categoryQueries leg 이 나오는지 — `condition_only` 의
+    # 반대 방향 축. 요인 분리(대조군·상황 선행/후행·추상도·일반화·수식어) 6발화.
+    "named_category": 6,
 }
 # [#300, D-4] #118 원본(PR #292, 이관 전 별도 프로브의 신규(screen) 그룹 — #300 이 흡수하며
 # 삭제했다)에서 **문자 단위로 옮긴** 발화 6종 — 이 목록 자체가 표본 동일성 요구사항이라
@@ -78,7 +81,7 @@ def _raw(name: str = "b") -> dict:
 @pytest.mark.parametrize("name", ["a", "b"])
 def test_committed_anchor_sets_load_and_match_manifest_hash(name: str) -> None:
     anchors = load_anchor_set(name)
-    assert anchors.fixture_version == f"intent-probe-anchors-{name}-v6"
+    assert anchors.fixture_version == f"intent-probe-anchors-{name}-v8"
 
 
 @pytest.mark.parametrize("name", ["a", "b"])
@@ -110,7 +113,8 @@ def test_cell_count_matches_group_context_product() -> None:
     # + [#344 라운드 2] 조건 전용 5(단일 컨텍스트)
     # + [#386] 찜 조회 6(단일 컨텍스트) + [#440] 찜 해제 4(단일 컨텍스트)
     # + [#285, I-25 §4.13] 수량 변경 6(단일 컨텍스트) = 95
-    assert len(cells) == 95
+    # + [#386] 찜 조회 6 + [#440] 찜 해제 4 + [#443] 상품군 명시 6 + [#285] 수량 변경 6(전부 단일 컨텍스트) = 101
+    assert len(cells) == 101
     per_group: dict[str, int] = {}
     for cell in cells:
         per_group[cell.utterance.group] = per_group.get(cell.utterance.group, 0) + 1
@@ -127,6 +131,7 @@ def test_cell_count_matches_group_context_product() -> None:
         "wishlist_view": 6,
         "wishlist_remove": 4,
         "cart_quantity": 6,
+        "named_category": 6,
     }
 
 
@@ -714,6 +719,54 @@ def test_non_condition_only_utterance_declaring_the_new_axis_is_rejected() -> No
         "conditionOnlyNoCategoryQuery"
     )
     with pytest.raises(ValidationError, match="conditionOnlyNoCategoryQuery"):
+        AnchorSet.model_validate(data)
+
+
+# ─────────── [#443] 상품군 명시 첫 턴 leg 산출(condition_only 의 반대 방향) ───────────
+
+
+def _named_category_utterance(data: dict) -> dict:
+    return next(u for u in data["utterances"] if u["group"] == "named_category")
+
+
+def test_named_category_utterances_all_carry_a_product_name() -> None:
+    """[#443] 이 축의 정답("leg 이 하나는 나와야 한다")이 자명하려면 발화에 살 물건 이름이
+    반드시 들어 있어야 한다 — 조건·상황만 있는 발화는 condition_only 의 정의역이지 이 그룹이
+    아니다."""
+    anchors = load_anchor_set("b")
+    texts = tuple(u.text for u in anchors.utterances if u.group == "named_category")
+    assert texts == (
+        "과일 추천해줘",
+        "나 아기 키우는데 과일 추천해줘",
+        "과일 추천해줘, 나 아기 키우고 있어서",
+        "나 아기 키우는데 유아용 물티슈 추천해줘",
+        "나 캠핑 다니는데 텐트 추천해줘",
+        "가성비 좋은 텀블러 추천해줘",
+    )
+
+
+def test_named_category_utterance_must_use_only_the_none_context() -> None:
+    """[#443] `GROUP_ALLOWED_CONTEXTS`(named_category → {none})가 막는다 —
+    `test_condition_only_utterance_must_use_only_the_none_context` 와 같은 재현."""
+    data = _raw("b")
+    _named_category_utterance(data)["contexts"] = ["none", "categoryPrior"]
+    with pytest.raises(ValidationError, match="만 선언할 수 있는데"):
+        AnchorSet.model_validate(data)
+
+
+def test_named_category_utterance_declaring_a_legacy_axis_is_rejected() -> None:
+    data = _raw("b")
+    _named_category_utterance(data)["axes"].append("mainIntent")
+    with pytest.raises(ValidationError, match="mainIntent"):
+        AnchorSet.model_validate(data)
+
+
+def test_non_named_category_utterance_declaring_the_new_axis_is_rejected() -> None:
+    data = _raw("b")
+    next(u for u in data["utterances"] if u["group"] == "general")["axes"].append(
+        "namedCategoryHasLeg"
+    )
+    with pytest.raises(ValidationError, match="namedCategoryHasLeg"):
         AnchorSet.model_validate(data)
 
 

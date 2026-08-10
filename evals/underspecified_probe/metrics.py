@@ -526,6 +526,10 @@ def sample_rows(
                 "blockingAxes": blocking_axes,
                 "expansionReason": sample.expansion_reason,
                 "latencyMs": sample.latency_ms,
+                "dedicatedCalled": sample.dedicated_called,
+                "dedicatedDecisionFlipped": sample.dedicated_disagreed,
+                "dedicatedCallFailed": sample.dedicated_failed,
+                "dedicatedFallbackAmbiguous": sample.dedicated_ambiguous,
             }
             # [#432] union 모드일 때만 채워진다(samples.csv 컬럼 형상은 report.write_artifacts
             # 호출부가 union_enabled 를 보고 정한다 — 여기서는 값만 싣는다).

@@ -1,0 +1,12 @@
+cellId,utteranceId,contextId,group,sampleCount,attempts,failureCount,filled
+condition-only-001|none,condition-only-001,none,condition_only,24,28,4,True
+condition-only-002|none,condition-only-002,none,condition_only,24,26,2,True
+condition-only-003|none,condition-only-003,none,condition_only,24,28,4,True
+condition-only-004|none,condition-only-004,none,condition_only,24,26,2,True
+condition-only-005|none,condition-only-005,none,condition_only,24,26,2,True
+named-category-001|none,named-category-001,none,named_category,24,24,0,True
+named-category-002|none,named-category-002,none,named_category,24,24,0,True
+named-category-003|none,named-category-003,none,named_category,24,24,0,True
+named-category-004|none,named-category-004,none,named_category,24,25,1,True
+named-category-005|none,named-category-005,none,named_category,24,24,0,True
+named-category-006|none,named-category-006,none,named_category,24,25,1,True

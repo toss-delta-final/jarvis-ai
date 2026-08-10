@@ -20,6 +20,11 @@ from app.agents.buyer.recommendation.state import (
     RouteDecision,
     extract_json,
 )
+from app.agents.buyer.recommendation.leg_head import suppress_generic_single_leg
+from app.agents.buyer.recommendation.category_leg_injection import (
+    DEFAULT_CATEGORY_LEG_INJECTION_PATH,
+    inject_category_leg,
+)
 from app.agents.buyer.screen_reference import grid_position
 from app.core.llm import LLMClient, LLMError
 from app.schemas.spring import ProductSearchFilters
@@ -228,6 +233,43 @@ _SYSTEM = """당신은 커머스 어시스턴트의 질의 분해기입니다.
 #
 # 카탈로그 표기 도달(브랜드가 맞아도 exact IN 이 놓치는 몫)은 프롬프트가 아니라
 # `app.pipelines.brand_aliases` 가 **와이어에서만** 넓힌다 — 여기서 다루지 않는다.
+
+# ── categoryQueries 불릿의 "넓은 상품군" 예시 한 줄 — 시도했으나 기각 (#443) ─────────────────
+# 결함: 사용자가 상품군을 **명시한** 첫 턴인데 categoryQueries 가 비는 결함이 실측됐다
+# (evals/intent_probe `namedCategoryHasLeg` 축, before 2런 36·33/48). 요인 분리 실측(#443
+# 「할 일」 2번)으로 원인이 상황 설명 유무·위치·case 판정이 아니라 **사용자가 말한 상품군의
+# 추상도**로 좁혀졌다 — "과일"처럼 넓은 대분류 명사를 말한 발화만 leg 이 비고, "유아용 물티슈"·
+# "텐트"·"텀블러"처럼 구체 상품명을 말한 발화는 거의 안 빈다. 기전으로 보이는 것: 위 ❌
+# "매장 코너 이름" 금지는 「사용자가 **말하지 않은** 뭉뚱그린 라벨을 지어내지 말라」는 뜻인데,
+# LLM 이 그걸 「사용자가 **말한** 넓은 상품군도 버려라」로 확대 해석한다.
+#
+# 시도했고 기각된 문면 4종(다시 시도하기 전에 읽을 것 — #84 `resolve_category_action` 의 인라인
+# categoryAction 기각 문단과 같은 역할):
+#   - "단서 없으면 categoryQueries 는 빈 배열([])" 계열(2종) — #443 축을 23·20/48 로 무너뜨렸다
+#     (대조군 38·33/48). "넓은 상품군을 말한 턴"까지 "단서 없음"으로 읽힌다.
+#   - 같은 문장을 이 자리 대신 categoryQueries 불릿 맨 앞에 둔 판 — #443 축은 스크리닝에서
+#     46/48 로 좋아졌지만 `conditionOnlyNoCategoryQuery`(#465, 반대 방향 축)가 33/40 으로
+#     무너지고(대조군 39·40), 누출 leg 이 사용자 발화를 그대로 복사한 텍스트였다 — 그 텍스트가
+#     임베딩 앵커로 흘러 #222 확장이 무관 카테고리로 fan-out 하는 입구가 된다(그 축이 존재하는
+#     이유 그 자체).
+#   - **예시 한 줄**("사용자가 말한 상품군은 넓어도 그대로 담으세요" — 이 자리에 있던 것, C5) —
+#     부분 셀 스크리닝에서는 46/48 이었으나, 전체 런 2회(N=8×6셀=48표본)에서는 35·38/48 로
+#     재현되지 않았다(사전 등록 문턱 "after 두 런 모두 before 최댓값(36) 이상 그리고 평균 상승
+#     ≥ +4/48" 미달 — after-1(35)<36 로 즉시 실패). 같은 프롬프트 sha(`6f64dcbd43d4`)가
+#     46·35·38 을 냈고 미변경 프롬프트(before, `865ed6fd771e`)도 38·33·36·33 으로 흔들려 —
+#     이 축의 런간 폭은 하네스 문서가 말하는 "축당 ±2"보다 훨씬 크다(≈5 이상). 동시에 반대
+#     방향 비용이 관측됐다: `conditionOnlyNoCategoryQuery` 39·40→38·37(−2.0),
+#     `categoryClear` 29·29→23·26(−4.5, 이미 등록된 #463 의 축), underspecified `missRate`
+#     8.0%→12.5%(분모 영향 없어 유효 비교). 이득이 노이즈와 구분 안 되고 비용은 세 축에서
+#     같은 방향으로 나와 **기각**했다.
+#
+# 다음 사람에게 남기는 규칙: 이 축은 런간 폭이 ≈5 라 부분 셀 스크리닝 1회로 채택하지 마라.
+# N=8×6셀(48표본)로는 +2 크기의 효과를 노이즈와 가를 수 없다 — 재시도하려면 `--n` 을 키운 전체
+# 런 2회 이상으로 사전 등록 문턱을 다시 재라. 산출물:
+# `evals/intent_probe/baselines/fast-2026-08-08-443-{before-1,before-2,cand5-1,cand5-2}`·
+# `evals/underspecified_probe/baselines/fast-2026-08-08-465-{before-1,cand5-1-partial}`
+# (스크리닝 46/48 자체의 산출물은 tmp 에 있었고 런타임 재시작으로 소실 — 위 46/48 은 런 보고에서
+# 옮겨 적은 값이라 산출물로 재검증할 수 없다).
 
 
 # ── 화면 맥락 screen (이슈 #118, api-spec §3.1) ────────────────────────────────────────────
@@ -567,6 +609,12 @@ async def decompose(
     screen: ScreenPrompt | None = None,
     category_fanout_max: int = 5,
     repurchase_max: int = 5,
+    leg_head_suppression: bool = False,
+    leg_generic_heads: frozenset[str] = frozenset(),
+    leg_condition_terms: frozenset[str] = frozenset(),
+    category_leg_injection: bool = False,
+    category_leg_injection_path: str = DEFAULT_CATEGORY_LEG_INJECTION_PATH,
+    category_leg_injection_min_length: int = 2,
 ) -> RouteDecision:
     """Haiku 1회 호출로 intent(추천/담기/장바구니조회/주문상태/일반)와 필터를 산출한다.
 
@@ -645,7 +693,25 @@ async def decompose(
         repurchase_products = _parse_repurchase_products(
             data.get("repurchaseProducts"), repurchase_max
         )
+        parsed_attr = _parse_attr_conditions(data.get("attrConditions"))
+        # attrConditions 는 ProductSearchFilters 모델 필드가 아니므로, leg 훅보다 먼저 파싱해
+        # what-축 게이트에 명시적으로 준다. 훅은 cat_signal 전이어야 폴백 플래그도 함께 뒤집힌다.
+        filters.attr_conditions = parsed_attr or None
         category_queries = _parse_category_queries(data.get("categoryQueries"), category_fanout_max)
+        # 주입은 head 억제 전에만 본다. 억제로 비워진 leg는 다시 채우지 않는다.
+        category_leg_injected = False
+        if category_leg_injection:
+            injected_queries = inject_category_leg(category_queries, intent=intent, utterance=query,
+                path=category_leg_injection_path, min_length=category_leg_injection_min_length)
+            category_leg_injected = not category_queries and bool(injected_queries)
+            category_queries = injected_queries
+        category_queries = suppress_generic_single_leg(
+            category_queries,
+            filters,
+            enabled=leg_head_suppression,
+            generic_heads=leg_generic_heads,
+            condition_terms=leg_condition_terms,
+        )
         # semanticQuery 는 filters 밖(최상위)에 오는 의미검색 입력 — 검색 백엔드까지 흐르도록
         # filters 에 실어준다(#101). 폴백 순서(PR#166 리뷰):
         #   LLM 값 → (단일 카테고리면) 그 leg query → 직전 턴 값 → 이번 턴 원문(query).
@@ -676,7 +742,6 @@ async def decompose(
         # 이전 축을 일부/전부 빠뜨려도(fast tier 실수) 조용히 유실되지 않고(merge 로 유지), '실수
         # 누락'과 '의도적 제거'를 dict 모양 추측이 아니라 명시 신호로 구분한다. attrRemovals 는 이번
         # 턴 지시라 저장하지 않고(결과 attr_conditions 만 영속), 적용 후 버린다.
-        parsed_attr = _parse_attr_conditions(data.get("attrConditions"))
         prior_attr = prior_filters.attr_conditions if prior_filters else None
         merged = {**(prior_attr or {}), **(parsed_attr or {})}
         for axis in _parse_attr_removals(data.get("attrRemovals")):
@@ -719,6 +784,7 @@ async def decompose(
         revert_categories=revert_categories,
         repurchase_products=repurchase_products,
         category_queries=category_queries,
+        category_leg_injected=category_leg_injected,
         # [#113] `is True` 로 좁힌다 — 문자열 "false"·1·null 등 애매한 산출을 전부 False 로
         # 떨어뜨려 **엄격한 쪽**(원래 조건 유지)으로 기울인다. 놓치면 무해하지만 오탐하면
         # 사용자가 말한 조건이 조용히 바뀐다.

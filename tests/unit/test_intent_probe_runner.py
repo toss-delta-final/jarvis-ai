@@ -107,6 +107,26 @@ async def test_tier_reaches_the_provider() -> None:
     assert {call["tier"] for call in fake.calls} == {"smart"}
 
 
+async def test_probe_uses_the_runtime_category_leg_injection_switch() -> None:
+    """#443 측정 팔은 배포와 같은 주입 설정을 decompose에 전달해야 한다."""
+    from app.core.config import Settings
+
+    named = next(cell for cell in CELLS if cell.utterance.utterance_id == "named-category-001")
+    result = await run_cell(
+        llm=ScriptedDecomposeLLM(ANCHORS),
+        cell=named,
+        anchors=ANCHORS,
+        n=1,
+        tier="fast",
+        attempt_multiplier=1,
+        settings=Settings(_env_file=None, category_leg_injection_enabled=True),
+        sleep=_no_sleep,
+    )
+
+    assert result.samples[0].category_legs == "|과일"
+    assert result.samples[0].category_leg_injected is True
+
+
 async def test_pending_cart_cells_carry_the_reask_product_and_options() -> None:
     cell = next(cell for cell in CELLS if cell.context.context_id == "pendingCart")
     fake = ScriptedDecomposeLLM(ANCHORS)

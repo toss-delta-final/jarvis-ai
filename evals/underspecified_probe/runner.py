@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
@@ -19,6 +20,7 @@ from time import perf_counter
 from typing import TYPE_CHECKING, Any
 
 from app.agents.buyer.recommendation.decompose import decompose
+from app.agents.buyer.recommendation.leg_head import suppress_generic_single_leg
 from app.agents.buyer.recommendation.needs_expansion import detect_expansion_need
 from app.agents.buyer.recommendation.no_condition import _is_blank
 from app.agents.buyer.recommendation.state import RouteDecision
@@ -52,6 +54,35 @@ class JudgmentSettings:
     하나뿐이다 — `SimpleNamespace` 대신 frozen dataclass 를 써서 오타 필드가 조용히 붙지 않게 한다."""
 
     underspecified_reask_enabled: bool
+
+
+def dedicated_suppressed_decision(decision: RouteDecision) -> tuple[RouteDecision, bool]:
+    """leg 제거 뒤 decompose의 fallback 파생식을 표본 정보로 재현한다.
+
+    원 semantic query가 단일 leg query와 같으면 cat_signal이었을 가능성으로 본다. llm_sq가 같은
+    문자열을 냈을 수도 있어 구분 불가하며, 그 모호 표본은 두번째 반환값으로 산출물에 남긴다.
+    """
+    clone = _clone_decision(decision)
+    leg_query = (clone.category_queries[0].query or "").strip() if len(clone.category_queries) == 1 else ""
+    semantic = (clone.filters.semantic_query or "").strip()
+    ambiguous = bool(leg_query and semantic == leg_query and not clone.semantic_query_is_fallback)
+    clone.category_queries = []
+    if clone.semantic_query_is_fallback or ambiguous:
+        clone.semantic_query_is_fallback = True
+    return clone, ambiguous
+
+
+def postprocessed_decision(
+    decision: RouteDecision, *, generic_heads: frozenset[str], condition_terms: frozenset[str]
+) -> tuple[RouteDecision, bool]:
+    """파싱부 head 억제와 동형인 사본; fallback 파생은 dedicated와 단일 구현을 공유한다."""
+    legs = suppress_generic_single_leg(
+        decision.category_queries, decision.filters, enabled=True,
+        generic_heads=generic_heads, condition_terms=condition_terms,
+    )
+    if len(legs) == len(decision.category_queries):
+        return _clone_decision(decision), False
+    return dedicated_suppressed_decision(decision)
 
 
 def _clone_decision(decision: RouteDecision) -> RouteDecision:
@@ -182,6 +213,12 @@ class Sample:
     # [#432] `--union` 일 때만 채워진다 — decompose 단계 표본은 union 단계 성패와 무관하게
     # 그대로 산다(§2-6 항목 2). None 이면 union 모드가 아니었다는 뜻이다.
     union: "UnionSampleResult | None" = None
+    dedicated_called: bool = False
+    dedicated_disagreed: bool = False
+    dedicated_failed: bool = False
+    dedicated_ambiguous: bool = False
+    before_verdict: bool | None = None
+    postprocess_verdict: bool | None = None
 
     @property
     def intent(self) -> str:
@@ -214,6 +251,12 @@ class Sample:
         judgment_settings: JudgmentSettings,
         latency_ms: int,
         union: "UnionSampleResult | None" = None,
+        dedicated_called: bool = False,
+        dedicated_disagreed: bool = False,
+        dedicated_failed: bool = False,
+        dedicated_ambiguous: bool = False,
+        before_verdict: bool | None = None,
+        postprocess_verdict: bool | None = None,
     ) -> "Sample":
         verdict = is_underspecified_turn(decision, prior, judgment_settings)
         # [§D10.3] `unresolved=[]` — 이 하네스는 카테고리 매핑(2단계)을 돌리지 않으므로(§D2 규약)
@@ -233,6 +276,12 @@ class Sample:
             expansion_reason=expansion_reason,
             union=union,
             latency_ms=latency_ms,
+            dedicated_called=dedicated_called,
+            dedicated_disagreed=dedicated_disagreed,
+            dedicated_failed=dedicated_failed,
+            dedicated_ambiguous=dedicated_ambiguous,
+            before_verdict=before_verdict,
+            postprocess_verdict=postprocess_verdict,
         )
 
 
@@ -274,10 +323,16 @@ async def run_cell(
     judgment_settings: JudgmentSettings,
     category_fanout_max: int = 5,
     repurchase_max: int = 5,
+    leg_head_suppression: bool = False,
+    leg_generic_heads: frozenset[str] = frozenset(),
+    leg_condition_terms: frozenset[str] = frozenset(),
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     union_enabled: bool = False,
     union_llm: Any | None = None,
     union_settings: Settings | None = None,
+    dedicated_llm: LLMClient | None = None,
+    tri_generic_heads: frozenset[str] = frozenset(),
+    tri_condition_terms: frozenset[str] = frozenset(),
 ) -> CellResult:
     """성공 표본 N개를 채울 때까지 재시도한다.
 
@@ -307,6 +362,9 @@ async def run_cell(
                 screen=None,
                 category_fanout_max=category_fanout_max,
                 repurchase_max=repurchase_max,
+                leg_head_suppression=leg_head_suppression,
+                leg_generic_heads=leg_generic_heads,
+                leg_condition_terms=leg_condition_terms,
             )
         except BudgetExceeded as exc:
             result.failures.append(
@@ -329,6 +387,26 @@ async def run_cell(
             )
             await sleep(backoff_seconds(len(result.failures)))
             continue
+        before_verdict = is_underspecified_turn(decision, prior, judgment_settings)
+        post_decision, _ = postprocessed_decision(decision, generic_heads=tri_generic_heads, condition_terms=tri_condition_terms)
+        postprocess_verdict = is_underspecified_turn(post_decision, prior, judgment_settings)
+        dedicated_called = dedicated_disagreed = dedicated_failed = dedicated_ambiguous = False
+        if dedicated_llm is not None:
+            dedicated_called = True
+            try:
+                raw = await dedicated_llm.complete(
+                    system='사용자가 무엇을 살지 지목하지 않았으면 {"underspecified":true}, 아니면 false만 JSON으로 답하세요.',
+                    user=anchor.utterance,
+                    tier=tier,
+                    max_tokens=24,
+                )
+                suppress = json.loads(raw).get("underspecified") is True
+                if suppress:
+                    clone, dedicated_ambiguous = dedicated_suppressed_decision(decision)
+                    dedicated_disagreed = is_underspecified_turn(clone, prior, judgment_settings) != is_underspecified_turn(decision, prior, judgment_settings)
+                    decision = clone
+            except Exception:
+                dedicated_failed = True
         union_result = None
         if union_enabled:
             # [#432] 순환 임포트 회피(LAZY) — union.py 가 이 파일의 _clone_decision 등을 쓴다.
@@ -363,6 +441,12 @@ async def run_cell(
                 judgment_settings=judgment_settings,
                 latency_ms=int(round((perf_counter() - started) * 1000)),
                 union=union_result,
+                dedicated_called=dedicated_called,
+                dedicated_disagreed=dedicated_disagreed,
+                dedicated_failed=dedicated_failed,
+                dedicated_ambiguous=dedicated_ambiguous,
+                before_verdict=before_verdict,
+                postprocess_verdict=postprocess_verdict,
             )
         )
     result.filled = len(result.samples) == n
@@ -380,11 +464,17 @@ async def run_probe(
     concurrency: int = 1,
     category_fanout_max: int = 5,
     repurchase_max: int = 5,
+    leg_head_suppression: bool = False,
+    leg_generic_heads: frozenset[str] = frozenset(),
+    leg_condition_terms: frozenset[str] = frozenset(),
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     on_cell_done: Callable[[CellResult], None] | None = None,
     union_enabled: bool = False,
     union_llm: Any | None = None,
     union_settings: Settings | None = None,
+    dedicated_llm: LLMClient | None = None,
+    tri_generic_heads: frozenset[str] = frozenset(),
+    tri_condition_terms: frozenset[str] = frozenset(),
 ) -> list[CellResult]:
     """모든 셀을 돌린다. 결과는 항상 cellId 정렬이라 동시성이 순서를 바꾸지 않는다."""
     semaphore = asyncio.Semaphore(max(concurrency, 1))
@@ -400,10 +490,16 @@ async def run_probe(
                 judgment_settings=judgment_settings,
                 category_fanout_max=category_fanout_max,
                 repurchase_max=repurchase_max,
+                leg_head_suppression=leg_head_suppression,
+                leg_generic_heads=leg_generic_heads,
+                leg_condition_terms=leg_condition_terms,
                 sleep=sleep,
                 union_enabled=union_enabled,
                 union_llm=union_llm,
                 union_settings=union_settings,
+                dedicated_llm=dedicated_llm,
+                tri_generic_heads=tri_generic_heads,
+                tri_condition_terms=tri_condition_terms,
             )
         if on_cell_done is not None:
             on_cell_done(result)

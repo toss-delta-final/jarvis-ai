@@ -16,6 +16,7 @@ import json
 import math
 import os
 from functools import lru_cache
+from pathlib import Path
 from typing import Annotated, Literal, NamedTuple
 
 from pydantic import Field, SecretStr, field_validator, model_validator
@@ -898,6 +899,29 @@ class Settings(BaseSettings):
     # 번에 전체 롤백). 기본 off — 이 기능은 no_condition(#162) 위에 얹는 확장이라, 검증 전
     # 기본 배포에 영향을 주지 않는다.
     underspecified_reask_enabled: bool = False
+    # #465 단일 leg 후처리 — decompose 파싱부에서 **총칭 head** leg 을 제거한다.
+    # 기본 **on**: 하방이 유계이고 실측으로 0이다(아래). 위치가 논지다 — `cat_signal` 계산
+    # 직전이라야 leg 제거가 `semantic_query_is_fallback` 로 자동 전파된다.
+    # 실측: 보호 named_category 77표본 오발동 0, 조건전용 누출은 런당 2건 제거,
+    # 해로운 발동 0(화면 1건은 "리스트에서 3번째 거" 쓰레기 leg의 올바른 억제), LLM 호출 0.
+    # primary missRate는 before 10.7·15.2% → postprocess 16.1·12.5%로 개선되지 않았다.
+    # #466 병합 뒤 표적이 런당 2~3건으로 작아 missRate가 이 스위치의 감도 있는 지표가 아니었다.
+    category_leg_head_suppression_enabled: bool = True
+    # #443 사전 주입 기본 on — N=24 독립 2런에서 namedCategoryHasLeg 98.6%·100.0%
+    # (base 문턱 83.7%)이며 conditionOnlyNoCategoryQuery 90.0%·92.5%(문턱 84.2%)다.
+    # 문면 7종은 최대 +7.3%p를 벌며 반대 축을 −10.8%p 지불했지만, 사전 기반 주입은 +25%p를
+    # 벌면서 반대 축 손실이 없다. 사전에 조건어가 없어 condition_only 발화는 매칭 자체가 불가능하다.
+    category_leg_injection_enabled: bool = True
+    category_leg_injection_path: str = str(
+        Path(__file__).resolve().parents[1] / "data" / "seller_categories.json"
+    )
+    category_leg_injection_min_length: int = 2
+    category_leg_generic_heads: list[str] = Field(
+        default_factory=lambda: ["거", "것", "상품", "제품", "아이템", "아무거나"]
+    )
+    category_leg_condition_terms: list[str] = Field(
+        default_factory=lambda: ["무료배송", "가성비", "평점", "인기", "최저가"]
+    )
     # 제약(가격)만 있는 턴의 인기 상품 고지 — no_condition_notice_popular 와 같은 톤이되, 실제로
     # 가격 필터를 통과한 후보라는 사실만 말한다(거짓 주장 금지, #132). no_condition 턴에는 내지
     # 않는다(그 턴은 no_condition_notice_* 가 이미 담당 — 중복 고지 방지).
