@@ -2058,6 +2058,36 @@ class Settings(BaseSettings):
     # 신뢰하는 프록시 홉 수(우측부터). 자사 프록시 1대면 1 = 최우측 값.
     forwarded_for_trusted_hops: int = 1
 
+    @field_validator("trust_forwarded_for", "forwarded_for_trusted_hops", mode="before")
+    @classmethod
+    def _empty_forwarded_for_settings_use_default(cls, value: object, info) -> object:
+        # `.github/workflows/deploy.yml` 이 이 두 값을 무조건 주입하는데(조직 Variables
+        # 관리), 저장소/조직 변수가 미등록·삭제되면 빈 문자열이 온다 — bool/int 파싱 실패로
+        # 전체 서비스가 기동 크래시 루프에 빠진다(레이트 리밋 정밀도 저하와 비교할 수 없는
+        # 사고, 실증: `TRUST_FORWARDED_FOR=` → `ValidationError: bool_parsing`). 빈 값은 필드
+        # 기본값(신뢰 off / hops=1)으로 해석해 기동은 항상 성공시킨다 — 대신 신뢰가 꺼지면
+        # IP 백스톱 키가 프록시(ALB) IP 하나로 뭉쳐 전체 사용자가 상한을 공유하는 동작
+        # 저하가 조용히 발생한다는 점을 알고 선택한 폴백이다(이슈 #134). `_empty_trace_
+        # content_settings_use_default`(#326)·`_empty_color_synonym_gate_settings_use_
+        # default`(#447)와 같은 관례.
+        if isinstance(value, str) and value.strip() == "":
+            # Field 선언의 기본값을 그대로 참조한다 — 값을 복제해 적으면 선언만 바꿨을 때
+            # "미설정 → 빈 문자열" 경로가 조용히 어긋난다(PR #327 리뷰에서 지적된 함정).
+            return cls.model_fields[info.field_name].default
+        return value
+
+    # 진단 로그 `client_ip_probe`(이슈 #134) 온/오프 — **기본 on**. 아무도 XFF 홉 수를
+    # 검증한 적이 없어 운영이 근거 없는 `FORWARDED_FOR_TRUSTED_HOPS` 값을 신뢰해 왔다. 하방은
+    # 유계다 — 레이트 리밋 대상 경로(채팅 전송)당 INFO 로그 1줄이고 원문 IP 는 절대 싣지
+    # 않는다(전부 safe_fingerprint). `deploy.yml` 에 주입 경로를 만들지 않는다 — 운영은 이
+    # 코드 기본값(on)으로 돈다.
+    client_ip_probe_enabled: bool = True
+    # 클라이언트 IP 로 신뢰하는 벤더 헤더 이름. Cloudflare 값을 코드에 박지 않기 위한
+    # 튜너블 — 소문자로 정규화해 비교한다(Starlette 헤더 조회는 대소문자 무시지만 설정값이
+    # 대문자로 들어와도 동작해야 한다). 빈 문자열이면 "CF 헤더 사용 안 함"으로 해석해
+    # `resolve_client_ip` 의 1단계(Cf-Connecting-IP)를 건너뛰고 XFF 규칙으로 간다.
+    trusted_client_ip_header: str = "cf-connecting-ip"
+
     # ── 벤치마크 runner (이슈 #151) ──
     # measured 30건·p99 100건의 고정 계약 하한은 evals/benchmark/runner.py(measured)와
     # stats.py(p99)의 max() 클램프에서 강제한다. validator는 값 사이의 상대적 정합만 본다 —

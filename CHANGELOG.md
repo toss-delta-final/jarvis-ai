@@ -9,6 +9,33 @@
 
 ## [Unreleased]
 
+### Fixed
+- **#134 — Cloudflare 뒤에서 레이트 리밋 IP 백스톱이 근거 없는 홉 수를 신뢰하던 결함을,
+  "배포된 상태가 스스로 진위를 증명"하는 구조로 고쳤다.** 이슈 본문의 전제(cloudflared
+  터널 뒤 `127.0.0.1`)는 2026-08-10 인프라 실측으로 낡았다 — 터널은 이미 제거됐고 경로는
+  Cloudflare 엣지 → ALB → AI EC2 하나뿐이며 오리진은 잠겨 있다(80/443 미개방, ALB 는
+  Cloudflare IPv4 15개 대역에서만 수신). 대신 진짜 위험이 드러났다: `deploy.yml` 이
+  `TRUST_FORWARDED_FOR`/`FORWARDED_FOR_TRUSTED_HOPS` 변수 참조(`${{ vars.… }}`)를 무조건
+  주입하며 값은 조직(Organization) Variables 로 관리된다(커밋 `44d74cef` 기준 `true`/`2` —
+  조직 변수는 권한상 이 작업에서 직접 확인하지 못했다). 그 근거("2026-08-06 실측")는 AI 가
+  그때까지 XFF 를 로그로 남긴 적이 없어 **관측된 적 없는 값**이었다 — 틀렸다면 IP 백스톱이
+  위조로 조용히 우회되는 상태였다. 신설 `app/core/client_ip.py` 가
+  클라이언트 IP 판별 우선순위(`Cf-Connecting-IP`[홉 수 개념 없는 단일 값] →
+  `X-Forwarded-For` 우측 신뢰 홉 → TCP peer)를 한 곳에 모으고, 레이트 리밋 대상 경로마다
+  `client_ip_probe` 진단 로그 1건을 낸다(원문 IP 없이 `safe_fingerprint` 만, 기본 on) —
+  핵심 필드 `cfMatchIndexFromRight`(CF 값과 일치하는 XFF 원소의 우측 1-based 위치)를 보면
+  운영 로그 한 줄만으로 `FORWARDED_FOR_TRUSTED_HOPS` 가 맞는지 확인할 수 있고,
+  `hopMismatch=true` 는 즉시 오설정 신호다. 프록시가 XFF 를 append 대신 헤더를 한 줄 더
+  추가하는 경우(`headers.getlist`)도 도착 순서대로 결합해 처리한다. 새 설정 2개
+  (`client_ip_probe_enabled` 기본 on, `trusted_client_ip_header` 기본 `cf-connecting-ip`)는
+  둘 다 기본값이 곧 운영 동작이라 `deploy.yml` 배선이 필요 없다. 부수적으로, `deploy.yml`
+  이 이 경로의 두 필드(`trust_forwarded_for`/`forwarded_for_trusted_hops`)를 무조건
+  주입하는데 빈 문자열 관용 validator 가 없어 조직 Variable 미등록·삭제 시
+  `ValidationError: bool_parsing` 으로 **전체 서비스 기동 크래시 루프**에 빠지는 잠재 사고를
+  발견해 `_empty_trace_content_settings_use_default`(#326) 관례대로 같이 막았다(폴백은
+  신뢰 off/hops=1 — 조용한 저하지만 서비스 정지보다는 낫다). 계약(api-spec) 불변 — 로그·설정
+  전용 변경이다.
+
 ### Docs
 - **#139 — 1차 완료(발표) 핵심 주장 4개와 claim-evidence matrix를 확정했다.** 발표(2026-08-14)가
   나흘 남은 시점에 `evals/` 17개 하네스에 이미 쌓인 baseline 을 엮어, 새 실행 없이 무엇을
