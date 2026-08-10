@@ -2490,6 +2490,11 @@ async def test_recommendation_deferred_conditions_keeps_search_retry(
     같은 이유로 `retrying` progress 가 이 턴에서도 나간다(api-spec §3.1 v0.32.5) —
     v0.32.4 까지는 미룬 턴이 재시도 자체를 안 해 그 프레임이 없었다.
     """
+    # [#443] 이 픽스처는 `categoryQueries: []` 인데 발화(`무선 이어폰 추천해줘`)에는 카탈로그
+    # 카테고리(`이어폰`)가 있어, 사전 기반 보강이 leg 을 채우면 흐름이 달라진다. 실제 decompose
+    # 라면 이 발화에 leg 을 내므로 그 조합은 프로덕션에 없는 픽스처 인공물이다 — 이 테스트의
+    # 주제는 I-1 재시도지 leg 산출이 아니므로 보강을 끈다(위 가드와 같은 규약).
+    monkeypatch.setattr(get_settings(), "category_leg_injection_enabled", False)
     import httpx
 
     # [#393] `ratingMin` 만 있는 턴은 payload 기준으로 무필터라 새 가드(A)가 인기 상품으로
@@ -2535,6 +2540,11 @@ async def test_recommendation_nondeferred_conditions_keeps_search_retry(
     [#393] `semanticQuery` 는 Spring payload 축이 아니라 여전히 payload 기준으로는 무필터다 —
     새 가드(A)도 함께 끈다.
     """
+    # [#443] 이 픽스처는 `categoryQueries: []` 인데 발화(`무선 이어폰 추천해줘`)에는 카탈로그
+    # 카테고리(`이어폰`)가 있어, 사전 기반 보강이 leg 을 채우면 흐름이 달라진다. 실제 decompose
+    # 라면 이 발화에 leg 을 내므로 그 조합은 프로덕션에 없는 픽스처 인공물이다 — 이 테스트의
+    # 주제는 I-1 재시도지 leg 산출이 아니므로 보강을 끈다(위 가드와 같은 규약).
+    monkeypatch.setattr(get_settings(), "category_leg_injection_enabled", False)
     import httpx
 
     # [#394] 기본값이 0으로 바뀌어 재시도 루프 자체를 켜서 검증하려면 명시 주입이 필요하다.
@@ -2580,6 +2590,11 @@ async def test_recommendation_relaxation_chip_probe_keeps_search_retry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """conditions 뒤 완화 칩 probe는 첫 이벤트 예산 밖이라 I-1 재시도를 유지한다(#277)."""
+    # [#443] 이 픽스처는 `categoryQueries: []` 인데 발화(`무선 이어폰 추천해줘`)에는 카탈로그
+    # 카테고리(`이어폰`)가 있어, 사전 기반 보강이 leg 을 채우면 흐름이 달라진다. 실제 decompose
+    # 라면 이 발화에 leg 을 내므로 그 조합은 프로덕션에 없는 픽스처 인공물이다 — 이 테스트의
+    # 주제는 I-1 재시도지 leg 산출이 아니므로 보강을 끈다(위 가드와 같은 규약).
+    monkeypatch.setattr(get_settings(), "category_leg_injection_enabled", False)
     import httpx
 
     # [#394] 기본값이 0으로 바뀌어 재시도 루프 자체를 켜서 검증하려면 명시 주입이 필요하다.

@@ -924,6 +924,9 @@ async def run_buyer_turn(
                         leg_head_suppression=settings.category_leg_head_suppression_enabled,
                         leg_generic_heads=frozenset(settings.category_leg_generic_heads),
                         leg_condition_terms=frozenset(settings.category_leg_condition_terms),
+                        category_leg_injection=settings.category_leg_injection_enabled,
+                        category_leg_injection_path=settings.category_leg_injection_path,
+                        category_leg_injection_min_length=settings.category_leg_injection_min_length,
                     )
         except LLMError as exc:
             # [#84] 이 경로에서 나가기 전에 병렬 태스크를 반드시 정리한다 — 안 하면 취소되지 않은

@@ -16,6 +16,7 @@ import json
 import math
 import os
 from functools import lru_cache
+from pathlib import Path
 from typing import Annotated, Literal, NamedTuple
 
 from pydantic import Field, SecretStr, field_validator, model_validator
@@ -898,6 +899,15 @@ class Settings(BaseSettings):
     # primary missRate는 before 10.7·15.2% → postprocess 16.1·12.5%로 개선되지 않았다.
     # #466 병합 뒤 표적이 런당 2~3건으로 작아 missRate가 이 스위치의 감도 있는 지표가 아니었다.
     category_leg_head_suppression_enabled: bool = True
+    # #443 사전 주입 기본 on — N=24 독립 2런에서 namedCategoryHasLeg 98.6%·100.0%
+    # (base 문턱 83.7%)이며 conditionOnlyNoCategoryQuery 90.0%·92.5%(문턱 84.2%)다.
+    # 문면 7종은 최대 +7.3%p를 벌며 반대 축을 −10.8%p 지불했지만, 사전 기반 주입은 +25%p를
+    # 벌면서 반대 축 손실이 없다. 사전에 조건어가 없어 condition_only 발화는 매칭 자체가 불가능하다.
+    category_leg_injection_enabled: bool = True
+    category_leg_injection_path: str = str(
+        Path(__file__).resolve().parents[1] / "data" / "seller_categories.json"
+    )
+    category_leg_injection_min_length: int = 2
     category_leg_generic_heads: list[str] = Field(
         default_factory=lambda: ["거", "것", "상품", "제품", "아이템", "아무거나"]
     )

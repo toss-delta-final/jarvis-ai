@@ -119,10 +119,15 @@ class Sample:
             ),
             category_legs_echo_prior=_legs_echo_prior(decision.category_queries, echo_tokens),
             category_legs=serialize_category_legs(decision.category_queries),
+            category_leg_injected=decision.category_leg_injected,
             resolved_product_id=resolved_product_id,
             screen_resolver_fired=screen_resolver_fired,
             screen_resolution_reason=screen_resolution_reason,
         )
+    # [#443] 모델 산출과 구분한 사전 보강 발동 여부 — condition_only 하드 불변식을 samples.csv
+    # 재집계만으로 판정할 수 있어야 한다. **기본값을 둔다** — 이 필드가 없던 시절에 쓰인 생성자
+    # 호출(테스트 픽스처 다수)이 전부 깨지고, 진단 필드라 "발동 안 함"이 안전한 기본값이다.
+    category_leg_injected: bool = False
 
 
 def _legs_echo_prior(queries, tokens: frozenset[str]) -> bool:  # noqa: ANN001
@@ -285,6 +290,9 @@ async def run_cell(
                 tier=tier,
                 category_fanout_max=category_fanout_max,
                 repurchase_max=repurchase_max,
+                category_leg_injection=settings.category_leg_injection_enabled,
+                category_leg_injection_path=settings.category_leg_injection_path,
+                category_leg_injection_min_length=settings.category_leg_injection_min_length,
                 **context_kwargs,
             )
         except BudgetExceeded:

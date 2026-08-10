@@ -21,6 +21,10 @@ from app.agents.buyer.recommendation.state import (
     extract_json,
 )
 from app.agents.buyer.recommendation.leg_head import suppress_generic_single_leg
+from app.agents.buyer.recommendation.category_leg_injection import (
+    DEFAULT_CATEGORY_LEG_INJECTION_PATH,
+    inject_category_leg,
+)
 from app.agents.buyer.screen_reference import grid_position
 from app.core.llm import LLMClient, LLMError
 from app.schemas.spring import ProductSearchFilters
@@ -608,6 +612,9 @@ async def decompose(
     leg_head_suppression: bool = False,
     leg_generic_heads: frozenset[str] = frozenset(),
     leg_condition_terms: frozenset[str] = frozenset(),
+    category_leg_injection: bool = False,
+    category_leg_injection_path: str = DEFAULT_CATEGORY_LEG_INJECTION_PATH,
+    category_leg_injection_min_length: int = 2,
 ) -> RouteDecision:
     """Haiku 1회 호출로 intent(추천/담기/장바구니조회/주문상태/일반)와 필터를 산출한다.
 
@@ -691,6 +698,13 @@ async def decompose(
         # what-축 게이트에 명시적으로 준다. 훅은 cat_signal 전이어야 폴백 플래그도 함께 뒤집힌다.
         filters.attr_conditions = parsed_attr or None
         category_queries = _parse_category_queries(data.get("categoryQueries"), category_fanout_max)
+        # 주입은 head 억제 전에만 본다. 억제로 비워진 leg는 다시 채우지 않는다.
+        category_leg_injected = False
+        if category_leg_injection:
+            injected_queries = inject_category_leg(category_queries, intent=intent, utterance=query,
+                path=category_leg_injection_path, min_length=category_leg_injection_min_length)
+            category_leg_injected = not category_queries and bool(injected_queries)
+            category_queries = injected_queries
         category_queries = suppress_generic_single_leg(
             category_queries,
             filters,
@@ -770,6 +784,7 @@ async def decompose(
         revert_categories=revert_categories,
         repurchase_products=repurchase_products,
         category_queries=category_queries,
+        category_leg_injected=category_leg_injected,
         # [#113] `is True` 로 좁힌다 — 문자열 "false"·1·null 등 애매한 산출을 전부 False 로
         # 떨어뜨려 **엄격한 쪽**(원래 조건 유지)으로 기울인다. 놓치면 무해하지만 오탐하면
         # 사용자가 말한 조건이 조용히 바뀐다.

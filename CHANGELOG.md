@@ -12,6 +12,10 @@
 ## [Unreleased]
 
 ### Fixed
+- **#443 — 정본 카탈로그 사전으로 빈 `categoryQueries` leg를 결정론 보강** — 모델이 상품군을
+  말한 첫 추천 턴에서 leg를 비우던 결함을 `seller_categories.json` 스냅샷의 최장 일치로 보완한다.
+  N=24 독립 2런에서 `namedCategoryHasLeg` 98.6%·100.0%(문턱 83.7%),
+  `conditionOnlyNoCategoryQuery` 90.0%·92.5%(문턱 84.2%), condition_only 주입 0건이라 기본 on.
 - **#553 — 운영 배포 전면 중단 복구: `deploy.yml` 설명문의 빈 Actions 표현식** — `script: |` 은 YAML 블록 스칼라라 `#` 가 주석이 아니라 리터럴이고 Actions 가 그 안의 표현식도 평가한다. #539 가 넣은 설명문의 **내용이 빈 표현식**이 문법 오류를 내 워크플로가 job 을 시작조차 못 했고(startup failure, run 2건 job 0개), 승격 #552 의 41커밋이 실서버에 반영되지 못했다. 설명문에서 표현식 리터럴을 걷어내고, 같은 블록에 "여기서는 표현식을 쓰지 않는다"는 경고를 남겼다. 로컬 YAML 파싱은 통과하므로 CI 로는 못 잡는 계열이라 `docs/lessons.md` 에 진단 단서(트리거 밖 브랜치에서도 run 생성 = startup failure)까지 기록했다.
 
 ### Fixed
