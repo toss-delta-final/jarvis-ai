@@ -1712,6 +1712,21 @@ class Settings(BaseSettings):
     # 멱등 원장(profile_graph_idempotency) 보존. 재전송이 최초 응답을 찾을 수 있는 창이다.
     # **두 값 모두 🔴 C-23 잔여(정책·법무 미정)라 잠정값**이며, 만료 행을 실제로 지우는 스윕 잡은
     # #358 범위 밖이다 — 지금 이 값들이 바꾸는 동작은 아래 REQ-PGRAPH-044 기동 검증뿐이다.
+    # ── 개인화 그래프 API 응답 예산 (이슈 #360, api-spec §3.8·§3.9) ──
+    # 조회 2s / 변경 3s. **Spring 타임아웃은 각각 1s 길다**(3s·4s) — 그 부등식이 깨지면 Spring 이
+    # 먼저 끊어 AI 의 `504 UPSTREAM_TIMEOUT` 을 **관측할 수 없는 죽은 계약**이 된다.
+    #
+    # 값은 **제안이며 실측이 아니다** — api-spec §2.9 (c) 기준표에 행이 없는 이유가 그것이고,
+    # 구현 후 실측해 등재하는 것이 #360 완료 조건이다.
+    #
+    # `state_store_query_timeout_s`(3.0)와의 관계: 저장소가 **즉시** 실패하면(연결 거부 →
+    # `OperationalError`) 예산 안에 잡혀 `503 UPSTREAM_UNAVAILABLE` 이고, **느리게 실패하면**
+    # (행·풀 고갈) 바깥 예산이 먼저 끊어 `504` 다. 후자를 503 으로 만들려면 그래프 전용 쿼리
+    # deadline 이 필요한데, 전역 값을 낮추면 장바구니 등 무관한 경로가 함께 짧아진다.
+    # "예산 초과 = 504" 가 계약의 뜻이므로 이 분기를 그대로 두고 §2.9 실측에서 다시 본다.
+    profile_graph_read_budget_s: float = Field(default=2.0, gt=0.0)
+    profile_graph_write_budget_s: float = Field(default=3.0, gt=0.0)
+
     graph_idempotency_ttl_h: float = Field(default=24.0, gt=0.0)
     # 변경 감사(profile_graph_audit) 보존. **전체 초기화가 지우지 않는다**(REQ-PGRAPH-062) —
     # 파괴 동작이 추적 불가가 되면 안 되므로, 여기 남는 것은 "무엇을" 이 아니라 "언제" 다.
@@ -3061,6 +3076,13 @@ class Settings(BaseSettings):
             raise ValueError(
                 "CONVERSATION_RETENTION_DAYS must not exceed GRAPH_AUDIT_RETENTION_DAYS "
                 "(an audit record must always be able to find its transcript)"
+            )
+        # [#360] 조회가 변경보다 오래 걸리는 예산은 계약(§3.8 2s / §3.9 3s)을 뒤집는다.
+        # 조회는 문서 단일 읽기고 변경은 잠금 + 문서 재작성 + 저널 쓰기라 순서가 고정이다.
+        if self.profile_graph_read_budget_s >= self.profile_graph_write_budget_s:
+            raise ValueError(
+                "PROFILE_GRAPH_READ_BUDGET_S must stay under the write budget "
+                "(api-spec §3.8 2s vs §3.9 3s)"
             )
         if self.state_store_pool_min_size < 0:
             raise ValueError("STATE_STORE_POOL_MIN_SIZE must be non-negative")
