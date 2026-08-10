@@ -860,6 +860,11 @@ class GraphMutationResult:
     # I-36 전용. 라벨이 아니라 **개수만**이라 여기 실어도 노출 경계를 넘지 않는다
     # (api-spec §3.9.4 `purged` — 정확히 `{edges, transcriptTurns}` 2키).
     purged: dict[str, int] | None = None
+    # I-33 전용. **투영된 edge 를 원장이 든다** — 재전송은 "최초 응답 본문을 그대로"여야 하는데
+    # (REQ-PGRAPH-043), 그 사이 그 edge 가 삭제됐으면 현재 문서로는 재구성할 수 없다. 라벨을
+    # 원장에 두는 것은 #358 이 테이블 3개를 나눌 때 이미 전제한 것이고(감사와 한 행에 둘 수
+    # 없는 이유가 바로 그 라벨이었다), REQ-PGRAPH-081 의 라벨 금지는 **감사 테이블** 조항이다.
+    edge: dict | None = None
 
 
 def graph_version(revision: int) -> str:
@@ -1316,6 +1321,20 @@ async def _delete_transcripts(user_id: int) -> int:
         return 0
 
 
+def _projected_edge(document: GraphDocument, edge_id: str | None, *, settings) -> dict | None:
+    """원장에 보관할 **와이어 항목** — I-33 재전송이 최초 응답을 그대로 돌려주게 한다 (#360).
+
+    삭제(`edge_id_after is None`)는 실을 것이 없다. 지연 임포트인 이유는 `graph_projection` 이
+    `graph_merge` 를 거쳐 이 모듈로 돌아오기 때문이다(같은 파일의 다른 지연 임포트와 같은 근거).
+    """
+    if edge_id is None:
+        return None
+    from app.agents.profile.graph_projection import project_edge
+
+    view = project_edge(document, edge_id, settings=settings)
+    return view.model_dump(by_alias=True) if view is not None else None
+
+
 def _find_edge(document: GraphDocument | None, edge_id: str) -> GraphEdge | None:
     """대상 edge — **잠금 아래에서 읽은 문서**에서만 찾는다 (#360)."""
     if document is None:
@@ -1367,8 +1386,10 @@ async def _replay_if_completed(
         merged=bool(payload.get("merged")),
         suppressed=bool(payload.get("suppressed")),
         # 재전송은 **최초 응답 본문 그대로**다(REQ-PGRAPH-043). 이 시점에는 이미 다 지워져
-        # 있어 다시 세면 전부 0 이므로, 원장이 든 값을 그대로 돌려줘야 한다.
+        # 있어 다시 세면 전부 0 이므로, 원장이 든 값을 그대로 돌려줘야 한다. `edge` 도 같은
+        # 이유다 — 그 사이 삭제됐으면 현재 문서로는 재구성할 수 없다.
         purged=payload.get("purged"),
+        edge=payload.get("edge"),
     )
 
 
@@ -1471,6 +1492,11 @@ async def _apply_claimed(
         "edgeId": outcome.edge_id_after,
         "merged": outcome.merged,
         "suppressed": action == "edgeDelete",
+        # **투영된 edge 를 원장에 보관한다** (#360). 재전송은 "최초 응답 본문을 그대로"인데
+        # (REQ-PGRAPH-043), 그 사이 이 edge 가 삭제됐으면 **현재 문서로는 재구성할 수 없다** —
+        # 수정 성공 → 삭제 → 원래 `If-Match` 로 온 네트워크 재시도(원장 TTL 24h 내)가 그 창이다.
+        # 지연 임포트로 순환을 끊는다(`graph_projection` → `graph_merge` → … → 이 모듈).
+        "edge": _projected_edge(updated, outcome.edge_id_after, settings=settings),
     }
     # **문서를 쓰기 전에 의도를 남긴다** (§7.2 저널 선행 기록). 문서 쓰기와 완료 표시는 서로
     # 다른 저장소라 한 트랜잭션에 못 묶이므로, 그 사이에 끊기면 재개가 "무엇을 만들려 했는지"를
@@ -1505,6 +1531,7 @@ async def _apply_claimed(
         edge_id=outcome.edge_id_after,
         merged=outcome.merged,
         suppressed=action == "edgeDelete",
+        edge=payload["edge"],
     )
 
 
@@ -1515,7 +1542,11 @@ def _result_from(
     return GraphMutationResult(
         graph_version=payload.get("graphVersion", ""),
         replayed=True,
-        edge_id=payload.get("edgeId", fallback_edge_id),
+        # `.get(key, default)` 이 아니라 `or` 인 이유: 삭제 성공의 `edgeId` 는 **키가 있고 값이
+        # None** 이라 기본값이 발동하지 않는다(`apply_suppression` 이 `edge_id_after=None`).
+        edge_id=payload.get("edgeId") or fallback_edge_id,
         merged=bool(payload.get("merged")),
         suppressed=bool(payload.get("suppressed", action == "edgeDelete")),
+        purged=payload.get("purged"),
+        edge=payload.get("edge"),
     )

@@ -46,7 +46,7 @@ from app.agents.profile.session_activity import close_pool as close_session_acti
 from app.agents.profile.store import close_store as close_profile_store
 from app.agents.seller.checkpoint import close_checkpointer as close_seller_checkpointer
 from app.agents.seller.history import close_store as close_seller_history_store
-from app.api import chat, events, internal, profile, seller
+from app.api import chat, events, internal, profile, profile_graph, seller
 from app.core.body_limit import BodySizeLimitMiddleware
 from app.core.conversation import close_store as close_conversation_store
 from app.core.config import Settings, get_settings
@@ -321,6 +321,8 @@ def create_app() -> FastAPI:
     app.include_router(events.router)
     # Spring → AI 위임(레인 b) — I-22 홈 추천 랭킹(§3.7, #148)
     app.include_router(internal.router)
+    # 같은 레인 — 마이페이지 취향 관리 I-32~I-37(§3.8·§3.9, #360). `M-11`~`M-16` 의 internal 판이다.
+    app.include_router(profile_graph.router)
 
     @app.get("/health", tags=["ops"])
     async def health() -> dict:
