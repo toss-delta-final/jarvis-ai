@@ -1049,7 +1049,11 @@ async def stream_recommendation(
                         exposed, profile_name_by_id, accumulated_names
                     )
                     await cart_store.set_last_reco(
-                        thread_key, [(pid, exposed_names.get(pid, "")) for pid in exposed]
+                        thread_key,
+                        [(pid, exposed_names.get(pid, "")) for pid in exposed],
+                        # #571 — 프로필 벡터 경로는 항상 목록 1개(`exposed`)라 표시 순서 = 저장
+                        # 순서가 성립한다.
+                        ordinal_span=len(exposed),
                     )
             else:
                 if trace := current_request_trace():
@@ -2707,6 +2711,10 @@ async def stream_recommendation(
                 thread_key,
                 [(pid, name_by_id.get(pid, "")) for pid in ranked_ids],
                 option_hints=option_hints,
+                # #571 — 표시 순서 = 저장 순서는 목록이 정확히 1개일 때만 성립한다(BUY_ALL 은
+                # 세트 간 중복이 dedup 로 접혀 화면 칸 수와 저장 건수가 어긋나고, 다목록 PICK_ONE
+                # 은 화면이 섹션으로 쪼개져 전역 순번이 정의되지 않는다 — §2 결정 2).
+                ordinal_span=len(push.lists[0].product_ids) if len(push.lists) == 1 else 0,
             )
     else:
         # push 실패 → products.ready 없음. rerank 코멘트가 "찾았다"고 했으니 목록 지연을 고지하고
