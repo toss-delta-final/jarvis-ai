@@ -20,11 +20,12 @@ import math
 from time import monotonic
 from typing import Protocol
 
+from app.agents.buyer.cart.options import narrow_options
 from app.core.config import get_settings
 from app.core.tracing import current_request_trace
 from app.pipelines import embedding as _embedding
 from app.pipelines.artifact_store import ArtifactStore, get_catalog_store
-from app.schemas.spring import ProductSearchFilters, ProductSearchResult
+from app.schemas.spring import CartOption, ProductSearchFilters, ProductSearchResult
 from app.services import spring_client
 
 _log = logging.getLogger(__name__)
@@ -303,6 +304,93 @@ def apply_ai_side_filters(products: list, filters: ProductSearchFilters) -> list
     return products
 
 
+def _attribute_color_values(product) -> list[str]:
+    """`SpringProduct.attributes["색상"]` 값을 리스트로 정규화한다 — 문자열 하나거나 배열일 수
+    있다(D7 자유 텍스트). `evals/option_color/harness.py::_parse_attribute_colors` 와 같은 규약
+    (raw TSV JSON 텍스트가 아니라 이미 파싱된 dict 를 다루므로 별도 함수다 — 공유할 대상이 없다)."""
+    if not product.attributes:
+        return []
+    value = product.attributes.get("색상")
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+    if isinstance(value, list):
+        return [str(v) for v in value if isinstance(v, str) and v.strip()]
+    return []
+
+
+def _is_color_unbuyable(
+    product, color: str, color_synonyms: dict[str, list[str]], settings
+) -> bool:
+    """판정식 A~D(이슈 #454 Phase 2, `docs/specs/MEASURE-OPTION-COLOR-454.md` §"판정식") — 넷을
+    전부 만족해야 "이 상품에서 이 색 옵션을 고를 수 없다"다. A(색상 조건 있음)는 호출부가 이미
+    보장한다.
+
+    D 판정은 `app.agents.buyer.cart.options.narrow_options` 의 R2(`by_condition`,
+    `color_synonyms` 확장)를 **그대로 호출**한다 — #454 되물음 좁히기와 같은 함수라 판정
+    로직을 두 곳에 두지 않는다(`evals/option_color` 하네스도 같은 함수를 쓴다).
+    """
+    if not product.options:
+        return False  # 옵션 자체가 없는 단일 SKU — "그 옵션에 색이 없다"는 질문이 성립 안 함
+    attribute_colors = _attribute_color_values(product)
+    if len(attribute_colors) < 2:
+        return False  # B 거짓 — 단일색/색상 축 없음은 정상(사이즈만 고르면 된다)
+    if product.option_count is None or product.option_count != len(product.options):
+        return False  # C 거짓(또는 미상) — 20개 절단이면 안 보이는 옵션에 그 색이 있을 수 있다
+    options = [CartOption(option_id=i, name=n) for i, n in enumerate(product.options)]
+    narrowing = narrow_options(
+        options,
+        message="",
+        terms=(color,),
+        min_term_len=settings.cart_option_narrow_min_term_len,
+        match_suffixes=settings.cart_option_match_suffixes,
+        color_synonyms=color_synonyms,
+    )
+    # D — 승인 동의어 확장 어느 것도 옵션 이름에 안 나타남("0건 매칭"만 참, 전건 일치는 매칭).
+    return narrowing.by_condition == () and not narrowing.condition_matched_all
+
+
+async def _filter_unbuyable_color_options(products: list, filters: ProductSearchFilters) -> list:
+    """검색 사후필터 — 옵션에 그 색이 없는 후보를 뺀다(이슈 #454 Phase 2, api-spec §4.6 [].options
+    소비 확대).
+
+    `rating_min` 사후필터(위 `apply_ai_side_filters`)와 같은 결 — **반증된 것만** 제거한다.
+    판정식 A~D 를 모두 만족하는(=옵션 목록 어디에도 그 색이 없다고 확신할 수 있는) 후보만 뺀다.
+    B(색상 축 없음/단일)·C(20개 절단)는 반증이 아니라 "모른다"이므로 보존한다 — `rating=None`을
+    저평점으로 단정하지 않는 것과 같은 철학.
+
+    [#393 C 와 다른 자리] `apply_ai_side_filters` 는 인기 상품 폴백 경로와 공유하는 동기 함수인데,
+    이 필터는 색상 동의어 사전 조회(비동기 I/O, TTL 캐시 히트가 아니면 DB 왕복)가 필요해 그
+    함수에 넣지 않았다 — `search_catalog`(정상 검색 경로)에만 적용하고 인기 상품 폴백에는
+    적용하지 않는다(#454 는 색상 조건이 있는 검색 턴을 다루는 이슈이고, 폴백은 범위 밖).
+
+    사전 적재 실패·설정 off·색상 조건 없음이면 오늘 동작(무필터)으로 degrade한다. **0건 가드** —
+    제외 후 후보가 0건이면 제외를 통째로 취소하고 원래 목록을 돌려준다(SKU 코드가 실제로는
+    색상 코드일 수 있어 AI 는 판별 못 한다 — 하방을 유계로 만든다).
+    """
+    settings = get_settings()
+    if not settings.search_color_option_postfilter_enabled:
+        return products
+    if not filters.color or not filters.color.strip():
+        return products
+    try:
+        color_synonyms = await spring_client._load_color_synonym_map(settings)
+    except Exception:
+        _log.warning("색상 옵션 사후필터 사전 적재 실패 — 오늘 동작으로 degrade", exc_info=True)
+        return products
+    if color_synonyms is None:
+        return products
+
+    color = filters.color
+    filtered = [p for p in products if not _is_color_unbuyable(p, color, color_synonyms, settings)]
+    if not filtered:
+        if trace := current_request_trace():
+            trace.mark_degraded("color_option_postfilter_all_excluded")
+        return products
+    return filtered
+
+
 async def search_catalog(
     filters: ProductSearchFilters,
     exclude_product_ids: list[int] | None = None,
@@ -334,6 +422,11 @@ async def search_catalog(
 
     # rating_min 사후필터 + attr_conditions 하드필터 — 인기 상품 폴백 경로와 공유(#393 C).
     products = apply_ai_side_filters(products, filters)
+
+    # 색상 옵션 사후필터(이슈 #454 Phase 2) — 인기 상품 폴백과 공유하지 않는다(위 함수 docstring
+    # "#393 C 와 다른 자리" 참조). rating_min/attr_conditions 뒤에 둬 그 필터가 이미 줄인 목록만
+    # 판정한다(비용 절감 — 판정 자체는 순서 무관하게 같은 결과).
+    products = await _filter_unbuyable_color_options(products, filters)
 
     # total_count = 사후필터 통과 매칭 수(전량). top-K 절단은 graph dedup 이후로 이동(#101).
     return ProductSearchResult(products=products, total_count=len(products))

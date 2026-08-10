@@ -9,6 +9,31 @@
 
 ## [Unreleased]
 
+### Changed
+- **#434 — `conditions` 칩·`conditionActions` 를 멀티 값 축(`category`·`brand`) 값당 1개로
+  분리하고, 값 지정 category 제거가 실제로 남은 카테고리 집합으로 재검색되게 했다**
+  (api-spec §3.1, v0.32.14). 종전에는 멀티 카테고리/브랜드를 칩 1개에 조인 문자열로 뭉쳐 "그
+  값만" 제거할 수 없었다. `build_condition_chips` 가 값마다 칩을 내고(`(field, value)` 기준
+  순서 보존 dedup), `conditionActions[].value`(선택, 스칼라)를 신설해 그 값만 지목한 제거를
+  지원한다 — **와이어 계약 추가 전용**이라 `value` 를 안 보내는 기존 FE 는 종전 동작과 100%
+  동일하다. `value` 없음은 여전히 그 field 전체 제거(하위호환)이다.
+  `brand` 는 실제 리스트라 값 지정 제거가 즉시 동작했지만, `category` 는 멀티턴 승계 상태
+  (`ProductSearchFilters.category`)에 대표 1개만 남아 값 지정 제거가 대표값 일치 판정만 하는
+  **관대 무시(no-op)** 였다 — 이슈 헤드라인인 카테고리 칩에서 기능의 절반이 비어 있었다.
+  `ThreadFilterStore` 에 이 스레드가 실제로 검색한 카테고리 집합을 담는 키(`chip_categories`)
+  를 신설해 매 추천 턴마다 무조건 덮어쓰고, 값 지정 category 제거 턴에는 그 집합에서 지목
+  값만 뺀 나머지로 재검색·재승계한다(다음 일반 리파인 턴부터는 종전처럼 대표 1개 승계로
+  되돌아간다 — 일반 승계 동작은 바뀌지 않았다). 저장 집합을 못 읽는 스레드(만료·구 스레드)는
+  대표값 일치 판정으로 강등한다. 복원 턴이 `case==3` 우연 일치로 `split_by_need`(니즈별 목록
+  분할)를 열지 않도록 `RouteDecision.category_legs_restored` 가드를 추가했다. 부수로 **`brand`
+  칩 `value` 가 리스트→스칼라로 정정**됐다(단일 값이어도) — §3.1 예시가 원래 스칼라를 명시했던
+  드리프트 해소로 FE 가시 변경이다. 호출부 로그(`condition_actions_applied`, #442)에
+  `changed_fields`(None 이 안 되는 브랜드 부분 제거 포함)·`unmatched_values`(관대 무시 건수,
+  값 자체는 미기록)를 추가하고 `no_op` 판정을 `changed_fields` 기준으로 바꿨다. 대표 카테고리가
+  안 바뀌는 복원(A·B·C 중 비대표 값 지목 제거)은 `changed_fields` 만으로는 `no_op: true`로
+  찍혀 무동작과 구분이 안 됐는데(#442 재발 형태), `category_legs_restored`(bool) 를 실제 복원
+  결과 기준으로 추가하고 `no_op` 판정에도 반영했다.
+
 ### Fixed
 - **#134 — Cloudflare 뒤에서 레이트 리밋 IP 백스톱이 근거 없는 홉 수를 신뢰하던 결함을,
   "배포된 상태가 스스로 진위를 증명"하는 구조로 고쳤다.** 이슈 본문의 전제(cloudflared
@@ -96,6 +121,44 @@
 - **#553 — 운영 배포 전면 중단 복구: `deploy.yml` 설명문의 빈 Actions 표현식** — `script: |` 은 YAML 블록 스칼라라 `#` 가 주석이 아니라 리터럴이고 Actions 가 그 안의 표현식도 평가한다. #539 가 넣은 설명문의 **내용이 빈 표현식**이 문법 오류를 내 워크플로가 job 을 시작조차 못 했고(startup failure, run 2건 job 0개), 승격 #552 의 41커밋이 실서버에 반영되지 못했다. 설명문에서 표현식 리터럴을 걷어내고, 같은 블록에 "여기서는 표현식을 쓰지 않는다"는 경고를 남겼다. 로컬 YAML 파싱은 통과하므로 CI 로는 못 잡는 계열이라 `docs/lessons.md` 에 진단 단서(트리거 밖 브랜치에서도 run 생성 = startup failure)까지 기록했다.
 
 ### Fixed
+- **#454 — 장바구니 옵션 되물음 좁히기에 승인된 색상 동의어 사전을 연결해 "검정 셔츠"처럼
+  고유어로 말한 색상 조건이 옵션명("블랙")과 표기가 달라 못 좁혀지던 문제를 줄였다.** 카탈로그
+  실측(옵션 보유 상품 4,439쌍, `scripts/measure_option_color_miss_454.py` 실행 재현)에서 고유어
+  발화의 좁힘률이 **2.7% → 54.9%(+52.2%p)**, 외래어 발화는 51.1% → 54.9%(+3.8%p) — 두 표기가
+  사전으로 같은 것이 되며 수렴한다. 등가 판정은 누적 조건 매칭(R2/`by_condition`)에만 적용하고
+  이번 발화 자동 선택(R1/`by_message`, #114·#455)은 리터럴 일치만 본다(#455 리뷰 F-1 비대칭
+  유지). 좁혀지지 않은 45.1% 중 옵션명에 색상 축이 실재하는 3.3%는 "그 색은 없다/품절이다"라고
+  단정하지 않고 "찾지 못했어요"로만 안내한다 —
+  판매자가 승인 사전 밖 표기(영문·약어·미승인 색명)를 썼을 수 있어 단정할 근거가 없다. 신규
+  설정 `cart_option_color_synonym_enabled`(기본 `True`) — 사전 적재 실패·미설정은 예외 없이
+  오늘 동작으로 degrade한다. **[#508 흡수, 2026-08-10]** BE 가 옵션별 재고를 2026-08-09
+  구매자 쪽 전량 배포했다(`product.stock_quantity` → `product_stock(product_id, option_id,
+  quantity)`, 02 D33) — I-1·I-3 `options`/`optionCount` 는 품절 옵션 제외·"구매 가능한 것"
+  기준으로, I-2 는 전 옵션 품절 시 `CART_STOCK_INSUFFICIENT`(`availableStock: 0`)로,
+  I-18 은 `maxQuantity`(옵션 재고 기준) 신설로 반영했다(api-spec §4.1·§4.6·§4.9·§4.17,
+  `<!-- VERSION_TBD -->`). **2026-08-10 운영 실측으로 확인** — `product_stock` 24,390행(품절
+  3,170), I-1 `optionCount` 동일 상품 161→138(23개 품절 제외). **다만 #508 이 이 색상 표기
+  이형 문제를 대신 풀어주지 않는다** —
+  옵션이 사이즈인 상품은 색상이 상품 속성에만 있어 재고 필터가 색상별로 못 거르므로(BE 명시
+  한계), 이 PR 의 색상 동의어 좁히기는 #508 이후에도 그대로 필요하다. 상세 실측·경계는
+  `docs/specs/MEASURE-OPTION-COLOR-454.md`.
+- **#454 Phase 2 — #508(옵션별 재고) 이후에도 남는 "옵션에 그 색이 없다" 문제를 검색
+  사후필터로 줄였다.** BE 의 색상 매칭(`attributes.색상` 축)과 품절 제외(`options` 축)가 서로
+  몰라서, 속성엔 그 색이 있어도 보이는 옵션엔 그 색이 없는 후보가 그대로 반환됐다(운영 실측
+  `color=블랙`: 옵션 있는 144건 중 77건이 옵션 목록에 블랙 계열 0개, 그중 52건은 다색이라
+  판정 확실). `app.services.search_service._filter_unbuyable_color_options` 가 판정식(색상
+  조건 있음 ∧ `attributes.색상` 복수 ∧ `optionCount==len(options)`(절단 아님) ∧ 승인 동의어
+  확장 어디에도 그 색이 옵션명에 없음)을 모두 만족하는 후보만 뺀다 — D 판정은
+  `app.agents.buyer.cart.options.narrow_options`(#454 되물음 좁히기와 같은 함수, 재구현
+  아님)를 그대로 호출한다. `evals/option_color` 하네스(신규, before/after 같은 패스로 산출)
+  실측: `unbuyable_rate` 11.0%(2,152/19,536, 옵션 있는 후보 대비) → 필터 적용 시 정의상 0%,
+  `candidates_per_query` 중앙값 2,579.0 → 2,486.5(**−3.6%**, recall 손실이 크지 않음), 0건
+  가드 발동 0/20색(전량 카탈로그 스케일에서는 안 뜬다). 하네스 판정과 실제 구현이 19,536건
+  전건 일치(교차검증 0건 불일치). 신규 설정 `search_color_option_postfilter_enabled`(기본
+  `True`) — 사전 적재 실패·색상 조건 없음·제외 후 0건이면 예외 없이 무필터로 degrade한다.
+  §2-B 되물음 고지 문구는 바꾸지 않는다(단정 금지 근거가 재고와 무관해 그대로 유효). api-spec
+  §4.6 `[].options` 소비를 검색 사후필터까지 확대(`<!-- VERSION_TBD -->`). 상세는
+  `docs/specs/MEASURE-OPTION-COLOR-454.md` §7.
 - **#466 — 브랜드-only 발화에서 `filters.brand` 가 비던 결함을 고쳤다** (#430 후속, 과소지정
   오탐의 근원). `decompose` 프롬프트에는 색상 전용 규칙만 있고 **브랜드 추출 규칙이 아예
   없었다.** `- recommend:` 불릿에 브랜드 절 하나를 넣어 ① 추출 ② **발화 표기 그대로**(번안 금지)
