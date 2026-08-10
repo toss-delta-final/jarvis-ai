@@ -57,7 +57,7 @@ class ProductSearchFilters(CamelModel):
     limit 은 **AI 후보 상한(rerank 입력 top-K)**. 정렬은 rerank(LLM) 소관이라 별도 필드가 없다(#100 P2).
     excludeProductIds 원천 = GET /orders/recent(§4.7), 게스트는 빈 배열.
     [2026-07-23, BE 합의] size 제거로 limit 은 더 이상 Spring 요청 size 가 아니다(§4.6) — Spring 은
-    전량 반환하고, limit 은 search_catalog 가 top-K 절단에 쓴다.
+    전량 반환하고, limit 은 search_catalog 가 top-K 절단에 쓴다. [#395, 2026-08-07] 재도입 폐지 확정.
     """
 
     category: str | None = None
@@ -111,6 +111,8 @@ class SpringProduct(CamelModel):
     # Layer2 속성(소재·핏 등, #100 P0) — 유연매칭(#101). 값 타입은 dict[str, object](비-str 관대):
     # BE 가 {"방수": true} 등 bool·숫자를 주면 dict[str, str] 은 후보 1건이 ValidationError 로
     # 검색 전체를 무너뜨린다(PR#127 리뷰). 소비는 #101 이라 지금 값 타입을 강제하지 않는다.
+    # [#395, api-spec §4.6] BE 가 2026-08-08 배포로 `_extra`·`_source_pid`·`_domain`·`_category`
+    # 를 더 이상 싣지 않는다 — 값 타입 관대 수신 규약은 그대로 유지된다.
     attributes: dict[str, object] | None = None
     price: int | None = None  # 판매가 — AI 계산용(예산·maxPrice·rerank, #100 P1), 표시 아님
     rating: float | None = None  # 조회 시 집계(DDL D9) — AI 계산용(평점필터·rerank, #100 P0)
@@ -1212,7 +1214,8 @@ class SellerReviewStats(SellerAggregateModel):
     by_product: list[SellerReviewProductStat] = Field(default_factory=list)
 
 
-# ── 7. 장바구니 삭제 · 찜 (이슈 #116·#117, I-24~I-28 — 확정 2026-08-05, Spring 구현 진행 중) ──
+# ── 7. 장바구니 삭제 · 찜 (이슈 #116·#117, I-24~I-28 — 확정 2026-08-05, Spring 구현됨) ──
+# [#285] BE `jarvis-backend` main 실측(2026-08-08, BE PR #92·#93) — api-spec §4.12~4.16 v0.31.3.
 
 
 class AddWishlistRequest(CamelModel):
@@ -1261,3 +1264,31 @@ class WishlistView(CamelModel):
     """I-28 응답(확정 2026-08-05). 찜 0건도 200 + items:[](404 아님, get_cart 와 같은 규약)."""
 
     items: list[WishlistItem] = Field(default_factory=list)
+
+
+# ── 8. 장바구니 수량 변경 (I-25, §4.13 — 확정 2026-08-05, Spring 구현됨 · AI 구현 착수 #285) ──
+
+
+class ChangeCartQuantityRequest(CamelModel):
+    """I-25 PATCH /internal/cart/items/{cartItemId} 요청 본문(확정 2026-08-05).
+
+    quantity 하나뿐 — **1~99 치환값**(합산 아님)이다. "3개로 바꿔줘"류 발화가 이 계약을 쓰고,
+    "하나 더 담아줘"류(합산)는 이 계약이 아니라 I-2(§4.1) 재호출이다 — 두 발화를 섞지 않는다.
+    범위는 `decompose`(`CartIntent.quantity`)가 이미 1~99 로 클램프하지만, 어댑터에 들어오는
+    값이 그 경로만은 아니므로 `add_to_cart`(`AddToCartRequest.quantity`)와 같은 관례로
+    스키마에서도 강제한다.
+    """
+
+    quantity: int = Field(..., ge=1, le=99)
+
+
+class ChangeCartQuantityResult(CamelModel):
+    """I-25 200 성공 응답(확정 2026-08-05) — {success, data:{cartItemId, quantity}}.
+
+    삭제(I-24)와 달리 **응답에 값이 있다** — `quantity` 가 BE 가 반영한 최종 수량이다(치환
+    요청값과 같아야 정상이지만, AI 는 요청값이 아니라 이 응답값을 신뢰해 emit 한다).
+    """
+
+    success: bool
+    cart_item_id: int | None = None  # 숫자(BIGINT, cart_item.id)
+    quantity: int | None = None

@@ -26,7 +26,13 @@ from pydantic import ValidationError
 from app.agents.buyer._frames import progress as progress_frame
 from app.agents.buyer._frames import sse
 from app.agents.buyer.cart.graph import stream_cart_add, stream_cart_view
+from app.agents.buyer.cart.intent_guard import (
+    classify_cart_utterance,
+    has_deceptive_wishlist_marker,
+    has_wishlist_remove_evidence,
+)
 from app.agents.buyer.cart.options import condition_terms as cart_condition_terms
+from app.agents.buyer.cart.quantity import stream_cart_quantity_change
 from app.agents.buyer.cart.remove import stream_cart_remove
 from app.agents.buyer.cart.state import get_cart_store
 from app.agents.buyer.cart.wishlist import (
@@ -58,6 +64,7 @@ from app.agents.buyer.recommendation.graph import stream_recommendation
 from app.agents.profile.builder import record_remember
 from app.agents.buyer.session_state import context_thread_key, ensure_thread_adopted
 from app.agents.profile.gate import is_remember_command
+from app.agents.profile.personalization_gate import personalization_enabled
 from app.agents.profile.reader import read_profile_summary
 from app.agents.profile.store import get_profile_store
 from app.core import pg_store
@@ -71,7 +78,7 @@ from app.core.tracing import current_request_trace, trace_span
 from app.core.session_context import SessionStateUnavailable
 from app.core.text import _strip_unsafe
 from app.agents.buyer.recommendation.state import CartIntent, CategoryQuery
-from app.agents.buyer.screen_reference import resolve_screen_reference
+from app.agents.buyer.screen_reference import mentions_screen_reference, resolve_screen_reference
 from app.schemas.chat import CONDITION_FIELD_TO_FILTER, ConditionAction, DoneData, ErrorData
 from app.schemas.spring import ProductSearchFilters
 from app.services import search_service, spring_client
@@ -723,9 +730,30 @@ async def run_buyer_turn(
     # 프로필 주입 (회원만, read-only) — 게스트/신규는 None(개인화 스킵, 결정 8)
     profile = None
     profile_vec = None
+    # [#359] 개인화 중지(§6.6)가 이 턴의 **수집**도 막는지. 소비는 아래 `profile`·`profile_vec`
+    # 를 비우는 것으로 끝나지만 수집 지점은 두 곳(여기의 "기억해", 아래의 세션 버퍼)이라
+    # 판정 결과를 변수로 들고 다닌다 — 턴당 플래그 조회는 **1회**여야 한다.
+    personalization_on = False
     profile_eligible = bool(not identity.is_guest and identity.user_id and not identity.seller_id)
     if profile_eligible:
-        summary = await read_profile_summary(identity.user_id)
+        # 요약 조회와 중지 플래그 조회를 **병렬**로 띄운다. 직렬로 붙이면 관문 안 직렬 합이
+        # 한 왕복만큼 늘어나는데, 아래 §관문 주석이 적었듯 그 예산은 이미 최악에서 상한을
+        # 넘긴다 — 같은 pg-profile 을 치는 두 조회라 병렬이면 벽시계는 `max` 이지 `sum` 이
+        # 아니다. `return_exceptions=True` 로 한쪽 실패가 다른 쪽을 취소해 고아 태스크를
+        # 만들지 않게 한다(이 파일의 `_cancel_scope_task` 와 같은 규율).
+        summary_result, gate_result = await asyncio.gather(
+            read_profile_summary(identity.user_id),
+            # 소비·hot-path 쓰기는 fail-closed 다 — 사용자가 껐는데 저장소 장애 동안 시스템이
+            # 몰래 개인화를 재개하는 것이 이 기능이 막으려는 상황이다(personalization_gate).
+            personalization_enabled(identity.user_id, on_error=False),
+            return_exceptions=True,
+        )
+        if isinstance(summary_result, BaseException):
+            raise summary_result
+        # 게이트는 자기 실패를 이미 `on_error` 로 흡수한다 — 여기까지 예외가 오면 프로그래밍
+        # 오류이므로 조용히 삼키지 않고 안전한 쪽(중지)으로 닫는다.
+        personalization_on = gate_result is True
+        summary = summary_result if personalization_on else None
         profile = summary.get("markdown") if summary else None
         # [#162] 요약 생성 시점에 미리 만들어 둔 취향 벡터(#148 `store._embed_summary`).
         # 종전에는 markdown 만 꺼내 쓰고 이 값을 버렸다 — 조건 없는 발화의 회원 경로가 이걸로
@@ -733,7 +761,9 @@ async def run_buyer_turn(
         profile_vec = summary.get("embedding") if summary else None
         # "기억해"류 명시 명령은 게이트 없이 즉시 승격(hot-path, REQ-PROF). intent 와 무관한
         # 명시 명령이라 라우팅 앞에 둔다 — decompose 가 실패한 턴에도 기록돼야 한다.
-        if is_remember_command(request.message):
+        # **[#359] 단 전역 중지가 개별 명시 요청보다 우선한다**(REQ-PGRAPH-052, api-spec §3.9.5
+        # "명시적 '기억해' 요청도 저장하지 않는다").
+        if personalization_on and is_remember_command(request.message):
             await record_remember(identity.user_id, request.message)
 
     # 장바구니 문맥 — 직전 추천(담기 productId 해소)·옵션 되물음 대기 상태.
@@ -1031,8 +1061,15 @@ async def run_buyer_turn(
     # 신호로도 쓰지 않는다는 판단이다.
     # [#84] 빈 발화 가드 — conditionActions 만 있고 message 가 빈 턴(계약상 허용, api-spec §3.1)은
     # 취향 신호가 0인데 버퍼(슬라이딩 윈도우)만 밀어낸다. 공백-only 도 같이 막는다.
+    # [#359] 개인화 중지면 여기도 막는다(REQ-PGRAPH-052). "기억해" 는 명시 명령이고 이쪽은 모든
+    # 발화가 지나가는 상시 경로라, 막지 않으면 중지해도 취향 원문이 계속 쌓이고 다음 배치가
+    # 그것을 델타로 뽑아 "수집 중지" 가 사후에 무너진다. 판정은 위 프로필 블록이 턴당 1회
+    # 조회해 둔 값을 재사용한다 — 여기서 다시 조회하면 왕복이 하나 늘어난다.
+    # **차단은 호출부에 둔다.** `store.append_session_ctx` 안에 넣으면 그 함수를 직접 부르는
+    # `evals/taste_probe/runner.py` 가 조용히 0건이 된다(프로덕션 함수 재사용이 그 하네스의 목적).
     if (
         profile_eligible
+        and personalization_on
         and request.message.strip()
         and decision.intent not in settings.profile_buffer_excluded_intents
     ):
@@ -1150,9 +1187,61 @@ async def run_buyer_turn(
     #      않으므로(테스트로 고정) LLM 은 screen 상품의 id 도 이름도 알 경로가 없고, id 는
     #      화면에 표시되지 않아 사용자가 말할 수도 없다. screen 상품이 동시에 직전 추천이면
     #      `last_reco` 쪽으로 그대로 allowed 에 남는다 — 정상 경로는 하나도 닫히지 않는다.
+    # [#440 라운드 3 리뷰 F9] decompose 가 `cart_remove` 로 오분류한 찜 해제 발화를 **화면 해소
+    # 보다 먼저** 정정한다 — 정정 후 도착지가 `wishlist_remove` 이고, 그 흐름은 화면 순번 해소를
+    # 전제로 설계됐다(아래 화면 해소 블록 조건에 이 불리언을 더한다). 이전 라운드는 정정을
+    # `cart_remove` 분기 안에서, 화면 해소를 이미 지나온 뒤에 했다 — 그 상태에서 원시
+    # `decision.cart.product_id`(화면 순번이 아니라 decompose 가 문맥에서 고른 값)를 그대로
+    # `stream_wishlist_remove` 에 넘기면, 화면 3열+찜 2건 상황에서 "3번째 거 찜에서 빼줘"가
+    # 사용자가 가리킨 항목이 아니라 decompose 오추출 productId 를 지운다(재현 확인 — 같은
+    # 발화라도 decompose 가 `wishlist_remove` 를 직접 내면 정확히 해소되고 `cart_remove` 로
+    # 오분류하면 다른 항목이 삭제됐다. LLM 분류 결과에 따라 삭제 대상이 갈리는 것은 그 자체가
+    # 결함이다). `decision` 자체는 변형하지 않는다 — 트레이스·관측은 decompose 가 실제로 무엇을
+    # 냈는지 그대로 남아야 한다.
+    # [#440 라운드 9 리뷰 F24] 정정은 결정론 규칙이 LLM 산출(`cart_remove`)을 **덮어쓰는**
+    # 지점이다 — 관대한 라우팅(`classify_cart_utterance`)만으로 덮어쓰면 `"문구 '찜
+    # 해제해줘' 대신 키보드 빼줘"`(decompose `cart_remove`, 실제 의도는 장바구니 삭제)에서
+    # 인용된 찜 문구가 라우팅을 `wishlist_remove` 로 끌어가 **장바구니 삭제라는 사용자의 실제
+    # 요청을 삼킨다**(실측, 파괴적 — 찜은 지워지지 않지만 요청한 장바구니 삭제가 안 일어난다).
+    # `has_wishlist_remove_evidence`(발화 전체 앵커, F22)를 함께 요구해 확신 없이는 덮어쓰지
+    # 않는다 — decompose 가 **직접** `wishlist_remove` 를 내는 분기(아래, 이 불리언과 무관)는
+    # 게이트하지 않는다: 거긴 LLM 판단을 존중하고 해소기의 되물음이 안전판이다. 우리가 LLM 을
+    # **덮어쓸 때만** 근거를 요구한다.
+    corrected_to_wishlist_remove = (
+        decision.intent == "cart_remove"
+        and classify_cart_utterance(request.message, settings) == "wishlist_remove"
+        and has_wishlist_remove_evidence(request.message, settings)
+    )
+    # [#440 후속 정정] 역방향 — decompose 가 `wishlist_remove` 를 냈는데 결정론 계층은 `cart_remove`
+    # 로 보는 경우("찜닭 빼줘": 음식명 + 장바구니 삭제 의도). 정정이 없으면 근거 게이트
+    # (`has_wishlist_remove_evidence`)가 찜 삭제는 막지만, 사용자가 실제로 요청한 장바구니
+    # 삭제는 아무도 수행하지 않아 조용히 증발한다(이슈 제목 "엉뚱한 걸 지우거나"의 잔여물,
+    # `docs/lessons.md` 참조 — 오분류 방어는 막기·고쳐 보내기 두 방향이 짝이어야 한다). 우리가
+    # LLM 을 덮어쓰는 세 번째 지점이다(오케스트레이터 실측 8/8, `evals/intent_probe/fixtures/
+    # anchors_a.json` `wishlist-remove-003` 참조).
+    #
+    # 세 조건 모두 참일 때만 정정한다:
+    #   1. decision.intent == "wishlist_remove"(LLM 이 찜 해제로 냈다)
+    #   2. classify_cart_utterance == "cart_remove"(결정론 계층은 반대로 본다 — `"찜닭 빼줘"`
+    #      는 어절 경계 검사가 `"찜닭"`의 `"찜"`을 죽여 다른 단계로 못 가고 4번(`cart_remove_
+    #      markers`)까지 내려간다)
+    #   3. `has_deceptive_wishlist_marker` — 발화에 `wishlist_target_markers` 가 부분 문자열로는
+    #      있지만 그중 어느 것도 어절 경계를 통과한 head 가 아니다(LLM 이 그 부분 문자열에
+    #      속았다는 서명). **이 조건이 없으면 안 된다** — `"이어폰 빼줘"`(찜 문맥일 수 있고
+    #      `"찜"` 자체가 발화에 없다)까지 장바구니로 보내 규칙 1(이름 매칭) 정상 경로가 죽는다
+    #      (대조군, `test_wishlist_remove_resolution.py` §4-E).
+    corrected_to_cart_remove = (
+        decision.intent == "wishlist_remove"
+        and classify_cart_utterance(request.message, settings) == "cart_remove"
+        and has_deceptive_wishlist_marker(request.message, settings)
+    )
     cart_intent = decision.cart or CartIntent()
     screen_reason: str | None = None
-    if decision.intent in ("cart_add", "wishlist_add", "wishlist_remove"):
+    screen_resolved = False
+    if (
+        decision.intent in ("cart_add", "wishlist_add", "wishlist_remove")
+        or corrected_to_wishlist_remove
+    ):
         # [#118] 화면 지시어는 **코드가 해소**한다 — 순번·좌표·"후보 1건" 은 결정적인 규칙이라
         # 확률적 계층에 맡길 이유가 없고, 맡겼더니 사용자가 말하지 않은 상품을 확정하는 일이
         # 잦았다(실측표는 screen_reference 모듈 docstring). `screen.products` 가 있는 턴에만
@@ -1183,6 +1272,56 @@ async def run_buyer_turn(
                 # 해소된 product_id 만 전달되면 화면 지시어 자체는 해소된다.
                 if resolved.product_id is None:
                     screen_reason = resolved.reason
+                # [#440 라운드 9 리뷰 F25] 해소기가 **실제로 상품을 확정했는지** 자체를 별도
+                # 불리언으로 남긴다 — `resolved` 를 이미 들고 있으니 새로 계산할 게 없다.
+                screen_resolved = resolved.product_id is not None
+
+    # [#440 라운드 6 리뷰 F18 → 라운드 8 리뷰 F21 → 라운드 9 리뷰 F25 → 라운드 10 리뷰 F27]
+    # F18 은 "화면이 있고(pending 이거나 해소기가 거부했다)"라는 **대리값**으로 이 신호를
+    # 만들었는데, 대리값이라 과대·과소 차단을 동시에 냈다. F21 은 `cart_intent.product_id is
+    # None` 으로 바꿨는데 이 값은 **출처를 잃는다**(해소기가 확정한 id 와 decompose 가 낸 id
+    # 를 구분 못 함). F25 는 **해소기 결과 자체**(`screen_resolved`, 위에서 남긴 값)로
+    # 출처 문제를 없앴다 — 필요한 것은 두 사실을 **직접** 보는 것이다: (1) 발화가 화면을
+    # **참조**하려 시도했는가 (2) 해소기가 그 시도를 **상품으로 확정**했는가(`screen_resolved`).
+    #
+    # **[라운드 10 리뷰 F27] 이 두 사실을 하나의 파생값(`screen_refused = mentions_screen_
+    # position and not screen_resolved`)으로 합쳐 넘기던 것을 그만둔다.** 화면 3번째가 503
+    # 으로 정확히 해소됐는데 찜 목록엔 77 하나뿐이면, 그 파생값은 `False`("위치를 가리켰고
+    # 해소도 성공했으니 거부 아님")가 되어 규칙 3(목록 1건 자동)이 무관한 77 을 지웠다(재현,
+    # 파괴적 — `screen_resolved=True` 를 "규칙 3 fallback 허용"으로 오독한 것). 규칙 2(문맥
+    # id)와 규칙 3(목록 1건 자동)은 이 신호를 **서로 다르게** 써야 한다 — 규칙 2 는 "위치를
+    # 가리켰는데 확정 못 했을 때만" 건너뛰면 되지만(파생값과 값이 같다), 규칙 3 은 "위치를
+    # 가리킨 이상 확정 성공 여부와 무관하게" 건너뛰어야 한다(사용자가 특정 위치를 지목했는데
+    # 그 지목이 목록 항목으로 안 이어지면 되물어야지, 목록에 하나 있다는 이유로 **다른 것**을
+    # 지우면 안 된다 — "코드가 고르는 규칙은 더 엄격해야 한다"는 이 이슈의 원칙). 파생값
+    # 하나로는 이 둘을 가를 수 없으므로 **원자 두 개를 그대로 넘긴다** — 파생값을 남기면
+    # 다음 사람이 어느 쪽을 고쳐야 할지 모른다(이 레인에서 이미 두 번 겪었다. `wishlist.py`
+    # docstring "라운드 10 리뷰 F27" 문단이 규칙별 계약을 명시한다).
+    #
+    # **[라운드 11 리뷰 F29]** 첫 원자는 "숫자 위치"(`mentions_screen_position`)가 아니라
+    # **"화면 참조 시도"**(`mentions_screen_reference` — 기존 정규식 네 개 **또는**
+    # `settings.screen_deictic_markers`, 새 마커 목록을 만들지 않는다)여야 한다 —
+    # `resolve_screen_reference` 자체가 지시대명사("이거")도 화면 참조로 처리하는데, 옛
+    # 헬퍼는 숫자 위치만 봐서 `"이거 찜에서 빼줘"`(화면 1건 501 로 확정, 찜엔 77 뿐)를 "위치
+    # 미언급"으로 오독해 규칙 3 이 무관한 77 을 지웠다(재현, 파괴적). 다만 **화면이 실제로
+    # 있을 때만** 의미가 있다 — 화면이 없는 턴까지 이 신호로 좁히면 `"이거 찜에서 빼줘"`(화면
+    # 없음)가 오늘과 달라진다(이 이슈 범위 밖의 회귀) — 화면이 없으면 규칙 3 은 그대로 정상
+    # 동작해야 한다.
+    #
+    # **[F29 구현 중 실측 수정]** 이 "화면이 있을 때만" 가드는 `screen is not None` 이지
+    # `bool(screen and screen.products)`(패킷의 원안 스니펫)가 아니다 — 후자는 `screen.
+    # products == []`(화면 객체는 왔지만 정제 후 상품이 0건)인 턴에서도 `screen_reference_
+    # attempted` 를 항상 `False` 로 묶어, 라운드 8(F21)이 고친 "빈 화면 + 위치 지시" 과소
+    # 차단(`test_empty_screen_products_still_blocks_an_out_of_range_position`)이 되살아난다
+    # (재현: `"99번째 거 찜에서 빼줘"`, `screen.products=[]`, 찜 1건 → 그 1건이 삭제됨). "화면이
+    # 없다"는 FE 가 `screen` 자체를 안 보냈다는 뜻이지, 화면은 왔는데 정제 후 상품이 비었다는
+    # 뜻이 아니다 — 후자는 여전히 "화면 참조를 시도했는데 확정할 게 없다"는 F21 의 원래 사례다.
+    #
+    # `stream_wishlist_remove`·`stream_cart_add` 세 위임 경로가 이 두 원자를 공유한다(아래 세
+    # 호출부, 중복 계산 금지).
+    screen_reference_attempted = screen is not None and mentions_screen_reference(
+        request.message, settings
+    )
 
     if decision.intent == "cart_add":
         if trace := current_request_trace():
@@ -1197,6 +1336,8 @@ async def run_buyer_turn(
                 message=request.message,
                 allowed_product_ids=allowed,
                 screen_reason=screen_reason,
+                screen_reference_attempted=screen_reference_attempted,
+                screen_resolved=screen_resolved,
                 # [이슈 #455] 누적 필터(prior) 우선 + 이번 턴 산출(decision.filters) — 옵션 되물음
                 # 좁히기의 조건어 원천. 담기 흐름 밖의 다른 라우팅·프롬프트는 건드리지 않는다.
                 condition_terms=cart_condition_terms(prior, decision.filters),
@@ -1215,15 +1356,65 @@ async def run_buyer_turn(
     # **도착지도 입력도 같아졌기 때문에**(화면 해소를 위에서 한 번만 수행해 `cart_intent` 를
     # 공유한다) 중복 판정이 동작을 바꾸지 않는다 — 결과가 다르면 그건 두 판별기가 이견을 낸
     # 것이지 이 라우팅의 결함이 아니다.
+    #
+    # **[#440] `cart_remove` 도 이제 세 번째 경로다.** decompose 사다리 1-3)("빼줘" → cart_remove)
+    # 이 "찜한 거 빼줘"류를 삭제로 오분류하면 `classify_cart_utterance` 2선 방어를 아예 거치지
+    # 않는다 — 그 판별기는 `cart/graph.py::stream_cart_add` 안에만 있어서 `cart_add` 로 온 발화만
+    # 본다. 위에서 계산해 둔 `corrected_to_wishlist_remove` 로 **정정**한다(`"wishlist_remove"`
+    # 일 때만 — 그 밖의 반환값, 기본값 `"cart_add"` 포함은 전부 무시하고 기존대로 삭제로 간다.
+    # 그러지 않으면 이 판별기의 기본값이 장바구니 삭제를 통째로 삼킨다).
+    #
+    # **[라운드 3 리뷰 F9] 정정한다면 `cart_intent` 는 반드시 화면 해소를 거친 값이어야 한다 —
+    # 이전 라운드의 "화면 해소를 못 거친 cart_intent 를 써도 기존 cart_remove 경로와 같은
+    # 조건이라 후퇴가 아니다"는 판단은 틀렸다.** 정정 후 도착지는 `stream_wishlist_remove` 이고
+    # 그 흐름은 화면 순번 해소를 전제로 만들어졌다 — 화면 3열+찜 2건, `"3번째 거 찜에서 빼줘"`,
+    # decompose 가 `cart_remove`·`productId=<다른 항목>` 을 내면, 화면 해소를 안 거친 원시
+    # productId 가 그대로 넘어가 사용자가 가리킨 항목이 아니라 그 오추출 항목이 삭제됐다(재현
+    # 확인). 그래서 `corrected_to_wishlist_remove` 를 화면 해소 블록 조건에도 넣어 `cart_intent`
+    # 자체가 이미 화면 순번을 반영한 값이 되게 했다(위 참조) — 판정은 여기서 **다시 부르지
+    # 않는다**(같은 판정을 두 번 부르면 이 저장소가 반복해 밟은 함정이다).
     if decision.intent == "cart_remove":
         if trace := current_request_trace():
             trace.set_lane("cart")
         with trace_span("buyer.graph.cart", "chain"):
+            if corrected_to_wishlist_remove:
+                async for frame in stream_wishlist_remove(
+                    identity=identity,
+                    cart=cart_intent,
+                    message=request.message,
+                    settings=settings,
+                    observer=observer,
+                    screen_reference_attempted=screen_reference_attempted,
+                    screen_resolved=screen_resolved,
+                ):
+                    yield frame
+                return
             async for frame in stream_cart_remove(
                 identity=identity,
                 message=request.message,
                 cart_store=cart_store,
                 thread_key=thread_key,
+                settings=settings,
+                observer=observer,
+            ):
+                yield frame
+        return
+
+    # [#285, I-25 §4.13] cart_remove 분기와 같은 자리·같은 방식으로 위임한다 — decompose 가
+    # 직접 `cart_quantity` 를 내면 여기서 바로 위임하고, 여전히 `cart_add` 로 오분류하면
+    # `cart/graph.py::stream_cart_add` 안의 `classify_cart_utterance` 2선 방어(사다리 4-a)가
+    # 같은 도착지로 다시 갈라낸다(cart_remove 와 완전히 대칭 — 위 "decompose 가 cart_remove/
+    # wishlist_add/wishlist_remove 를 직접 산출하면" 문단 참조). 화면 지시어 해소(`cart_intent`)
+    # 는 이 intent 를 받지 않는다 — 대상 해소는 장바구니 내용에서 이름으로 하지 화면 순번으로
+    # 하지 않는다(cart_remove 와 같은 이유, 위 화면 해소 블록 조건에 없다).
+    if decision.intent == "cart_quantity":
+        if trace := current_request_trace():
+            trace.set_lane("cart")
+        with trace_span("buyer.graph.cart", "chain"):
+            async for frame in stream_cart_quantity_change(
+                identity=identity,
+                cart=cart_intent,
+                message=request.message,
                 settings=settings,
                 observer=observer,
             ):
@@ -1250,12 +1441,38 @@ async def run_buyer_turn(
         if trace := current_request_trace():
             trace.set_lane("cart")
         with trace_span("buyer.graph.cart", "chain"):
+            # [#440 후속 정정] 위에서 계산해 둔 `corrected_to_cart_remove` 로 역방향 정정한다 —
+            # decompose 가 찜 해제로 냈어도 결정론 계층이 장바구니 삭제로 보고, 그 근거가
+            # "부분 문자열은 있는데 경계를 통과한 head 가 없다"는 오분류 서명일 때만이다(위
+            # `corrected_to_cart_remove` 정의 참조). 판정은 여기서 다시 부르지 않는다(같은
+            # 판정을 두 번 부르면 이 저장소가 반복해 밟은 함정이다).
+            if corrected_to_cart_remove:
+                async for frame in stream_cart_remove(
+                    identity=identity,
+                    message=request.message,
+                    cart_store=cart_store,
+                    thread_key=thread_key,
+                    settings=settings,
+                    observer=observer,
+                ):
+                    yield frame
+                return
+            # [#440 라운드 4 리뷰 F12, 라운드 6 리뷰 F18, 라운드 8 리뷰 F21, 라운드 10 리뷰 F27]
+            # 발화가 화면 위치를 가리키려 했는데 확정되지 못했으면(위 `screen_reference_attempted`·
+            # `screen_resolved` 계산 참조) 이 분기도 정정 경로와 똑같이 겪는다 — 화면 해소 블록은
+            # 원래부터 `wishlist_remove` intent 를 포함해(위 조건 참조) decompose 가 직접 이
+            # intent 를 내도 화면이 있으면 그 해소를 거친다. 거부/미해소됐는데
+            # `_resolve_wishlist_remove_target` 규칙 2·3 이 그 사실을 모른 채 문맥 id/목록 1건
+            # 으로 대신 확정하면, 해소기가 "되물음으로 가라"고 낸 신호를 조용히 덮어써 사용자가
+            # 가리키지 못한 항목이 삭제된다(재현 확인).
             async for frame in stream_wishlist_remove(
                 identity=identity,
                 cart=cart_intent,
                 message=request.message,
                 settings=settings,
                 observer=observer,
+                screen_reference_attempted=screen_reference_attempted,
+                screen_resolved=screen_resolved,
             ):
                 yield frame
         return

@@ -1,4 +1,8 @@
-"""등록 초안 preview 빌더 (#506, api-spec §3.2 v0.31.0) — 11필드/null/포맷/sections 계약."""
+"""등록 초안 preview 빌더 (#506) — 13필드/null/포맷/sections 계약.
+
+[#541] 카테고리 2칸 표기(`categoryMajor`·`categorySubPath`) 추가로 11 → 13 필드
+(api-spec-seller §6.1 — 추가 전용이라 기존 소비자는 불변).
+"""
 
 from __future__ import annotations
 
@@ -24,6 +28,8 @@ _PREVIEW_KEYS = {
     "discountRate",
     "stockText",
     "categoryPath",
+    "categoryMajor",
+    "categorySubPath",
     "summary",
     "description",
     "sections",
@@ -38,6 +44,9 @@ def _catalog(tmp_path, monkeypatch):
             [
                 {"id": "100", "path": ["패션의류/잡화", "남성의류", "셔츠"]},
                 {"id": "101", "path": ["패션의류/잡화", "남성의류", "남방"]},
+                # [#541] 정본 스냅샷의 실제 모양(2칸, leaf 가 "중 > 소" 병합형) —
+                # 3칸 픽스처만 두면 2칸에서만 드러나는 표기 회귀를 놓친다.
+                {"id": "200", "path": ["디지털/가전", "컴퓨터 주변기기 > 키보드"]},
             ],
             ensure_ascii=False,
         ),
@@ -101,7 +110,7 @@ def test_preview_keys_always_present_and_formatted() -> None:
     preview = build_create_preview(
         _record(_full_changes()), analysis=_ANALYSIS, seller_inputs="32,000원 / 50개"
     )
-    assert set(preview) == _PREVIEW_KEYS  # 키는 항상 11개 — 빠지는 키가 없다(FE 계약)
+    assert set(preview) == _PREVIEW_KEYS  # 키는 항상 13개 — 빠지는 키가 없다(FE 계약)
     assert preview["title"] == "코튼 오버핏 셔츠"
     assert preview["priceText"] == "32,000원"  # 서버 포맷 완료 — FE 재가공 금지 계약
     assert preview["originalPriceText"] == "40,000원"
@@ -113,6 +122,36 @@ def test_preview_keys_always_present_and_formatted() -> None:
     kinds = [s["kind"] for s in preview["sections"]]
     assert kinds == ["source", "warning"]
     assert "판매자 입력: 32,000원 / 50개" in preview["sections"][0]["items"]
+
+
+@pytest.mark.parametrize(
+    ("category_id", "expected_major", "expected_sub"),
+    [
+        ("100", "패션의류/잡화", "남성의류 > 셔츠"),  # 3칸 스냅샷
+        ("200", "디지털/가전", "컴퓨터 주변기기 > 키보드"),  # 2칸 스냅샷(정본 모양)
+    ],
+)
+def test_preview_category_split_into_two_slots(
+    category_id: str, expected_major: str, expected_sub: str
+) -> None:
+    """[#541] 카테고리는 판매자가 채우는 두 칸(대분류 / 중·소분류)으로도 내려간다.
+
+    불변식 `categoryPath == categoryMajor + " > " + categorySubPath` 를 고정한다 —
+    FE 가 categoryPath 를 " > " 로 쪼개 칸을 만들면 "패션의류/잡화" 처럼 이름에 슬래시가
+    든 대분류나 "중 > 소" 병합형 leaf 에서 칸 수를 오판한다. 쪼개기는 서버가 한다.
+    """
+    preview = build_create_preview(_record(_full_changes(category=category_id)))
+    assert preview["categoryMajor"] == expected_major
+    assert preview["categorySubPath"] == expected_sub
+    assert preview["categoryPath"] == f"{expected_major} > {expected_sub}"
+
+
+def test_preview_category_slots_empty_when_category_missing() -> None:
+    """카테고리 change 가 없으면 3키 모두 빈 문자열 — 키는 남는다(FE 계약)."""
+    preview = build_create_preview(_record(_full_changes(category=None)))
+    assert preview["categoryPath"] == ""
+    assert preview["categoryMajor"] == ""
+    assert preview["categorySubPath"] == ""
 
 
 def test_preview_nulls_and_placeholder_without_optionals() -> None:
@@ -187,6 +226,15 @@ def test_draft_event_masks_preview_text_fields() -> None:
     assert secret not in payload["data"]["preview"]["description"]
     # imageUrl 은 면제 — URL 원형 보존(마스킹 오탐 방지).
     assert payload["data"]["preview"]["imageUrl"] == "https://cdn.example.com/seller/7/ab12.jpg"
+    # [#541] 새 표시 키도 마스킹 목록에 들어 있어야 한다 — 표시 키를 늘리면서 목록을
+    # 안 늘리면 그 키만 원문으로 나간다(마스킹 정책이 카드에서 반쪽이 된다).
+    assert {"categoryMajor", "categorySubPath"} <= set(payload["data"]["preview"])
+    assert seller_api._masked_preview({"categoryMajor": f"대분류 {secret}"})["categoryMajor"] != (
+        f"대분류 {secret}"
+    )
+    assert seller_api._masked_preview({"categorySubPath": f"중소 {secret}"})["categorySubPath"] != (
+        f"중소 {secret}"
+    )
 
 
 def test_draft_event_carries_preview_for_create_only() -> None:

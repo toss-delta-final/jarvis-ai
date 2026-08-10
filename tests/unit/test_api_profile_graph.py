@@ -161,9 +161,13 @@ async def test_graph_version_also_rides_the_etag_header(client: httpx.AsyncClien
 async def test_disabled_personalization_still_returns_the_whole_graph(
     client: httpx.AsyncClient,
 ) -> None:
-    """중지는 "쓰지 않는다"이지 "숨긴다"가 아니다 — `markdown` 도 그대로 내려간다 (§3.8).
+    """중지는 "쓰지 않는다"이지 "숨긴다"가 아니다 — `edges` 는 전량 나가고 `exists` 도 `true` 다.
 
-    중지 시 `null` 이 되는 것은 §3.4 이고 본 절이 아니다.
+    **중지 회원의 프로필은 존재하고 보존된다**(§3.9.5). `exists: false` 로 답하면 사용자가 지울
+    것이 있는지조차 알 수 없다 — `reader.read_profile_summary` 는 중지 시 `None` 을 내는 **소비
+    게이트**(#359)라 여기서 쓰면 안 되는 이유다.
+
+    바뀌는 것은 `markdown` 하나다 — 아래 테스트가 그쪽을 잰다.
     """
     await _seed()
     await graph_journal.set_personalization(
@@ -173,8 +177,31 @@ async def test_disabled_personalization_still_returns_the_whole_graph(
     body = (await client.get(GRAPH)).json()
 
     assert body["personalization"] == {"enabled": False}
-    assert body["markdown"] == "소니 선호"
+    assert body["exists"] is True  # 데이터는 보존된다
     assert len(body["edges"]) == 1
+
+
+async def test_the_summary_is_withheld_while_personalization_is_paused(
+    client: httpx.AsyncClient,
+) -> None:
+    """`markdown` 은 중지 중 `null` 이다 — 요약은 소비 산출물이라 "사용 중지"의 대상이다.
+
+    #359 가 rerank·홈 프로필 벡터·마이페이지 세 소비처를 같은 규칙으로 막았다(REQ-PGRAPH-100).
+    **지운 게 아니다** — 재개하면 그대로 돌아온다.
+    """
+    await _seed()
+    await graph_journal.set_personalization(
+        user_id=USER, enabled=False, request_id="req-0", now=NOW
+    )
+
+    paused = (await client.get(GRAPH)).json()
+    await graph_journal.set_personalization(
+        user_id=USER, enabled=True, request_id="req-1", now=NOW
+    )
+    resumed = (await client.get(GRAPH)).json()
+
+    assert paused["markdown"] is None and paused["generatedAt"] is None
+    assert resumed["markdown"] == "소니 선호"  # 복원된다
 
 
 @pytest.mark.parametrize("raw", ["0", "abc", "true", str(2**63)])

@@ -15,7 +15,13 @@
 from __future__ import annotations
 
 from app.agents.profile.graph_merge import edge_sort_key
-from app.agents.profile.graph_models import GraphDocument, GraphEdge, GraphNode, is_projected
+from app.agents.profile.graph_models import (
+    GraphDocument,
+    GraphEdge,
+    GraphNode,
+    is_pin_challenged,
+    is_projected,
+)
 from app.core.config import Settings
 from app.schemas.profile_graph import GraphEdgeObjectView, GraphEdgeView
 
@@ -68,23 +74,7 @@ def _view(edge: GraphEdge, node: GraphNode, *, settings: Settings) -> GraphEdgeV
         object=GraphEdgeObjectView(node_id=node.node_id, type=node.type, label=node.label),
         # 구매 이력 파생만 수정 불가다 — **삭제는 허용**한다(api-spec §3.9.2).
         editable=edge.predicate != "purchased",
-        challenged=_is_challenged(edge, settings=settings),
+        # 판정은 `graph_models` 가 소유한다(#359) — 여기서는 호출만 한다. 임계 `0` 이 신호를
+        # 끄는 값이라 `count >= threshold` 로 직접 짜면 정반대로 동작하는데, 그 특례가 그쪽에 있다.
+        challenged=is_pin_challenged(edge, settings=settings),
     )
-
-
-def _is_challenged(edge: GraphEdge, *, settings: Settings) -> bool:
-    """사용자가 고정한 취향에 **반대 관측이 임계 이상 쌓였는가** (REQ-PGRAPH-033).
-
-    ⚠️ **[#359 대기] 지금은 항상 `False` 다.** 판정 자체는 #359 가 소유한다 —
-    `graph_merge._resolve_conflicts` 가 pin 을 `superseded` 로 내리지 않고 `challenge_count` 를
-    올리도록 고치고, 임계값 `graph_pin_challenge_count`(확정 기본값 `3`)를 config 에 신설하며,
-    `0` 이 신호를 끄는 값이라 `count >= threshold` 로 짜면 정반대로 동작하는 특례 분기까지
-    그쪽 범위다(#360 코멘트 2026-08-10).
-
-    **#359 머지 후 rebase 에서 `graph_models.is_pin_challenged(edge, settings)` 호출로 교체한다.**
-    지금 여기서 임계 config 를 만들면 #359 와 충돌하고, 필드를 빼면 계약이 깨진다. `challenge_count`
-    를 올리는 코드가 저장소에 0건이라 어느 쪽으로 짜도 값은 같지만, **왜 항상 False 인지**를
-    남겨야 다음 사람이 버그로 오해하지 않는다.
-    """
-    del edge, settings  # #359 rebase 에서 배선한다
-    return False

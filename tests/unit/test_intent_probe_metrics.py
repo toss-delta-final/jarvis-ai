@@ -120,6 +120,15 @@ def test_expected_denominators_match_issue_240_shape() -> None:
         "wishlistViewPositive": 24,
         "wishlistViewNoSteal": 24,
         "wishlistViewRouting": 48,
+        # [#440] 찜 해제 4발화 × none 컨텍스트 × N=8 — 양성 2(16) · 음성 대조 2(16) = 32.
+        "wishlistRemovePositive": 16,
+        "wishlistRemoveNoSteal": 16,
+        "wishlistRemoveRouting": 32,
+        # [#285, I-25 §4.13 — 4단계] 수량 변경 6발화 × none 컨텍스트 × N=8 — 양성 3(24) ·
+        # 음성 대조 3(24) = 48.
+        "cartQuantityPositive": 24,
+        "cartQuantityNoSteal": 24,
+        "cartQuantityRouting": 48,
     }
 
 

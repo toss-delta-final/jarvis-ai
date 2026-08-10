@@ -45,6 +45,7 @@ from pydantic import BaseModel, ValidationError
 
 from app.core.config import get_settings
 from app.core.tracing import TraceNode, current_request_trace, trace_span
+from app.pipelines import brand_aliases
 from app.schemas.spring import (
     AccountEventsResult,
     AddToCartRequest,
@@ -53,6 +54,8 @@ from app.schemas.spring import (
     AddToCartResult,
     BehaviorEventsResult,
     CartView,
+    ChangeCartQuantityRequest,
+    ChangeCartQuantityResult,
     ChurnResult,
     FunnelResult,
     OrderEventsResult,
@@ -91,6 +94,7 @@ _SpringOperation = Literal[
     "add_to_cart",
     "get_cart",
     "delete_cart_item",
+    "change_cart_quantity",
     "add_wishlist",
     "remove_wishlist",
     "get_wishlist",
@@ -541,6 +545,28 @@ class InvalidStock(Exception):
     판매자가 무한 재confirm 에 갇힌다(I-12 ALREADY_DELETED 와 같은 규약)."""
 
 
+class ProductCategoryInvalid(Exception):
+    """I-10 400 PRODUCT_CATEGORY_INVALID (#541) — `categoryId` 가 없는 카테고리이거나
+    **대분류**다(BE `SellerProductService.create` → `Category.isRoot()` 거부).
+
+    AI 는 소분류만 담긴 스냅샷에서 id 를 고르므로 정상 경로에서는 나지 않는다. 여기
+    도달하는 건 **스냅샷이 정본 DB 보다 낡은** 경우뿐이다(파일 교체 = 배포, #506).
+    같은 초안을 다시 confirm 해도 결과가 같으므로 안내는 "재시도"가 아니라 **"카테고리를
+    다시 말해 새 초안"** 이다. SpringUnavailableError 하위가 아니다(catch-all 회피)."""
+
+
+class ProductFieldMissing(Exception):
+    """I-10 422 MISSING_FIELD (#541) — BE 가 필수값(name·price·stockQuantity·categoryId)
+    누락으로 거부. 본문의 `error.message` 에 누락 필드명이 실린다(BE `requireFields`).
+
+    정상 경로에서는 `validate_draft` 가 4종을 모두 강제하므로 나지 않는다. 실제로 여기
+    오는 경로는 **와이어 형식 불일치**다 — 예: `seller_stock_wire_mode="stocks"` 를 BE
+    PR B 배포 전에 켜면 `stockQuantity` 를 안 실어 구 BE 가 누락으로 거부한다(#524 가
+    말한 "등록은 시끄럽게 실패한다"의 그 지점). 종전엔 매핑이 없어 이 시끄러운 실패가
+    `SpringUnavailableError` → "일시적인 오류(재시도 가능)" 로 **조용해졌다**.
+    설정·배포를 고쳐야 풀리는 문제라 재시도 안내를 하면 안 된다."""
+
+
 # ── I-30 발송 처리 예외 (이슈 #297, §4.19 — 🔶 초안, BE 협의 전) ──────────────────
 #
 # HITL 쓰기(발송)는 "이미 된 일"과 "방금 한 일"과 "안 되는 일"을 구분해야 거짓 성공
@@ -588,13 +614,17 @@ def _client(*, timeout: float | None = None) -> httpx.AsyncClient:
 
 
 def _search_query_params(
-    filters: ProductSearchFilters, *, color_values: list[str] | None = None
+    filters: ProductSearchFilters,
+    *,
+    color_values: list[str] | None = None,
+    brand_values: list[str] | None = None,
 ) -> dict:
     """decompose 필터 → BE I-1 GET 쿼리 파라미터 (§4.6, C-15).
 
     BE I-1 파라미터는 keyword/categoryName/minPrice/maxPrice/brandName/color 뿐이다(color=#100 P1).
     [2026-07-23, BE 합의] size 제거 — 라운드1은 고정필터 매칭을 전량 반환하고, 결과 수 제한(top-K)은
-    AI 쪽(search_catalog 가 filters.limit 로 절단)에서 적용한다(api-spec §4.6). brandName 은 다중 —
+    AI 쪽(search_catalog 가 filters.limit 로 절단)에서 적용한다(api-spec §4.6). [#395, 2026-08-07]
+    재도입 폐지 확정. brandName 은 다중 —
     브랜드 전량을 반복 파라미터로 실어 BE IN 필터에 맡긴다(방법 D, #100 P1, BE 배열 수용 협의 대상).
     나머지 필터(excludeProductIds·ratingMin)는 여기 싣지 않고 AI 사후필터(search_service)로 처리한다.
     정렬은 rerank(LLM) 소관(#100 P2, sort 필드 제거).
@@ -614,7 +644,12 @@ def _search_query_params(
         # 다중 브랜드 전량 전송(방법 D) — httpx 가 brandName=A&brandName=B 반복 파라미터로
         # 직렬화 → BE IN 필터(#100 P1). 조건칩(state)도 전 브랜드를 표시하므로 요청·표시가 일치한다.
         # 빈/공백 요소는 제거(LLM 이 [""] 등을 낼 수 있음 — brandName= 빈값 전송 방지, #127 리뷰).
-        brands = [b for b in filters.brand if b and b.strip()]
+        # [#466] `brand_values` 는 법인 표기 확장(`app.pipelines.brand_aliases`)의 결과다 —
+        # None 이면 종전대로 원문을 싣는다. 확장값은 **사용자 원문을 먼저 포함**하는 가산 목록
+        # 이라(그 함수의 계약) 여기서 원문과 합치지 않는다. 조건칩은 `filters.brand`(원문)를
+        # 그대로 보므로 확장이 표시에 새지 않는다.
+        source = filters.brand if brand_values is None else brand_values
+        brands = [b for b in source if b and b.strip()]
         if brands:
             params["brandName"] = brands
     if filters.color and filters.color.strip():
@@ -846,7 +881,14 @@ async def search_products(filters: ProductSearchFilters) -> ProductSearchResult:
         except Exception:
             # 색상 확장은 보조 품질 경로다. DB 장애가 본 검색을 죽이지 않게 기존 단수로 degrade.
             _log.warning("색상 동의어 확장 실패 — 원문 단수 color로 검색", exc_info=True)
-    params = _search_query_params(filters, color_values=color_values)
+    # [#466] 브랜드 법인 표기 확장 — 순수 함수라 DB·네트워크 의존이 없어 색상처럼 try 로
+    # 감싸지 않는다(삼킬 실패가 없다). 꺼져 있으면 None → 와이어가 종전과 바이트 동일하다.
+    brand_values = brand_aliases.brand_wire_values(
+        filters.brand,
+        enabled=settings.brand_alias_expansion_enabled,
+        cap=settings.brand_alias_max_values,
+    )
+    params = _search_query_params(filters, color_values=color_values, brand_values=brand_values)
     attempts = settings.spring_max_retries + 1
     # [#132] 검색 1회의 **총시간** 상한. `spring_search_timeout_s` 는 httpx 에 스칼라로 주입돼
     # connect/read/write/pool 네 시계가 되는데 `read` 는 **청크 사이 간격** 상한이라, 바디가
@@ -1096,7 +1138,8 @@ async def get_cart(user_id: int | None = None, guest_id: str | None = None) -> C
         raise SpringUnavailableError(f"get_cart 실패: {exc}") from exc
 
 
-# ── 장바구니 삭제 · 찜 (이슈 #116·#117, I-24~I-28 — 확정 2026-08-05, Spring 구현 진행 중) ──
+# ── 장바구니 삭제 · 찜 (이슈 #116·#117, I-24~I-28 — 확정 2026-08-05, Spring 구현됨) ──
+# [#285] BE `jarvis-backend` main 실측(2026-08-08, BE PR #92·#93) — api-spec §4.12~4.16 v0.31.3.
 
 
 def _envelope_success_false(resp: httpx.Response) -> bool:
@@ -1158,7 +1201,10 @@ async def delete_cart_item(
 
     if resp.status_code == 200:
         if _envelope_success_false(resp):
-            # 🔶 I-24 협의 대상: 200 + success:false 의 실제 사유(code) 위치가 미확정.
+            # [#285] BE `ApiResponse`(`global/response/ApiResponse.java`)는 success:false 를
+            # error{code,...} 와 함께만 만들고 GlobalExceptionHandler 가 전부 상태 코드로 낸다
+            # — 200 + success:false 경로 자체가 없다. 계약상 오지 않는 조합이라 방어적으로
+            # 실패 처리한다(fail-closed). 이 방어 분기는 지우지 않는다.
             raise CartError("delete_cart_item 실패: 200 success=false")
         return
     if resp.status_code == 404:
@@ -1173,6 +1219,94 @@ async def delete_cart_item(
     raise CartError(f"delete_cart_item 실패: {resp.status_code} {code}")
 
 
+async def change_cart_quantity(
+    cart_item_id: int, quantity: int, *, user_id: int | None = None, guest_id: str | None = None
+) -> ChangeCartQuantityResult:
+    """장바구니 수량 변경 — I-25(확정 2026-08-05, §4.13) PATCH /internal/cart/items/{cartItemId}.
+
+    `delete_cart_item`(I-24)과 대칭 시그니처 — 신원 query 는 userId 또는 guestId 정확히 하나만
+    싣는다(방어는 동일 규약). **I-24 와의 차이**: 삭제는 재고·상품 상태를 안 보지만 **수량
+    변경은 재고를 본다**(치환값 > 재고면 400 CART_STOCK_INSUFFICIENT). 그리고 **합산이 아니라
+    치환**이라 "하나 더 담아줘"류는 이 계약이 아니라 I-2(§4.1) 재호출이다 — 어댑터가 그 구분을
+    하지 않으니 호출부가 올바른 함수를 골라야 한다.
+
+    실패 매핑(§4.13): 400 이고 `error.code == "CART_STOCK_INSUFFICIENT"` 면 →
+    CartStockInsufficient(available_stock)(I-2 담기와 같은 예외·같은 파서 `_parse_cart_error`
+    재사용). 404 이고 code 가 정확히 `CART_ITEM_NOT_FOUND` 일 때만 → CartItemNotFound(I-24 와
+    같은 예외). **[라운드 23 규약 계승]** code 가 다르거나 본문을 못 읽는 400/404(엔드포인트
+    미배포 포함)는 typed 예외가 아니라 CartError 다 — status 만 보고 낙성하면 라우트 부재
+    404 를 "그 항목이 없다"로, 임의의 400 을 "재고 부족"으로 오인한다.
+    400 VALIDATION_ERROR(신원 query 이상·quantity 범위 밖)·403 AUTH_FORBIDDEN(소유자 불일치,
+    전용 예외 없음 — BE `CartService#findOwnedItem` 실측, I-24 와 동일 규약)·500·도달 불가·
+    미상 코드 → CartError(형제 어댑터와 같은 낙성처).
+    """
+    if (user_id is None) == (guest_id is None):
+        # [확정 2026-08-05] delete_cart_item 과 같은 방어 — 신원 query 는 정확히 하나.
+        raise CartError("change_cart_quantity 신원 query 는 정확히 하나여야 함")
+
+    params: dict[str, object] = {}
+    if user_id is not None:
+        params["userId"] = user_id
+    if guest_id is not None:
+        params["guestId"] = guest_id
+    try:
+        # 스키마(`ChangeCartQuantityRequest.quantity: Field(ge=1, le=99)`)가 범위를 강제한다 —
+        # `decompose` 가 이미 클램프하지만 이 어댑터에 들어오는 값이 그 경로만은 아니라서다.
+        # 호출부가 typed 예외 하나만 캐치하면 되도록 `ValidationError` 를 그대로 새게 두지
+        # 않는다(delete_cart_item 의 신원 XOR 방어와 같은 이유).
+        body = ChangeCartQuantityRequest(quantity=quantity)
+    except ValidationError as exc:
+        raise CartError(f"change_cart_quantity quantity 범위 밖: {exc}") from exc
+
+    try:
+        with _spring_span("change_cart_quantity", "PATCH") as span:
+            async with _client() as client:
+                resp = await client.patch(
+                    f"/internal/cart/items/{cart_item_id}",
+                    params=params,
+                    json=body.model_dump(by_alias=True),
+                )
+                _record_spring_status(span, resp)
+    except httpx.HTTPError as exc:
+        raise CartError(f"change_cart_quantity 도달 실패: {exc}") from exc
+
+    if resp.status_code == 200:
+        if _envelope_success_false(resp):
+            # [#285] 형제 어댑터(delete_cart_item 등)와 같은 fail-closed 근거 — BE `ApiResponse`
+            # 는 success:false 를 error{code,...} 와 함께만 만들고 GlobalExceptionHandler 가
+            # 전부 상태 코드로 낸다. 200 + success:false 경로 자체가 없다. 계약상 오지 않는
+            # 조합이라 방어적으로 실패 처리한다(fail-closed). 이 방어 분기는 지우지 않는다.
+            raise CartError("change_cart_quantity 실패: 200 success=false")
+        try:
+            data = resp.json()
+        except ValueError as exc:
+            raise CartError(f"change_cart_quantity 응답 파싱 실패: {exc}") from exc
+        payload = data.get("data") if isinstance(data, dict) else None
+        try:
+            return ChangeCartQuantityResult(
+                success=True,
+                cart_item_id=(payload or {}).get("cartItemId"),
+                quantity=(payload or {}).get("quantity"),
+            )
+        except ValidationError as exc:
+            raise CartError(f"change_cart_quantity 응답 스키마 이상: {exc}") from exc
+    if resp.status_code == 400:
+        code, _options, available_stock = _parse_cart_error(resp)
+        if code == "CART_STOCK_INSUFFICIENT":
+            raise CartStockInsufficient(available_stock)
+        # VALIDATION_ERROR(신원 query 이상·quantity 범위 밖) 및 그 밖의 code 는 CartError.
+        raise CartError(f"change_cart_quantity 실패: 400 {code}")
+    if resp.status_code == 404:
+        code = _parse_error_code(resp)
+        if code == "CART_ITEM_NOT_FOUND":
+            raise CartItemNotFound()
+        # [라운드 23 규약 계승] 엔드포인트 미배포로 오는 다른/없는 code 의 404 를 "그 항목이
+        # 없다"로 오인하면 상위가 거짓 성공/거짓 실패 안내를 낸다 — code 정확 일치일 때만 낙성.
+        raise CartError(f"change_cart_quantity 실패: 404 {code}")
+    code = _parse_error_code(resp)
+    raise CartError(f"change_cart_quantity 실패: {resp.status_code} {code}")
+
+
 async def add_wishlist(request: AddWishlistRequest) -> WishlistAddResult:
     """찜 추가 — I-26(확정 2026-08-05) POST /internal/wishlist.
 
@@ -1183,7 +1317,9 @@ async def add_wishlist(request: AddWishlistRequest) -> WishlistAddResult:
     → WishlistProductNotFound. 409 이고 code 가 정확히 WISHLIST_DUPLICATE·RESOURCE_CONFLICT
     (UNIQUE 경합, 둘 다 동일 취급) 중 하나일 때만 → WishlistDuplicate. **[라운드 23]** code 가
     다르거나 본문을 못 읽는 404/409(엔드포인트 미배포 포함)는 WishlistError 다.
-    400·403(SELLER·ADMIN, 전용 예외 없음)·500·도달 불가·미상 코드 → WishlistError.
+    400·500·도달 불가·미상 코드 → WishlistError. [#285] 찜 API 에는 403 이 없다(§4.14~4.16 +
+    BE `InternalWishlistController` 실측 — 역할 검사 부재). 계약상 오지 않지만 오더라도 위
+    "미상 코드" 분기로 `WishlistError` 에 수렴한다.
     """
     try:
         with _spring_span("add_wishlist", "POST") as span:
@@ -1201,7 +1337,9 @@ async def add_wishlist(request: AddWishlistRequest) -> WishlistAddResult:
         except ValueError as exc:
             raise WishlistError(f"add_wishlist 응답 파싱 실패: {exc}") from exc
         if isinstance(data, dict) and data.get("success") is False:
-            # 🔶 I-26 협의 대상: 200 + success:false 의 실제 사유(code) 위치가 미확정.
+            # [#285] BE `ApiResponse` 는 success:false 를 error{code,...} 와 함께만 만들고
+            # GlobalExceptionHandler 가 전부 상태 코드로 낸다 — 200 + success:false 경로 자체가
+            # 없다. 계약상 오지 않는 조합이라 방어적으로 실패 처리한다(fail-closed).
             raise WishlistError("add_wishlist 실패: 200 success=false")
         payload = data.get("data") if isinstance(data, dict) else None
         product_id = payload.get("productId") if isinstance(payload, dict) else None
@@ -1237,8 +1375,9 @@ async def remove_wishlist(product_id: int, *, user_id: int) -> None:
     회원 전용(USER). path 는 productId(wishlistId 아님), query 는 userId 하나뿐(guestId 없음).
     실패: 404 이고 code 가 정확히 WISHLIST_NOT_FOUND(찜 안 한 상품 = 이미 해제 = 없는 상품도
     동일 코드, 구별 불가)일 때만 → WishlistNotFound(비멱등). **[라운드 23]** code 가 다르거나
-    본문을 못 읽는 404(엔드포인트 미배포 포함)는 WishlistError 다. 400·403(전용 예외 없음)·500·
-    도달 불가·미상 코드 → WishlistError.
+    본문을 못 읽는 404(엔드포인트 미배포 포함)는 WishlistError 다. 400·500·도달 불가·미상 코드
+    → WishlistError. [#285] 찜 API 에는 403 이 없다(§4.14~4.16 + BE 역할 검사 부재). 계약상
+    오지 않지만 오더라도 위 "미상 코드" 분기로 `WishlistError` 에 수렴한다.
     """
     try:
         with _spring_span("remove_wishlist", "DELETE") as span:
@@ -1252,7 +1391,9 @@ async def remove_wishlist(product_id: int, *, user_id: int) -> None:
 
     if resp.status_code == 200:
         if _envelope_success_false(resp):
-            # 🔶 I-27 협의 대상: 200 + success:false 의 실제 사유(code) 위치가 미확정.
+            # [#285] BE `ApiResponse` 는 success:false 를 error{code,...} 와 함께만 만들고
+            # GlobalExceptionHandler 가 전부 상태 코드로 낸다 — 200 + success:false 경로 자체가
+            # 없다. 계약상 오지 않는 조합이라 방어적으로 실패 처리한다(fail-closed).
             raise WishlistError("remove_wishlist 실패: 200 success=false")
         return
     if resp.status_code == 404:
@@ -1329,7 +1470,9 @@ async def get_wishlist(user_id: int) -> WishlistView:
     애초에 빈 배열(`items: []`, 찜 0건)인 경우는 이 판정 대상이 아니다 — 그건 I-28 의 정상
     응답이라 그대로 빈 `WishlistView` 를 돌려준다.
     """
-    # 🔶 I-28 협의 대상: 전량 반환 응답의 크기 상한이 미확정 — 클라 측 절단은 두지 않는다.
+    # [#285] `GET /internal/wishlist` 신설 자체는 수용됐다(§4.16 "페이징 없음 — MVP 전량
+    # 반환"으로 등재). 🔶 이슈 #285 코멘트 Q11 이 물었던 "전량 반환 응답의 크기 상한"은 아직
+    # 답을 받지 못했다 — 진짜로 열려 있다. 상한이 없으므로 클라 측 절단은 두지 않는다.
     try:
         with _spring_span("get_wishlist", "GET") as span:
             async with _client() as client:
@@ -1745,13 +1888,22 @@ class SpringClient:
 
         [#524] 422 `INVALID_STOCK` 은 전용 예외다 — 등록 시점엔 옵션이 없어 `optionId` 는
         항상 null 이므로 여기 오는 건 수량 문제뿐이지만, 코드 구분을 I-11 과 대칭으로 둔다.
+
+        [#541] 400 `PRODUCT_CATEGORY_INVALID`·422 `MISSING_FIELD` 도 전용 예외다. 둘 다
+        **재시도로 풀리지 않는** 실패(스냅샷 낡음 / 와이어 형식 불일치)인데 매핑이 없어
+        `SpringUnavailableError` 로 낙성돼 판매자에게 "일시적인 오류(재시도 가능)" 로
+        보였다 — 등록이 계속 실패하는데 원인은 화면 어디에도 없었다.
         """
         data = await self._request(
             "POST",
             f"/internal/seller/{brand_id}/products",
             operation="create_product",
             json_body=payload.model_dump(by_alias=True, exclude_none=True),
-            error_code_map={"INVALID_STOCK": InvalidStock},
+            error_code_map={
+                "INVALID_STOCK": InvalidStock,
+                "PRODUCT_CATEGORY_INVALID": ProductCategoryInvalid,
+                "MISSING_FIELD": ProductFieldMissing,
+            },
         )
         return self._validate(ProductCreateResult, data)
 

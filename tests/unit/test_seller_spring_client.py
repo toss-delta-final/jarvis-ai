@@ -16,7 +16,9 @@ from app.schemas.spring import ChurnMember, ProductCreate, ProductUpdate
 from app.services.spring_client import (
     ProductAlreadyDeleted,
     InvalidStock,
+    ProductCategoryInvalid,
     ProductDeletedNotEditable,
+    ProductFieldMissing,
     SpringClient,
     SpringUnavailableError,
 )
@@ -1357,3 +1359,50 @@ async def test_invalid_stock_is_not_spring_unavailable() -> None:
     """catch-all 에 삼켜지지 않는다 — 도구·HITL 의 `except SpringUnavailableError` 는
     "재시도 가능한 장애" 경로라, 여기 낙성되면 거짓 재시도 안내가 나간다."""
     assert not issubclass(InvalidStock, SpringUnavailableError)
+
+
+# ── [#541] I-10 400 PRODUCT_CATEGORY_INVALID / 422 MISSING_FIELD (§6·§6.2) ────────
+
+
+async def test_create_product_maps_category_invalid() -> None:
+    """400 PRODUCT_CATEGORY_INVALID → 전용 예외.
+
+    BE 는 없는 categoryId 와 **대분류** id 를 같은 코드로 거부한다. 스냅샷이 낡아야만
+    나는 실패라 재시도로 풀리지 않는데, 매핑이 없던 동안엔 "일시적인 오류"로 보였다.
+    """
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400, json={"success": False, "error": {"code": "PRODUCT_CATEGORY_INVALID"}}
+        )
+
+    client = _client(handler)
+    with pytest.raises(ProductCategoryInvalid):
+        await client.create_product(
+            "brand-1", ProductCreate(name="파우치", price=10000, stock_quantity=5, category_id=1)
+        )
+
+
+async def test_create_product_maps_missing_field() -> None:
+    """422 MISSING_FIELD → 전용 예외 — 와이어 형식 불일치(#524 stocks 선전환)의 신호."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            422,
+            json={
+                "success": False,
+                "error": {"code": "MISSING_FIELD", "message": "stockQuantity"},
+            },
+        )
+
+    client = _client(handler)
+    with pytest.raises(ProductFieldMissing):
+        await client.create_product(
+            "brand-1", ProductCreate(name="파우치", price=10000, stock_quantity=5, category_id=1)
+        )
+
+
+def test_create_category_errors_are_not_spring_unavailable() -> None:
+    """둘 다 catch-all 밖이다 — 재시도해도 결과가 같아 "일시적 장애" 안내가 거짓이 된다."""
+    assert not issubclass(ProductCategoryInvalid, SpringUnavailableError)
+    assert not issubclass(ProductFieldMissing, SpringUnavailableError)

@@ -27,7 +27,6 @@ from fastapi import APIRouter, Body, Depends, Header, HTTPException, Path, Reque
 from app.agents.profile import graph_journal
 from app.agents.profile.graph_errors import GraphEdgeNotFound
 from app.agents.profile.graph_projection import project_edge, project_edges
-from app.agents.profile.reader import read_profile_summary
 from app.agents.profile.resolver import ObjectSpec
 from app.agents.profile.store import get_profile_store
 from app.api.deps import verify_service_token
@@ -136,8 +135,12 @@ async def get_profile_graph(
     아직 취향이 쌓이지 않은 회원의 정상 상태이며 `404` 는 이 경로에 없다.
 
     **개인화 중지 중에도 200 + 전체 그래프**를 낸다. 중지는 "쓰지 않는다"이지 "숨긴다"가 아니고,
-    보존된 데이터를 검토하고 지우려면 볼 수 있어야 한다. `markdown` 도 그대로 내려간다 — 중지 시
-    `null` 이 되는 것은 §3.4 이지 본 절이 아니다.
+    보존된 데이터를 검토하고 지우려면 볼 수 있어야 한다. **`exists` 도 그대로 `true` 다** — 중지
+    회원의 프로필은 존재하고 보존된다.
+
+    다만 **`markdown` 은 중지 중 `null` 이다** — 요약은 소비 산출물이라 "사용 중지"의 대상이고,
+    #359 가 rerank·홈 벡터·마이페이지 세 소비처를 같은 규칙으로 막았다(REQ-PGRAPH-100). 지울
+    대상을 보는 데는 `edges` 로 충분하다.
     """
     return await _within(
         settings.profile_graph_read_budget_s, _load_graph(user_id, response, settings)
@@ -147,8 +150,13 @@ async def get_profile_graph(
 async def _load_graph(user_id: int, response: Response, settings: Settings) -> ProfileGraphView:
     store = await get_profile_store()
     document = await store.get_graph(str(user_id))
-    summary = await read_profile_summary(str(user_id))
     enabled = await graph_journal.get_personalization_flag(user_id=user_id)
+    # **`reader.read_profile_summary` 를 쓰지 않는다** — 그쪽은 중지 시 `None` 을 돌려주는
+    # 소비 게이트(#359, REQ-PGRAPH-100)라 여기 쓰면 `exists` 까지 `false` 가 된다. 중지 회원의
+    # 프로필은 **존재하고 보존된다**(§3.9.5) — "없다"고 답하면 계약이 거짓이 되고, 사용자가
+    # 지울 것이 있는지조차 알 수 없다. 존재 여부는 저장소에서 직접 읽고, **사용 차단은 아래
+    # `markdown` 을 비우는 것으로** 집행한다.
+    summary = await store.get_summary(str(user_id))
 
     version = graph_journal.graph_version(document.revision) if document else "g0"
     # `ETag` 는 **편의 사본**이고 정규 출처는 본문 `graphVersion` 이다 — 응답 헤더는 CORS 제약으로
@@ -157,9 +165,13 @@ async def _load_graph(user_id: int, response: Response, settings: Settings) -> P
     return ProfileGraphView(
         user_id=user_id,
         # 「승격된 프로필 존재 여부」 — 요약 유무가 기준이다(§3.4 선례와 동일).
+        # **중지는 존재 여부를 바꾸지 않는다** — 데이터는 보존되고 재개하면 복원된다.
         exists=summary is not None,
-        markdown=_strip_unsafe_multiline(summary["markdown"]) if summary else None,
-        generated_at=summary["generated_at"] if summary else None,
+        # 중지 중에는 **요약을 내보내지 않는다** — "사용 중지"의 집행이다(#359 REQ-PGRAPH-100 이
+        # rerank·홈 벡터·마이페이지 세 소비처를 같은 규칙으로 막는다). `edges` 는 그대로 나간다:
+        # 중지는 "쓰지 않는다"이지 "숨긴다"가 아니고, 보존된 데이터를 지우려면 볼 수 있어야 한다.
+        markdown=_strip_unsafe_multiline(summary.markdown) if summary and enabled else None,
+        generated_at=summary.generated_at if summary and enabled else None,
         graph_version=version,
         personalization=PersonalizationView(enabled=enabled),
         edges=project_edges(document, settings=settings),

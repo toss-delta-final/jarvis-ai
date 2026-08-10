@@ -35,6 +35,18 @@ from app.agents.seller.schemas import (
 _CHART_RE = re.compile(r"차트|그래프|시각화|도표|그려")
 
 
+def wants_chart_keyword(message: str) -> bool:
+    """차트 요청 키워드 존재 검사 — 레인 선판정(②.5)과 resolve_plan 이 공유하는 정본.
+
+    [#531] 이 판정이 resolve_plan 안에만 있던 탓에 **analysis 레인 진입 이후**에야
+    실행됐다. 그런데 차트 좌표(report 이벤트 charts[])는 그 레인에만 있고, supervisor 는
+    "매출 그래프 보여줘"를 조회로 보아 general 로 보낸다 — 판정이 영영 도달하지 못하는
+    순환이었다. 함수로 승격해 호출점을 레인 결정 **앞**(api/seller.py ②.5)으로 끌어올리되,
+    정본은 여기 하나로 둔다(두 경로가 서로 다른 어휘를 갖지 않게).
+    """
+    return bool(_CHART_RE.search(message))
+
+
 @dataclass(frozen=True)
 class ResolvedPlan:
     """기간이 코드로 환산된 실행 계획 — LLM 비노출 내부 계약.
@@ -93,18 +105,29 @@ def resolve_plan(
       clarification 을 쓰지 않는다 — 기간 문구의 소유자는 period.py 하나다
       (PLANNER_PROMPT `[기간]` 절 + AnalysisPlan.period_expr description).
       여기 남는 clarification 은 "어떤 분석을 원하는지 모를 때" 뿐이다.
-    - analyses 가 비면 planner 오류로 간주하고 되묻기 처리.
+    - analyses 가 비면 planner 오류로 간주하고 되묻기 처리. [#531] 단, 질문에 차트
+      어휘가 있으면 되묻지 않고 chart_only 턴으로 승격한다 — 레인 선판정이 이미
+      차트 요청으로 판정해 보낸 발화다(본문 주석 참조).
     - 기간 환산은 period.resolve_period 소관 — 해석 불가 표현("작년 여름" 등)의
       ValueError 도 그대로 전파된다. 그 메시지는 판매자에게 그대로 노출되므로
       period 쪽에서 안내문 형태로 쓴다(#269 P0 계약 승계).
     - max_days 미지정이면 period 가 Settings 에서 읽는다 — 상한 초과는 되묻기다.
-    - wants_chart = plan.wants_chart OR _CHART_RE(question) — LLM 판정과 코드
-      키워드 검사의 OR(이슈 #242). question 은 키워드 기본값(""라 매칭 안 됨)
+    - wants_chart = plan.wants_chart OR wants_chart_keyword(question) — LLM 판정과
+      코드 키워드 검사의 OR(이슈 #242). question 은 키워드 기본값(""라 매칭 안 됨)
       이라 기존 호출부(question 미전달)는 LLM 판정만 반영해 하위 호환된다.
+      [#531] 같은 검사가 레인 선판정에서도 먼저 돌지만 여기 OR 를 걷어내지 않는다 —
+      승인 재개(pending)·직접 호출처럼 선판정을 거치지 않는 진입로가 남아 있다.
     """
     if plan.clarification:
         raise ValueError(plan.clarification)
-    if not plan.analyses and not plan.chart_only:
+    # [#531] 차트 어휘로 레인 선판정(api/seller.py ②.5)에 걸려 여기 온 발화인데 planner 가
+    # analyses 를 비우고 chart_only 도 안 걸면 되묻기로 끝난다 — ASCII 아트가 되묻기로
+    # 바뀔 뿐 좌표(report.charts[])는 여전히 나가지 못하고, 이슈의 완료 조건이 planner
+    # LLM 판정 하나에 매달린다. 선판정이 이미 "차트 요청"이라 판정한 근거가 있으므로
+    # 코드가 chart_only 로 승격한다(§5 3층 분담 — 코드가 LLM 누락을 받아내는 층).
+    # clarification 은 위에서 이미 갈렸다 — planner 가 되물을 이유를 댔으면 그쪽이 이긴다.
+    chart_only = plan.chart_only or (not plan.analyses and wants_chart_keyword(question))
+    if not plan.analyses and not chart_only:
         # [#504] chart_only 턴은 워커를 쓰지 않으므로 analyses 가 비어도 계획이 성립한다.
         raise ValueError(
             "어떤 분석을 원하시는지 파악하지 못했습니다. 조금 더 구체적으로 알려주세요."
@@ -144,7 +167,7 @@ def resolve_plan(
             chart_to = chart_resolution.date_to
             chart_expr = chart_resolution.expr
     wants_chart = (
-        plan.wants_chart or plan.chart_only or bool(chart_expr) or bool(_CHART_RE.search(question))
+        plan.wants_chart or chart_only or bool(chart_expr) or wants_chart_keyword(question)
     )
     comparison = resolution.comparison
     return ResolvedPlan(
@@ -162,7 +185,7 @@ def resolve_plan(
         chart_from=chart_from,
         chart_to=chart_to,
         chart_period_error=chart_period_error,
-        chart_only=plan.chart_only,
+        chart_only=chart_only,
     )
 
 

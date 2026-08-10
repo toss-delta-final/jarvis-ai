@@ -18,6 +18,7 @@ from app.agents.profile.graph_models import (
     GraphDocument,
     GraphEdge,
     GraphNode,
+    UserIntent,
     make_edge_id,
     make_edge_key,
 )
@@ -222,16 +223,49 @@ def test_purchased_is_not_editable_but_everything_else_is(settings: Settings) ->
     assert editable == {"bought": False, "liked": True}
 
 
-def test_challenged_is_false_until_359_wires_the_counter(settings: Settings) -> None:
-    """⚠️ **#359 대기** — 반대 관측 카운터를 올리는 코드가 아직 없어 항상 `False` 다.
+def test_challenged_needs_a_pin(settings: Settings) -> None:
+    """고정되지 않은 edge 는 반대 관측이 아무리 쌓여도 `challenged` 가 아니다 (REQ-PGRAPH-033).
 
-    판정(`_resolve_conflicts` pin 예외 + `challenge_count` 증가 + `graph_pin_challenge_count`)은
-    #359 소유이고, #360 은 투영에서 **호출만** 한다. 이 테스트는 **버그가 아니라 알려진 경계**
-    라는 것을 고정한다 — #359 머지 후 rebase 에서 함께 갱신한다.
+    이 신호의 뜻은 *"사용자가 고친 취향에 시스템이 이견이 있다"* 이지 "관측이 흔들린다"가 아니다.
     """
-    document = _document(_edge("소니"))
+    loud = _edge("소니").model_copy(update={"challenge_count": 99})
+    document = _document(loud)
 
     assert project_edges(document, settings=settings)[0].challenged is False
+
+
+def test_a_pin_past_the_threshold_is_challenged(settings: Settings) -> None:
+    """pin + 임계 이상 반대 관측 → **동작 트리거**가 켜진다. 상태는 그대로다."""
+    pinned = _edge("소니").model_copy(
+        update={
+            "user_intent": UserIntent(kind="correct", asserted_at=NOW, mutation_id="m1"),
+            "challenge_count": settings.graph_pin_challenge_count,
+        }
+    )
+    document = _document(pinned)
+
+    item = project_edges(document, settings=settings)[0]
+
+    assert item.challenged is True
+    assert item.predicate == "likes"  # 상태는 안 바뀐다 — 반영은 명시적 사용자 동작으로만
+
+
+def test_the_threshold_zero_switches_the_signal_off(settings: Settings) -> None:
+    """`graph_pin_challenge_count == 0` 은 **신호를 끈다** — `count >= 0` 으로 짜면 정반대다.
+
+    판정은 `graph_models.is_pin_challenged` 가 소유하고 투영은 호출만 한다. 그 특례가 여기서
+    실제로 지켜지는지 본다.
+    """
+    off = settings.model_copy(update={"graph_pin_challenge_count": 0})
+    pinned = _edge("소니").model_copy(
+        update={
+            "user_intent": UserIntent(kind="correct", asserted_at=NOW, mutation_id="m1"),
+            "challenge_count": 99,
+        }
+    )
+    document = _document(pinned)
+
+    assert project_edges(document, settings=off)[0].challenged is False
 
 
 # ─────────── 상한 없음 (§3.8) ───────────

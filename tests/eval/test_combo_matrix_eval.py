@@ -135,6 +135,38 @@ def test_intent_axis_matches_route_decision_literal() -> None:
     )
 
 
+def test_intent_axis_values_all_generated_or_explicitly_excluded() -> None:
+    """[#285, I-25 4단계] intent 축의 모든 값은 최소 1개 leaf 에 나타나야 한다 — 단, `excludes`
+    규칙이 그 값을 **명시적으로 이름 지어**(`forbid.intent` 에 값 문자열로) 제외한 경우는 예외다.
+
+    위 `test_intent_axis_matches_route_decision_literal` 은 axes.json 의 intent **값 목록**이
+    `RouteDecision.intent` 와 어휘 일치하는지만 본다 — 값을 목록에 올려놓고도 constraints 가
+    조용히 모든 leaf 에서 그 값을 걸러(생성기가 그 값의 leaf 를 하나도 못 만들어) 커버리지가
+    비어도 그 테스트는 통과한다. `cart_quantity_not_generated` 처럼 **의도된** 제외는 옳지만,
+    다음에 누가 축값을 추가하고 실수로(오타·제약 축 이름 오기 등) 아무 leaf 도 못 얻으면 그
+    구멍이 아무 신호 없이 남는다 — 오늘의 암묵적 구멍을 "제외하려면 반드시 그 값의 이름을
+    `forbid.intent` 에 적어야 한다"는 명시적 탈출구 하나로 바꾼다."""
+    doc = load_axes()
+    leaves = enumerate_leaves(doc)
+    generated_intents = {leaf["intent"] for leaf in leaves}
+    all_intent_values = set(doc.axis_by_id()["intent"].value_ids()) - {"n/a"}
+
+    explicitly_excluded = {
+        value
+        for constraint in doc.constraints
+        if constraint.type == "excludes"
+        for value in constraint.forbid.get("intent", [])
+    }
+
+    missing = all_intent_values - generated_intents
+    unexplained = missing - explicitly_excluded
+    assert not unexplained, (
+        f"intent 값 {sorted(unexplained)} 이 leaf 생성에서 빠졌는데 어떤 excludes 규칙도 "
+        "forbid.intent 에 그 값의 이름을 적어 제외를 선언하지 않는다 — 의도된 제외라면 "
+        "excludes 규칙을 추가하고, 실수라면 leaf 를 못 만드는 제약을 고쳐라."
+    )
+
+
 def test_context_axis_is_subset_of_intent_probe_context_ids() -> None:
     from evals.intent_probe.schema import CONTEXT_IDS
 

@@ -192,6 +192,24 @@ async def close_pool() -> None:
     await _drain_pending_cleanup(propagate_errors=True)
 
 
+async def warm_pool() -> None:
+    """기동 시 풀·스키마를 미리 준비한다 — 첫 사용자 턴이 그 비용을 물지 않도록 (#359).
+
+    `close_pool` 과 대칭이며 `app.main._lifespan` 이 부른다. 지금까지 이 풀은 열리는 자리가 없어
+    **첫 호출자가 지연 초기화 전체를 지불**했는데, 그 첫 호출자가 항상 백그라운드 sweep(사용자
+    예산 밖)이라 무해했다. #359 의 중지 게이트가 **구매자 턴**을 첫 호출자로 바꾼다 —
+    `pool.open(wait=True)`(연결 5s) + `_ensure_schema`(마이그레이션 30s, advisory 잠금 + 테이블
+    3개 + 인덱스)가 `_init_lock` 안에서 직렬화되므로, 배포 직후 첫 회원 턴이 first-token 10s
+    관문 안에서 그것을 물고 동시 턴까지 함께 막는다.
+
+    **실패해도 기동을 막지 않는다** — 호출부가 잡는다. 워밍은 최적화이지 선결 조건이 아니고,
+    실패하면 지연 초기화가 원래 하던 일을 그대로 한다(운영에서 pg-profile 이 죽어 있으면
+    `_get_pool` 이 raise 하는데, 그걸 기동 실패로 승격시키면 개인화와 무관한 구매자 턴까지 서버가
+    안 뜬다).
+    """
+    await _get_pool()
+
+
 def reset() -> None:
     """테스트 격리용 — InMemory 폴백으로 초기화(실제 연결 시도 없이 즉시 blank).
 
@@ -415,9 +433,18 @@ async def _ensure_schema(pool: AsyncConnectionPool) -> None:
                         user_id bigint PRIMARY KEY,
                         enabled boolean NOT NULL DEFAULT true,
                         disabled_at timestamptz,
+                        disabled_spans jsonb NOT NULL DEFAULT '[]'::jsonb,
                         graph_version text,
                         updated_at timestamptz NOT NULL DEFAULT now()
                     )
+                    """
+                )
+                # 구 볼륨에는 컬럼이 없다 — `CREATE TABLE IF NOT EXISTS` 는 기존 테이블을
+                # 갱신하지 않으므로 추가를 따로 건다(이 파일이 마이그레이션 정본이다).
+                await conn.execute(
+                    """
+                    ALTER TABLE profile_personalization_state
+                        ADD COLUMN IF NOT EXISTS disabled_spans jsonb NOT NULL DEFAULT '[]'::jsonb
                     """
                 )
 
@@ -1007,6 +1034,56 @@ async def next_revision(*, user_id: int, existing: GraphDocument | None) -> int:
     return max(current, floor) + 1
 
 
+@dataclass(frozen=True)
+class PersonalizationState:
+    """중지 플래그 + 감쇠 차감 입력 (REQ-PGRAPH-050/055).
+
+    `disabled_spans` 는 **닫힌** 구간만 든다 — 중지 중인 현재 구간은 끝이 없어 실을 수 없다.
+    """
+
+    enabled: bool
+    disabled_at: str | None
+    disabled_spans: list[dict]
+
+
+async def get_personalization_state(*, user_id: int) -> PersonalizationState:
+    """플래그와 중지 구간을 **한 번에** 읽는다 (#359).
+
+    `get_personalization_flag` 와 나누면 배치가 왕복을 두 번 하게 된다 — 같은 단일 행이다.
+    hot-path 는 구간이 필요 없어 여전히 `get_personalization_flag` 를 쓴다.
+    """
+    pool = await _get_pool()
+    if pool is None:
+        row = _fallback_table("personalization").get(int(user_id))
+        if row is None:
+            return PersonalizationState(True, None, [])
+        return PersonalizationState(
+            bool(row["enabled"]),
+            row.get("disabled_at"),
+            list(row.get("disabled_spans") or []),
+        )
+
+    async def _run() -> PersonalizationState:
+        async with pool.connection() as conn:
+            cur = await conn.execute(
+                "SELECT enabled, disabled_at, disabled_spans "
+                "FROM profile_personalization_state WHERE user_id = %s",
+                (int(user_id),),
+            )
+            found = await cur.fetchone()
+            if found is None:
+                return PersonalizationState(True, None, [])
+            enabled, disabled_at, spans = found
+            return PersonalizationState(
+                bool(enabled),
+                # 저장은 timestamptz 지만 감쇠 계산은 ISO 문자열로 한다(순수 함수 입력).
+                disabled_at.isoformat() if disabled_at is not None else None,
+                list(spans or []),
+            )
+
+    return await run_with_query_timeout(_run())
+
+
 async def get_personalization_flag(*, user_id: int) -> bool:
     """개인화 중지 플래그 — 없으면 켜짐(기본값). REQ-PGRAPH-050 의 전용 저장 위치."""
     pool = await _get_pool()
@@ -1036,17 +1113,27 @@ async def set_personalization_flag(
 
     **그래프 락과 요약 락을 동시에 쥐지 않기 위해** 여기서 요약 표식은 건드리지 않는다. 그쪽은
     호출부가 요약 락 아래에서 따로 처리한다(`store.py` 의 advisory 풀 이중 점유 주석).
+
+    **[#359] 재개는 같은 upsert 안에서 중지 구간을 닫는다**(REQ-PGRAPH-055) — `disabled_at → now`
+    를 `disabled_spans` 에 덧붙인다. 그래프 문서는 여전히 건드리지 않는다.
     """
-    previous = await get_personalization_flag(user_id=user_id)
-    if previous == enabled:
+    state = await get_personalization_state(user_id=user_id)
+    if state.enabled == enabled:
         return False
 
     disabled_at = None if enabled else now
+    spans = state.disabled_spans
+    if enabled and state.disabled_at:
+        # 재개 — 이제야 구간이 닫힌다. 중지 중에는 끝이 없어 실을 수 없다(열린 구간을 빼면
+        # 미래를 차감하는 셈이고, 어차피 중지 중에는 배치가 안 돌아 감쇠도 안 걸린다).
+        spans = _capped_spans([*spans, {"from": state.disabled_at, "to": now}])
+
     pool = await _get_pool()
     if pool is None:
         _fallback_table("personalization")[int(user_id)] = {
             "enabled": enabled,
             "disabled_at": disabled_at,
+            "disabled_spans": spans,
             "graph_version": graph_version_token,
         }
         return True
@@ -1056,19 +1143,39 @@ async def set_personalization_flag(
             await conn.execute(
                 """
                 INSERT INTO profile_personalization_state
-                    (user_id, enabled, disabled_at, graph_version, updated_at)
-                VALUES (%s, %s, %s, %s, now())
+                    (user_id, enabled, disabled_at, disabled_spans, graph_version, updated_at)
+                VALUES (%s, %s, %s, %s, %s, now())
                 ON CONFLICT (user_id) DO UPDATE
                 SET enabled = EXCLUDED.enabled,
                     disabled_at = EXCLUDED.disabled_at,
+                    disabled_spans = EXCLUDED.disabled_spans,
                     graph_version = EXCLUDED.graph_version,
                     updated_at = now()
                 """,
-                (int(user_id), enabled, disabled_at, graph_version_token),
+                (int(user_id), enabled, disabled_at, Jsonb(spans), graph_version_token),
             )
 
     await run_with_query_timeout(_run())
     return True
+
+
+def _capped_spans(spans: list[dict]) -> list[dict]:
+    """중지 구간 목록을 상한 안으로 — 넘으면 **가장 오래된 두 개를 하나로 합친다**.
+
+    합치면 그 사이 간격까지 중지로 세므로 감쇠를 **덜 빼는**(=취향을 더 오래 살리는) 쪽으로
+    틀린다. 오래된 것을 버리는 대안은 반대로 이미 지난 중지를 없던 일로 만들어 감쇠가 몰린다 —
+    "데이터는 보존된다"는 약속에 가까운 쪽을 고른다. 병합은 결정론적이라 재생 동일성도 유지된다.
+    """
+    limit = get_settings().graph_decay_pause_spans_max
+    ordered = sorted(spans, key=lambda span: (span.get("from") or "", span.get("to") or ""))
+    while len(ordered) > limit:
+        first, second, *rest = ordered
+        logger.warning(
+            "profile_personalization_spans_merged",
+            extra={"limit": limit, "kept": len(rest) + 1},
+        )
+        ordered = [{"from": first["from"], "to": second["to"]}, *rest]
+    return ordered
 
 
 async def set_personalization(

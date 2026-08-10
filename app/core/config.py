@@ -59,6 +59,7 @@ ROUTE_INTENTS = frozenset(
         "wishlist_add",
         "wishlist_remove",
         "wishlist_view",
+        "cart_quantity",
     }
 )
 
@@ -446,6 +447,18 @@ class Settings(BaseSettings):
     # off — 운영은 `deploy.yml` env 로 켠다(미등록 시 빈 문자열 폴백은 위와 동일).
     color_synonym_array_contract_ready: bool = False
 
+    # ── 브랜드 법인 표기 확장 (#466, `app.pipelines.brand_aliases`) ──
+    # 색상과 달리 **기본 on** 이다. 색상 확장은 DB 사전을 읽어야 해서 DB 없는 환경에서 연결
+    # 시도만 남지만(위), 브랜드 확장은 순수 함수라 의존이 없다. 그리고 이 플래그가 고치는 것은
+    # 결함이다 — 운영 시드 실측으로 "삼성" 발화가 78건 중 7건(9.0%), "LG" 가 38건 중 1건(2.6%)
+    # 에만 닿는다. 하방은 유계다: 확장은 **가산적**이고 exact IN 이라 미존재 이름은 BE 가 무시
+    # 한다(api-spec §4.6). off 로 두면 와이어가 바이트 단위로 종전과 같다.
+    brand_alias_expansion_enabled: bool = True
+    # `brandName` 반복 파라미터 개수 상한 — 계약에 상한은 없지만(§4.6) URL 길이는 유계여야
+    # 한다. 사용자 원문이 **먼저** 채워지므로 상한에 걸려도 종전 동작을 잃지 않는다
+    # (`brand_aliases.expand_brands`). 0 이면 확장 없이 원문으로 검색한다.
+    brand_alias_max_values: int = Field(default=12, ge=0)
+
     @field_validator(
         "color_synonym_expansion_enabled", "color_synonym_array_contract_ready", mode="before"
     )
@@ -775,6 +788,21 @@ class Settings(BaseSettings):
     rerank_max_tokens_per_item: int = Field(default=60, ge=1)  # {productId, rationale} 1건 몫
     llm_call_limit: int = 2
     relaxation_max_rounds: int = 3
+
+    # ── 추천 실행 provenance 로그 (이슈 #140, app/core/reco_provenance.py) ──
+    # 랭킹 로직 배포 버전 — `recommend_provenance` 로그의 algorithmVersion 조립에 쓰인다
+    # (`f"{pipeline}@{reco_algorithm_version}"`). **모델 식별자를 이 값에 넣지 말 것**
+    # (§3.7 [HARD] — 알고리즘·모델 버전은 와이어에 싣지 않고 로그 전용이며, 모델 식별자는
+    # 별도 필드 `rankerModel` 로만 남긴다).
+    reco_algorithm_version: str = "2026-08-10"
+    # rerank 프롬프트 버전 — LLM 순위가 실제로 관여한 경로(메인 rerank 성공)에서만
+    # provenance `promptVersion` 에 실린다. degrade·프로필 벡터·홈 경로는 LLM 순위가 아니라
+    # `null`.
+    rerank_prompt_version: str = "rerank-v1"
+    # provenance 로그 한 줄의 방어 상한 — 자연 상한은 계약 MAX_LISTS(10) × LIST_MAX_PRODUCTS(9)
+    # = 90 이지만, 별도 방어선을 둬 초과분은 조용히 버리지 않고 `itemsTruncated=true` 로
+    # 표시한다(silent cap 금지, 저장소 관례).
+    reco_provenance_max_items: int = Field(default=128, ge=1)
 
     # ── 0건/소량 조건 완화 (#113, api-spec §3.1 suggestions.relaxation · 결정 14-D) ──
     # 필드명은 **와이어 표기(camelCase)** 다 — 그대로 `relaxation.field` 로 나가므로(§3.1) 내부
@@ -1203,11 +1231,12 @@ class Settings(BaseSettings):
         "거로",
     ]
 
-    # ── 장바구니 삭제 · 찜 (이슈 #116·#117, I-24~I-28 — 확정 2026-08-05, Spring 구현 진행 중) ──
+    # ── 장바구니 삭제 · 찜 (이슈 #116·#117, I-24~I-28 — 확정 2026-08-05, Spring 구현됨) ──
+    # [#285] BE `jarvis-backend` main 실측(2026-08-08, BE PR #92·#93) — api-spec §4.12~4.16 v0.31.3.
     # [라운드 23] 삭제·찜 흐름의 온/오프를 가리던 두 설정 필드(기본 False)를 삭제했다(사용자
     # 지시 — 플래그를 두지 말고 항상 켜라) — 계약이 확정됐으니 판정이 나오면 항상 해당 흐름으로
-    # 위임한다. Spring 이 아직 배포 전이라 실호출은 실패로 degrade하지만(§4.12~4.16), 그 실패는
-    # AI 쪽 설정이 아니라 상대 서버 상태의 문제라 AI 코드에 게이트를 둘 이유가 없다.
+    # 위임한다. 상대 서버(Spring)가 일시 장애를 겪어 실호출이 실패로 degrade하는 경우가 있어도,
+    # 그 실패는 AI 쪽 설정이 아니라 상대 서버 상태의 문제라 AI 코드에 게이트를 둘 이유가 없다.
     # 삭제 발화 표지 — "빼" 같은 짧은 조각은 오탐(빼곡·빼고·뺴빼로)이 흔해 쓰지 않는다. 어미까지
     # 포함한 동작 구만 잡는다("하나 빼고 담아줘"의 "빼고"는 여기 없음 — 삭제 지시가 아니다).
     # [라운드 2 리뷰] 제거해줘·빼 주세요·지워 주세요 추가 — 흔한 변형이면서 전부 어미까지 갖춘
@@ -1221,6 +1250,27 @@ class Settings(BaseSettings):
         "제거해줘",
         "빼 주세요",
         "지워 주세요",
+    ]
+    # [#285, I-25 §4.13 — 1단계] 수량 변경(치환) 표지. 여기 튜너블은 아직 아무 코드도 읽지
+    # 않는다(2단계가 decompose/intent_guard 에서 소비) — "튜너블 하드코딩 금지" 규칙 때문에
+    # 소비 로직보다 먼저 config.py 에 넣어 둔다.
+    # `cart_remove_markers` 와 같은 이유로 짧은 조각을 뺐다 — "바꿔" 단독은 "색상 바꿔줘"·
+    # "다른 걸로 바꿔줘"(둘 다 수량과 무관) 오탐 표면이 커서 어미까지 갖춘 동작 구만 담는다.
+    cart_quantity_markers: list[str] = [
+        "개로 바꿔",
+        "개로 변경",
+        "개로 해줘",
+        "수량 바꿔",
+        "수량 변경",
+    ]
+    # I-25 는 **치환**이라 "더 담아"류(합산)는 이 계약이 아니라 I-2(§4.1) 재호출이다 — 2단계가
+    # 이 표지를 보고 수량 변경으로 가지 않게 막는 용도. `cart_add_markers`("담아")와 겹치는
+    # 어휘("담아")를 단독으로 넣지 않는 이유도 같다 — 여기 목록은 "더/추가로 + 담다" 조합만
+    # 어미까지 갖춰 닫는다.
+    cart_quantity_increment_markers: list[str] = [
+        "더 담아",
+        "하나 더",
+        "추가로 담아",
     ]
     # 담기 표지 — 삭제/찜 표지와 같은 발화에 함께 있으면 담기가 강한 신호로 우선한다(§4.1
     # "찜한 거 담아줘"·"하나 빼고 담아줘" — 강한 신호는 약한 신호로 덮지 않는다, docs/lessons.md).
@@ -1251,23 +1301,177 @@ class Settings(BaseSettings):
     # ⚠️ "찜 빼줘"는 cart_remove_markers 의 "빼줘"도 부분 문자열로 동시에 매칭한다 —
     # classify_cart_utterance 의 판정 순서(찜 해제 → 찜 추가 → 삭제 → 담기)가 이 충돌을
     # 해소한다(찜 해제를 삭제보다 먼저 본다). 표지 목록 자체는 겹침을 허용하고 순서로 정리한다.
+    # [라운드 3 리뷰 F8] "찜 취소"(어미 없는 명사형)를 여기서 뺐다 — 왼쪽 경계만으로는
+    # "찜 취소는 어떻게 해?"·"찜 취소선 그어줘" 같은 조회·질문까지 명령으로 읽혔다(실측,
+    # 파괴적). `wishlist_remove_noun_markers`(아래)로 옮겨 왼쪽 경계 + 명사형 종결 규칙을
+    # 함께 받게 했다 — "장바구니 억제를 받지 않는다"는 이 목록의 규약은 그쪽도 그대로 유지한다.
     wishlist_remove_markers: list[str] = [
         "찜 빼줘",
         "찜 해제해줘",
         "찜에서 빼줘",
-        "찜 취소",
         "찜에서 지워",
     ]
+    # 어미 없는 명사형 찜 해제 표지(#440, 라운드 3 리뷰 F8) — `wishlist_remove_markers` 와
+    # 같은 사다리 1번 단계에서 보되, 오른쪽에 `_noun_ending_match_end`(발화 끝 또는 용언 어미 직결)를
+    # 추가로 요구한다(`intent_guard.has_wishlist_remove_evidence`·`classify_cart_utterance`
+    # 참조). `"찜 취소해줘, 장바구니는 그대로 두고"` 처럼 이 목록도 장바구니 억제를 받지
+    # 않는다 — 그 규약은 `wishlist_remove_markers` 와 공유한다.
+    wishlist_remove_noun_markers: list[str] = ["찜 취소", "찜 해제"]
     # 찜 지시 표지 — "찜한 거 담아줘"·"찜해둔 이어폰 담아줘"류에서 찜은 지시 대상을 수식할 뿐
     # 동작이 아니다. 이 표지가 있으면 찜 판정에 개입하지 않는다(그 발화의 동사는 담기다).
+    # [라운드 1 리뷰 F4] 이 4개는 아래 `wishlist_target_markers`(#440 인접 결합 head 축)의
+    # **부분집합이어야 한다** — 지시 수식어는 전부 인접 결합의 head 도 될 수 있어야 하기
+    # 때문이다("찜해뒀던 거 빼줘"처럼 여기에 새 수식어를 추가하면 그 낱말도 head 로 인식돼야
+    # 한다). `set(wishlist_reference_markers) <= set(wishlist_target_markers)` 를
+    # `tests/unit/test_wishlist_remove_resolution.py` 가 테스트로 고정한다 — 한쪽만 고쳐지는
+    # "같은 개념이 두 곳에 각자 있다가 한쪽만 고쳐진다" 재발(`negation.py` 상단 docstring)을
+    # 막는다. 한쪽에 낱말을 추가하면 반드시 `wishlist_target_markers` 도 함께 고쳐라.
     wishlist_reference_markers: list[str] = ["찜한", "찜해둔", "찜해 놓은", "찜했던"]
-    # ⚠️ [#440] **찜 조회/해제를 가르는 표지 목록은 두지 않는다.** #386 에서 두 번 시도했다가
-    # 둘 다 뺐다 — 조회 표지 목록은 조회 표현을 전수로 알아야 성립해 `"내 찜 뭐야"` 류에서 뚫렸고,
-    # 반대로 "찜 명사 + 해제 동사" 결합은 짧은 표지가 다른 낱말에 묻혀(`"찜"` ⊂ `찜닭`,
-    # `"빼"` ⊂ `빼고`) `"찜닭 빼고 보여줘"` 를 해제 근거로 오인했다. 바로 위
-    # `cart_remove_markers` 주석이 이미 경고한 그 함정이다. 어절 경계가 없는 한국어에서
-    # 부분 문자열만으로 이 둘을 가르려면 인접성 판정이 필요하고, 그건 `negation.py`·`remove.py`
-    # 와 얽힌 별도 작업이라 #440 으로 옮겼다.
+    # ⚠️ [#440] **해결됨 — 인접 결합(pair) 판정으로 조회/해제를 가른다.** #386 은 두 접근을
+    # 시도했다가 둘 다 되돌렸다 — ① 조회 표지 전수화는 목록 밖 표현("내 찜 뭐야")에서 뚫렸고,
+    # ② "찜 명사 + 해제 동사" 부분 문자열 결합은 짧은 표지가 다른 낱말에 묻혀(`"찜"` ⊂ `찜닭`·
+    # `갈비찜`·`찜질방`, `"빼"` ⊂ `빼고`) `"찜닭 빼고 보여줘"` 를 해제 근거로 오인했다(바로 위
+    # `cart_remove_markers` 주석이 이미 경고한 그 함정). #440 은 `negation.matches_pair_unnegated`
+    # (어절 경계 + **닫힌 어휘 브리지**, 라운드 3 리뷰 F7 — 거리(창)는 "같은 명령"을 보장하지
+    # 못해 브리지로 교체했다)로 이 둘을 가른다 — 아래 튜너블이 그 판정의 head·tail·브리지 축이다.
+    # 찜 지시 명사(#440) — 인접 결합 판정의 head 축. 어절 경계 검사를 통과한 출현만 센다
+    # (`negation.matches_pair_unnegated`) — 그래서 `찜닭`·`갈비찜`·`찜질방` 의 "찜" 은 걸리지 않는다.
+    # [라운드 1 리뷰 F4] 위 `wishlist_reference_markers` 4개를 문자 그대로 포함한다 — 그쪽이
+    # 이 목록의 부분집합이어야 한다는 불변식은 여기 말고 그 필드 주석에 적었다. 새 지시 수식어를
+    # 여기 추가하면 `wishlist_reference_markers` 도 같이 고쳐라(반대 방향도 마찬가지).
+    # [라운드 1 리뷰 F1-(c)] "찜목록"(붙여쓰기) 추가 — "찜 목록"은 이미 bare "찜"+공백으로
+    # 걸리지만, 붙여쓴 "찜목록에서 빼줘"는 bare "찜" 뒤가 "목"이라(의존명사도 조사도 경계문자도
+    # 아니다) 오른쪽 경계 검사에서 죽는다. 별도 head 로 등록해 그 붙여쓰기 자체를 지시 명사로 센다.
+    wishlist_target_markers: list[str] = [
+        "찜",
+        "찜한",
+        "찜해둔",
+        "찜해 놓은",
+        "찜했던",
+        "위시리스트",
+        "찜목록",
+    ]
+
+    # 찜 해제 동작 구(#440) — 인접 결합 판정의 tail 축. 전부 어미까지 갖춘 동작 구만 담는다
+    # (발화 전체 부분 문자열 검색이 아니라, head 뒤 브리지 바로 그 자리에서만 본다).
+    # [라운드 1 리뷰 F1-(b)] 지워주세요·없애줘·없애 줘·없애주세요·없애 주세요 추가 — 전부
+    # 어미까지 갖춘 동작 구라 오탐 표면이 없다. "지워주세요" 붙여쓰기가 `cart_remove_markers`
+    # (위)에 없는 건 기존 구멍이지만 그쪽은 이 이슈 범위 밖이라 건드리지 않는다 — 여기 tail
+    # 목록에만 보강한다.
+    # [라운드 3 리뷰 F8] "해제"·"취소"(어미 없는 명사형)를 여기서 뺐다 — 오른쪽 경계 없이
+    # 어미 동작구와 같은 자리에서 보면 "찜 해제 방법 보여줘"·"찜 취소 수수료 알려줘" 같은
+    # 조회·질문이 명령으로 읽힌다(실측, 파괴적). `wishlist_remove_action_nouns`(아래)로 옮겨
+    # 명사형 종결 규칙(`negation._noun_ending_match_end`)을 따로 받게 했다.
+    wishlist_remove_action_markers: list[str] = [
+        "빼줘",
+        "빼주세요",
+        "빼 줘",
+        "빼 주세요",
+        "지워줘",
+        "지워주세요",
+        "지워 주세요",
+        "삭제해줘",
+        "제거해줘",
+        "없애줘",
+        "없애 줘",
+        "없애주세요",
+        "없애 주세요",
+    ]
+
+    # 어미 없는 명사형 tail(#440, 라운드 3 리뷰 F8) — head 뒤 브리지 자리에서 보되, 오른쪽에
+    # `_noun_ending_match_end`(발화 끝이거나 아래 `utterance_action_verb_suffixes` 로 바로 이어질 때만)
+    # 를 추가로 요구한다. 위 `wishlist_remove_action_markers` 와 분리하는 이유: 그 목록은 전부
+    # 어미까지 갖춰 뒤에 다른 낱말이 붙는 구조가 아니지만, 이 명사형은 뒤에 조사·다른 낱말이
+    # 자유롭게 붙을 수 있어(취소는·취소선·취소 수수료) 오른쪽 검사가 반드시 필요하다.
+    wishlist_remove_action_nouns: list[str] = ["해제", "취소"]
+
+    # 앵커 스캔 전용 해제 동작 어간(#440 라운드 13 리뷰 F31) — `"빼지 말고"` 의 `"빼"` 처럼
+    # 부정 어미가 붙어 활용된 동작구를 **왼쪽 앵커가 소비**하기 위해서만 쓴다.
+    # ⚠️ 이 목록은 **명령의 근거로 절대 쓰지 마라** — 짧은 조각이라 `"빼"` ⊂ `빼고`·`빼곡` 같은
+    # 오탐이 그대로 있다(`cart_remove_markers` 주석 참조). 앵커는 "이 조각을 알고 있다"만 판정하고,
+    # 명령 여부는 끝의 완성형 tail + 종결 조건이 따로 증명한다 — 그래서 여기서만 안전하다.
+    wishlist_remove_action_stems: list[str] = ["빼", "지워", "삭제", "제거", "해제", "취소", "없애"]
+
+    # 위 명사형 뒤에 바로 이어지면 유효한 **요청 완성형** 용언 어미(#440, 라운드 3 리뷰 F8) —
+    # `wishlist_remove_noun_markers`(사다리 1-a 명사형)와 `wishlist_remove_action_nouns`
+    # (1-b tail) 가 함께 쓴다. "취소해줘"·"취소해 주세요"류를 살리고 "취소는"·"취소선"·"취소
+    # 수수료"는 죽인다.
+    # [라운드 4 리뷰 F10] **맨 어간("해"·"할"·"했"·"시켜")은 절대 넣지 마라** — 어간은 명령형만
+    # 만들지 않는다. "할"이 있으면 "할 방법"·"할 수 있는지"·"할까"가, "해"가 있으면 "해도 돼"가,
+    # "했"이 있으면 "했는지"가 전부 통과해 조회·질문이 삭제 명령으로 읽힌다(실측, 파괴적). 심지어
+    # 어간으로 **시작하는 다른 낱말**도 통과했다("찜 해제해당 여부 알려줘"의 "해당"이 "해"로
+    # 시작한다는 이유만으로 삭제까지 실행됐다, 재현 확인) — `"찜"` ⊂ `찜닭`, `"빼"` ⊂ `빼고` 와
+    # 같은 함정(짧은 조각이 다른 말에 묻힌다)의 **세 번째 재발**이다. 목록은 반드시 요청을
+    # 완성하는 형태(뒤에 다른 활용이 이어질 수 없는 종결형)만 담는다.
+    # [라운드 5 리뷰 F14] **"할래"·"할게" 를 뺐다** — 1인칭 의지형이라 `negation._noun_ending_match_end`
+    # 의 종결 검사를 통과해도 그 자체가 질문의 주제가 될 수 있다("찜 취소할게 맞지?"가 삭제로
+    # 읽혔다, 재현). 요청형(상대에게 해 달라고 하는 형태)만 남긴다 — 어간 다음은 짧은 조각이
+    # 다른 말에 묻히는 이 이슈의 **네 번째** 함정이었다(`_noun_ending_match_end` 가 접두 매칭만
+    # 하던 결함, 그 함수 docstring 참조).
+    utterance_action_verb_suffixes: list[str] = [
+        "해줘",
+        "해 줘",
+        "해주세요",
+        "해 주세요",
+        "해줄래",
+        "해 줄래",
+        "시켜줘",
+        "시켜 줘",
+        "해라",
+    ]
+
+    # 찜 head 와 해제 tail 사이에 올 수 있는 낱말(#440, 라운드 3 리뷰 F7) — **닫힌 어휘만**.
+    # `utterance_name_trailing_filler_words`(그쪽은 뜻 없는 부사·수량사)와 함께 쓰인다
+    # (`intent_guard._matches_wishlist_remove_pair` 가 호출부에서 합친다 — 새로 베끼지 않는다).
+    # 여기엔 찜 목록을 가리키는 일반명사만 둔다 — **상품명이 될 수 있는 말은 절대 금지**.
+    # 하나라도 실질명사가 들어가면 "찜 보고 이거 빼줘"·"찜한 상품 중에 이어폰 빼줘" 류가 다시
+    # 결합돼 사용자가 요청하지 않은 항목이 삭제된다(실측, 파괴적 — 라운드 3 리뷰 F7 재현).
+    wishlist_remove_bridge_words: list[str] = ["목록", "리스트", "상품", "거", "것", "게", "걸"]
+
+    # 찜 해제 명령 **앞**에 올 수 있는 낱말(#440, 라운드 9 리뷰 F22) — **닫힌 어휘만**.
+    # 관형사·지시대명사·소유 표현처럼 대상을 가리키기만 하는 말이다. **실질명사(상품명이 될 수
+    # 있는 말)는 절대 금지** — 하나라도 열면 `"다음 문구를 영어로 번역해줘: '찜 해제해줘'"`
+    # 처럼 해제 문구를 **인용한** 발화가 다시 명령으로 읽힌다(실측, 파괴적).
+    # `wishlist_remove_bridge_words` 와 `utterance_name_trailing_filler_words`·
+    # `utterance_name_boundary_particles` 도 함께 허용한다(같은 성격의 닫힌 어휘라 목록을 새로
+    # 베끼지 않는다 — `intent_guard.wishlist_remove_known_words` 가 호출부에서 합친다, 라운드
+    # 13 리뷰 F33 부터 규칙 1·2·3 이 이 한 함수의 결과를 그대로 공유한다).
+    # `negation._name_left_anchor_reachable` 가 발화 시작부터 이 합집합만으로 head **또는**
+    # 이름 시작에 도달하는지 검사한다 — 규칙 2·3(`intent_guard.has_wishlist_remove_evidence`)
+    # 은 head 자리에, 규칙 1(`negation.matches_name_unnegated_as_command`)은 상품명 자리에
+    # **같은 함수·같은 어휘**로 같은 앵커를 건다(라운드 11 리뷰 F28 — 상품명 **자체**가 닫힌
+    # 어휘일 필요는 없다, 그 **앞**이 닫힌 접두여야 한다는 뜻이라 두 규칙에 같은 앵커를 걸 수
+    # 있다. 라운드 9(F22)는 규칙 1을 별도의 라우팅급 게이트로 뒀었는데 그 분리가 두 라운드
+    # 연속 구멍을 냈다 — `wishlist.py` 상단 docstring "라운드 11 리뷰 F28" 문단 참조. 라운드
+    # 13 리뷰 F33 이전엔 규칙 2·3 의 앵커 어휘가 이 4개뿐이라 규칙 1의 더 넓은 목록과 실제로는
+    # **다른 앵커**였다 — 지금은 `wishlist_remove_known_words` 하나로 글자 그대로 같다).
+    wishlist_remove_prefix_words: list[str] = [
+        "내",
+        "제",
+        "내가",
+        "제가",
+        "그",
+        "이",
+        "저",
+        "우리",
+        "그거",
+        "이거",
+        "저거",
+    ]
+
+    # [#440 라운드 10 리뷰 F26 → 라운드 11 리뷰 F28] 인용·삽입 부호 목록(`utterance_quote_
+    # open_chars`)은 여기 있었다가 **삭제됐다** — "부호가 있으면 무효"라는 거부 목록은
+    # `"사용자가 말한 건 이어폰 찜 빼줘"`(부호 없는 간접화법)를 못 가른다. 규칙 1도 규칙 2·3
+    # 과 같은 **전체 왼쪽 앵커**(`negation.matches_name_unnegated_as_command` 의 `prefix_words`)
+    # 를 받게 되면서, 그 앵커가 부호 유무와 무관하게 "닫힌 접두가 아니면 전부 무효"로 더 강하게
+    # 덮는다 — 이 필드는 이제 필요 없다.
+
+    # 의존명사(#440, 라운드 1 리뷰 F1-(a)) — 인접 결합 head 의 오른쪽 경계에서 조사와 같은
+    # 자격으로 소비한다. "찜한 거"와 "찜한거"는 같은 말인데 공백 유무로 기능이 갈리면 안 된다
+    # (데이터 의존적 결함, `negation.py` 라운드 20 의 "받침 유무로 결과가 갈리던" 것과 같은 부류).
+    # **상품명이 될 수 있는 말은 절대 넣지 마라** — `찜닭`의 `"닭"`처럼 실질명사를 넣는 순간
+    # 어절 경계 검사가 무력화돼 이 이슈가 고친 거짓양성이 통째로 되살아난다.
+    utterance_dependent_nouns: list[str] = ["거", "것", "게", "걸"]
     # 부정·유보 표지(2차 리뷰 지적 1·2·3, `intent_guard.py::_matches_unnegated`) — 표지 출현
     # 바로 뒤 짧은 창 안에 이 표지 중 하나가 오면 그 표지 출현은 없는 것으로 친다("장바구니에
     # 넣지는 마" 의 담기 표지 무효화, "빼줘야 할까"의 삭제 표지 무효화). 이 규칙은 **개입을
@@ -1280,6 +1484,17 @@ class Settings(BaseSettings):
     # 찜 빼줘"에서 "이어폰" 뒤 8자 창 "은 찜 빼지 말"에 "말고"는 안 들어와도 "지 말"은 들어온다).
     # 하지 마: 위 표지가 못 잡는 "동사 없이 하지 마"류 보강. 말고: "A 말고 B" 대조·배제(표지가
     # 이름 바로 뒤에 오는 경우). 야 할/야 될: "~해야 할까?" 류 의문·유보.
+    # [라운드 4 리뷰 F11 → 라운드 5 리뷰 F13 되돌림] F11 은 "야 하"·"야 되"·"도 될"·"도 돼"·
+    # "도 되" 를 여기 넣으라고 했으나 **틀렸다** — 이 목록은 `intent_guard` 의 담기·찜 추가
+    # 판정과 `remove.py` 도 함께 쓴다. 여기서 표지가 걸려 판정이 "무효화"되면 그건 개입을
+    # 줄이는 게 아니라 **사다리 기본값(`cart_add`)으로 떨어져 다른 자원에 실제 변경이 난다**
+    # (실측: `"이거 찜해줘. 배송도 돼?"` 가 찜 대신 장바구니에 담겼다 — wishlist_add 가 무효화
+    # 되면 그 자리를 cart_add 가 대신 채운다). `remove.py` 에서도 `"전부 빼줘, 환불도 되는지
+    # 알려줘"` 가 정상 전체 삭제에서 되물음으로 바뀌었다(회귀). "넓히면 오탐해도 안전하다"는
+    # 전제는 **모든 호출부의 fallback 이 무해할 때만** 성립하는데, 이 목록은 공유 목록이라 한
+    # 호출부만 보고 판단할 수 없다 — 넓히려면 그 목록을 쓰는 경로 전용으로 분리해야 한다
+    # (`utterance_hedge_connectives`·`utterance_quotative_markers` 참조 — 라운드 6 리뷰 F16 이
+    # 목록 나열 자체를 그 두 필드로 대체했다).
     utterance_negation_markers: list[str] = [
         "지 마",
         "지는 마",
@@ -1289,6 +1504,29 @@ class Settings(BaseSettings):
         "말고",
         "야 할",
         "야 될",
+    ]
+    # [라운드 6 리뷰 F16] `wishlist_remove_hedge_markers`(라운드 5 리뷰 F13)를 **삭제하고**
+    # 구조 판정으로 바꿨다 — "도 될"·"도 돼"·"도 되"를 나열했더니 "도 괜찮"·"도 상관없"·
+    # "도 무방" 이 다음 라운드에 다시 뚫렸다(실측). 한국어 유보·허가 표현은 **열린 집합**이라
+    # 나열로 끝나지 않는다. 그 앞에 붙는 **연결어미**("도"·"야")는 유한하다 — `negation.
+    # tail_is_command` 가 "동작구 tail 바로 뒤에 연결어미가 오고 그 뒤가 더 있으면 명령이
+    # 아니다"로 판정한다. `intent_guard` 의 찜 해제 경로(`_matches_wishlist_remove_pair`,
+    # `wishlist_remove_markers`·`wishlist_remove_noun_markers` 매칭)에서만 쓴다 — 라운드 5(F13)
+    # 의 교훈대로 담기·찜 추가·`remove.py` 판정은 건드리지 않는다.
+    utterance_hedge_connectives: list[str] = ["도", "야"]
+    # 인용 조사(#440 라운드 6 리뷰 F16) — 동작구를 **말 자체로 인용**하는 문법 부류. 연결어미와
+    # 같은 이유로 유한하다. `"찜 취소해줘라는 말이 뭐야?"`(표현을 묻는 발화가 삭제 명령으로
+    # 읽히던 것)를 `negation.tail_is_command` 가 이 목록으로 막는다.
+    utterance_quotative_markers: list[str] = [
+        "라는",
+        "라고",
+        "이라는",
+        "이라고",
+        "란",
+        "냐는",
+        "냐고",
+        "라며",
+        "라니",
     ]
     # 부정·유보 표지를 찾는 창 크기(문자 수) — 표지 출현 끝 위치부터 이 길이만큼만 본다.
     # "장바구니에 넣지는 마"(담기 표지 뒤 "지는 마"까지 4자)·"빼줘야 할까"(삭제 표지 뒤 "야
@@ -1427,6 +1665,16 @@ class Settings(BaseSettings):
     # 강등 임계 = profile_gate_threshold - graph_demote_margin (REQ-PGRAPH-016 히스테리시스).
     # **승격 임계는 기존 게이트 임계를 재사용한다 — 두 번째 임계 키를 만들지 않는다**(§11).
     graph_demote_margin: float = Field(default=0.1, ge=0.0, lt=1.0)
+    # pin 된 취향에 반대 관측이 몇 건 쌓이면 `challenged` 를 켤지 (REQ-PGRAPH-033).
+    # **상태는 바꾸지 않는다** — 취향 변화의 반영은 명시적 사용자 동작으로만 일어나고, 이 값은
+    # FE 가 "다시 반영할까요?" 를 물을지 판단하는 동작 트리거다(api-spec §3.8).
+    # **`0` 은 신호를 끈다** — `count >= threshold` 로 순진하게 쓰면 0 에서 항상 참이 되어 규약과
+    # 정반대로 동작하므로 `graph_models.is_pin_challenged` 가 특례로 가른다.
+    graph_pin_challenge_count: int = Field(default=3, ge=0)
+    # 중지 구간 목록(`profile_personalization_state.disabled_spans`)의 최대 길이 (REQ-PGRAPH-055).
+    # 넘으면 가장 오래된 두 구간을 bounding span 으로 병합한다 — 감쇠를 **덜 빼는**(취향을 더
+    # 오래 살리는) 쪽으로 틀리므로 보수적이다. 감쇠 정지 자체를 끄는 스위치가 아니다.
+    graph_decay_pause_spans_max: int = Field(default=50, ge=1)
     # confidence 감쇠 반감기(일). 이 키가 없으면 강등이 **구조적으로 도달 불가**하다 — 게이트가
     # salience >= profile_gate_threshold 인 관측만 저장하므로 감쇠 없이는 confidence 가 승격 임계
     # 아래로 내려갈 수 없고, 히스테리시스가 형식만 만족된다(SPEC v0.1.1 §11 보강).
@@ -1434,12 +1682,23 @@ class Settings(BaseSettings):
     # edge 당 보관하는 근거 fact key 개수 상한(무제한 누적 방어).
     graph_evidence_refs_max: int = Field(default=20, ge=1)
     profile_graph_label_max_chars: int = Field(default=60, ge=1)
-    # 문서 edge 개수 상한. suppressed·superseded 는 영구 보존이라 단일 jsonb 가 단조 증가하므로
-    # 저장 폭주는 여기서 막는다. 다만 **사용자 삭제(suppressed·pin)에는 걸리지 않는다** — 절단이
-    # tombstone 을 지우면 지운 취향이 다음 배치에 active 로 부활하고 복구 경로가 없다. 밀리는
-    # 순서는 superseded(재파생으로 자기복구) → active 이고, 사용자 삭제만으로 이 값을 넘으면
-    # 넘긴 채 보존하고 경고한다(graph_merge._truncate).
+    # **`active` edge 전용 상한** (REQ-PGRAPH-005). 키 이름은 유지하되 #359 에서 뜻이 좁아졌다 —
+    # 개명하면 운영 env·문서가 갈라지는데 얻는 것이 없다.
+    # **`profile_max_facts` 와 같은 값으로 둔다**: active 는 서로 다른 edge_key 수를 넘을 수 없고
+    # 그것은 fact 수를 넘을 수 없으므로, 같게 두면 active 절단이 **구조적으로 발동 불가**가 된다.
+    # 값을 낮추면 그 보장이 사라진다.
     profile_graph_max_edges: int = Field(default=200, ge=1)
+    # **`superseded` 전용 상한** (신설 #359). 종전에는 단일 상한 안에서 superseded 가 active 보다
+    # 먼저 보존돼, 근거 0건이어도 영구 이월되는 superseded 가 쌓이면 **active 가 하나도 안 남는**
+    # 되먹임이 있었다(이슈 #150 코멘트). 바구니를 나누면 그 잠식이 사라지고, superseded 의 실효
+    # 예산은 종전 `상한 − |pin|` 에서 이 값 전량으로 **늘어난다**.
+    profile_graph_max_superseded_edges: int = Field(default=200, ge=1)
+    # tombstone(재파생 차단 표식) 목록 상한 (신설 #359). #499/#358 이 tombstone 을 edges 밖 별도
+    # 목록으로 빼면서 상한이 아예 없어졌다 — 항목당 필드 3개라 증가 폭은 작지만 단조 증가다.
+    # 넘으면 `suppressed_at` 오래된 순으로 버린다. 버린 취향이 부활할 잔여 리스크는 낮다:
+    # 개별 삭제가 원문을 물리 삭제하므로 재파생할 fact 가 대부분 없다. 다만 근거 목록이
+    # `graph_evidence_refs_max` 로 잘려 있어 0 은 아니며, 신경 쓰이면 그 값을 함께 올린다.
+    profile_graph_max_tombstones: int = Field(default=1000, ge=1)
     # 와이어 3버킷 라벨의 경계 2개. **버킷 경계는 계약이 아니다**(§6 공통 규약) — 내부 수치는
     # 노출하지 않고 라벨만 나간다.
     profile_graph_confidence_buckets: list[float] = Field(default_factory=lambda: [0.34, 0.67])

@@ -608,6 +608,168 @@ def test_scope_refusal_short_circuits_before_routing(monkeypatch: pytest.MonkeyP
     assert events[-1]["data"]["panel"] == "keep"
 
 
+# ── ②.5 [#531] 차트 요청 레인 선판정 — 순서 계약이 이 판정의 전부다 ──────────────
+
+
+def _chart_pipeline_stub():
+    """analysis 레인 진입만 확인하면 되는 최소 파이프라인 스텁."""
+    from app.agents.seller.orchestrator import PipelineResult, VerifiedReport
+
+    async def fake_pipeline(question, context, *, today, emit, recent_turns=(), screen=None):
+        return PipelineResult(
+            kind="report",
+            text="그래프를 준비했습니다.",
+            verified=VerifiedReport("그래프를 준비했습니다.", passed=True, attempts=1),
+        )
+
+    return fake_pipeline
+
+
+def test_chart_keyword_short_circuits_routing_to_analysis(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#531] 차트 요청은 라우팅(LLM) 없이 analysis 레인으로 직행한다.
+
+    supervisor 는 "이번달 매출 그래프 보여줘"를 조회로 보아 general 을 고르는데
+    (해석 신호가 없다 — 프롬프트대로다), general 은 report 이벤트를 발행하지 않아
+    좌표(charts[].series[].points[])가 나갈 자리 자체가 없다. 그 결과 general_agent 가
+    ASCII 아트를 token 으로 그리던 것이 이 이슈다.
+    """
+    monkeypatch.setattr(seller_api, "route_question", _no_route)
+    monkeypatch.setattr(seller_api, "run_analysis_pipeline", _chart_pipeline_stub())
+
+    events = _collect_seller(_request("이번달 매출 그래프 보여줘"))
+
+    assert events[0]["type"] == "meta"
+    assert events[0]["data"]["lane"] == "analysis"
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "이번달 매출 차트 보여줘",
+        "매출 그래프 띄워줘",
+        "상품별 재고 시각화해줘",
+        "전환율 도표로 보여줘",
+        "최근 7일 매출 그려줘",
+        "전환율 분석하고 그래프로 보여줘",  # 다른 발화와 섞여 와도 잡는다(존재 검사)
+    ],
+)
+def test_chart_vocabulary_all_reach_analysis_lane(
+    monkeypatch: pytest.MonkeyPatch, message: str
+) -> None:
+    """차트 어휘 5종은 문장 어디에 있든 analysis 레인으로 간다."""
+    monkeypatch.setattr(seller_api, "route_question", _no_route)
+    monkeypatch.setattr(seller_api, "run_analysis_pipeline", _chart_pipeline_stub())
+
+    events = _collect_seller(_request(message))
+
+    assert events[0]["data"]["lane"] == "analysis"
+
+
+def test_plain_lookup_still_goes_through_routing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """[회귀] 차트 어휘가 없는 조회는 선판정이 삼키지 않는다 — 라우터가 판정한다.
+
+    선판정이 "매출"만으로 반응하면 general 조회 전체가 analysis 로 끌려가
+    #180(조회/해석 분리)이 통째로 무너진다.
+    """
+    called: list[str] = []
+
+    async def _counting_route(question, context, recent_turns=(), screen=None):
+        from app.agents.seller.schemas import RouteDecision
+
+        called.append(question)
+        return RouteDecision(category="general", reason="stub", confidence=0.9)
+
+    agent = _StubStreamAgent([AIMessageChunk(content="1,200,000원입니다.")])
+    monkeypatch.setattr(seller_api, "route_question", _counting_route)
+    monkeypatch.setattr(seller_api, "build_general_agent", lambda today, checkpointer=None: agent)
+
+    events = _collect_seller(_request("최근 7일 매출 보여줘"))
+
+    assert called == ["최근 7일 매출 보여줘"], "라우팅을 건너뛰면 안 된다"
+    assert events[0]["data"]["lane"] == "general"
+
+
+def test_chart_keyword_does_not_bypass_scope_refusal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """[순서 ②] scope 선차단이 차트 선판정보다 앞이다 — 도메인 밖 차트 요청 차단.
+
+    뒤집히면 "경쟁사 매출 그래프 보여줘"가 analysis 레인에 들어가 타 판매자 데이터를
+    조회하려 든다.
+    """
+    monkeypatch.setattr(seller_api, "route_question", _no_route)
+
+    def _must_not_run(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("도메인 밖 요청은 분석 파이프라인에 닿으면 안 된다")
+
+    monkeypatch.setattr(seller_api, "run_analysis_pipeline", _must_not_run)
+
+    events = _collect_seller(_request("경쟁사 매출 그래프 보여줘"))
+
+    assert [e["type"] for e in events] == ["meta", "token", "done"]
+    assert events[0]["data"]["lane"] == "refused"
+
+
+def test_chart_keyword_does_not_bypass_pending_period_clear(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[순서 ①.7] 기간 확인 대기 폐기가 차트 선판정보다 앞이다.
+
+    뒤집히면 승인이 아닌 발화가 대기를 남긴 채 지나가, 다음 턴의 "응" 이 엉뚱한
+    옛 계획을 재개시킨다.
+    """
+    from app.agents.seller import period_confirm as seller_period_confirm
+
+    cleared: list[str] = []
+
+    async def _fake_load_pending(context, thread_id):
+        return object()  # 대기 존재 — 내용은 이 테스트와 무관
+
+    async def _fake_clear_pending(context, thread_id):
+        cleared.append(thread_id)
+
+    monkeypatch.setattr(seller_period_confirm, "load_pending", _fake_load_pending)
+    monkeypatch.setattr(seller_period_confirm, "clear_pending", _fake_clear_pending)
+    monkeypatch.setattr(seller_api, "route_question", _no_route)
+    monkeypatch.setattr(seller_api, "run_analysis_pipeline", _chart_pipeline_stub())
+
+    events = _collect_seller(_request("이번달 매출 그래프 보여줘"))
+
+    assert cleared == ["t-1"], "대기를 남긴 채 차트 레인으로 새면 안 된다"
+    assert events[0]["data"]["lane"] == "analysis"
+
+
+def test_chart_keyword_does_not_bypass_image_product_lane(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[순서 image] 사진 실은 발화의 목적지는 등록 초안뿐이다(#506).
+
+    "이 사진으로 등록하고 그래프도 보여줘" 가 analysis 로 새면 이미지가 버려진다.
+    """
+    monkeypatch.setattr(seller_api, "route_question", _no_route)
+
+    def _must_not_run(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("이미지 첨부 턴은 분석 파이프라인에 닿으면 안 된다")
+
+    monkeypatch.setattr(seller_api, "run_analysis_pipeline", _must_not_run)
+
+    async def _fake_product_stream(request, context, *, request_id=None, pending=None):
+        yield seller_api._meta("product")
+        yield seller_api._done("keep")
+
+    monkeypatch.setattr(seller_api, "_product_stream", _fake_product_stream)
+
+    request = SellerChatRequest(
+        session_id="s-1",
+        thread_id="t-1",
+        message="이 사진으로 등록하고 그래프도 보여줘",
+        image_urls=["https://cdn.example.com/a.jpg"],
+    )
+    events = _collect_seller(request)
+
+    assert events[0]["data"]["lane"] == "product"
+
+
 def test_analysis_route_relays_progress_and_report(monkeypatch: pytest.MonkeyPatch) -> None:
     """analysis 분기 — 진행 token(emit 중계) → 최종 text token → report → done."""
     from app.agents.seller.orchestrator import PipelineResult, VerifiedReport
