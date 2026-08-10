@@ -45,6 +45,7 @@ from pydantic import BaseModel, ValidationError
 
 from app.core.config import get_settings
 from app.core.tracing import TraceNode, current_request_trace, trace_span
+from app.pipelines import brand_aliases
 from app.schemas.spring import (
     AccountEventsResult,
     AddToCartRequest,
@@ -610,7 +611,10 @@ def _client(*, timeout: float | None = None) -> httpx.AsyncClient:
 
 
 def _search_query_params(
-    filters: ProductSearchFilters, *, color_values: list[str] | None = None
+    filters: ProductSearchFilters,
+    *,
+    color_values: list[str] | None = None,
+    brand_values: list[str] | None = None,
 ) -> dict:
     """decompose 필터 → BE I-1 GET 쿼리 파라미터 (§4.6, C-15).
 
@@ -636,7 +640,12 @@ def _search_query_params(
         # 다중 브랜드 전량 전송(방법 D) — httpx 가 brandName=A&brandName=B 반복 파라미터로
         # 직렬화 → BE IN 필터(#100 P1). 조건칩(state)도 전 브랜드를 표시하므로 요청·표시가 일치한다.
         # 빈/공백 요소는 제거(LLM 이 [""] 등을 낼 수 있음 — brandName= 빈값 전송 방지, #127 리뷰).
-        brands = [b for b in filters.brand if b and b.strip()]
+        # [#466] `brand_values` 는 법인 표기 확장(`app.pipelines.brand_aliases`)의 결과다 —
+        # None 이면 종전대로 원문을 싣는다. 확장값은 **사용자 원문을 먼저 포함**하는 가산 목록
+        # 이라(그 함수의 계약) 여기서 원문과 합치지 않는다. 조건칩은 `filters.brand`(원문)를
+        # 그대로 보므로 확장이 표시에 새지 않는다.
+        source = filters.brand if brand_values is None else brand_values
+        brands = [b for b in source if b and b.strip()]
         if brands:
             params["brandName"] = brands
     if filters.color and filters.color.strip():
@@ -868,7 +877,14 @@ async def search_products(filters: ProductSearchFilters) -> ProductSearchResult:
         except Exception:
             # 색상 확장은 보조 품질 경로다. DB 장애가 본 검색을 죽이지 않게 기존 단수로 degrade.
             _log.warning("색상 동의어 확장 실패 — 원문 단수 color로 검색", exc_info=True)
-    params = _search_query_params(filters, color_values=color_values)
+    # [#466] 브랜드 법인 표기 확장 — 순수 함수라 DB·네트워크 의존이 없어 색상처럼 try 로
+    # 감싸지 않는다(삼킬 실패가 없다). 꺼져 있으면 None → 와이어가 종전과 바이트 동일하다.
+    brand_values = brand_aliases.brand_wire_values(
+        filters.brand,
+        enabled=settings.brand_alias_expansion_enabled,
+        cap=settings.brand_alias_max_values,
+    )
+    params = _search_query_params(filters, color_values=color_values, brand_values=brand_values)
     attempts = settings.spring_max_retries + 1
     # [#132] 검색 1회의 **총시간** 상한. `spring_search_timeout_s` 는 httpx 에 스칼라로 주입돼
     # connect/read/write/pool 네 시계가 되는데 `read` 는 **청크 사이 간격** 상한이라, 바디가
@@ -1118,7 +1134,8 @@ async def get_cart(user_id: int | None = None, guest_id: str | None = None) -> C
         raise SpringUnavailableError(f"get_cart 실패: {exc}") from exc
 
 
-# ── 장바구니 삭제 · 찜 (이슈 #116·#117, I-24~I-28 — 확정 2026-08-05, Spring 구현 진행 중) ──
+# ── 장바구니 삭제 · 찜 (이슈 #116·#117, I-24~I-28 — 확정 2026-08-05, Spring 구현됨) ──
+# [#285] BE `jarvis-backend` main 실측(2026-08-08, BE PR #92·#93) — api-spec §4.12~4.16 v0.31.3.
 
 
 def _envelope_success_false(resp: httpx.Response) -> bool:
@@ -1180,7 +1197,10 @@ async def delete_cart_item(
 
     if resp.status_code == 200:
         if _envelope_success_false(resp):
-            # 🔶 I-24 협의 대상: 200 + success:false 의 실제 사유(code) 위치가 미확정.
+            # [#285] BE `ApiResponse`(`global/response/ApiResponse.java`)는 success:false 를
+            # error{code,...} 와 함께만 만들고 GlobalExceptionHandler 가 전부 상태 코드로 낸다
+            # — 200 + success:false 경로 자체가 없다. 계약상 오지 않는 조합이라 방어적으로
+            # 실패 처리한다(fail-closed). 이 방어 분기는 지우지 않는다.
             raise CartError("delete_cart_item 실패: 200 success=false")
         return
     if resp.status_code == 404:
@@ -1205,7 +1225,9 @@ async def add_wishlist(request: AddWishlistRequest) -> WishlistAddResult:
     → WishlistProductNotFound. 409 이고 code 가 정확히 WISHLIST_DUPLICATE·RESOURCE_CONFLICT
     (UNIQUE 경합, 둘 다 동일 취급) 중 하나일 때만 → WishlistDuplicate. **[라운드 23]** code 가
     다르거나 본문을 못 읽는 404/409(엔드포인트 미배포 포함)는 WishlistError 다.
-    400·403(SELLER·ADMIN, 전용 예외 없음)·500·도달 불가·미상 코드 → WishlistError.
+    400·500·도달 불가·미상 코드 → WishlistError. [#285] 찜 API 에는 403 이 없다(§4.14~4.16 +
+    BE `InternalWishlistController` 실측 — 역할 검사 부재). 계약상 오지 않지만 오더라도 위
+    "미상 코드" 분기로 `WishlistError` 에 수렴한다.
     """
     try:
         with _spring_span("add_wishlist", "POST") as span:
@@ -1223,7 +1245,9 @@ async def add_wishlist(request: AddWishlistRequest) -> WishlistAddResult:
         except ValueError as exc:
             raise WishlistError(f"add_wishlist 응답 파싱 실패: {exc}") from exc
         if isinstance(data, dict) and data.get("success") is False:
-            # 🔶 I-26 협의 대상: 200 + success:false 의 실제 사유(code) 위치가 미확정.
+            # [#285] BE `ApiResponse` 는 success:false 를 error{code,...} 와 함께만 만들고
+            # GlobalExceptionHandler 가 전부 상태 코드로 낸다 — 200 + success:false 경로 자체가
+            # 없다. 계약상 오지 않는 조합이라 방어적으로 실패 처리한다(fail-closed).
             raise WishlistError("add_wishlist 실패: 200 success=false")
         payload = data.get("data") if isinstance(data, dict) else None
         product_id = payload.get("productId") if isinstance(payload, dict) else None
@@ -1259,8 +1283,9 @@ async def remove_wishlist(product_id: int, *, user_id: int) -> None:
     회원 전용(USER). path 는 productId(wishlistId 아님), query 는 userId 하나뿐(guestId 없음).
     실패: 404 이고 code 가 정확히 WISHLIST_NOT_FOUND(찜 안 한 상품 = 이미 해제 = 없는 상품도
     동일 코드, 구별 불가)일 때만 → WishlistNotFound(비멱등). **[라운드 23]** code 가 다르거나
-    본문을 못 읽는 404(엔드포인트 미배포 포함)는 WishlistError 다. 400·403(전용 예외 없음)·500·
-    도달 불가·미상 코드 → WishlistError.
+    본문을 못 읽는 404(엔드포인트 미배포 포함)는 WishlistError 다. 400·500·도달 불가·미상 코드
+    → WishlistError. [#285] 찜 API 에는 403 이 없다(§4.14~4.16 + BE 역할 검사 부재). 계약상
+    오지 않지만 오더라도 위 "미상 코드" 분기로 `WishlistError` 에 수렴한다.
     """
     try:
         with _spring_span("remove_wishlist", "DELETE") as span:
@@ -1274,7 +1299,9 @@ async def remove_wishlist(product_id: int, *, user_id: int) -> None:
 
     if resp.status_code == 200:
         if _envelope_success_false(resp):
-            # 🔶 I-27 협의 대상: 200 + success:false 의 실제 사유(code) 위치가 미확정.
+            # [#285] BE `ApiResponse` 는 success:false 를 error{code,...} 와 함께만 만들고
+            # GlobalExceptionHandler 가 전부 상태 코드로 낸다 — 200 + success:false 경로 자체가
+            # 없다. 계약상 오지 않는 조합이라 방어적으로 실패 처리한다(fail-closed).
             raise WishlistError("remove_wishlist 실패: 200 success=false")
         return
     if resp.status_code == 404:
@@ -1351,7 +1378,9 @@ async def get_wishlist(user_id: int) -> WishlistView:
     애초에 빈 배열(`items: []`, 찜 0건)인 경우는 이 판정 대상이 아니다 — 그건 I-28 의 정상
     응답이라 그대로 빈 `WishlistView` 를 돌려준다.
     """
-    # 🔶 I-28 협의 대상: 전량 반환 응답의 크기 상한이 미확정 — 클라 측 절단은 두지 않는다.
+    # [#285] `GET /internal/wishlist` 신설 자체는 수용됐다(§4.16 "페이징 없음 — MVP 전량
+    # 반환"으로 등재). 🔶 이슈 #285 코멘트 Q11 이 물었던 "전량 반환 응답의 크기 상한"은 아직
+    # 답을 받지 못했다 — 진짜로 열려 있다. 상한이 없으므로 클라 측 절단은 두지 않는다.
     try:
         with _spring_span("get_wishlist", "GET") as span:
             async with _client() as client:

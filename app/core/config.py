@@ -446,6 +446,18 @@ class Settings(BaseSettings):
     # off — 운영은 `deploy.yml` env 로 켠다(미등록 시 빈 문자열 폴백은 위와 동일).
     color_synonym_array_contract_ready: bool = False
 
+    # ── 브랜드 법인 표기 확장 (#466, `app.pipelines.brand_aliases`) ──
+    # 색상과 달리 **기본 on** 이다. 색상 확장은 DB 사전을 읽어야 해서 DB 없는 환경에서 연결
+    # 시도만 남지만(위), 브랜드 확장은 순수 함수라 의존이 없다. 그리고 이 플래그가 고치는 것은
+    # 결함이다 — 운영 시드 실측으로 "삼성" 발화가 78건 중 7건(9.0%), "LG" 가 38건 중 1건(2.6%)
+    # 에만 닿는다. 하방은 유계다: 확장은 **가산적**이고 exact IN 이라 미존재 이름은 BE 가 무시
+    # 한다(api-spec §4.6). off 로 두면 와이어가 바이트 단위로 종전과 같다.
+    brand_alias_expansion_enabled: bool = True
+    # `brandName` 반복 파라미터 개수 상한 — 계약에 상한은 없지만(§4.6) URL 길이는 유계여야
+    # 한다. 사용자 원문이 **먼저** 채워지므로 상한에 걸려도 종전 동작을 잃지 않는다
+    # (`brand_aliases.expand_brands`). 0 이면 확장 없이 원문으로 검색한다.
+    brand_alias_max_values: int = Field(default=12, ge=0)
+
     @field_validator(
         "color_synonym_expansion_enabled", "color_synonym_array_contract_ready", mode="before"
     )
@@ -1203,11 +1215,12 @@ class Settings(BaseSettings):
         "거로",
     ]
 
-    # ── 장바구니 삭제 · 찜 (이슈 #116·#117, I-24~I-28 — 확정 2026-08-05, Spring 구현 진행 중) ──
+    # ── 장바구니 삭제 · 찜 (이슈 #116·#117, I-24~I-28 — 확정 2026-08-05, Spring 구현됨) ──
+    # [#285] BE `jarvis-backend` main 실측(2026-08-08, BE PR #92·#93) — api-spec §4.12~4.16 v0.31.3.
     # [라운드 23] 삭제·찜 흐름의 온/오프를 가리던 두 설정 필드(기본 False)를 삭제했다(사용자
     # 지시 — 플래그를 두지 말고 항상 켜라) — 계약이 확정됐으니 판정이 나오면 항상 해당 흐름으로
-    # 위임한다. Spring 이 아직 배포 전이라 실호출은 실패로 degrade하지만(§4.12~4.16), 그 실패는
-    # AI 쪽 설정이 아니라 상대 서버 상태의 문제라 AI 코드에 게이트를 둘 이유가 없다.
+    # 위임한다. 상대 서버(Spring)가 일시 장애를 겪어 실호출이 실패로 degrade하는 경우가 있어도,
+    # 그 실패는 AI 쪽 설정이 아니라 상대 서버 상태의 문제라 AI 코드에 게이트를 둘 이유가 없다.
     # 삭제 발화 표지 — "빼" 같은 짧은 조각은 오탐(빼곡·빼고·뺴빼로)이 흔해 쓰지 않는다. 어미까지
     # 포함한 동작 구만 잡는다("하나 빼고 담아줘"의 "빼고"는 여기 없음 — 삭제 지시가 아니다).
     # [라운드 2 리뷰] 제거해줘·빼 주세요·지워 주세요 추가 — 흔한 변형이면서 전부 어미까지 갖춘
