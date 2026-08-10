@@ -343,7 +343,11 @@ def create_app() -> FastAPI:
     # 같은 레인 — 마이페이지 취향 관리 I-32~I-37(§3.8·§3.9, #360). `M-11`~`M-16` 의 internal 판이다.
     app.include_router(profile_graph.router)
 
-    @app.get("/health", tags=["ops"])
+    # [#574] GET 과 함께 HEAD 도 연다 — FastAPI 의 `APIRoute` 는 Starlette 의 순수 `Route` 와
+    # 달리 GET 등록 시 HEAD 를 자동으로 붙이지 않아, `@app.get` 만 쓰면 HEAD 가 405 로 떨어진다.
+    # 외부 업타임 모니터(UptimeRobot 무료 플랜)는 HEAD 만 보낼 수 있어 서비스가 살아 있어도
+    # 다운으로 보고됐다. 응답은 상수라 HEAD 를 열어도 노출 정보가 늘지 않는다.
+    @app.api_route("/health", methods=["GET", "HEAD"], tags=["ops"])
     async def health() -> dict:
         """헬스 체크. 컨테이너 healthcheck·부팅 확인용."""
         return {"status": "ok"}
