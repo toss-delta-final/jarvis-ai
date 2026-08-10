@@ -18,6 +18,7 @@ from enum import StrEnum
 from app.agents.profile.gate import should_promote
 from app.agents.profile.graph_merge import build_graph_document, empty_document
 from app.agents.profile.graph_models import GraphDocument
+from app.agents.profile.personalization_gate import personalization_enabled
 from app.agents.profile.resolver import resolve_triple
 from app.agents.profile.store import FactRecord, get_profile_store
 from app.agents.buyer.recommendation.state import extract_json
@@ -110,11 +111,25 @@ async def generate_session_delta(
     동안 버퍼에 새로 추가된 항목까지 통째로 삭제되는 레이스를 막기 위함(cap 트리밍으로 스냅샷 항목이
     먼저 밀려나도 seq 기준이라 안전).
     LLMError 는 전파 — 상위가 degrade 처리. 게스트는 호출 안 함(상위 책임).
+
+    **[#359] 개인화 중지면 델타를 뽑지 않되 "처리됨"으로 보고한다**(REQ-PGRAPH-052/053).
+    반환값 둘의 의미가 정반대라 여기가 갈림길이다 — `None` 을 돌려주면 호출자가 RETRYABLE 로
+    빠지고 버퍼가 남아 **같은 자리에서 sweep 이 영구 재시도**한다(세션 라이프사이클 정지).
+    반대로 **판정 불가**(플래그 조회 실패)에 튜플을 돌려주면 호출자가 `clear_session_ctx_upto`
+    까지 진행해 **DB 블립 한 번에 개인화가 켜져 있는 사용자의 누적 버퍼가 영구 삭제**된다.
+    그래서 중지 확인 = 튜플, 판정 불가 = `None` 이다(`personalization_gate` 의 `on_error=None`).
     """
+    # 플래그를 **LLM 왕복 앞**에서 본다 — 중지 중에 비용을 쓰면서 결과를 버릴 이유가 없다.
+    enabled = await personalization_enabled(user_id, on_error=None)
+    if enabled is None:
+        return None  # 판정 불가 — degrade(버퍼 보존), 다음 sweep 재시도
     store = await get_profile_store()
     buffer = await store.get_session_ctx_upto(thread_key, profile_watermark)
     if not buffer or llm is None:
         return None  # degrade(버퍼 없음/LLM 미구성) — 처리 안 함(상위가 버퍼 보존)
+    if not enabled:
+        # 처리됨(승격 0건) — 호출자가 버퍼를 정리하고 claim 을 완료한다(REQ-PGRAPH-053).
+        return [], profile_watermark
     structured = settings.profile_graph_delta_enabled
     # LLMError 는 전파 — 상위(events)가 degrade 로 처리해 버퍼를 보존(정상 반려와 구분).
     raw = await llm.complete(
@@ -191,7 +206,17 @@ async def consolidate(user_id: str, *, llm, settings) -> ConsolidationResult:
 
     반환 계약은 유지한다(finalizer 의 RETRYABLE 분기가 여기 의존한다): 할 일 없음은 NO_WORK,
     LLM 미구성·오류·빈 응답은 FAILED.
+
+    **[#359] 개인화 중지면 아무것도 만들지 않는다**(REQ-PGRAPH-052 — 그래프·요약·임베딩).
+    `NO_WORK` 는 finalizer 가 이미 정상 종료로 처리하는 값이라 라이프사이클이 멈추지 않는다
+    (`FAILED` 만 RETRYABLE 로 간다). **판정 불가는 중지로 접지 않는다** — `NO_WORK` 로 돌리면
+    pg 블립이 지속되는 동안 켜진 사용자의 프로필이 영영 갱신되지 않는데 로그 말고는 드러날
+    신호가 없다. 종전대로 진행하고 실패는 자기 경로에서 나게 둔다.
+    부수로 중지 기간에는 감쇠도 진행되지 않는다(REQ-PGRAPH-055) — 배치가 안 돌기 때문인데,
+    그것만으로는 부족하고 재개 시 누적 오프셋 차감이 필요하다(C8).
     """
+    if await personalization_enabled(user_id, on_error=True) is False:
+        return ConsolidationResult.NO_WORK
     store = await get_profile_store()
     now = _now_iso()
 
