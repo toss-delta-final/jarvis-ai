@@ -26,7 +26,8 @@ _TOKEN_SPLIT_RE = re.compile(r"[^\w]+")
 
 @dataclass(frozen=True, slots=True)
 class OptionHint:
-    """I-1(§4.6)이 후보와 함께 준 옵션 메타 — 이름은 절단됐을 수 있고 total 은 절단 전 전체 개수."""
+    """I-1(§4.6)이 후보와 함께 준 옵션 메타 — 이름은 20개로 절단됐을 수 있고 `total` 은 그
+    이름들의 원본 개수([#508] 품절 제외 후 "구매 가능한 것" 기준, api-spec §4.6)다."""
 
     names: tuple[str, ...]
     total: int | None

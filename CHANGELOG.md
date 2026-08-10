@@ -20,9 +20,34 @@
   단정하지 않고 "찾지 못했어요"로만 안내한다 —
   판매자가 승인 사전 밖 표기(영문·약어·미승인 색명)를 썼을 수 있어 단정할 근거가 없다. 신규
   설정 `cart_option_color_synonym_enabled`(기본 `True`) — 사전 적재 실패·미설정은 예외 없이
-  오늘 동작으로 degrade한다. **이 PR 은 #454 를 닫지 않는다**(`Part of #454`) — 옵션 단위 재고
-  자체가 없는 근본 원인은 BE `product_stock` 신설(#508)을 기다려야 한다. 상세 실측은
+  오늘 동작으로 degrade한다. **[#508 흡수, 2026-08-10]** BE 가 옵션별 재고를 2026-08-09
+  구매자 쪽 전량 배포했다(`product.stock_quantity` → `product_stock(product_id, option_id,
+  quantity)`, 02 D33) — I-1·I-3 `options`/`optionCount` 는 품절 옵션 제외·"구매 가능한 것"
+  기준으로, I-2 는 전 옵션 품절 시 `CART_STOCK_INSUFFICIENT`(`availableStock: 0`)로,
+  I-18 은 `maxQuantity`(옵션 재고 기준) 신설로 반영했다(api-spec §4.1·§4.6·§4.9·§4.17,
+  `<!-- VERSION_TBD -->`). **2026-08-10 운영 실측으로 확인** — `product_stock` 24,390행(품절
+  3,170), I-1 `optionCount` 동일 상품 161→138(23개 품절 제외). **다만 #508 이 이 색상 표기
+  이형 문제를 대신 풀어주지 않는다** —
+  옵션이 사이즈인 상품은 색상이 상품 속성에만 있어 재고 필터가 색상별로 못 거르므로(BE 명시
+  한계), 이 PR 의 색상 동의어 좁히기는 #508 이후에도 그대로 필요하다. 상세 실측·경계는
   `docs/specs/MEASURE-OPTION-COLOR-454.md`.
+- **#454 Phase 2 — #508(옵션별 재고) 이후에도 남는 "옵션에 그 색이 없다" 문제를 검색
+  사후필터로 줄였다.** BE 의 색상 매칭(`attributes.색상` 축)과 품절 제외(`options` 축)가 서로
+  몰라서, 속성엔 그 색이 있어도 보이는 옵션엔 그 색이 없는 후보가 그대로 반환됐다(운영 실측
+  `color=블랙`: 옵션 있는 144건 중 77건이 옵션 목록에 블랙 계열 0개, 그중 52건은 다색이라
+  판정 확실). `app.services.search_service._filter_unbuyable_color_options` 가 판정식(색상
+  조건 있음 ∧ `attributes.색상` 복수 ∧ `optionCount==len(options)`(절단 아님) ∧ 승인 동의어
+  확장 어디에도 그 색이 옵션명에 없음)을 모두 만족하는 후보만 뺀다 — D 판정은
+  `app.agents.buyer.cart.options.narrow_options`(#454 되물음 좁히기와 같은 함수, 재구현
+  아님)를 그대로 호출한다. `evals/option_color` 하네스(신규, before/after 같은 패스로 산출)
+  실측: `unbuyable_rate` 11.0%(2,152/19,536, 옵션 있는 후보 대비) → 필터 적용 시 정의상 0%,
+  `candidates_per_query` 중앙값 2,579.0 → 2,486.5(**−3.6%**, recall 손실이 크지 않음), 0건
+  가드 발동 0/20색(전량 카탈로그 스케일에서는 안 뜬다). 하네스 판정과 실제 구현이 19,536건
+  전건 일치(교차검증 0건 불일치). 신규 설정 `search_color_option_postfilter_enabled`(기본
+  `True`) — 사전 적재 실패·색상 조건 없음·제외 후 0건이면 예외 없이 무필터로 degrade한다.
+  §2-B 되물음 고지 문구는 바꾸지 않는다(단정 금지 근거가 재고와 무관해 그대로 유효). api-spec
+  §4.6 `[].options` 소비를 검색 사후필터까지 확대(`<!-- VERSION_TBD -->`). 상세는
+  `docs/specs/MEASURE-OPTION-COLOR-454.md` §7.
 - **#466 — 브랜드-only 발화에서 `filters.brand` 가 비던 결함을 고쳤다** (#430 후속, 과소지정
   오탐의 근원). `decompose` 프롬프트에는 색상 전용 규칙만 있고 **브랜드 추출 규칙이 아예
   없었다.** `- recommend:` 불릿에 브랜드 절 하나를 넣어 ① 추출 ② **발화 표기 그대로**(번안 금지)

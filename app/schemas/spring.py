@@ -120,7 +120,10 @@ class SpringProduct(CamelModel):
     # 데이터 부재)과 '리뷰 있고 저평점'을 가른다. None/미전송이면 rating 이 지배(구 동작 폴백).
     review_count: int | None = None
     # [#278] Spring 송신 계약은 옵션 이름 최대 20개다. AI는 초과분도 원본 배열로 관대 수신한다.
-    # option_count 는 절단 전 전체 개수이며, 이 PR은 rerank·문구·옵션 되물음에서 소비하지 않는다.
+    # [#508, 2026-08-09 BE 배포] option_count 는 "절단 전 전체 개수"가 아니라 **품절 제외 후
+    # 구매 가능한 옵션 개수**다(구 기준 폐기, api-spec §4.6) — BE 가 이미 필터한 목록의 크기를
+    # 그대로 쓰므로 options·option_count 는 항상 같은 기준이다. rerank·문구 소비는 여전히
+    # 하지 않으며, 옵션 되물음(#455/#454)에서만 소비한다.
     options: list[str] | None = None
     option_count: int | None = Field(default=None, alias="optionCount", ge=0)
     category: str | None = Field(default=None, alias="categoryName")
@@ -371,12 +374,11 @@ class AddToCartResult(CamelModel):
 # ── 4. 장바구니 조회 (I-18, §4.9, C-16) ──
 
 # 구매 가능 상태 — I-18(§4.9) · I-28(§4.16) 공용. 겹치면 HIDDEN 우선(서버가 정해서 내린다).
-# 둘 다 상품 단위 판정이되 성격이 다르다: HIDDEN 은 status != ON_SALE 이라 옵션과 무관하게
-# 상품 전체가 판매 종료이고, SOLD_OUT 은 "옵션 중 하나라도 살 수 있으면 AVAILABLE" 이다.
-# ⚠️ [#524/#508] 구 주석의 근거였던 "재고가 product.stock_quantity 하나로 옵션 전체에 공유
-# (product_option 에 재고 컬럼 없음)" 은 **BE 옵션별 재고 전환(02 D33 — product_stock 신설)
-# 이후 사실이 아니다.** 판정 규칙(하나라도 살 수 있으면 AVAILABLE)은 그대로지만 근거가
-# "공유 재고" 에서 "옵션별 재고의 OR" 로 바뀐다. 구매자 레인 동작 정합은 #508 소관.
+# HIDDEN 은 status != ON_SALE 이라 옵션과 무관하게 상품 전체가 판매 종료다. SOLD_OUT 판정
+# 규칙("옵션 중 하나라도 살 수 있으면 AVAILABLE")은 그대로지만, [#508, 2026-08-09 BE 배포]
+# 근거는 "재고가 product.stock_quantity 하나로 옵션 전체에 공유(product_option 에 재고 컬럼
+# 없음)"에서 "옵션별 재고(product_stock(product_id, option_id, quantity), 02 D33)의 OR"로
+# 바뀌었다 — 구 근거는 폐기.
 PurchaseState = Literal["AVAILABLE", "SOLD_OUT", "HIDDEN"]
 
 # 상태 → 안내용 한국어 라벨. **전사(全射) 매핑을 의도한다**(ORDER_ITEM_STATUS_TEXT 와 같은 형태).

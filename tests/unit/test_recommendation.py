@@ -1430,7 +1430,8 @@ def test_i1_envelope_parses_review_count() -> None:
 
 
 def test_i1_envelope_parses_option_names_and_total_count() -> None:
-    """[#278] I-1 options/optionCount 를 이름 배열과 절단 전 전체 개수로 수신한다."""
+    """[#278] I-1 options/optionCount 를 이름 배열과 개수(int)로 수신한다(의미는 #508 개정 —
+    api-spec §4.6, 여기서는 파싱만 고정한다)."""
     from app.services.spring_client import _parse_search_response
 
     product = _parse_search_response(
@@ -1477,7 +1478,7 @@ def test_i1_options_over_20_preserve_product_and_unconsumed_metadata() -> None:
 
 
 def test_i1_option_count_rejects_negative_value() -> None:
-    """[#278] 절단 전 전체 옵션 개수는 음수가 될 수 없다."""
+    """[#278] optionCount 는 음수가 될 수 없다."""
     import pytest
     from pydantic import ValidationError
 

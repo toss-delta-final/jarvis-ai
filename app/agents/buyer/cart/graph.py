@@ -114,10 +114,18 @@ def _cart_option_required_text(
     settings,
     color_synonyms: Mapping[str, Sequence[str]] | None = None,
 ) -> str:
-    """CART_OPTION_REQUIRED 되물음 문구(이슈 #455, #454) — 네 갈래.
+    """CART_OPTION_REQUIRED 되물음 문구(이슈 #455, #454, #508) — 네 갈래.
 
-    (a) 400 목록이 비었는데 I-1 힌트 이름이 있으면 그 이름으로 되묻는다(오늘은
-        `_options_text([])` 가 "옵션" 이라 아무 도움이 안 되는 문구가 나갔다).
+    (a) 400 목록이 비었을 때 — 두 갈래로 더 나뉜다.
+        - I-1 힌트 이름이 있으면 그 이름으로 되묻는다(오늘은 `_options_text([])` 가 "옵션"
+          이라 아무 도움이 안 되는 문구가 나갔다).
+        - [이슈 #508] 힌트 이름도 없으면 **품절 안내로 degrade** 한다. 신 계약(BE 가
+          `error.detail.options` 를 I-1 과 같은 "구매 가능한 것" 기준으로 필터, api-spec §4.1)
+          에서는 남은 옵션이 없으면 `CART_OPTION_REQUIRED` 대신 `CART_STOCK_INSUFFICIENT` 로
+          와야 하므로 이 경로는 방어(드리프트·계약 위반 대비)다. 여기서는 재고를 단정해도
+          된다 — **I-2 가 "옵션이 필수인데 고를 게 하나도 없다"고 말한 사실**에 근거하기
+          때문이다((c) 갈래의 색상 단정 금지와는 상황이 다르다 — 그건 옵션명 표기 추론이고
+          이건 목록이 비었다는 사실이다).
     (b) 400 목록이 있고 누적 조건(`by_condition`)으로 좁혀지면 좁힌 목록만 실은 문구.
         `color_synonyms`(이슈 #454)를 주면 이 좁히기가 색상 이형 표기(조건어 "검정" ↔
         옵션명 "블랙")까지 등가로 본다(`narrow_options` R2 확장, `_select_auto_option`/R1 은
@@ -141,7 +149,7 @@ def _cart_option_required_text(
                         "어떤 걸로 담을까요?"
                     )
                 return f"옵션을 선택해 주세요: {names_text}. 어떤 걸로 담을까요?"
-        return f"옵션을 선택해 주세요: {_options_text(options)}. 어떤 걸로 담을까요?"
+        return "지금은 고를 수 있는 옵션이 없어요. 품절된 것 같아요. 다른 상품을 보여드릴까요?"
 
     narrowing = narrow_options(
         options,

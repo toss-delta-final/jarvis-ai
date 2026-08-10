@@ -726,6 +726,14 @@ class Settings(BaseSettings):
     # 쿼리 임베딩 입력으로 씀)에서는 드롭이 품질을 급락시키므로, graph 가 search_backend!=embedding_rerank
     # 이면 이 값과 무관하게 keyword 를 유지한다(가드는 소비 지점 graph.py).
     search_drop_keyword_with_category: bool = True
+    # [이슈 #454 Phase 2] 색상 조건 검색의 사후필터 — attributes.색상 이 복수이고(옵션 축과
+    # 별개로 상품 자체가 여러 색을 가진 것으로 표기됨) optionCount==len(options)(20개 절단
+    # 아님)인데 옵션 이름 어디에도 그 색(승인 동의어 확장 포함)이 없는 후보를 뺀다
+    # (`app.services.search_service._filter_unbuyable_color_options`, 판정식 A~D). **기본값
+    # True** — 결함을 고치는 플래그는 하방이 유계면 기본 on: 사전 적재 실패·설정 off·색상
+    # 조건 없음은 예외 없이 무필터로 degrade하고, 제외 후 0건이면 제외 자체를 취소한다(0건
+    # 가드) — 둘 다 오늘 동작(무필터)으로 되돌아갈 뿐이라 하방이 유계하다.
+    search_color_option_postfilter_enabled: bool = True
     # pgvector 의미 재정렬 후 Sonnet 입력 상한(옛 "FastAPI 30" 이관처, §4.6). products[:limit] 절단이라
     # ge=0 — 음수면 slice 가 뒤에서 잘려 "<=0 이면 0개" 불변식이 깨진다(형제 category_fanout_* 규약).
     embedding_rerank_limit: int = Field(default=30, ge=0)

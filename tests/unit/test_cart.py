@@ -2886,8 +2886,41 @@ async def test_cart_add_narrows_without_any_hint_present() -> None:
     assert action["type"] == "CART_ADDED"
 
 
+async def test_cart_add_option_count_guard_passes_when_hint_matches_filtered_options() -> None:
+    """(#508 신 계약) 품절 제외 후에도 정합 가드가 자동 선택을 막지 않는다 — I-1 힌트 `total`
+    과 I-2 400 목록이 이미 같은 기준(구매 가능)으로 필터돼 있어 개수가 자연히 일치한다. 아래
+    `..._mismatch_skips_autoselect` 와 반대 방향(가드 통과 vs 가드 차단)을 잡는 짝 테스트다."""
+    store = CartStateStore()
+    options = [
+        CartOption(option_id=1, name="레드"),
+        CartOption(option_id=2, name="블루"),
+        CartOption(option_id=3, name="그린"),
+    ]
+    calls: list[int | None] = []
+
+    async def add_fn(req):
+        calls.append(req.option_id)
+        if req.option_id is None:
+            raise CartOptionRequired(options)
+        return AddToCartResult(success=True, cart_item_id=91)
+
+    # total=3 == len(options)=3 — 품절 제외로 이미 같은 기준으로 걸러진 상태를 흉내낸다.
+    await store.set_last_reco("m:t", [(1, "상품")], option_hints={1: OptionHint(names=(), total=3)})
+
+    events = await _run_add(
+        store, CartIntent(product_id=1, quantity=1), add_fn, message="레드로 담아줘"
+    )
+
+    assert calls == [None, 1]  # 자동 선택 발동 — 되물음 왕복 없이 담긴다
+    action = next(e for e in events if e["type"] == "action")["data"]
+    assert action["type"] == "CART_ADDED" and action["cartItemId"] == 91
+
+
 async def test_cart_add_option_count_mismatch_skips_autoselect() -> None:
-    """(`optionCount` 불일치) 힌트 total=5 인데 400 목록이 3개면 자동 선택하지 않고 되묻는다."""
+    """(`optionCount` 불일치) 힌트 total=5 인데 400 목록이 3개면 자동 선택하지 않고 되묻는다.
+    (#508 신 계약에서도 유효) — 신 계약에서는 힌트·400 목록이 보통 같은 기준(구매 가능)으로
+    맞춰지지만(위 `..._guard_passes_...` 참조), 그럼에도 어긋나면(드리프트·계약 위반) 가드는
+    여전히 발동해 자동 선택을 막는다 — "품절 제외로 항상 일치한다"고 가드를 없애면 안 되는 이유."""
     store = CartStateStore()
     options = [
         CartOption(option_id=1, name="레드"),
@@ -2955,6 +2988,22 @@ async def test_cart_add_empty_options_falls_back_to_hint_names() -> None:
     assert "화이트" in token and "레드" in token
     assert "외 2개" in token
     assert all(ch not in token for ch in ("\x1b", "​"))
+
+
+async def test_cart_add_empty_options_without_hint_degrades_to_stock_message() -> None:
+    """(이슈 #508) 400 목록이 비었고 I-1 힌트 이름도 없으면 품절 안내로 degrade한다 — 신
+    계약에서는 이 경로가 남은 옵션이 없다는 뜻이라(BE 는 보통 CART_STOCK_INSUFFICIENT 로 내려야
+    한다) 무의미한 "옵션을 선택해 주세요: 옵션." 문구 대신 재고를 단정해도 근거가 있다."""
+    store = CartStateStore()
+
+    async def add_fn(req):
+        raise CartOptionRequired([])
+
+    events = await _run_add(store, CartIntent(product_id=1, quantity=1), add_fn)
+
+    assert "action" not in _types(events)
+    token = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert token == "지금은 고를 수 있는 옵션이 없어요. 품절된 것 같아요. 다른 상품을 보여드릴까요?"
 
 
 # ─────────── 색상 동의어 등가·조건 미충족 고지 (이슈 #454) ───────────
