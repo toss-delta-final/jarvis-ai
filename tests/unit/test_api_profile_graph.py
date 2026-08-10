@@ -320,6 +320,29 @@ async def test_an_unresolvable_label_is_400(client: httpx.AsyncClient) -> None:
     assert response.json()["error"]["code"] == "BAD_REQUEST"
 
 
+async def test_a_replayed_patch_still_answers_with_the_original_item(
+    client: httpx.AsyncClient,
+) -> None:
+    """수정 → 그 항목 삭제 → 원래 `If-Match` 로 재시도해도 **최초 응답 그대로**다.
+
+    네트워크 재시도가 지연 도착하는 실제 창이고, 원장이 투영된 항목을 들지 않으면 여기서
+    조립할 대상이 없어 `404`·`500` 이 나간다.
+    """
+    await _seed()
+    first = (
+        await client.patch(EDGE, json={"predicate": "avoids"}, headers={"If-Match": '"g42"'})
+    ).json()
+    await client.delete(f"{GRAPH}/edges/{first['edge']['edgeId']}", headers={"If-Match": '"g43"'})
+
+    replay = await client.patch(EDGE, json={"predicate": "avoids"}, headers={"If-Match": '"g42"'})
+
+    assert replay.status_code == 200
+    body = replay.json()
+    assert body["replayed"] is True
+    assert body["edge"] == first["edge"]
+    assert body["edge"]["object"]["label"] == "소니"
+
+
 # ─────────── If-Match (§3.9 preamble) ───────────
 
 

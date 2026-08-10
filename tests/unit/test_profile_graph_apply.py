@@ -899,6 +899,58 @@ async def test_an_unresolvable_label_is_refused_without_touching_the_document() 
     assert await graph_journal.list_audit(user_id=int(USER)) == []
 
 
+async def test_a_replayed_patch_returns_the_original_edge_even_after_it_was_deleted() -> None:
+    """재전송은 **최초 응답 본문 그대로**다 — 그 사이 그 edge 가 삭제됐어도 (REQ-PGRAPH-043).
+
+    **여기가 원장이 투영된 edge 를 드는 이유다.** "재생 시 현재 문서에서 다시 읽어 조립한다"로
+    구현하면 이 창에서 조립할 대상이 없어 `404` 나 `500` 이 나간다:
+
+        PATCH(If-Match g42) → 200, edge Y
+        DELETE(If-Match g43) → 200            # Y 소멸
+        PATCH 재시도(If-Match g42)             # 네트워크 재시도, 원장 TTL 24h 내
+          → 문서에 Y 가 없다
+
+    보관을 빼면 이 테스트가 깨진다.
+    """
+    await _seed(revision=42)
+    first = await graph_journal.apply_edge_mutation(
+        user_id=int(USER),
+        action="edgeUpdate",
+        edge_id=SONY,
+        if_match="g42",
+        request_id="req-1",
+        now=NOW,
+        predicate="avoids",
+    )
+    assert first.edge is not None
+    await graph_journal.apply_edge_mutation(  # 그 edge 를 지운다
+        user_id=int(USER),
+        action="edgeDelete",
+        edge_id=first.edge_id or "",
+        if_match="g43",
+        request_id="req-2",
+        now=NOW,
+    )
+
+    replay = await graph_journal.apply_edge_mutation(
+        user_id=int(USER),
+        action="edgeUpdate",
+        edge_id=SONY,
+        if_match="g42",  # 최초와 같은 선행조건 → 같은 파생 키
+        request_id="req-3",
+        now=NOW,
+        predicate="avoids",
+    )
+
+    assert replay.replayed is True
+    assert replay.graph_version == first.graph_version
+    # **내용까지** 본다 — `edge is None` 이면 둘이 같아져 동등 비교만으로는 안 걸린다.
+    assert replay.edge is not None
+    assert replay.edge == first.edge
+    assert replay.edge["object"]["label"] == "소니"
+    assert replay.edge["predicate"] == "avoids"
+
+
 async def test_a_node_id_outside_the_graph_is_refused() -> None:
     """형식은 맞지만 그 사용자 그래프에 없는 `nodeId` 는 새로 만들지 않는다 (api-spec §3.9.1)."""
     await _seed(revision=42)
