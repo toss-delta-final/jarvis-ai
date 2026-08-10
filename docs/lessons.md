@@ -13,6 +13,25 @@
 
 ---
 
+## [2026-08-10] `make_interval(days => %s)` 는 실수(float) 보존기간 설정과 못 섞는다
+- 증상: 전사록 보존 스윕(#321) SQL 이 통합 테스트에서 `psycopg.errors.UndefinedFunction:
+  function make_interval(days => double precision) does not exist` 로 죽었다.
+- 원인: `conversation_retention_days` 는 (다른 보존기간 설정들과의 일관성 때문에) `float`
+  이다. Postgres `make_interval` 의 `days` 인자는 **정수(int)** 전용 오버로드만 있어 float
+  값을 그대로 바인딩하면 매칭되는 함수가 없다. `graph_journal.py` 가 쓰는
+  `make_interval(secs => %s)` 는 `secs` 가 `double precision` 이라 같은 함수를 그대로
+  베껴 쓰면 안전해 보이지만, `days`/`hours`/`mins` 인자는 시그니처가 다르다.
+  실 pg-profile 없이 `_Connection` fake 로만 돌리는 유닛 테스트는 SQL 문자열만 보고
+  실행하지 않아 이 클래스의 버그를 못 잡는다 — 실 Postgres 를 치는 통합 테스트가 잡았다.
+- 규칙: `make_interval` 을 새로 쓸 때는 **인자별 타입을 먼저 확인**한다(`secs` 만
+  `double precision`, 나머지는 `int`). float 보존기간/윈도우를 초 단위가 아닌 다른 단위로
+  넘겨야 하면 `make_interval` 대신 `interval '1 day' * %s`(interval-스칼라 곱, float 그대로
+  받는다) 를 쓴다. SQL 리터럴을 바꾸는 변경은 fake 커넥션 유닛 테스트만으로 "통과"라고
+  보고하지 말고 실 DB 를 치는 integration 테스트로 최소 1회 실행해 확인할 것.
+- 관련: `app/core/conversation.py::PgConversationStore.purge_expired_turns`,
+  `tests/integration/test_pg_conversation_store.py`
+
+
 ## [2026-08-10] 초록불이 "잰다"는 뜻은 아니다 — 한 이슈에서 공허한 테스트를 세 번 만들었다
 - 증상: #359 작업 중 **새로 쓴 테스트가 통과했는데 아무것도 안 재는** 경우가 세 번 나왔다.
   전부 변이 검증(고친 코드를 되돌려 보기)으로만 드러났고, 코드 리뷰나 커버리지로는 안 보였다.

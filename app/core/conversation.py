@@ -14,7 +14,9 @@ import itertools
 import math
 import uuid
 from collections import deque
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from enum import Enum
 from typing import Protocol
 
@@ -56,6 +58,11 @@ class Turn:
     user_text: str
     assistant_text: str = ""
     status: TurnStatus = TurnStatus.PENDING
+    # [이슈 #321] 보존 스윕의 비교 대상 — ConversationStore(인메모리)가 주입 clock 으로 찍는다.
+    # PgConversationStore 는 이 필드를 쓰지 않는다 — 서버 컬럼(`created_at timestamptz
+    # DEFAULT now()`)이 시계 권위라 SQL 의 `now()` 를 그대로 쓴다(비대칭은 의도적이다,
+    # "고치지" 말 것 — 분산 앱 서버 시계보다 단일 DB 시계가 신뢰 가능하다).
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
 @dataclass(frozen=True)
@@ -90,6 +97,8 @@ class ConversationStoreProtocol(Protocol):
 
     async def delete_turns_for_user(self, user_id: str) -> int: ...
 
+    async def purge_expired_turns(self, retention_days: float) -> int: ...
+
 
 class ConversationStore:
     """인메모리 대화 저장소(테스트 전용). conversationId(=sessionId) 별로 턴을 순서대로 보관한다."""
@@ -99,11 +108,15 @@ class ConversationStore:
     # (cross-tenant). 프로덕션 경로(PgConversationStore)는 이 한계가 없다.
     _MAX_TURNS = 5000
 
-    def __init__(self) -> None:
+    def __init__(self, *, clock: Callable[[], datetime] = lambda: datetime.now(UTC)) -> None:
         self._turns: dict[str, Turn] = {}
         self._by_conversation: dict[str, list[str]] = {}
         self._order: deque[str] = deque()
         self._seq = itertools.count(1)
+        # [이슈 #321] 보존 스윕 테스트가 가변 fake clock 을 주입해 시간을 전진시킨다
+        # (`time.sleep` 금지 — `reset_store()` 가 테스트마다 새 스토어를 만드므로 생성자 주입이
+        # monkeypatch 보다 깨끗하다, `graph_journal`·`test_profile_graph_merge.py` 와 같은 관례).
+        self._clock = clock
 
     async def save_user_message(
         self,
@@ -128,6 +141,7 @@ class ConversationStore:
             user_id=user_id,
             role=role,
             user_text=text,
+            created_at=self._clock(),
         )
         self._by_conversation.setdefault(conversation_id, []).append(turn_id)
         self._order.append(turn_id)
@@ -189,6 +203,33 @@ class ConversationStore:
                 self._by_conversation[conversation_id] = remaining
             else:
                 self._by_conversation.pop(conversation_id, None)
+        return len(doomed)
+
+    async def purge_expired_turns(self, retention_days: float) -> int:
+        """보존 스윕 한 배치(이슈 #321) — cutoff 이전 턴 중 가장 오래된 것부터 배치 상한만큼.
+
+        `_evict_if_needed` 는 PENDING 을 일부러 건너뛰지만(진행 중 응답 유실 방지), 시간 만료는
+        그 규칙을 **따르지 않는다** — retention_days 만큼 묵은 PENDING 은 죽은 스트림이라, 예외를
+        두면 TTL 이 지우려던 것이 정확히 그만큼 영구히 남는다.
+        """
+        settings = get_settings()
+        cutoff = self._clock() - timedelta(days=retention_days)
+        expired = sorted(
+            (turn_id for turn_id, turn in self._turns.items() if turn.created_at < cutoff),
+            key=lambda turn_id: self._turns[turn_id].created_at,
+        )
+        doomed = expired[: settings.conversation_retention_batch_size]
+        for turn_id in doomed:
+            turn = self._turns.pop(turn_id, None)
+            if turn is None:
+                continue
+            ids = self._by_conversation.get(turn.conversation_id)
+            if ids and turn_id in ids:
+                ids.remove(turn_id)
+                if not ids:
+                    del self._by_conversation[turn.conversation_id]
+            with contextlib.suppress(ValueError):
+                self._order.remove(turn_id)
         return len(doomed)
 
 
@@ -275,6 +316,14 @@ class PgConversationStore:
                     await conn.execute(
                         "CREATE INDEX IF NOT EXISTS idx_conversation_turns_user "
                         "ON conversation_turns (user_id)"
+                    )
+                    # 보존 스윕(이슈 #321) 의 `WHERE created_at < ...` 조회용. 기존 인덱스
+                    # (conversation_id, sequence_id)·(conversation_id, thread_id)·(user_id) 는
+                    # 선두 컬럼이 이 조건과 맞지 않아 못 쓴다. `CONCURRENTLY` 는 쓰지 않는다 —
+                    # 트랜잭션 밖에서만 가능한데 이 setup() 은 전체가 트랜잭션이다.
+                    await conn.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_conversation_turns_created_at "
+                        "ON conversation_turns (created_at)"
                     )
 
         await asyncio.wait_for(_run(), timeout=settings.state_store_migration_timeout_s)
@@ -387,7 +436,7 @@ class PgConversationStore:
                 row = await (
                     await conn.execute(
                         "SELECT turn_id, conversation_id, thread_id, user_id, role, user_text, "
-                        "assistant_text, status "
+                        "assistant_text, status, created_at "
                         "FROM conversation_turns WHERE turn_id = %s",
                         (_turn_id(turn_id),),
                     )
@@ -402,7 +451,7 @@ class PgConversationStore:
                 rows = await (
                     await conn.execute(
                         "SELECT turn_id, conversation_id, thread_id, user_id, role, user_text, "
-                        "assistant_text, status "
+                        "assistant_text, status, created_at "
                         "FROM conversation_turns WHERE conversation_id = %s "
                         "ORDER BY sequence_id",
                         (conversation_id,),
@@ -423,9 +472,44 @@ class PgConversationStore:
         """
         return await self._execute("DELETE FROM conversation_turns WHERE user_id = %s", (user_id,))
 
+    async def purge_expired_turns(self, retention_days: float) -> int:
+        """보존 스윕 한 배치(이슈 #321) — 호출부(`app/pipelines/scheduler.py`)가 배치 상한에
+        도달할 때까지 반복 호출한다(ConversationStore 인메모리 구현과 같은 계약).
+
+        `now()` 는 **서버 시각**으로 계산한다(`graph_journal.py` 와 같은 방식, Pg 가 시계
+        권위다). cutoff 는 `make_interval(days => ...)` 가 아니라 `interval '1 day' * %s` 로
+        곱한다 — `make_interval` 의 `days` 인자는 정수라 `conversation_retention_days` 같은
+        실수(float) 설정을 바인딩하면 `UndefinedFunction` 으로 죽는다(실측). `FOR UPDATE
+        SKIP LOCKED` 로 동시에 도는 `finalize_assistant` UPDATE 에 막히지 않고 건너뛴다.
+        배치당 짧은 트랜잭션 1개로 끝난다 — 한 번에 통째로 지우면 장수 트랜잭션이 autovacuum 을
+        막아 bloat 가 터진다. 중간에 타임아웃이 나도 DELETE 는 멱등이라 다음 tick 이 이어받는다.
+        """
+        settings = get_settings()
+        return await self._execute(
+            "DELETE FROM conversation_turns "  # noqa: S608 - 리터럴만 조립, 파라미터는 바인딩
+            "WHERE turn_id IN ("
+            "    SELECT turn_id FROM conversation_turns "
+            "    WHERE created_at < now() - (interval '1 day' * %s) "
+            "    ORDER BY created_at "
+            "    LIMIT %s "
+            "    FOR UPDATE SKIP LOCKED"
+            ")",
+            (retention_days, settings.conversation_retention_batch_size),
+        )
+
 
 def _row_to_turn(row: tuple) -> Turn:
-    turn_id, conversation_id, thread_id, user_id, role, user_text, assistant_text, status = row
+    (
+        turn_id,
+        conversation_id,
+        thread_id,
+        user_id,
+        role,
+        user_text,
+        assistant_text,
+        status,
+        created_at,
+    ) = row
     return Turn(
         turn_id=turn_id,
         conversation_id=conversation_id,
@@ -435,6 +519,9 @@ def _row_to_turn(row: tuple) -> Turn:
         user_text=user_text,
         assistant_text=assistant_text,
         status=TurnStatus(status),
+        # [F1, #321 리뷰 2라운드] 없이 두면 default_factory 가 "읽은 시각"을 채워 pg 조회
+        # 결과의 created_at 이 조용히 거짓이 된다 — 실제 삽입 시각(서버 컬럼)을 그대로 싣는다.
+        created_at=created_at,
     )
 
 
