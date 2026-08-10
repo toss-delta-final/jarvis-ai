@@ -20,7 +20,10 @@ from pydantic import ValidationError
 
 from app.agents.buyer._frames import sse
 from app.agents.buyer.cart.identity import cart_identity
-from app.agents.buyer.cart.intent_guard import classify_cart_utterance
+from app.agents.buyer.cart.intent_guard import (
+    classify_cart_utterance,
+    has_wishlist_remove_evidence,
+)
 from app.agents.buyer.cart.options import OptionHint, narrow_options
 from app.agents.buyer.cart.purchase_state import state_advice_lines, state_suffix
 from app.agents.buyer.cart.remove import stream_cart_remove
@@ -319,6 +322,8 @@ async def stream_cart_add(
     message: str = "",
     allowed_product_ids: set[int] | None = None,
     screen_reason: str | None = None,
+    screen_reference_attempted: bool = False,
+    screen_resolved: bool = False,
     condition_terms: Sequence[str] = (),
     has_last_reco: bool = False,
     has_push_failed: bool = False,
@@ -349,6 +354,22 @@ async def stream_cart_add(
     찜 해소는 "추천 목록·문맥에서 productId 해소"까지)이며, **[라운드 23]** 플래그 제거로 이제
     이 흐름은 항상 사용자에게 도달한다 — 통합은 여전히 후속 항목이다.
 
+    **[#440 라운드 5 리뷰 F15]** 위 "세 분기는 `screen_reason` 을 넘기지 않는다"는 **문구용
+    전달**에 대한 결정이다 — `stream_wishlist_remove` 위임에는 화면 위치 신호를 별도로
+    넘긴다. 여기서 넘기는 것은 문구가 아니라 **"발화가 화면 위치를 가리키려 했는가·해소기가
+    확정했는가"라는 안전 신호**라 위 결정과 충돌하지 않는다(`wishlist.py::_resolve_wishlist_
+    remove_target` 게이트 참조). 이 경로는 decompose 가 `cart_add` 로 오분류한 발화가 오는
+    **2선 방어**라, 라운드 4(F12)가 `buyer/graph.py` 의 두 직접 경로만 고치고 이 경로를
+    빠뜨렸던 것이 실제로 파괴적이었다(화면 순번 해소가 거부됐는데도 찜이 삭제됨, 재현 확인).
+    **[라운드 6 리뷰 F18]** 그 신호는 호출부(`buyer/graph.py`)가 계산해 그대로 넘기는 값이다
+    — 이 함수는 그 값을 **찜 해제 위임에만** 그대로 전달할 뿐, 담기(`stream_cart_add` 자체의
+    동작)에는 아무 영향도 주지 않는다(기본값이 "위치 미언급"이라 화면이 없거나 안 넘긴 호출부는
+    오늘과 같다). **[라운드 10 리뷰 F27]** 단일 파생값(`screen_refused`)이 `screen_position_
+    mentioned`·`screen_resolved` 두 원자로 갈라졌다 — 규칙 2·3 이 이 신호를 서로 다르게 쓰기
+    때문이다(`wishlist.py` docstring "라운드 10 리뷰 F27" 문단 참조). 파생값을 남겨두지 않고
+    두 원자를 그대로 전달한다 — 파생값이 남으면 다음 사람이 어느 쪽을 고쳐야 할지 모른다(이
+    레인에서 이미 두 번 겪었다).
+
     **`has_last_reco`(#435)·`has_push_failed`(#468)는 위 세 위임 중 `stream_wishlist_add`로
     위임할 때만 전달한다** — 나머지 둘(`stream_wishlist_remove`·`stream_cart_remove`)은 누락이
     아니라 **불필요**다. 그 두 흐름의 미해소 문구는 `last_reco`·push 실패 마커를 보지 않고
@@ -377,7 +398,12 @@ async def stream_cart_add(
         ):
             yield frame
         return
-    if intent == "wishlist_remove":
+    # [#440 라운드 9 리뷰 F24] 이 위임도 결정론 규칙이 LLM 흐름을 **덮어쓰는** 지점이다 — 관대한
+    # 라우팅만으로 위임하면 pending(옵션 되물음) 중 `"찜 취소해줘 이 표현이 맞아?"` 같은 발화가
+    # `clear_pending` 을 실행해 **진행 중이던 되물음을 지운다**(실측, 파괴적 — 찜도 안 지워지고
+    # 담기 흐름도 잃는다). `has_wishlist_remove_evidence`(F22)가 없으면 위임하지 않고 **오늘
+    # 동작(담기 흐름)** 으로 남긴다 — `clear_pending` 도 일어나지 않는다.
+    if intent == "wishlist_remove" and has_wishlist_remove_evidence(message, settings):
         await cart_store.clear_pending(thread_key)
         async for frame in stream_wishlist_remove(
             identity=identity,
@@ -387,6 +413,8 @@ async def stream_cart_add(
             get_wishlist_fn=get_wishlist_fn,
             remove_wishlist_fn=remove_wishlist_fn,
             observer=observer,
+            screen_reference_attempted=screen_reference_attempted,
+            screen_resolved=screen_resolved,
         ):
             yield frame
         return

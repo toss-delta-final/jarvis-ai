@@ -1,8 +1,8 @@
 {
-  "provenance": "reconstructed-from-issue-240-and-pr-239; category_action group added by #84 (mixed utterances in round 3); screen cells absorbed from #118 by #300; condition_only group added by #344 round 2; wishlist_view group added by #386",
+  "provenance": "reconstructed-from-issue-240-and-pr-239; category_action group added by #84 (mixed utterances in round 3); screen cells absorbed from #118 by #300; condition_only group added by #344 round 2; wishlist_view group added by #386; wishlist_remove group added by #440",
   "sha256": {
-    "anchors_a.json": "b625c2208f30be427bf1f1d0cc6e4ef6879e197dc26938a7d35bfa91fdfe3586",
-    "anchors_b.json": "ad9b2f8b3cc741e1d4fab5c14ca3c97b9357ccddc9c1a752e258d44a051865b8"
+    "anchors_a.json": "d2ef4844a57f32e188ff8819ec4ad084484103932f1bd023029b072b99b5fcd5",
+    "anchors_b.json": "de8d8589afe4b6f0513ccf381da95fc34b4c181aa59bbabacd10111587dfc7b7"
   },
   "version": "intent-probe-anchors-manifest-v6"
 }
