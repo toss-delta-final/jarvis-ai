@@ -58,6 +58,7 @@ from app.agents.buyer.recommendation.graph import stream_recommendation
 from app.agents.profile.builder import record_remember
 from app.agents.buyer.session_state import context_thread_key, ensure_thread_adopted
 from app.agents.profile.gate import is_remember_command
+from app.agents.profile.personalization_gate import personalization_enabled
 from app.agents.profile.reader import read_profile_summary
 from app.agents.profile.store import get_profile_store
 from app.core import pg_store
@@ -723,9 +724,30 @@ async def run_buyer_turn(
     # 프로필 주입 (회원만, read-only) — 게스트/신규는 None(개인화 스킵, 결정 8)
     profile = None
     profile_vec = None
+    # [#359] 개인화 중지(§6.6)가 이 턴의 **수집**도 막는지. 소비는 아래 `profile`·`profile_vec`
+    # 를 비우는 것으로 끝나지만 수집 지점은 두 곳(여기의 "기억해", 아래의 세션 버퍼)이라
+    # 판정 결과를 변수로 들고 다닌다 — 턴당 플래그 조회는 **1회**여야 한다.
+    personalization_on = False
     profile_eligible = bool(not identity.is_guest and identity.user_id and not identity.seller_id)
     if profile_eligible:
-        summary = await read_profile_summary(identity.user_id)
+        # 요약 조회와 중지 플래그 조회를 **병렬**로 띄운다. 직렬로 붙이면 관문 안 직렬 합이
+        # 한 왕복만큼 늘어나는데, 아래 §관문 주석이 적었듯 그 예산은 이미 최악에서 상한을
+        # 넘긴다 — 같은 pg-profile 을 치는 두 조회라 병렬이면 벽시계는 `max` 이지 `sum` 이
+        # 아니다. `return_exceptions=True` 로 한쪽 실패가 다른 쪽을 취소해 고아 태스크를
+        # 만들지 않게 한다(이 파일의 `_cancel_scope_task` 와 같은 규율).
+        summary_result, gate_result = await asyncio.gather(
+            read_profile_summary(identity.user_id),
+            # 소비·hot-path 쓰기는 fail-closed 다 — 사용자가 껐는데 저장소 장애 동안 시스템이
+            # 몰래 개인화를 재개하는 것이 이 기능이 막으려는 상황이다(personalization_gate).
+            personalization_enabled(identity.user_id, on_error=False),
+            return_exceptions=True,
+        )
+        if isinstance(summary_result, BaseException):
+            raise summary_result
+        # 게이트는 자기 실패를 이미 `on_error` 로 흡수한다 — 여기까지 예외가 오면 프로그래밍
+        # 오류이므로 조용히 삼키지 않고 안전한 쪽(중지)으로 닫는다.
+        personalization_on = gate_result is True
+        summary = summary_result if personalization_on else None
         profile = summary.get("markdown") if summary else None
         # [#162] 요약 생성 시점에 미리 만들어 둔 취향 벡터(#148 `store._embed_summary`).
         # 종전에는 markdown 만 꺼내 쓰고 이 값을 버렸다 — 조건 없는 발화의 회원 경로가 이걸로
@@ -733,7 +755,9 @@ async def run_buyer_turn(
         profile_vec = summary.get("embedding") if summary else None
         # "기억해"류 명시 명령은 게이트 없이 즉시 승격(hot-path, REQ-PROF). intent 와 무관한
         # 명시 명령이라 라우팅 앞에 둔다 — decompose 가 실패한 턴에도 기록돼야 한다.
-        if is_remember_command(request.message):
+        # **[#359] 단 전역 중지가 개별 명시 요청보다 우선한다**(REQ-PGRAPH-052, api-spec §3.9.5
+        # "명시적 '기억해' 요청도 저장하지 않는다").
+        if personalization_on and is_remember_command(request.message):
             await record_remember(identity.user_id, request.message)
 
     # 장바구니 문맥 — 직전 추천(담기 productId 해소)·옵션 되물음 대기 상태.

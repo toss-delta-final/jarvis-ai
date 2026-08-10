@@ -26,6 +26,7 @@ import uuid
 
 from fastapi import HTTPException
 
+from app.agents.profile.personalization_gate import personalization_enabled
 from app.agents.profile.reader import read_profile_summary
 from app.core.config import Settings, get_settings
 from app.core.text import _strip_unsafe
@@ -321,11 +322,23 @@ async def rank_home(request: HomeRecommendationRequest) -> HomeRecommendationRes
     # 막는다 — 기본값(상한 2.0 < 예산 2.5)에서 랭킹 몫 0.5s 가 남는다. async 경로라 wait_for
     # 취소가 실제로 듣는다(_call_store 가 필요한 건 동기 스레드 호출뿐).
     # 신원은 서비스 토큰이 인가하고 memberId 는 §3.7 계약상 본문으로 온다(레인 b).
+    # [#359] 중지 플래그를 요약과 **병렬**로 읽는다 — 직렬로 붙이면 왕복이 하나 늘어 예산
+    # (store 2.0s < 전체 2.5s)을 잠식한다. 같은 pg-profile 이라 병렬이면 벽시계는 `max` 다.
+    personalization_on: bool | None = None
     try:
         # [#469] 단계 span — 트레이스 미바인딩(Noop)이면 no-op 이라 예산에 영향이 없다.
         with trace_span("home.profile", "chain"):
-            profile = await asyncio.wait_for(
-                read_profile_summary(str(request.member_id)),
+            profile, personalization_on = await asyncio.wait_for(
+                asyncio.gather(
+                    read_profile_summary(str(request.member_id)),
+                    # **3상태를 그대로 쓴다**: `None`(판정 불가)이면 아래에서 프로필 항만 빼고
+                    # 랭킹을 계속한다 — 플래그도 pg-profile 에 있어 그 실패는 api-spec §3.7
+                    # 「HOME 실패 모드」의 `profile_unavailable`(200·프로필 항만 빠짐·남은 근거로
+                    # 판정)에 해당한다. `False` 로 접어 `NO_PROFILE` 을 강제하면 그 표와 충돌한다.
+                    # 소비 fail-closed 는 여기서 "프로필을 쓰지 않는다"로 실현되며, 시그널은
+                    # Spring 이 준 별개 근거라 그것까지 버릴 근거는 중지가 **확인됐을 때**뿐이다.
+                    personalization_enabled(request.member_id, on_error=None),
+                ),
                 timeout=min(settings.home_reco_store_timeout_s, max(_remaining(), 0.001)),
             )
     except TimeoutError:
@@ -336,6 +349,17 @@ async def rank_home(request: HomeRecommendationRequest) -> HomeRecommendationRes
         # 경로와 동일 관례). #141 규약이 막는 건 와이어·외부 trace 노출이지 로컬 로그가 아니다.
         logger.exception("home_reco_profile_unavailable")
         profile = None
+
+    # [#359] **중지가 확인되면 시그널이 있어도 `NO_PROFILE`** (api-spec §3.7 v0.32.7·§3.9.5).
+    # 중지는 "프로필을 못 읽는다"가 아니라 "개인화하지 않는다"는 사용자 의사이므로, 아래
+    # `if not query_vec` 판정 기준의 **결과가 아니라 그보다 앞서는 단락**이다 — 프로필 벡터 항만
+    # 빼면 `recentlyViewed`·`cart` 시그널만으로 질의 벡터가 만들어져 `PERSONALIZED` 가 나간다.
+    # degrade 표식은 붙이지 않는다(REQ-PGRAPH-054 — 중지는 장애가 아니라 정상 동작이고, 관측
+    # 계층에서 중지 여부가 새면 안 된다).
+    if personalization_on is False:
+        return _respond("NO_PROFILE", [], {}, started=started, candidates=0, settings=settings)
+    if personalization_on is None:
+        profile = None  # 판정 불가 — 프로필 항만 빼고 랭킹은 계속한다
     # 미리 만들어 둔 취향 벡터(§3.7 "프로필 벡터와 가중 혼합"). 구 요약·임베딩 실패분은 None.
     # markdown 원문은 여기서 쓰지 않는다 — reason 매칭 분기는 극성(선호/회피) 문제로 제거했다
     # (build_reasons docstring).
