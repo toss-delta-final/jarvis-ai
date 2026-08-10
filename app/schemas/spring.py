@@ -1264,3 +1264,31 @@ class WishlistView(CamelModel):
     """I-28 응답(확정 2026-08-05). 찜 0건도 200 + items:[](404 아님, get_cart 와 같은 규약)."""
 
     items: list[WishlistItem] = Field(default_factory=list)
+
+
+# ── 8. 장바구니 수량 변경 (I-25, §4.13 — 확정 2026-08-05, Spring 구현됨 · AI 구현 착수 #285) ──
+
+
+class ChangeCartQuantityRequest(CamelModel):
+    """I-25 PATCH /internal/cart/items/{cartItemId} 요청 본문(확정 2026-08-05).
+
+    quantity 하나뿐 — **1~99 치환값**(합산 아님)이다. "3개로 바꿔줘"류 발화가 이 계약을 쓰고,
+    "하나 더 담아줘"류(합산)는 이 계약이 아니라 I-2(§4.1) 재호출이다 — 두 발화를 섞지 않는다.
+    범위는 `decompose`(`CartIntent.quantity`)가 이미 1~99 로 클램프하지만, 어댑터에 들어오는
+    값이 그 경로만은 아니므로 `add_to_cart`(`AddToCartRequest.quantity`)와 같은 관례로
+    스키마에서도 강제한다.
+    """
+
+    quantity: int = Field(..., ge=1, le=99)
+
+
+class ChangeCartQuantityResult(CamelModel):
+    """I-25 200 성공 응답(확정 2026-08-05) — {success, data:{cartItemId, quantity}}.
+
+    삭제(I-24)와 달리 **응답에 값이 있다** — `quantity` 가 BE 가 반영한 최종 수량이다(치환
+    요청값과 같아야 정상이지만, AI 는 요청값이 아니라 이 응답값을 신뢰해 emit 한다).
+    """
+
+    success: bool
+    cart_item_id: int | None = None  # 숫자(BIGINT, cart_item.id)
+    quantity: int | None = None

@@ -33,8 +33,9 @@ def test_dry_run_writes_every_artifact(tmp_path: Path) -> None:
     assert _run(out) == 0
     assert {path.name for path in out.iterdir()} == ARTIFACT_NAMES
     results = _results(out)
-    # [#440] 찜 해제 4셀 추가로 85 → 89(§4-2, `test_intent_probe_fixtures.py` 와 같은 총합).
-    assert results["cellCount"] == 89
+    # [#285, I-25 §4.13 — 4단계] 수량 변경 6셀 추가로 89 → 95(§4-2, `test_intent_probe_fixtures.py`
+    # 와 같은 총합. #440 이전엔 85였다).
+    assert results["cellCount"] == 95
     assert results["unfilledCells"] == []
     assert results["dryRun"] is True
 
@@ -154,13 +155,14 @@ def test_pacer_snapshot_is_recorded(tmp_path: Path) -> None:
     assert _run(out, "--rpm", "5") == 0
     pacer = _results(out)["pacer"]
     assert pacer["maxRpm"] == 5
-    # 셀 89 × N=2 (decompose) + 카테고리 15셀 × 2 (범위 해제 분류기) = 208.
+    # 셀 95 × N=2 (decompose) + 카테고리 15셀 × 2 (범위 해제 분류기) = 220.
     # [#84] 분류기도 **페이서를 지난다** — 레이트 예산에 빠지면 실 런에서 429 가 난다.
     # [#300] screen 6셀은 분류기를 태우지 않는다(직전 카테고리가 없다) — 셀 수만 늘어난다.
     # [#344 라운드 2] 조건 전용 5셀도 분류기를 태우지 않는다(직전 카테고리가 없는 none 컨텍스트).
     # [#386] 찜 조회 6셀도 같다(none 컨텍스트). [#440] 찜 해제 4셀도 같다(none 컨텍스트,
-    # 85 → 89 로 셀 수만 늘어난다).
-    assert pacer["acquireCount"] == 89 * 2 + 15 * 2
+    # 85 → 89 로 셀 수만 늘어났다). [#285, I-25 §4.13 — 4단계] 수량 변경 6셀도 같다(none
+    # 컨텍스트, 직전 카테고리 없음) — 89 → 95 로 셀 수만 늘어난다.
+    assert pacer["acquireCount"] == 95 * 2 + 15 * 2
     assert pacer["waitCount"] > 0
 
 

@@ -1024,6 +1024,10 @@ class _CartClient:
         self.calls.append(("DELETE", url, params))
         return self._resp
 
+    async def patch(self, url, json=None, params=None):
+        self.calls.append(("PATCH", url, {"params": params, "json": json}))
+        return self._resp
+
 
 async def test_add_to_cart_success_parses(monkeypatch: pytest.MonkeyPatch) -> None:
     import app.services.spring_client as sc
@@ -1451,6 +1455,177 @@ async def test_delete_cart_item_rejects_two_identity_queries() -> None:
         await sc.delete_cart_item(55, user_id=1, guest_id="guest-uuid-1")
 
 
+# ─────────── spring_client 배선 (I-25 수량 변경, §4.13 — 확정 2026-08-05, #285 1단계) ───────────
+
+
+async def test_change_cart_quantity_success_returns_final_quantity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.services.spring_client as sc
+
+    client = _CartClient(
+        _CartResp(200, {"success": True, "data": {"cartItemId": 55, "quantity": 3}})
+    )
+    monkeypatch.setattr(sc, "_client", lambda: client)
+    result = await sc.change_cart_quantity(55, 3, user_id=1)
+    assert result.success and result.cart_item_id == 55 and result.quantity == 3
+    assert client.calls == [
+        ("PATCH", "/internal/cart/items/55", {"params": {"userId": 1}, "json": {"quantity": 3}})
+    ]
+
+
+async def test_change_cart_quantity_success_guest_id_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    import app.services.spring_client as sc
+
+    client = _CartClient(
+        _CartResp(200, {"success": True, "data": {"cartItemId": 55, "quantity": 5}})
+    )
+    monkeypatch.setattr(sc, "_client", lambda: client)
+    result = await sc.change_cart_quantity(55, 5, guest_id="guest-uuid-1")
+    assert result.quantity == 5
+    assert client.calls == [
+        (
+            "PATCH",
+            "/internal/cart/items/55",
+            {"params": {"guestId": "guest-uuid-1"}, "json": {"quantity": 5}},
+        )
+    ]
+
+
+async def test_change_cart_quantity_stock_insufficient_carries_available_stock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """400 CART_STOCK_INSUFFICIENT → CartStockInsufficient, available_stock 값이 실린다."""
+    import app.services.spring_client as sc
+
+    body = {
+        "error": {"code": "CART_STOCK_INSUFFICIENT", "detail": {"availableStock": 2}},
+    }
+    monkeypatch.setattr(sc, "_client", lambda: _CartClient(_CartResp(400, body)))
+    with pytest.raises(sc.CartStockInsufficient) as exc_info:
+        await sc.change_cart_quantity(55, 10, user_id=1)
+    assert exc_info.value.available_stock == 2
+
+
+async def test_change_cart_quantity_stock_insufficient_without_available_stock_is_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """availableStock 이 없으면 available_stock 은 None(값을 지어내지 않는다)."""
+    import app.services.spring_client as sc
+
+    body = {"error": {"code": "CART_STOCK_INSUFFICIENT"}}
+    monkeypatch.setattr(sc, "_client", lambda: _CartClient(_CartResp(400, body)))
+    with pytest.raises(sc.CartStockInsufficient) as exc_info:
+        await sc.change_cart_quantity(55, 10, user_id=1)
+    assert exc_info.value.available_stock is None
+
+
+async def test_change_cart_quantity_validation_error_is_not_stock_insufficient(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """400 이어도 code 가 VALIDATION_ERROR 면 재고 부족이 아니라 CartError."""
+    import app.services.spring_client as sc
+
+    monkeypatch.setattr(
+        sc,
+        "_client",
+        lambda: _CartClient(_CartResp(400, {"error": {"code": "VALIDATION_ERROR"}})),
+    )
+    with pytest.raises(sc.CartError) as exc_info:
+        await sc.change_cart_quantity(55, 3, user_id=1)
+    assert not isinstance(exc_info.value, sc.CartStockInsufficient)
+
+
+async def test_change_cart_quantity_not_found_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    import app.services.spring_client as sc
+
+    monkeypatch.setattr(
+        sc,
+        "_client",
+        lambda: _CartClient(_CartResp(404, {"error": {"code": "CART_ITEM_NOT_FOUND"}})),
+    )
+    with pytest.raises(sc.CartItemNotFound):
+        await sc.change_cart_quantity(999, 3, user_id=1)
+
+
+async def test_change_cart_quantity_404_with_wrong_code_raises_cart_error_not_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[라운드 23 규약 계승] code 가 계약과 다른 404(엔드포인트 미배포 포함)를 "그 항목이 없다"
+    로 오인하면 안 된다."""
+    import app.services.spring_client as sc
+
+    monkeypatch.setattr(
+        sc, "_client", lambda: _CartClient(_CartResp(404, {"error": {"code": "NOT_FOUND"}}))
+    )
+    with pytest.raises(sc.CartError) as exc_info:
+        await sc.change_cart_quantity(999, 3, user_id=1)
+    assert not isinstance(exc_info.value, sc.CartItemNotFound)
+
+
+async def test_change_cart_quantity_404_empty_body_raises_cart_error_not_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.services.spring_client as sc
+
+    monkeypatch.setattr(sc, "_client", lambda: _CartClient(_CartResp(404, {})))
+    with pytest.raises(sc.CartError) as exc_info:
+        await sc.change_cart_quantity(999, 3, user_id=1)
+    assert not isinstance(exc_info.value, sc.CartItemNotFound)
+
+
+async def test_change_cart_quantity_forbidden_maps_to_cart_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """403 AUTH_FORBIDDEN(소유자 불일치) 은 전용 예외 없이 CartError 로 낙성한다(I-24 와 동일)."""
+    import app.services.spring_client as sc
+
+    monkeypatch.setattr(
+        sc, "_client", lambda: _CartClient(_CartResp(403, {"error": {"code": "AUTH_FORBIDDEN"}}))
+    )
+    with pytest.raises(sc.CartError):
+        await sc.change_cart_quantity(55, 3, user_id=1)
+
+
+async def test_change_cart_quantity_500_maps_to_cart_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    import app.services.spring_client as sc
+
+    monkeypatch.setattr(
+        sc, "_client", lambda: _CartClient(_CartResp(500, {"error": {"code": "INTERNAL_ERROR"}}))
+    )
+    with pytest.raises(sc.CartError):
+        await sc.change_cart_quantity(55, 3, user_id=1)
+
+
+async def test_change_cart_quantity_200_success_false_raises_cart_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """200 이지만 공통 봉투 success:false 면 성공으로 처리하지 않는다(형제 어댑터와 같은 방어)."""
+    import app.services.spring_client as sc
+
+    monkeypatch.setattr(
+        sc, "_client", lambda: _CartClient(_CartResp(200, {"success": False, "data": None}))
+    )
+    with pytest.raises(sc.CartError):
+        await sc.change_cart_quantity(55, 3, user_id=1)
+
+
+async def test_change_cart_quantity_rejects_zero_identity_queries() -> None:
+    """신원 query 0개(둘 다 None) — 어댑터가 방어적으로 호출 자체를 막는다."""
+    import app.services.spring_client as sc
+
+    with pytest.raises(sc.CartError):
+        await sc.change_cart_quantity(55, 3)
+
+
+async def test_change_cart_quantity_rejects_two_identity_queries() -> None:
+    """신원 query 2개(둘 다 not None) — "정확히 하나" 계약을 어댑터가 방어한다."""
+    import app.services.spring_client as sc
+
+    with pytest.raises(sc.CartError):
+        await sc.change_cart_quantity(55, 3, user_id=1, guest_id="guest-uuid-1")
+
+
 # ─────────── spring_client 배선 (I-26/I-27/I-28 찜, 이슈 #117, 확정 2026-08-05) 은 tests/unit/test_wishlist.py ───────────
 
 
@@ -1464,6 +1639,66 @@ def test_parse_cart_clamps_quantity() -> None:
     assert _parse_cart({"productId": 1, "quantity": 1000}).quantity == 99
     assert _parse_cart({"productId": 1, "quantity": 0}).quantity == 1
     assert _parse_cart({"productId": 1, "quantity": 3}).quantity == 3
+
+
+def test_parse_cart_target_quantity_does_not_default_to_one() -> None:
+    """[#285, 함정 3 회귀 고정] `targetQuantity` 는 `quantity`(담기, 기본값 1)와 달리 추출
+    실패·미기재를 **조용히 1로 메우지 않는다** — 변이 시험: `_parse_target_quantity` 가
+    `quantity` 처럼 `min(max(qty, 1), 99) if qty is not None else 1` 로 바뀌면 이 테스트의
+    `is None` 단정이 깨진다(1이 나온다)."""
+    from app.agents.buyer.recommendation.decompose import _parse_cart
+
+    assert _parse_cart({"quantity": 1}).target_quantity is None  # 키 자체가 없음
+    assert _parse_cart({"quantity": 1, "targetQuantity": None}).target_quantity is None
+    assert _parse_cart({"quantity": 1, "targetQuantity": 3}).target_quantity == 3
+
+
+def test_parse_cart_target_quantity_out_of_range_asks_instead_of_clamping() -> None:
+    """[#285, 함정 3] 범위(1~99) 밖 값은 `quantity` 처럼 잘라 보내지 않고 미해소(None)로
+    되돌린다 — 클램프해서 보내면 사용자가 말한 값과 실제 전송값이 달라진다(BE 도 §4.13
+    VALIDATION_ERROR 로 거부한다). 변이 시험: 클램프로 바뀌면 150 이 99 로 나와 이 단정이
+    깨진다."""
+    from app.agents.buyer.recommendation.decompose import _parse_cart
+
+    assert _parse_cart({"quantity": 1, "targetQuantity": 150}).target_quantity is None
+    assert _parse_cart({"quantity": 1, "targetQuantity": 0}).target_quantity is None
+    assert _parse_cart({"quantity": 1, "targetQuantity": 1}).target_quantity == 1
+    assert _parse_cart({"quantity": 1, "targetQuantity": 99}).target_quantity == 99
+
+
+def test_parse_cart_target_quantity_coerces_float_and_string() -> None:
+    """`_as_int` 관례를 그대로 따른다(새 파서를 만들지 않는다) — float·문자열 숫자도 받는다."""
+    from app.agents.buyer.recommendation.decompose import _parse_cart
+
+    assert _parse_cart({"quantity": 1, "targetQuantity": 3.0}).target_quantity == 3
+    assert _parse_cart({"quantity": 1, "targetQuantity": "5"}).target_quantity == 5
+    assert _parse_cart({"quantity": 1, "targetQuantity": "abc"}).target_quantity is None
+
+
+async def test_route_cart_quantity(monkeypatch: pytest.MonkeyPatch) -> None:
+    """[#285] decompose 가 직접 `cart_quantity` 를 산출하면 `stream_cart_quantity_change` 로
+    위임된다(`test_route_cart_remove` 와 같은 패턴) — `intent` 허용 목록에 `cart_quantity` 가
+    빠지면 이 테스트가 `"recommend"` 로 떨어져 change_cart_quantity 가 호출되지 않아 깨진다
+    (실제 runtime 파싱 분기를 exercise — 정적 타입 대조가 아니다)."""
+    from tests._fakes import FakeLLM
+    import app.services.spring_client as sc
+
+    async def fake_get(*, user_id=None, guest_id=None):
+        return CartView(
+            items=[CartViewItem(cart_item_id=1, product_id=1, product_name="키보드", quantity=1)]
+        )
+
+    async def fake_change(cart_item_id, quantity, *, user_id=None, guest_id=None):
+        assert cart_item_id == 1 and quantity == 3
+        return sc.ChangeCartQuantityResult(success=True, cart_item_id=1, quantity=3)
+
+    monkeypatch.setattr(sc, "get_cart", fake_get)
+    monkeypatch.setattr(sc, "change_cart_quantity", fake_change)
+    llm = FakeLLM(decompose={"intent": "cart_quantity", "cart": {"targetQuantity": 3}})
+    events = await _collect(run_buyer_turn(_req(message="키보드 3개로 바꿔줘"), _member(), llm=llm))
+    action = next(e for e in events if e["type"] == "action")["data"]
+    assert action["type"] == "CART_QUANTITY_CHANGED"
+    assert action["quantity"] == 3
 
 
 async def test_cart_add_rejects_out_of_context_product() -> None:

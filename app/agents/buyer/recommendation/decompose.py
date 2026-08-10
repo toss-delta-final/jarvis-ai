@@ -35,7 +35,7 @@ _SYSTEM = """당신은 커머스 어시스턴트의 질의 분해기입니다.
 반드시 아래 JSON 만 출력하세요(설명·코드펜스 금지):
 {
   "intent": "recommend" | "cart_add" | "cart_view" | "order_status" | "general" |
-    "cart_remove" | "wishlist_add" | "wishlist_remove" | "wishlist_view",
+    "cart_remove" | "wishlist_add" | "wishlist_remove" | "wishlist_view" | "cart_quantity",
   "reply": "intent가 general일 때만 줄 짧은 한국어 답변, 아니면 빈 문자열",
   "case": 1 | 2 | 3,
   "semanticQuery": "정형 제약을 제외한 벡터 검색용 자연어",
@@ -47,7 +47,7 @@ _SYSTEM = """당신은 커머스 어시스턴트의 질의 분해기입니다.
     "brand": [string]|null, "ratingMin": number|null, "keyword": string|null,
     "color": string|null
   },
-  "cart": { "productId": int|null, "optionId": int|null, "quantity": int },
+  "cart": { "productId": int|null, "optionId": int|null, "quantity": int, "targetQuantity": int|null },
   "revertCategories": [string],
   "repurchaseProducts": [string],
   "buyAll": bool,
@@ -63,6 +63,9 @@ _SYSTEM = """당신은 커머스 어시스턴트의 질의 분해기입니다.
   요청이면 wishlist_add, 찜한 상품을 해제·취소해 달라는 요청이면 wishlist_remove입니다.
   USER_MESSAGE에 **"찜"이나 "위시리스트"를 직접 명시하고 그 목록의 내용 조회를 요청할 때만**
   wishlist_view입니다.
+  담은 상품의 **최종 수량을 지정**해 바꿔 달라는 요청("3개로 바꿔줘", "수량 2개로 변경")이면
+  cart_quantity입니다. "하나 더 담아줘"·"추가로 담아줘"처럼 **더하는(합산)** 요청은
+  cart_quantity가 아니라 cart_add입니다 — 최종 수량 지정과 추가 요청은 다른 동작입니다.
 - order_status 긍정 예: "내 주문 어디까지 왔어?", "배송 상태 알려줘", "최근 주문 진행 상황".
 - order_status로 분류하지 않는 예: "배송 빠른 상품 추천해줘"는 recommend,
   "이 상품 주문하고 싶어"는 기존 상품 추천/장바구니 의미, "주문 취소 방법"은 general,
@@ -74,6 +77,11 @@ _SYSTEM = """당신은 커머스 어시스턴트의 질의 분해기입니다.
   1-1) "찜 빼줘"·"찜 해제해줘" 같은 **명시적 찜 해제 동사**가 있으면 wishlist_remove.
   1-2) "찜해줘"·"위시리스트에 추가해줘" 같은 **명시적 찜 추가 동사**가 있으면 wishlist_add.
   1-3) "빼줘"·"삭제해줘" 같은 **명시적 삭제 동사**가 있으면 cart_remove.
+  1-4) "3개로 바꿔줘"·"수량 2개로 변경" 처럼 **최종 수량을 지정**하는 치환 동사가 있으면
+     cart_quantity. "하나 더 담아줘"·"추가로 담아줘" 처럼 **더하는(합산)** 표현만 있으면
+     cart_quantity가 아니라 cart_add. "3개로 바꿔서 담아줘"처럼 치환 표현("바꿔")과 담기
+     표현("담아")이 함께 있으면, 최종 수량을 지정하는 치환 의도가 더 구체적이므로
+     cart_quantity를 우선하세요.
   2) 그 외에는 USER_MESSAGE에 "장바구니"가 직접 나오면서 그 내용을 조회할 때만 cart_view.
   2-1) 그 외에는 USER_MESSAGE에 "찜"·"위시리스트"가 직접 나오면서 그 목록을 조회할 때만
      wishlist_view. 예: "내가 뭐 찜했지?", "찜한 거 보여줘", "위시리스트 뭐 있어?".
@@ -153,6 +161,11 @@ _SYSTEM = """당신은 커머스 어시스턴트의 질의 분해기입니다.
   productId 를 고르세요. 못 고르면 productId=null. quantity 기본 1.
 - wishlist_add: cart_add 와 같은 방식으로 LAST_RECOMMENDATIONS에서 사용자가 가리킨 상품의
   productId 를 cart.productId 에 고르세요. 못 고르면 productId=null.
+- cart_quantity: 사용자가 말한 **최종 목표 수량**을 targetQuantity 에 넣으세요("3개로 바꿔줘" →
+  targetQuantity=3, "수량 2개로 변경" → targetQuantity=2). 수량을 명시하지 않았으면(예: "수량
+  바꿔줘") targetQuantity=null 로 두세요 — 임의로 1이나 다른 값을 지어내지 마세요(모르면
+  null, 코드가 되물어야 합니다). 대상 상품은 이 필드로 지정하지 않습니다 — 어느 장바구니
+  항목을 바꿀지는 코드가 발화에서 결정론적으로 해소합니다(cart_remove 와 같은 규약).
 - PENDING_CART(옵션 되물음 대기)가 있고 USER_MESSAGE가 options의 이름·번호·순번을 실제로 고른
   경우에만 옵션 답변입니다 — 사용자 답에 맞는 optionId 를 골라 intent=cart_add,
   cart.optionId 로 주세요. 단,
@@ -609,6 +622,7 @@ async def decompose(
             "wishlist_add",
             "wishlist_remove",
             "wishlist_view",
+            "cart_quantity",
         )
         else "recommend"
     )
@@ -807,6 +821,24 @@ def _as_int(value: object) -> int | None:
     return None
 
 
+def _parse_target_quantity(value: object) -> int | None:
+    """I-25(§4.13) 목표 수량 파싱 — `quantity`(담기, 기본값 1)와 달리 **조용히 클램프하지
+    않는다**(#285 패킷 함정 3).
+
+    "100개로 바꿔줘"처럼 범위(1~99) 밖 값을 그냥 잘라 99로 보내면, 사용자가 명시적으로 말한
+    값과 실제로 보낸 값이 달라져 "수량을 99개로 바꿨어요" 같은 성공 안내가 사용자 말과 어긋난다
+    (BE 도 범위 밖은 §4.13 `VALIDATION_ERROR`로 거부한다 — 클램프해서 보내봐야 성공하지 않는다).
+    그래서 범위 밖이면 **미해소(None)로 되돌린다** — `stream_cart_quantity_change` 가 "수량
+    미상"과 같은 경로(되물음)로 처리해 사용자에게 다시 확인받는다.
+    """
+    qty = _as_int(value)
+    if qty is None:
+        return None
+    if qty < 1 or qty > 99:
+        return None
+    return qty
+
+
 def _parse_cart(raw: object) -> CartIntent | None:
     """decompose 의 cart 객체 → CartIntent (없거나 형식 오류면 빈 의도)."""
     if not isinstance(raw, dict):
@@ -818,4 +850,7 @@ def _parse_cart(raw: object) -> CartIntent | None:
         # api-spec §4.1 수량 1~99 — 상한 초과 발화("100개")가 AddToCartRequest 검증에서
         # ValidationError 로 스트림을 끊지 않게 파싱 시점에 클램프한다.
         quantity=min(max(qty, 1), 99) if qty is not None else 1,
+        # [#285] target_quantity 는 quantity 와 의미가 다르다 — 기본값 1이 아니라 "추출 실패 =
+        # None = 되물음"이다(패킷 함정 3, CartIntent docstring 참조).
+        target_quantity=_parse_target_quantity(raw.get("targetQuantity")),
     )

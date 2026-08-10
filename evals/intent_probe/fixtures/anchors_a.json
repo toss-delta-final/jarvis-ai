@@ -1037,166 +1037,332 @@
       "utteranceId": "condition-only-001",
       "group": "condition_only",
       "text": "5만원 이하 아무거나 추천해줘",
-      "contexts": ["none"],
+      "contexts": [
+        "none"
+      ],
       "expected": {
         "intent": "recommend"
       },
-      "axes": ["conditionOnlyNoCategoryQuery"],
+      "axes": [
+        "conditionOnlyNoCategoryQuery"
+      ],
       "note": "[#344 라운드 2] 조건 전용 발화 — category_probe none 슬라이스와 같은 문구다. decompose 가 categoryQueries 를 비워 내는 계약은 지금 프롬프트의 우연한 동작이고 코드가 강제하지 않는다([#222 R2 F-2] category_mapping._collect_expansion_leaves docstring 참조). 오케스트레이터 실측(2026-08-06, none 슬라이스 40표본): 이 문구가 3건 누출됐다."
     },
     {
       "utteranceId": "condition-only-002",
       "group": "condition_only",
       "text": "평점 좋은 걸로 보여줘",
-      "contexts": ["none"],
+      "contexts": [
+        "none"
+      ],
       "expected": {
         "intent": "recommend"
       },
-      "axes": ["conditionOnlyNoCategoryQuery"],
+      "axes": [
+        "conditionOnlyNoCategoryQuery"
+      ],
       "note": "[#344 라운드 2] 조건 전용 발화 — category_probe none 슬라이스와 같은 문구다."
     },
     {
       "utteranceId": "condition-only-003",
       "group": "condition_only",
       "text": "인기 많은 거 추천해줘",
-      "contexts": ["none"],
+      "contexts": [
+        "none"
+      ],
       "expected": {
         "intent": "recommend"
       },
-      "axes": ["conditionOnlyNoCategoryQuery"],
+      "axes": [
+        "conditionOnlyNoCategoryQuery"
+      ],
       "note": "[#344 라운드 2] 조건 전용 발화 — category_probe none 슬라이스와 같은 문구다."
     },
     {
       "utteranceId": "condition-only-004",
       "group": "condition_only",
       "text": "무료배송 되는 걸로 찾아줘",
-      "contexts": ["none"],
+      "contexts": [
+        "none"
+      ],
       "expected": {
         "intent": "recommend"
       },
-      "axes": ["conditionOnlyNoCategoryQuery"],
+      "axes": [
+        "conditionOnlyNoCategoryQuery"
+      ],
       "note": "[#344 라운드 2] 조건 전용 발화 — category_probe none 슬라이스와 같은 문구다. 오케스트레이터 실측: 이 문구가 3건 누출됐다."
     },
     {
       "utteranceId": "condition-only-005",
       "group": "condition_only",
       "text": "가성비 좋은 거 추천해줘",
-      "contexts": ["none"],
+      "contexts": [
+        "none"
+      ],
       "expected": {
         "intent": "recommend"
       },
-      "axes": ["conditionOnlyNoCategoryQuery"],
+      "axes": [
+        "conditionOnlyNoCategoryQuery"
+      ],
       "note": "[#344 라운드 2] 조건 전용 발화 — category_probe none 슬라이스와 같은 문구다. 오케스트레이터 실측: 이 문구가 4건 누출됐고(그중 1건은 '가성비 좋은 무선 이어폰'으로 없던 카테고리까지 창작), 그래서 불변식이 이미 ~25% 흔들린다는 것이 이 축을 만든 동기다."
     },
     {
       "utteranceId": "wishlist-view-001",
       "group": "wishlist_view",
       "text": "내가 뭐 찜했지?",
-      "contexts": ["none"],
+      "contexts": [
+        "none"
+      ],
       "expected": {
         "intent": "wishlist_view"
       },
-      "axes": ["wishlistViewPositive", "wishlistViewRouting"],
+      "axes": [
+        "wishlistViewPositive",
+        "wishlistViewRouting"
+      ],
       "note": "[#386] 찜 목록 조회 양성 — api-spec §4.16(I-28)이 규정한 발화형이다. 이 intent 는 이번 이슈로 신설돼 커밋된 어느 기준선에도 표본이 없다(그래서 별도 축으로 격리한다)."
     },
     {
       "utteranceId": "wishlist-view-002",
       "group": "wishlist_view",
       "text": "찜한 거 보여줘",
-      "contexts": ["none"],
+      "contexts": [
+        "none"
+      ],
       "expected": {
         "intent": "wishlist_view"
       },
-      "axes": ["wishlistViewPositive", "wishlistViewRouting"],
+      "axes": [
+        "wishlistViewPositive",
+        "wishlistViewRouting"
+      ],
       "note": "[#386] 찜 목록 조회 양성 — api-spec §4.16(I-28)이 규정한 발화형이다. 이 intent 는 이번 이슈로 신설돼 커밋된 어느 기준선에도 표본이 없다(그래서 별도 축으로 격리한다)."
     },
     {
       "utteranceId": "wishlist-view-003",
       "group": "wishlist_view",
       "text": "위시리스트 뭐 있어?",
-      "contexts": ["none"],
+      "contexts": [
+        "none"
+      ],
       "expected": {
         "intent": "wishlist_view"
       },
-      "axes": ["wishlistViewPositive", "wishlistViewRouting"],
+      "axes": [
+        "wishlistViewPositive",
+        "wishlistViewRouting"
+      ],
       "note": "[#386] 찜 목록 조회 양성 — api-spec §4.16(I-28)이 규정한 발화형이다. 이 intent 는 이번 이슈로 신설돼 커밋된 어느 기준선에도 표본이 없다(그래서 별도 축으로 격리한다)."
     },
     {
       "utteranceId": "wishlist-view-004",
       "group": "wishlist_view",
       "text": "보여줘",
-      "contexts": ["none"],
+      "contexts": [
+        "none"
+      ],
       "expected": {
         "intent": "recommend"
       },
-      "axes": ["wishlistViewNoSteal", "wishlistViewRouting"],
+      "axes": [
+        "wishlistViewNoSteal",
+        "wishlistViewRouting"
+      ],
       "note": "[#386] 음성 대조 — 목적어 없는 조회 동사만으로는 wishlist_view 가 아니다. cart_view 도 같은 이유로 \"보여줘\"·\"뭐 있어?\" 단독을 금지하는 가드를 갖고 있는데(#234 실측), 찜 조회를 더하면 그 자리가 3파전(recommend·cart_view·wishlist_view)이 된다 — 이 셀이 그걸 직접 잰다."
     },
     {
       "utteranceId": "wishlist-view-005",
       "group": "wishlist_view",
       "text": "뭐 있어?",
-      "contexts": ["none"],
+      "contexts": [
+        "none"
+      ],
       "expected": {
         "intent": "recommend"
       },
-      "axes": ["wishlistViewNoSteal", "wishlistViewRouting"],
+      "axes": [
+        "wishlistViewNoSteal",
+        "wishlistViewRouting"
+      ],
       "note": "[#386] 음성 대조 — 목적어 없는 조회 동사만으로는 wishlist_view 가 아니다. cart_view 도 같은 이유로 \"보여줘\"·\"뭐 있어?\" 단독을 금지하는 가드를 갖고 있는데(#234 실측), 찜 조회를 더하면 그 자리가 3파전(recommend·cart_view·wishlist_view)이 된다 — 이 셀이 그걸 직접 잰다."
     },
     {
       "utteranceId": "wishlist-view-006",
       "group": "wishlist_view",
       "text": "찜한 거 담아줘",
-      "contexts": ["none"],
+      "contexts": [
+        "none"
+      ],
       "expected": {
         "intent": "cart_add"
       },
-      "axes": ["wishlistViewNoSteal", "wishlistViewRouting"],
+      "axes": [
+        "wishlistViewNoSteal",
+        "wishlistViewRouting"
+      ],
       "note": "[#386] 음성 대조 — \"찜한\"은 지시 대상을 수식할 뿐이고 이 발화의 동사는 담기다. config.wishlist_reference_markers 와 decompose 판정 사다리 1)이 이미 세운 규약이라, 찜 조회 규칙을 더한 뒤에도 그대로여야 한다(강한 신호 우선)."
     },
     {
       "utteranceId": "wishlist-remove-001",
       "group": "wishlist_remove",
       "text": "찜한 거 빼줘",
-      "contexts": ["none"],
+      "contexts": [
+        "none"
+      ],
       "expected": {
         "intent": "wishlist_remove"
       },
-      "axes": ["wishlistRemovePositive", "wishlistRemoveRouting"],
+      "axes": [
+        "wishlistRemovePositive",
+        "wishlistRemoveRouting"
+      ],
       "note": "[#440] 이슈 본문 재현 케이스. 사다리 1-1) \"찜 빼줘\"·\"찜 해제해줘\" → wishlist_remove 는 #116/#117(3eb505c, 2026-08-05)이 이슈 #440 등록 이전에 이미 넣었다 — 그래서 #440 은 프롬프트를 고치지 않았다. 무수정 프롬프트 실측에서 양성 2셀이 8/8 이라 문면 수정의 상한 이득이 0 이고, 넓히면 wishlist-remove-003(\"찜닭 빼줘\")의 거짓양성을 악화시킨다. 결정론 계층(intent_guard 인접 결합 + wishlist 해소 근거 게이트)이 프롬프트 판정과 무관하게 올바른 동작을 보장한다."
     },
     {
       "utteranceId": "wishlist-remove-002",
       "group": "wishlist_remove",
       "text": "찜해둔 거 지워줘",
-      "contexts": ["none"],
+      "contexts": [
+        "none"
+      ],
       "expected": {
         "intent": "wishlist_remove"
       },
-      "axes": ["wishlistRemovePositive", "wishlistRemoveRouting"],
+      "axes": [
+        "wishlistRemovePositive",
+        "wishlistRemoveRouting"
+      ],
       "note": "[#440] 같은 부류 변형. 사다리 1-1)이 #116/#117 때 이미 넣은 규칙이라 #440 은 프롬프트를 고치지 않았다(wishlist-remove-001 note 참조 — 무수정 실측 8/8, 문면 수정의 상한 이득이 0). 결정론 계층(intent_guard 인접 결합 + wishlist 해소 근거 게이트)이 프롬프트 판정과 무관하게 올바른 동작을 보장한다."
     },
     {
       "utteranceId": "wishlist-remove-003",
       "group": "wishlist_remove",
       "text": "찜닭 빼줘",
-      "contexts": ["none"],
+      "contexts": [
+        "none"
+      ],
       "expected": {
         "intent": "cart_remove"
       },
-      "axes": ["wishlistRemoveNoSteal", "wishlistRemoveRouting"],
+      "axes": [
+        "wishlistRemoveNoSteal",
+        "wishlistRemoveRouting"
+      ],
       "note": "[#440] 거짓양성 대조(음식명) — \"찜닭\"의 \"찜\"이 어절 경계를 통과하지 못해 인접 결합이 걸리지 않는다. 프롬프트 계층은 이 발화를 여전히 wishlist_remove 로 보낸다(0/8 오답) — 이 셀의 목적은 그 불일치를 기록하는 것이다. 결정론 계층이 (a) 찜 삭제를 막고 (b) wishlist_remove → cart_remove 역방향 정정(#440 후속)으로 장바구니 삭제까지 이어준다."
     },
     {
       "utteranceId": "wishlist-remove-004",
       "group": "wishlist_remove",
       "text": "장바구니에서 빼줘",
-      "contexts": ["none"],
+      "contexts": [
+        "none"
+      ],
       "expected": {
         "intent": "cart_remove"
       },
-      "axes": ["wishlistRemoveNoSteal", "wishlistRemoveRouting"],
+      "axes": [
+        "wishlistRemoveNoSteal",
+        "wishlistRemoveRouting"
+      ],
       "note": "[#440] 잠식 대조 — 새 인접 결합 규칙이 cart_remove(\"장바구니에서 빼줘\")를 잠식하지 않는지 잰다. 사다리 1-1)이 #116/#117 때 이미 넣은 규칙이라 #440 은 프롬프트를 고치지 않았다(wishlist-remove-001 note 참조). 결정론 계층(intent_guard 인접 결합 + wishlist 해소 근거 게이트)이 프롬프트 판정과 무관하게 올바른 동작을 보장한다. wishlist-remove-005(\"찜한 거 담아줘\")는 wishlist-view-006 과 발화가 겹쳐 중복 셀을 만들지 않고 이 축에서 뺐다 — 기존 셀이 이미 재고 있다."
+    },
+    {
+      "utteranceId": "cart-quantity-001",
+      "group": "cart_quantity",
+      "text": "장바구니 이어폰 3개로 바꿔줘",
+      "contexts": [
+        "none"
+      ],
+      "expected": {
+        "intent": "cart_quantity"
+      },
+      "axes": [
+        "cartQuantityPositive",
+        "cartQuantityRouting"
+      ],
+      "note": "[#285, I-25 §4.13 — 4단계] 수량 변경 양성 — 최종 수량을 지정하는 치환 표현. 이 intent 는 이번 이슈로 신설돼 커밋된 어느 기준선에도 표본이 없다(그래서 별도 축으로 격리한다). combo_matrix 는 build_decompose_json 으로 intent 를 강제해 라우팅을 재지 않기로 했으므로(axes.json cart_quantity_not_generated), 라우팅 회귀는 이 축이 잰다. 실제 정답 보증은 결정론 계층(intent_guard.py 사다리 4-a + quantity.py 대상 해소)이 맡는다."
+    },
+    {
+      "utteranceId": "cart-quantity-002",
+      "group": "cart_quantity",
+      "text": "수량 2개로 변경해줘",
+      "contexts": [
+        "none"
+      ],
+      "expected": {
+        "intent": "cart_quantity"
+      },
+      "axes": [
+        "cartQuantityPositive",
+        "cartQuantityRouting"
+      ],
+      "note": "[#285, I-25 §4.13 — 4단계] 수량 변경 양성 — 상품명 없이 수량 표지만으로도 잡혀야 한다(대상 해소는 결정론 계층 몫, 라우팅과 별개)."
+    },
+    {
+      "utteranceId": "cart-quantity-003",
+      "group": "cart_quantity",
+      "text": "담아둔 거 5개로 해줘",
+      "contexts": [
+        "none"
+      ],
+      "expected": {
+        "intent": "cart_quantity"
+      },
+      "axes": [
+        "cartQuantityPositive",
+        "cartQuantityRouting"
+      ],
+      "note": "[#285, I-25 §4.13 — 4단계] 수량 변경 양성 — \"담아둔 거\"(과거 참조)가 담기 표지(cart_add_markers)로 오인돼 0-a 에서 cart_add 로 새지 않는지 잰다."
+    },
+    {
+      "utteranceId": "cart-quantity-004",
+      "group": "cart_quantity",
+      "text": "하나 더 담아줘",
+      "contexts": [
+        "none"
+      ],
+      "expected": {
+        "intent": "cart_add"
+      },
+      "axes": [
+        "cartQuantityNoSteal",
+        "cartQuantityRouting"
+      ],
+      "note": "[#285, I-25 §4.13 — 4단계] 가장 중요한 음성 대조(패킷 함정 2) — 합산 요청은 치환(cart_quantity)이 아니라 cart_add 다. classify_cart_utterance 사다리 4-a 는 cart_quantity_increment_markers 가 매칭되면 cart_quantity 로 가지 않는다(0-a 담기 표지가 이미 이 발화를 cart_add 로 확정하기도 한다)."
+    },
+    {
+      "utteranceId": "cart-quantity-005",
+      "group": "cart_quantity",
+      "text": "이어폰 빼줘",
+      "contexts": [
+        "none"
+      ],
+      "expected": {
+        "intent": "cart_remove"
+      },
+      "axes": [
+        "cartQuantityNoSteal",
+        "cartQuantityRouting"
+      ],
+      "note": "[#285, I-25 §4.13 — 4단계] 음성 대조 — 삭제 요청은 cart_quantity 를 훔치지 않는다(cart_remove_markers 가 먼저 잡는다, intent_guard.py 사다리 4번)."
+    },
+    {
+      "utteranceId": "cart-quantity-006",
+      "group": "cart_quantity",
+      "text": "장바구니 목록 좀 보여줘",
+      "contexts": [
+        "none"
+      ],
+      "expected": {
+        "intent": "cart_view"
+      },
+      "axes": [
+        "cartQuantityNoSteal",
+        "cartQuantityRouting"
+      ],
+      "note": "[#285, I-25 §4.13 — 4단계] 음성 대조 — 조회 요청은 cart_quantity 를 훔치지 않는다(cart_view). \"장바구니 보여줘\"(cart-control-001)와 발화가 겹치지 않도록 다른 문구를 쓴다(드라이런 후보 매칭이 텍스트로 셀을 특정하므로 동일 문구 중복은 모호성을 만든다)."
     }
   ]
 }

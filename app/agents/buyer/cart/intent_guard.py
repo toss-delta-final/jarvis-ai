@@ -336,7 +336,8 @@ def has_deceptive_wishlist_marker(message: str, settings) -> bool:
 
 
 def classify_cart_utterance(message: str, settings) -> str:
-    """'cart_add' | 'cart_remove' | 'wishlist_add' | 'wishlist_remove' — 확실할 때만 갈라낸다.
+    """'cart_add' | 'cart_remove' | 'wishlist_add' | 'wishlist_remove' | 'cart_quantity' — 확실할
+    때만 갈라낸다.
 
     기본값은 항상 `"cart_add"`(= 오늘 동작). 놓치는 것은 무해하고(오늘처럼 담긴다), 오탐하면
     사용자가 요청하지 않은 동작(담기 취소·찜)이 일어나므로 "확실할 때만 개입"한다
@@ -472,6 +473,19 @@ def classify_cart_utterance(message: str, settings) -> str:
            다른 절의 "찜"과 "빼줘"도 같이 살아나 사용자가 요청하지 않은 항목이 삭제된다
            (실측, 파괴적) — 넓혀서 얻는 것보다 잃는 것이 크다.
       4. `cart_remove_markers` 매칭 → `"cart_remove"`.
+      4-a. **[#285, I-25 §4.13]** `cart_quantity_markers`(치환 동사, "개로 바꿔"·"수량 변경" 등)
+           매칭 → `"cart_quantity"`. **0-a(담기)가 여전히 이 단계보다 앞이다** — "3개로 바꿔서
+           담아줘"는 "담아"가 `cart_add_markers` 에 걸려 0-a 에서 이미 `"cart_add"` 로 확정되고
+           이 단계에 도달하지 않는다. 이 판별기는 decompose 가 **이미 `cart_add` 로 보낸** 발화만
+           보는 2선 방어라(패킷 §5.3), "담기가 가장 강한 신호"라는 0-a 의 기존 원칙(docstring 위
+           문단)을 이 새 클래스에도 그대로 적용한다 — decompose(1차)가 `cart_add`/`cart_quantity`
+           를 가르는 판단은 이미 끝났고, 여기서 다시 뒤집을 근거가 없다. **함정 2**(치환 vs
+           합산): `cart_quantity_increment_markers`(더 담아·하나 더·추가로 담아)가 부정되지 않은
+           채 매칭되면 이 단계를 건너뛴다 — "하나 더 담아줘"류는 합산이라 `cart_quantity` 가
+           아니다(대개 "담아"를 포함해 0-a 에서 이미 걸리지만, "하나 더 줘"처럼 "담아"가 없는
+           변형도 방어한다). `cart_remove_markers`(4번)와 어휘가 겹치지 않아(치환 동사엔 "빼"·
+           "지워" 계열이 없다) 순서가 4번의 앞이든 뒤든 결과는 같지만, decompose 사다리(1-4)와
+           같은 상대 위치(삭제 확인 다음)를 유지해 두 파일을 나란히 읽기 쉽게 한다.
       5. 그 외 → `"cart_add"`(기본값).
     """
     negation_markers = settings.utterance_negation_markers
@@ -544,4 +558,21 @@ def classify_cart_utterance(message: str, settings) -> str:
         message, settings.cart_remove_markers, negation_markers, window, prefix_negation_markers
     ):
         return "cart_remove"
+
+    # 4-a. [#285, I-25 §4.13] 함정 2 방어 — 합산 표지(더 담아·하나 더·추가로 담아)가 있으면
+    # cart_quantity 로 가지 않는다(대개 "담아"를 포함해 0-a 에서 이미 걸리지만 방어적으로 둔다).
+    if not _matches_unnegated(
+        message,
+        settings.cart_quantity_increment_markers,
+        negation_markers,
+        window,
+        prefix_negation_markers,
+    ) and _matches_unnegated(
+        message,
+        settings.cart_quantity_markers,
+        negation_markers,
+        window,
+        prefix_negation_markers,
+    ):
+        return "cart_quantity"
     return "cart_add"
