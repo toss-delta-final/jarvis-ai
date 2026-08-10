@@ -80,6 +80,26 @@
   신뢰 off/hops=1 — 조용한 저하지만 서비스 정지보다는 낫다). 계약(api-spec) 불변 — 로그·설정
   전용 변경이다.
 
+### Docs
+- **#139 — 1차 완료(발표) 핵심 주장 4개와 claim-evidence matrix를 확정했다.** 발표(2026-08-14)가
+  나흘 남은 시점에 `evals/` 17개 하네스에 이미 쌓인 baseline 을 엮어, 새 실행 없이 무엇을
+  증명하는지 고정했다. **C1**(에이전트 경로가 no-op 대비 nDCG@10 유의 개선,
+  paired bootstrap 95% CI 하한 +0.0632) · **C2**(컨텍스트가 있어도 의도 라우팅이 흔들리지
+  않고 화면 밖 상품을 확정하지 않음, 출고판 `mainIntent` 0.979~0.983·`screenNoHallucination`
+  1.0) · **C3**(개인화는 후보를 줄이지 않고 순서에만 반영, 하드 제약 위반 0 + #119 전후 라이브
+  필터 유출 29/31건→1/31건) · **C4**(지연·비용 공개 가능, staging 실측 전까지 `pending(#152)`)
+  4개를 채택하고, 개인화 품질 향상 주장과 파이프라인 vs 단일 LLM 우위 주장은 라이브/최신
+  골든셋에서 `inconclusive`라 정직한 negative result 로 돌려 부록에 세웠다(필요 N 재산정
+  ≈176 paired cases 포함). 판매자 품질은 전용 하네스 부재(`SELLER-FINAL-RISKS` V1
+  "provider별 실 LLM 검증 0회")를 근거로 1차 주장에서 제외했다. `evals/README.md`(#328) 8항
+  인용 규율(datasetHash 세대 혼동 금지·로컬↔운영 비혼동)을 재확인하고, `intent_probe`의
+  출고판이 `adopted-*`이지 최신 timestamp인 `merged-*`가 아니라는 함정을 baseline 지정표로
+  고정했다. release gate(G0~G4)·run manifest 필수 6항·발표 산출물 9종·P0 재검토(열린 post-mvp
+  24건 전수 판정 — #152·#154·#139만 P0 유지)를 함께 정했다. §13 에는 과정 배포 자료(「LLM Agent 프로젝트
+  가이드 v2」)의 평가 항목(기획·협업·기술난이도·완성도·발표전달력)을 이 문서의 claim·산출물에
+  연결하는 대조표도 뒀다. 계약(api-spec) 변경 없음.
+  (`docs/specs/RELEASE-CLAIMS-139.md` v1.0.0, `docs/specs/README.md` 색인)
+
 ### Security
 - **#321 — "기억해" 원문의 하드 PII(전화번호·주민번호·카드번호·계좌번호·이메일·시크릿 토큰)가
   게이트 없이 저장되던 결함을 막았다.** 신설 `app/core/pii.py`(순수·동기·무 I/O, 예외를 던지지
