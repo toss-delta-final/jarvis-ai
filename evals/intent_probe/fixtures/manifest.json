@@ -1,8 +1,8 @@
 {
-  "provenance": "reconstructed-from-issue-240-and-pr-239; category_action group added by #84 (mixed utterances in round 3); screen cells absorbed from #118 by #300; condition_only group added by #344 round 2; wishlist_view group added by #386; named_category group added by #443 (mirror of condition_only, #465)",
+  "provenance": "reconstructed-from-issue-240-and-pr-239; category_action group added by #84 (mixed utterances in round 3); screen cells absorbed from #118 by #300; condition_only group added by #344 round 2; wishlist_view group added by #386; wishlist_remove group added by #440; named_category group added by #443 (mirror of condition_only, #465)",
   "sha256": {
-    "anchors_a.json": "81eff9060f6d7d5a6934e8af86fc4e251085a6105664c7631a0190284e7cd2c2",
-    "anchors_b.json": "6c96881cb343945a1258a328ad243ee4e0c8340d9edec24752681c995da2c34b"
+    "anchors_a.json": "8fe521e28b7888d92e62c063cf1e0ca2ac774ab6c4053153bf1ef3bda3999b3f",
+    "anchors_b.json": "06c71b9a78b7d0196d541abc1a10f63a32e74129f205f99a496a143022c5ae20"
   },
-  "version": "intent-probe-anchors-manifest-v7"
+  "version": "intent-probe-anchors-manifest-v8"
 }

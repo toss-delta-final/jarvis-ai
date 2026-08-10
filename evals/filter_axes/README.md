@@ -128,6 +128,124 @@ probe(`probe.py`)는 **수동 도구다 — CI에 넣지 않는다**(규약3). �
 든다: `uv run python -m evals.filter_axes.probe --out artifacts/fax-run1`. 위반이 있으면
 exit code 1.
 
+## 브랜드 추출 축 (#466, `brand_probe.py` + `brand_cases.json`)
+
+위 `brand` 축은 **정의만 있고 실질 표본이 없다** — goldenset dev 109건 중 `expectedFilters.brand`
+라벨은 `buy-over-0003` **1건뿐**이라 support≈1 이고, 그 축의 P/R 로는 "브랜드-only 발화에서
+브랜드가 뽑히는가"를 잴 수 없다. #466 이 그 공백에서 나왔다(브랜드-only 발화의 추출 실패가
+`evals/underspecified_probe` 의 과소지정 **오탐**으로만 간접 관측되고 있었다).
+
+그래서 라벨 공수 없이 규모를 늘릴 수 있는 **MFT(positive) + 오추출 대조(negative)** 슬라이스를
+따로 뒀다. 위 INV/DIR/pair probe(`probe.py`·`probe_cases.jsonl`)와는 **데이터셋·해시가 별개**다
+— 숫자를 섞어 비교하지 말 것(규약2·8).
+
+    uv run python -m evals.filter_axes.brand_probe --n 3 --label after --out artifacts/brand-after
+    uv run python -m evals.filter_axes.brand_probe --n 3 --prompt old_system.txt --label before ...
+
+`--prompt` 로 후보 `_SYSTEM` 을 갈아끼워 A/B 한다(`underspecified_probe --prompt` 와 같은 수단).
+수동 도구다 — **CI 에 넣지 않는다**(규약3). 채점·집계 함수만 `tests/unit/test_brand_probe.py`
+로 CI 고정한다.
+
+### 축 4종과 분자·분모 (규약8)
+
+분모는 `positives × n`(=20n), `spurious` 만 `negatives × n`(=4n).
+
+| 축 | 분자 | 무엇을 잡는가 |
+|---|---|---|
+| `present` | `filters.brand` 가 빈 값이 아닌 표본 | 추출 자체 |
+| `verbatim` | 산출 값이 **전부** 발화 안에 그대로 있는 표본 | 번안("애플"→`Apple`). `brandName` 은 exact IN 이라 번안은 조용히 빗나간다 |
+| `expected` | 케이스가 라벨한 브랜드와 정규화 동등한 값을 포함한 표본 | 총칭어 오추출("삼성 제품"→`["제품"]`) |
+| `spurious` | **negative** 발화에서 brand 가 채워진 표본 (**낮을수록 좋다**) | trivial baseline 대조 — 없으면 "전부 브랜드로 찍기"가 만점을 받는다(규약1) |
+
+`verbatim ⊆ present` 다. `expected` 는 `verbatim` 과 서로 포함 관계가 아니다.
+
+### 실측 (gpt-5-nano = 배포 fast 티어, n=3, 전/후 각 2런)
+
+| 축 | before(dev 프롬프트) | after(브랜드 절) |
+|---|---|---|
+| `present`  | 17·19 / 60 | 45·42 / 60 |
+| `verbatim` | 13·11 / 60 | 45·42 / 60 |
+| `expected` | 13·11 / 60 | 45·42 / 60 |
+| `spurious` | 0·0 / 12   | 0·0 / 12   |
+
+사전 등록 문턱은 **"after 두 런 모두 before 최댓값 이상"**이었고 45·42 ≫ 19 로 통과했다.
+after 에서 세 축이 같은 값인 것은 **뽑힌 브랜드가 전부 발화 원문 표기이자 라벨 일치**라는 뜻이다.
+before 의 대표 실패: 애플 발화에서 추출된 8표본이 전부 `Apple`(verbatim 0), 락앤락 0/6.
+인접 레인(#443/#465)이 같은 티어에서 잰 런간 폭이 ≈5/48 이라, 이 효과는 그 노이즈 대역
+밖이다. `--n` 을 키우지 않고 이 문턱을 쓴 근거가 그 폭이다.
+
+### 이 축이 재지 **않는** 것 — 카탈로그 표기 도달
+
+브랜드가 원문 그대로 뽑혀도 I-1 은 exact IN 이라 **카탈로그의 다른 표기**에는 닿지 않는다.
+운영 시드 실측(brand 2,368행 × product 6,559건 조인):
+
+| 발화 | 원문 표기 도달 | 같은 회사 총합 | 도달률 |
+|---|---|---|---|
+| "삼성" | 7 | 78 (`삼성전자` 71) | 9.0% |
+| "LG" | 1 | 38 (`LG전자` 37) | 2.6% |
+| "애플" | 1 | 8 (`Apple` 7) | 12.5% |
+| "나이키" | 106 | 110 | 96.4% |
+| "아디다스" | 83 | 94 | 88.3% |
+
+`app.pipelines.brand_aliases` 가 와이어에서 이 몫을 덮는다 — 법인 접미사(양방향)와 음차 쌍
+(양방향)을 **가산적으로** 덧붙인다. 카탈로그 사본을 두지 않는다(§4.6 이 미존재 이름을 무시하므로
+틀린 후보는 공짜다).
+
+#### 시드 대조 (재현 절차) — 규칙을 건드리면 **이걸 먼저 돌린다**
+
+확장이 실제로 잇는 쌍이 전부 같은 회사인지 전수 확인한다. 아래는 2026-08-10 시드 기준 결과이며,
+**CI 가 다시 확인하지 않는다** — BE 가 `한샘전자` 같은 무관한 행을 추가하면 조용히 오염이
+시작되므로, 브랜드 규칙(접미사·음차 쌍)을 넓히거나 시드가 갱신되면 재실행할 것.
+
+```bash
+cd ~/inte-final/_sql/mariadb && uv run --project <repo> python - <<'EOF'
+import re, collections
+from app.pipelines.brand_aliases import expand_brands, _norm
+brands, counts = {}, collections.Counter()
+pat = re.compile(r"\((\d+),(?:NULL|\d+),'((?:[^'\\]|\\.)*)'")
+for line in open('20_brand.sql', encoding='utf-8'):
+    for m in pat.finditer(line):
+        brands[m.group(1)] = m.group(2)
+prow = re.compile(r'\((\d+),(\d+),')
+for line in open('30_product.sql', encoding='utf-8'):
+    if line.startswith('('):
+        for m in prow.finditer(line):
+            counts[m.group(2)] += 1
+byname = collections.Counter()
+for bid, n in counts.items():
+    if bid in brands:
+        byname[brands[bid]] += n
+bynorm = {}
+for name, n in byname.items():
+    bynorm.setdefault(_norm(name), []).append((name, n))
+for T in sorted(byname):
+    for cand in expand_brands([T], cap=12)[1:]:
+        for name, n in bynorm.get(_norm(cand), []):
+            if _norm(name) != _norm(T):
+                print(f'{T!r}({byname[T]}) -> {name!r}({n})')
+EOF
+```
+
+2026-08-10 결과 — **12 방향 = 6쌍, 전부 같은 브랜드, 교차 오염 0건**:
+
+| 쌍 | 상품 수 | 종류 |
+|---|---|---|
+| `삼성` ↔ `삼성전자` | 7 ↔ 71 | 법인 접미사 |
+| `LG` ↔ `LG전자` | 1 ↔ 37 | 법인 접미사 |
+| `한일` ↔ `한일전자` | 1 ↔ 1 | 법인 접미사 (같은 회사라는 근거는 이름 추론뿐 — 양쪽 1건이라 무해로 수용) |
+| `애플` ↔ `Apple` | 1 ↔ 7 | 음차 |
+| `나이키` ↔ `Nike` | 106 ↔ 1 | 음차 |
+| `아디다스` ↔ `adidas` | 83 ↔ 2 | 음차 |
+
+`삼성도어`·`삼성메디칼`은 접미사 화이트리스트가 닫혀 있어 **구조적으로** 배제된다.
+
+#### 남은 몫
+
+`NIKE 나이키`·`나이키 NIKE`·`나이키(NIKE)`·`아디다스 오리지널스` 같은 **행 안에서 두 표기를
+붙여 쓴 변형**은 규칙으로 유도할 수 없어 남아 있다(나이키 기준 110건 중 4건). 닫으려면 행 단위
+매핑이 필요한데 그건 카탈로그 사본이라(CLAUDE.md·api-spec C-28 "차기 DB 정리 대상") 여기서
+하지 않았다. 다시 잴 때 위 표를 기준선으로 쓸 것.
+
 ## datasetVersion 정책
 
 `cases/manifest.json`의 `datasetVersion`(`fax-1.0.0`)은 probe 케이스 파일 자체의 버전이다

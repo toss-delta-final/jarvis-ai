@@ -57,7 +57,7 @@ class ProductSearchFilters(CamelModel):
     limit 은 **AI 후보 상한(rerank 입력 top-K)**. 정렬은 rerank(LLM) 소관이라 별도 필드가 없다(#100 P2).
     excludeProductIds 원천 = GET /orders/recent(§4.7), 게스트는 빈 배열.
     [2026-07-23, BE 합의] size 제거로 limit 은 더 이상 Spring 요청 size 가 아니다(§4.6) — Spring 은
-    전량 반환하고, limit 은 search_catalog 가 top-K 절단에 쓴다.
+    전량 반환하고, limit 은 search_catalog 가 top-K 절단에 쓴다. [#395, 2026-08-07] 재도입 폐지 확정.
     """
 
     category: str | None = None
@@ -111,6 +111,8 @@ class SpringProduct(CamelModel):
     # Layer2 속성(소재·핏 등, #100 P0) — 유연매칭(#101). 값 타입은 dict[str, object](비-str 관대):
     # BE 가 {"방수": true} 등 bool·숫자를 주면 dict[str, str] 은 후보 1건이 ValidationError 로
     # 검색 전체를 무너뜨린다(PR#127 리뷰). 소비는 #101 이라 지금 값 타입을 강제하지 않는다.
+    # [#395, api-spec §4.6] BE 가 2026-08-08 배포로 `_extra`·`_source_pid`·`_domain`·`_category`
+    # 를 더 이상 싣지 않는다 — 값 타입 관대 수신 규약은 그대로 유지된다.
     attributes: dict[str, object] | None = None
     price: int | None = None  # 판매가 — AI 계산용(예산·maxPrice·rerank, #100 P1), 표시 아님
     rating: float | None = None  # 조회 시 집계(DDL D9) — AI 계산용(평점필터·rerank, #100 P0)
@@ -1212,7 +1214,8 @@ class SellerReviewStats(SellerAggregateModel):
     by_product: list[SellerReviewProductStat] = Field(default_factory=list)
 
 
-# ── 7. 장바구니 삭제 · 찜 (이슈 #116·#117, I-24~I-28 — 확정 2026-08-05, Spring 구현 진행 중) ──
+# ── 7. 장바구니 삭제 · 찜 (이슈 #116·#117, I-24~I-28 — 확정 2026-08-05, Spring 구현됨) ──
+# [#285] BE `jarvis-backend` main 실측(2026-08-08, BE PR #92·#93) — api-spec §4.12~4.16 v0.31.3.
 
 
 class AddWishlistRequest(CamelModel):

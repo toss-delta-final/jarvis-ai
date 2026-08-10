@@ -1387,3 +1387,58 @@ def test_prior_echo_tokens_drop_one_character_fragments() -> None:
         {"가 > 이어폰", "이어폰"}
     )
     assert prior_echo_tokens(category=None, semantic_query=None) == frozenset()
+
+
+# ── 브랜드 추출 (#466) ────────────────────────────────────────────────────────────────────
+
+
+def test_brand_prompt_teaches_extraction_verbatim_and_no_guessing() -> None:
+    """[#466] `- recommend:` 불릿의 브랜드 절이 네 가지를 **함께** 지시한다.
+
+    이 절이 생기기 전에는 브랜드 추출 규칙이 아예 없었고(색상만 있었다), 실 LLM 실측에서
+    브랜드-only 발화 60표본 중 추출이 22·18건뿐이었다. 절을 넣은 뒤 47·48건이 됐고
+    (전/후 각 2런, gpt-5-nano=배포 fast 티어), 비브랜드 발화 오추출은 0/12 로 유지됐다.
+    네 항목 중 하나라도 지워지면 그때 잰 결함이 그대로 되살아나므로 각각을 따로 고정한다.
+    """
+    from app.agents.buyer.recommendation.decompose import _SYSTEM
+
+    rule = _SYSTEM.split("- recommend:", 1)[1].split("- case:", 1)[0]
+    assert "filters.brand" in rule  # ① 추출 자체
+    assert "표기 그대로" in rule  # ② 원문 표기 유지(번안 금지) — exact IN 이라 번안은 빗나간다
+    assert "총칭어" in rule  # ③ "삼성 제품"의 제품·가전 분리
+    assert "추측하지 마세요" in rule  # ④ 오추출 금지(what-축이라 되물음을 잠재운다)
+
+
+def test_brand_clause_survives_into_screen_variant_prompt() -> None:
+    """screen 이 실린 턴의 프롬프트에도 브랜드 절이 있어야 한다.
+
+    `_SYSTEM_WITH_SCREEN` 은 `.replace()` 산물이라 기존 기동 가드는 **앵커 문구**만 지킨다 —
+    브랜드 절이 통째로 빠져도 그 가드는 통과한다. 화면 맥락이 있는 턴만 조용히 브랜드를
+    놓치는 비대칭을 막는다.
+    """
+    from app.agents.buyer.recommendation.decompose import _SYSTEM_WITH_SCREEN
+
+    assert "filters.brand" in _SYSTEM_WITH_SCREEN
+    assert "표기 그대로" in _SYSTEM_WITH_SCREEN
+
+
+async def test_brand_survives_verbatim_from_llm_output_to_spring_params() -> None:
+    """[#466] LLM 이 낸 브랜드 표기가 **원문 그대로** I-1 `brandName` 까지 간다.
+
+    프롬프트 절만 고정하면 "문구가 있다"만 재는 공허한 검사가 된다 — 실제로 보호할 성질은
+    사용자가 말한 표기가 와이어까지 살아남는 것이다(`brandName` 은 exact IN, api-spec §4.6).
+    """
+    from app.services import spring_client as sc
+
+    d = await _run(_raw(filters={"brand": ["애플"]}))
+    assert d.filters.brand == ["애플"]
+    assert sc._search_query_params(d.filters)["brandName"] == ["애플"]
+
+
+async def test_brand_absent_stays_none_so_underspecified_can_fire() -> None:
+    """브랜드가 없으면 축이 비어야 한다 — brand 는 what-축이라 오추출이 되물음을 잠재운다."""
+    from app.agents.buyer.recommendation.underspecified import _WHAT_FILTER_AXES
+
+    assert "brand" in _WHAT_FILTER_AXES
+    d = await _run(_raw())
+    assert not d.filters.brand
