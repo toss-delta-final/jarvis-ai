@@ -29,7 +29,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.agents.buyer.cart.intent_guard import classify_cart_utterance, has_wishlist_remove_evidence
+from app.agents.buyer.cart.intent_guard import (
+    classify_cart_utterance,
+    has_deceptive_wishlist_marker,
+    has_wishlist_remove_evidence,
+)
 from app.agents.buyer.cart.wishlist import _resolve_wishlist_remove_target, stream_wishlist_remove
 from app.agents.buyer.graph import run_buyer_turn as _production_run_buyer_turn
 from app.agents.buyer.recommendation.state import CartIntent
@@ -966,6 +970,164 @@ async def test_e2e_route_wishlist_remove_direct_still_works(
     llm = FakeLLM(decompose={"intent": "wishlist_remove", "cart": {}})
     events = await _collect(run_buyer_turn(_req(message="찜한 거 빼줘"), _member(), llm=llm))
     assert _actions(events)[0]["type"] == "WISHLIST_REMOVED"
+
+
+# ─── §4-E 후속 정정(#440 followup) — `wishlist_remove` → `cart_remove` 역방향 ───
+
+
+async def test_e2e_followup_wishlist_remove_corrects_to_cart_remove_for_food_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """decompose 가 `"찜닭 빼줘"`(음식명 + 장바구니 삭제 의도)를 `wishlist_remove` 로 오분류해도,
+    결정론 계층은 `cart_remove` 로 본다("찜닭"의 "찜"이 어절 경계를 통과 못한다) — 정정돼 장바구니
+    항목이 실제로 삭제되고 찜(이어폰)은 건드리지 않는다."""
+    from tests._fakes import FakeLLM
+    import app.services.spring_client as sc
+
+    deleted: list[int] = []
+
+    async def fake_get_cart(*, user_id=None, guest_id=None):
+        return CartView(
+            items=[CartViewItem(cart_item_id=1, product_id=1, product_name="찜닭", quantity=1)]
+        )
+
+    async def fake_delete_cart_item(cart_item_id, *, user_id=None, guest_id=None):
+        deleted.append(cart_item_id)
+        return None
+
+    async def fake_get_wishlist(user_id):
+        raise AssertionError("정정 후에는 장바구니 삭제로 가야 하는데 get_wishlist 가 호출됐다")
+
+    monkeypatch.setattr(sc, "get_cart", fake_get_cart)
+    monkeypatch.setattr(sc, "delete_cart_item", fake_delete_cart_item)
+    monkeypatch.setattr(sc, "get_wishlist", fake_get_wishlist)
+    llm = FakeLLM(decompose={"intent": "wishlist_remove", "cart": {}})
+    events = await _collect(run_buyer_turn(_req(message="찜닭 빼줘"), _member(), llm=llm))
+    assert deleted == [1]
+    assert _actions(events)[0]["type"] == "CART_REMOVED"
+
+
+async def test_e2e_followup_wishlist_remove_corrects_to_cart_remove_for_ribs_stew(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """같은 정정 — `"갈비찜 빼줘"`(`"갈비찜"`의 `"찜"`은 왼쪽에 `"비"`가 바로 붙어 경계를
+    통과 못한다)."""
+    from tests._fakes import FakeLLM
+    import app.services.spring_client as sc
+
+    deleted: list[int] = []
+
+    async def fake_get_cart(*, user_id=None, guest_id=None):
+        return CartView(
+            items=[CartViewItem(cart_item_id=1, product_id=1, product_name="갈비찜", quantity=1)]
+        )
+
+    async def fake_delete_cart_item(cart_item_id, *, user_id=None, guest_id=None):
+        deleted.append(cart_item_id)
+        return None
+
+    async def fake_get_wishlist(user_id):
+        raise AssertionError("정정 후에는 장바구니 삭제로 가야 하는데 get_wishlist 가 호출됐다")
+
+    monkeypatch.setattr(sc, "get_cart", fake_get_cart)
+    monkeypatch.setattr(sc, "delete_cart_item", fake_delete_cart_item)
+    monkeypatch.setattr(sc, "get_wishlist", fake_get_wishlist)
+    llm = FakeLLM(decompose={"intent": "wishlist_remove", "cart": {}})
+    events = await _collect(run_buyer_turn(_req(message="갈비찜 빼줘"), _member(), llm=llm))
+    assert deleted == [1]
+    assert _actions(events)[0]["type"] == "CART_REMOVED"
+
+
+async def test_e2e_followup_wishlist_remove_stays_wishlist_remove_without_marker_substring(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """대조군(정정 조건 3번) — `"이어폰 빼줘"`는 발화에 `wishlist_target_markers` 부분 문자열이
+    전혀 없다(`"찜"` 자체가 없다) — 정정되면 **안 된다**. 정정되면 규칙 1(이름 매칭)이 처리해야
+    할 정상 찜 해제 경로가 장바구니로 새 버린다(이 조건이 빠지면 재현되는 결함, findings 문서
+    §B ⚠️ 참조). `"찜"` 이 전혀 없는 이 발화는 `has_wishlist_remove_evidence` 도 애초에 `False`
+    라 규칙 2·3(문맥 id·목록 1건 자동)이 열리지 않고, 규칙 1(이름 매칭)도 트레일링 표지가
+    `wishlist_remove_markers`(`"찜 빼줘"`류)뿐이라 bare `"빼줘"` 는 못 잡는다 — 그래서 실제
+    결과는 삭제가 아니라 **되물음**이다(직접 실측 확인). 이 테스트가 지키는 성질은 "삭제가
+    일어난다"가 아니라 "장바구니 쪽으로 잘못 정정돼 엉뚱한 항목(키보드)이 지워지지 않는다"다."""
+    from tests._fakes import FakeLLM
+    import app.services.spring_client as sc
+
+    async def fake_get_wishlist(user_id):
+        return WishlistView(items=[_item(10, "이어폰")])
+
+    async def fake_remove_wishlist(product_id, *, user_id=None):
+        raise AssertionError("근거 없는 발화인데 remove_wishlist 가 호출됐다")
+
+    async def fake_delete_cart_item(cart_item_id, *, user_id=None, guest_id=None):
+        raise AssertionError("정정되지 않아야 하는데 stream_cart_remove 가 호출됐다")
+
+    monkeypatch.setattr(sc, "get_wishlist", fake_get_wishlist)
+    monkeypatch.setattr(sc, "remove_wishlist", fake_remove_wishlist)
+    monkeypatch.setattr(sc, "delete_cart_item", fake_delete_cart_item)
+    llm = FakeLLM(decompose={"intent": "wishlist_remove", "cart": {}})
+    events = await _collect(run_buyer_turn(_req(message="이어폰 빼줘"), _member(), llm=llm))
+    assert not _actions(events)
+
+
+async def test_e2e_followup_wishlist_remove_explicit_marker_stays_wishlist_remove(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """무회귀 — `"찜 빼줘"`(사다리 1번 명시 매칭)는 `classify_cart_utterance` 도 `wishlist_remove`
+    로 보므로 정정 조건 2번(`== "cart_remove"`)이 거짓이라 정정되지 않는다."""
+    from tests._fakes import FakeLLM
+    import app.services.spring_client as sc
+
+    async def fake_get_wishlist(user_id):
+        return WishlistView(items=[_item(10, "이어폰")])
+
+    async def fake_remove_wishlist(product_id, *, user_id=None):
+        assert product_id == 10
+        return None
+
+    monkeypatch.setattr(sc, "get_wishlist", fake_get_wishlist)
+    monkeypatch.setattr(sc, "remove_wishlist", fake_remove_wishlist)
+    llm = FakeLLM(decompose={"intent": "wishlist_remove", "cart": {}})
+    events = await _collect(run_buyer_turn(_req(message="찜 빼줘"), _member(), llm=llm))
+    assert _actions(events)[0]["type"] == "WISHLIST_REMOVED"
+
+
+async def test_e2e_followup_wishlist_remove_view_phrase_stays_unresolved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """무회귀 — `"내 찜 뭐야"`(조회 발화)는 근거가 없어(§4-B) 삭제 0회·되물음으로 남아야 한다
+    (`classify_cart_utterance` 기본값이 `cart_add` 라 정정 조건 2번도 애초에 거짓이다)."""
+    from tests._fakes import FakeLLM
+    import app.services.spring_client as sc
+
+    async def fake_get_wishlist(user_id):
+        return WishlistView(items=[_item(10, "이어폰")])
+
+    async def fake_remove_wishlist(product_id, *, user_id=None):
+        raise AssertionError("조회 발화인데 remove_wishlist 가 호출됐다")
+
+    async def fake_delete_cart_item(cart_item_id, *, user_id=None, guest_id=None):
+        raise AssertionError("조회 발화인데 delete_cart_item 이 호출됐다")
+
+    monkeypatch.setattr(sc, "get_wishlist", fake_get_wishlist)
+    monkeypatch.setattr(sc, "remove_wishlist", fake_remove_wishlist)
+    monkeypatch.setattr(sc, "delete_cart_item", fake_delete_cart_item)
+    llm = FakeLLM(decompose={"intent": "wishlist_remove", "cart": {}})
+    events = await _collect(run_buyer_turn(_req(message="내 찜 뭐야"), _member(), llm=llm))
+    assert not _actions(events)
+
+
+def test_has_deceptive_wishlist_marker_true_for_food_name_false_positives() -> None:
+    assert has_deceptive_wishlist_marker("찜닭 빼줘", SETTINGS) is True
+    assert has_deceptive_wishlist_marker("갈비찜 빼줘", SETTINGS) is True
+
+
+def test_has_deceptive_wishlist_marker_false_when_no_marker_substring() -> None:
+    assert has_deceptive_wishlist_marker("이어폰 빼줘", SETTINGS) is False
+
+
+def test_has_deceptive_wishlist_marker_false_for_boundary_passing_head() -> None:
+    """`"찜 빼줘"`는 `"찜"` 이 어절 경계를 통과하는 정상 head 라 거짓양성 서명이 아니다."""
+    assert has_deceptive_wishlist_marker("찜 빼줘", SETTINGS) is False
 
 
 async def test_e2e_guest_gets_login_notice_regardless_of_phrasing(

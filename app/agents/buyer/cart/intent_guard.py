@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from app.agents.buyer.cart.negation import (
     _spans,
+    has_boundary_passing_head,
     has_prefix_negation,
     matches_pair_unnegated,
     matches_unnegated,
@@ -306,6 +307,31 @@ def has_wishlist_remove_evidence(message: str, settings) -> bool:
         settings,
         require_termination=True,
         prefix_words=wishlist_remove_known_words(settings),
+    )
+
+
+def has_deceptive_wishlist_marker(message: str, settings) -> bool:
+    """[#440 후속 정정] `wishlist_target_markers` 가 발화에 **부분 문자열로는** 있지만, 그중
+    어느 것도 어절 경계 검사(`negation.has_boundary_passing_head` — `matches_pair_unnegated`
+    가 쓰는 head 스캔과 **같은 코드 경로**)를 통과하지 못했는지 본다. LLM 이 `찜닭`·`갈비찜`의
+    `"찜"`처럼 경계를 통과하지 못하는 부분 문자열에 속아, 실제로는 장바구니 삭제 의도인 발화를
+    `wishlist_remove` 로 오분류했다는 서명이다(오케스트레이터 실측 8/8,
+    `evals/intent_probe/fixtures/anchors_a.json` `wishlist-remove-003` 참조).
+
+    `buyer/graph.py::corrected_to_cart_remove`(`wishlist_remove` → `cart_remove` 역방향
+    정정)의 세 번째 조건 — 이 조건이 없으면 `"찜"` 자체가 발화에 없는 경우("이어폰 빼줘")까지
+    부분 문자열 부재를 "경계 통과 실패"와 같은 것으로 오인해 장바구니로 보내, 규칙 1(이름
+    매칭)이 처리해야 할 정상 찜 해제 경로를 죽인다 — 그래서 부분 문자열 **존재**를 먼저
+    요구한다(`tests/unit/test_wishlist_remove_resolution.py` §4-E 대조군)."""
+    markers = settings.wishlist_target_markers
+    if not any(marker in message for marker in markers):
+        return False
+    return not has_boundary_passing_head(
+        message,
+        markers,
+        settings.utterance_dependent_nouns,
+        settings.utterance_name_boundary_particles,
+        settings.wishlist_remove_bridge_words + settings.utterance_name_trailing_filler_words,
     )
 
 

@@ -28,6 +28,7 @@ from app.agents.buyer._frames import sse
 from app.agents.buyer.cart.graph import stream_cart_add, stream_cart_view
 from app.agents.buyer.cart.intent_guard import (
     classify_cart_utterance,
+    has_deceptive_wishlist_marker,
     has_wishlist_remove_evidence,
 )
 from app.agents.buyer.cart.options import condition_terms as cart_condition_terms
@@ -1179,6 +1180,29 @@ async def run_buyer_turn(
         and classify_cart_utterance(request.message, settings) == "wishlist_remove"
         and has_wishlist_remove_evidence(request.message, settings)
     )
+    # [#440 후속 정정] 역방향 — decompose 가 `wishlist_remove` 를 냈는데 결정론 계층은 `cart_remove`
+    # 로 보는 경우("찜닭 빼줘": 음식명 + 장바구니 삭제 의도). 정정이 없으면 근거 게이트
+    # (`has_wishlist_remove_evidence`)가 찜 삭제는 막지만, 사용자가 실제로 요청한 장바구니
+    # 삭제는 아무도 수행하지 않아 조용히 증발한다(이슈 제목 "엉뚱한 걸 지우거나"의 잔여물,
+    # `docs/lessons.md` 참조 — 오분류 방어는 막기·고쳐 보내기 두 방향이 짝이어야 한다). 우리가
+    # LLM 을 덮어쓰는 세 번째 지점이다(오케스트레이터 실측 8/8, `evals/intent_probe/fixtures/
+    # anchors_a.json` `wishlist-remove-003` 참조).
+    #
+    # 세 조건 모두 참일 때만 정정한다:
+    #   1. decision.intent == "wishlist_remove"(LLM 이 찜 해제로 냈다)
+    #   2. classify_cart_utterance == "cart_remove"(결정론 계층은 반대로 본다 — `"찜닭 빼줘"`
+    #      는 어절 경계 검사가 `"찜닭"`의 `"찜"`을 죽여 다른 단계로 못 가고 4번(`cart_remove_
+    #      markers`)까지 내려간다)
+    #   3. `has_deceptive_wishlist_marker` — 발화에 `wishlist_target_markers` 가 부분 문자열로는
+    #      있지만 그중 어느 것도 어절 경계를 통과한 head 가 아니다(LLM 이 그 부분 문자열에
+    #      속았다는 서명). **이 조건이 없으면 안 된다** — `"이어폰 빼줘"`(찜 문맥일 수 있고
+    #      `"찜"` 자체가 발화에 없다)까지 장바구니로 보내 규칙 1(이름 매칭) 정상 경로가 죽는다
+    #      (대조군, `test_wishlist_remove_resolution.py` §4-E).
+    corrected_to_cart_remove = (
+        decision.intent == "wishlist_remove"
+        and classify_cart_utterance(request.message, settings) == "cart_remove"
+        and has_deceptive_wishlist_marker(request.message, settings)
+    )
     cart_intent = decision.cart or CartIntent()
     screen_reason: str | None = None
     screen_resolved = False
@@ -1364,6 +1388,22 @@ async def run_buyer_turn(
         if trace := current_request_trace():
             trace.set_lane("cart")
         with trace_span("buyer.graph.cart", "chain"):
+            # [#440 후속 정정] 위에서 계산해 둔 `corrected_to_cart_remove` 로 역방향 정정한다 —
+            # decompose 가 찜 해제로 냈어도 결정론 계층이 장바구니 삭제로 보고, 그 근거가
+            # "부분 문자열은 있는데 경계를 통과한 head 가 없다"는 오분류 서명일 때만이다(위
+            # `corrected_to_cart_remove` 정의 참조). 판정은 여기서 다시 부르지 않는다(같은
+            # 판정을 두 번 부르면 이 저장소가 반복해 밟은 함정이다).
+            if corrected_to_cart_remove:
+                async for frame in stream_cart_remove(
+                    identity=identity,
+                    message=request.message,
+                    cart_store=cart_store,
+                    thread_key=thread_key,
+                    settings=settings,
+                    observer=observer,
+                ):
+                    yield frame
+                return
             # [#440 라운드 4 리뷰 F12, 라운드 6 리뷰 F18, 라운드 8 리뷰 F21, 라운드 10 리뷰 F27]
             # 발화가 화면 위치를 가리키려 했는데 확정되지 못했으면(위 `screen_reference_attempted`·
             # `screen_resolved` 계산 참조) 이 분기도 정정 경로와 똑같이 겪는다 — 화면 해소 블록은

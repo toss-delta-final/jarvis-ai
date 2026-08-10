@@ -588,6 +588,28 @@ def _iter_head_bridge_ends(
     return results
 
 
+def has_boundary_passing_head(
+    message: str,
+    head_markers: list[str],
+    dependent_nouns: list[str],
+    boundary_particles: list[str],
+    bridge_words: list[str],
+) -> bool:
+    """`head_markers` 중 하나라도 어절 경계 검사를 통과해 나타나는지만 본다 — `_iter_head_bridge_
+    ends`(위, 라운드 3 리뷰 F7)의 head 스캔을 그대로 재사용한다(새 경계 판정을 만들지 않는다).
+    그 함수는 이미 경계를 통과한 head 출현만 걸러 돌려주므로, 결과가 비어 있지 않은지만 보면 된다.
+
+    **[#440 후속]** `wishlist_remove` → `cart_remove` 역방향 정정(`intent_guard.
+    has_deceptive_wishlist_marker`)이 쓴다 — LLM 이 `찜닭`·`갈비찜` 처럼 경계를 통과하지 못하는
+    부분 문자열에 속아 실제로는 삭제 의도인 발화를 `wishlist_remove` 로 오분류했는지 판정하려면
+    "경계를 통과한 head 가 하나도 없다"는 사실이 필요하다."""
+    return bool(
+        _iter_head_bridge_ends(
+            message, head_markers, dependent_nouns, boundary_particles, bridge_words
+        )
+    )
+
+
 def matches_pair_unnegated(
     message: str,
     head_markers: list[str],
