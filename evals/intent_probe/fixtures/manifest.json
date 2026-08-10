@@ -1,8 +1,8 @@
 {
-  "provenance": "reconstructed-from-issue-240-and-pr-239; category_action group added by #84 (mixed utterances in round 3); screen cells absorbed from #118 by #300; condition_only group added by #344 round 2; wishlist_view group added by #386; wishlist_remove group added by #440; cart_quantity group added by #285 (I-25 §4.13, 4단계)",
+  "provenance": "reconstructed-from-issue-240-and-pr-239; category_action group added by #84 (mixed utterances in round 3); screen cells absorbed from #118 by #300; condition_only group added by #344 round 2; wishlist_view group added by #386; wishlist_remove group added by #440; cart_quantity group added by #285 (I-25 §4.13, 4단계); named_category group added by #443 (mirror of condition_only, #465)",
   "sha256": {
-    "anchors_a.json": "2831fc38891cf46418d2ff2f7cfb272742182059c3707f498af81c00bd1cfca7",
-    "anchors_b.json": "9f92defff497dc91017f489bba47ffecc55e73be5e9a0d19669084df135b5616"
+    "anchors_a.json": "f61175dd4b5ad3df86d558f1ffb2c19689e6938d22d5d076bea77f329d9aca2c",
+    "anchors_b.json": "f5c33d5e99289ba70b09f6301543c5d8ab61ac700943b97b50e5e0de9499dfbc"
   },
-  "version": "intent-probe-anchors-manifest-v6"
+  "version": "intent-probe-anchors-manifest-v8"
 }

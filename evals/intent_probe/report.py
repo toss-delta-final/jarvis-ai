@@ -175,6 +175,10 @@ def render_report(results: dict[str, Any]) -> str:
         f"{results['diagnostics']['screenResolverOverrideCount']}",
         f"- 화면 지시어: 두 목록 밖 productId 확정(위험한 실패, 0 이어야 함): "
         f"{results['diagnostics']['screenOutOfListConfirmCount']}",
+        f"- 상품군 명시 첫 턴: leg 0개(공백) 표본 수: "
+        f"{results['diagnostics']['namedCategoryEmptyLegsCount']}",
+        f"- 상품군 명시 첫 턴: case=3 판정 표본 수: "
+        f"{results['diagnostics']['namedCategoryCase3Count']}",
         "",
         "## 셀별 intent 분포",
         "",
@@ -238,6 +242,8 @@ def write_artifacts(
             "scopeFree",
             # [F-4] leg 원문 — 에코 판정 규칙을 바꿔도 이 열이 있으면 재집계로 끝난다.
             "categoryLegs",
+            # [#443] 모델 leg와 구분한 사전 주입 발동 여부 — condition_only 하드 불변식 재집계용.
+            "categoryLegInjected",
             "categoryLegsEchoPrior",
             "resolvedCategoryAction",
             # [#300] screen 지시어 해소 — 원본 decompose 산출(위 productId)은 F-4 규약대로 그대로
@@ -263,6 +269,7 @@ def write_artifacts(
                 "hasCategorySignal": sample.has_category_signal,
                 "scopeFree": sample.scope_free,
                 "categoryLegs": sample.category_legs,
+                "categoryLegInjected": sample.category_leg_injected,
                 "categoryLegsEchoPrior": sample.category_legs_echo_prior,
                 "resolvedCategoryAction": sample.resolved_category_action,
                 "resolvedProductId": sample.resolved_product_id,

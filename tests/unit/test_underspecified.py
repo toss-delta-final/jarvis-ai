@@ -212,6 +212,9 @@ def test_route_decision_axes_are_all_classified() -> None:
     # [리뷰 F4] `scoped_to_previous` 는 "무관" — 첫 턴 한정 판정이라 직전 결과 지칭이 공허하다.
     # [이슈 #434 라운드2] `category_legs_restored` 도 `category_expanded` 와 동형 — True 면
     # 정의상 `category_legs` 가 이미 채워져 있어(blocking) 중복 계상이라 여기가 맞다.
+    # [#443] `category_leg_injected` 는 **진단 플래그**라 판정에 영향이 없다 — 사전 기반 보강이
+    # 실제로 판정을 움직이는 경로는 `category_queries`(위 blocking)를 채우는 것이고, 이 불리언은
+    # "모델이 냈나 보강이 채웠나"를 산출물에서 가르기 위한 표식일 뿐이다. 그래서 no_effect 다.
     no_effect = {
         "intent",
         "case",
@@ -220,6 +223,7 @@ def test_route_decision_axes_are_all_classified() -> None:
         "category_expanded",
         "category_legs_restored",
         "scoped_to_previous",
+        "category_leg_injected",
     }
 
     assert {f.name for f in fields(RouteDecision)} == (

@@ -4163,7 +4163,9 @@ def _fruit_probe_mapper():
     )
 
 
-async def test_fruit_recommend_turn_expands_to_fruit_only_legs_not_popular_fallback() -> None:
+async def test_fruit_recommend_turn_expands_to_fruit_only_legs_not_popular_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """[#428 이 이슈의 사용자 가시 회귀, 리뷰 1차 F-1 갱신] "나 아기 키우는데 과일 추천해줘"
     — decompose 가 D1(`categoryQueries: []`, `case=3`)을 내도 전개 후 재매핑이 **과일 계열로만**
     fan-out 된다.
@@ -4173,7 +4175,14 @@ async def test_fruit_recommend_turn_expands_to_fruit_only_legs_not_popular_fallb
     폴백·rerank 지연(운영 실측 8.80s)의 원인이 됐다(#428 이슈 코멘트 ③). 형제 합의 필터가
     "배"의 노이즈만 걸러 이제는 **과일 대분류만** 남는다(리뷰 1차 F-1 — 지지 집계를 top-1 로
     좁혀 "과자/간식" 같은 꼬리 순위 우연한 겹침이 승자가 되지 않는다).
+
+    [#443] **주입이 켜진 프로덕션에서는 이 발화가 더 이상 이 경로에 도달하지 않는다.** 사전 기반
+    보강이 파싱 시점에 `과일` leg 을 채워 `needs_expansion`(#217) 게이트가 열리지 않기 때문이고,
+    그 우회가 바로 #443 이 비용으로 지목한 것이다(전개 LLM 1회 + fan-out N건 + 지연 14.52s).
+    이 경로의 남은 정의역은 **카탈로그 사전에 없는 카테고리 발화**이므로, 여기서는 보강을 꺼서
+    #428 이 지키려던 노이즈 필터링을 계속 재게 한다.
     """
+    monkeypatch.setattr(get_settings(), "category_leg_injection_enabled", False)
     calls: list = []
 
     async def _search(filters, exclude_product_ids=None):

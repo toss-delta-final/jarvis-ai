@@ -71,6 +71,7 @@ from evals.combo_matrix.fakes import (  # noqa: E402
 from evals.combo_matrix.generator import FILTER_AXES  # noqa: E402
 from evals.combo_matrix.schema import ComboCase  # noqa: E402
 from tests.integration._stubs import ScriptedLLM  # noqa: E402
+from app.core.config import get_settings  # noqa: E402
 from tests.unit.test_recommendation import _collect, run_buyer_turn  # noqa: E402
 
 _CAMEL_FILTER_KEY = {
@@ -268,227 +269,239 @@ async def _observe_chat(case: ComboCase) -> dict:
         await _warm_up_last_reco(request, identity)
     decompose_json = build_decompose_json(axes)
     llm = ScriptedLLM(decompose=decompose_json, rerank_error=(degrade == "rerank_failed"))
-    # search 실패(spring_timeout)가 최우선 — 검색 자체가 안 되면 결과 건수는 의미가 없다.
-    # 그다음 constraint_strength=overspecified_zero 는 **정의상 검색 0건**이다 — 0건을 돌려주는
-    # recording 대역(`RecordingFilteringSearch(products=[])`)을 써서 표현 가능한 필터를 적용해도
-    # 항상 0건이라는 목적은 만족하면서 경계 도달 filters 도 기록한다(이슈 #381 D2·D4 —
-    # overspecified_zero 재검토: `PAIR_CATALOG` 표본으로는 필터를 실제로 적용해도 0건이 자연
-    # 발생하지 않아 주입을 유지, README "관측 재생성 이력" 참조).
-    #
-    # **실제로 도는 것은 `zero_result` 종료뿐이다 — 자동완화·완화칩은 돌지 않는다(#425 판정: 정의된
-    # 동작, 갭 아님).** combo-0031 에 present 인 필터축은 `price_min` 하나뿐인데,
-    # `app.agents.buyer.recommendation.relaxation.FIELD_TO_ATTR` 에 `price_min`(와이어명
-    # `priceMin`)이 없어(완화 축은 `priceMax`·`ratingMin`·`brand`·`color` 뿐, 모듈 docstring
-    # "비카테고리 조건(가격 상한·평점 하한·브랜드·색상)만 한 단계 푼다") `build_relaxation_
-    # candidates(filters, settings) == []` 다 — config 로도 `priceMin` 을 완화 축에 넣을 수 없다
-    # (`app.core.config.Settings._require_known_relaxation_chip_fields` 가 기동 시점에
-    # `FIELD_TO_ATTR` 밖 이름을 거부). 그 결과 `stream_recommendation`(recommendation/graph.py)의
-    # `may_auto_relax` 게이트가 False, 자동완화 루프(`if not candidates and not underspecified:`)는
-    # 진입해도 후보가 비어 0회 반복, 완화 칩 블록(`if not underspecified and (not candidates or
-    # len(candidates) < settings.relaxation_min_results):`)도 진입해도 probe 후보가 비어 칩
-    # 0개다. README 「알려진 관측 한계」의 `overspecified_zero` 항목 참조.
-    # 그 외(normal)는 `fakes.make_recording_filtering_search()`(대역 카탈로그 `PAIR_CATALOG`)를
-    # 써서 search 콜러블이 실제로 받은 필터를 기록한다 — [#426] 대역이 `SearchBackend` 자리에
-    # 서므로 Spring 와이어 축(keyword·category·price·brand·color)은 대역이, AI 사후필터 축
-    # (rating_min·attr_conditions)은 배포 코드가 실제로 적용한다(`fakes.RecordingFilteringSearch`).
-    if degrade == "spring_timeout":
-        raw_search = failing_search
-    elif axes.get("constraint_strength") == "overspecified_zero":
-        raw_search = make_recording_filtering_search(products=[])
-    else:
-        raw_search = make_recording_filtering_search()
-    search_calls: list = []
-
-    async def search(filters, exclude_product_ids=None):
-        # search 가 여러 번 불릴 수 있어(무필터 보충 재검색 등) 매 호출을 기록하고 첫 호출(주
-        # 검색)만 관측에 쓴다(pair_runner.py 와 같은 규약) — raw_search 가 실패해도(spring_timeout)
-        # 호출 자체는 일어났다는 사실과 그때 전달된 filters 는 남긴다.
-        search_calls.append(filters)
-        return await raw_search(filters, exclude_product_ids=exclude_product_ids)
-
-    push = RecordingPush()
-
-    # `run_buyer_turn` 은 담기 계열 Spring 호출(`add_fn`/`add_wishlist_fn`)을 주입 파라미터로
-    # 노출하지 않는다(`app/agents/buyer/graph.py::run_buyer_turn`·`cart/graph.py::stream_cart_add` 가 항상 기본값
-    # `spring_client.add_wishlist`/`add_to_cart` 를 씀) — search·order_status_fn 주입과 달리
-    # 여기는 모듈 함수를 직접 몽키패치해야 한다(HOME 러너의 `home_svc.get_catalog_store` 패턴과
-    # 동일). 패치 없이는 실 네트워크 호출이 나가 환경에 따라 결과가 달라진다(리뷰 R3 관측 중
-    # 발견 — 비결정론 원천). cart_add 는 R7(리뷰 라운드 2)에서 같은 공백을 발견해 추가했다 —
-    # wishlist_add 만 패치하고 cart_add 는 항상 성공으로 관측되던 채 defined 라벨("Spring 조회
-    # 실패를 잡아 degrade 처리")과 어긋나 있었다.
-    patch_add_wishlist = axes["intent"] == "wishlist_add" and degrade == "spring_timeout"
-    patch_add_to_cart = axes["intent"] == "cart_add" and degrade == "spring_timeout"
-    # [#386] 찜 **조회**(I-28)는 degrade 여부와 무관하게 늘 패치한다 — 담기 계열이 실패 주입
-    # 때만 패치하면 되는 것과 다르다. `get_wishlist` 는 정상 케이스에서도 호출되는데, 패치하지
-    # 않으면 로컬에 Spring 이 없을 때 실 네트워크 호출이 실패해 **degrade=none 케이스가 degrade 를
-    # 관측한다**(환경에 따라 결과가 뒤집힌다). wishlist_remove 도 대상 해소용으로 같은 함수를
-    # 부르므로 함께 잡는다 — 이 케이스가 이번 재생성으로 ci·degrade=none 조합이 되면서 그
-    # 공백이 드러났다.
-    patch_wishlist_read = axes["intent"] in ("wishlist_view", "wishlist_remove")
-    original_add_wishlist = spring_client.add_wishlist
-    original_add_to_cart = spring_client.add_to_cart
-    original_get_wishlist = spring_client.get_wishlist
-    original_remove_wishlist = spring_client.remove_wishlist
-    if patch_add_wishlist:
-        spring_client.add_wishlist = _failing_add_wishlist
-    if patch_add_to_cart:
-        spring_client.add_to_cart = _failing_add_to_cart
-    if patch_wishlist_read:
-        spring_client.get_wishlist = (
-            _failing_get_wishlist if degrade == "spring_timeout" else _ok_get_wishlist
-        )
-        spring_client.remove_wishlist = _ok_remove_wishlist
-
-    # [#426] attr_conditions 사후필터 계측 — 대역이 흉내 내는 게 아니라(그건 앱 판정 로직
-    # 재구현 금지 위반) **배포 함수가 실제로 호출됐는지·무엇을 걸렀는지**를 관측한다(HOME 러너의
-    # `profileHookInvoked`/`buildReasonsInvoked` 와 같은 계열, § `_observe_home`).
-    # 패치 대상이 `apply_ai_side_filters` 가 아니라 `_apply_attr_conditions` 인 이유 둘:
-    #   ① `apply_ai_side_filters` 는 rating_min 만 present 여도 호출돼 신호가 뭉개진다.
-    #      `_apply_attr_conditions` 는 `filters.attr_conditions` 가 truthy 일 때만 불린다
-    #      (`search_service.py` `if filters.attr_conditions:`) — 호출됨 == 이 축이 평가됨.
-    #   ② `recommendation/graph.py` 는 `from ... import apply_ai_side_filters` 로 이름을
-    #      바인딩해 가서 `search_service.apply_ai_side_filters` 패치가 안 먹지만,
-    #      `_apply_attr_conditions` 는 정의 모듈 전역으로 조회되므로 인기 상품 폴백 경로
-    #      (`_run_candidate_source`, search 대역이 아예 개입하지 않는 자리)까지 한 번에 잡힌다.
-    attr_post_filter_calls: list[tuple[int, int]] = []
-    original_apply_attr_conditions = search_service._apply_attr_conditions
-
-    def _apply_attr_conditions_spy(products, conditions):
-        result = original_apply_attr_conditions(products, conditions)
-        attr_post_filter_calls.append((len(products), len(result)))
-        return result
-
-    search_service._apply_attr_conditions = _apply_attr_conditions_spy
+    # [#443] 사전 기반 leg 보강을 이 하네스에서는 끈다. 이 하네스의 설계 전제가 **"decompose
+    # 산출을 고정 주입해 축을 통제한다"** 인데(모듈 docstring), 보강은 산출이 아니라 **발화**를
+    # 읽어 leg 을 만든다 — `build_utterance` 가 `case=1` 을 항상 `"무선 이어폰"` 으로 realize 하고
+    # `이어폰` 이 카탈로그 사전에 있어, 켜 두면 `category=absent` 로 통제한 축이 발화 쪽에서
+    # 되살아나 축 자체가 뜻을 잃는다(실측: combo-0062 가 zero_result → stop·3건).
+    # #443 축의 실측 자리는 `evals/intent_probe` 의 `namedCategoryHasLeg` 다.
+    _settings_for_case = get_settings()
+    _prev_injection = _settings_for_case.category_leg_injection_enabled
+    _settings_for_case.category_leg_injection_enabled = False
     try:
-        events = await _collect(
-            run_buyer_turn(
-                request,
-                identity,
-                llm=llm,
-                search=search,
-                push_fn=push,
-                popular_fn=make_popular(),
-                order_status_fn=(
-                    failing_order_status
-                    if axes["intent"] == "order_status" and degrade == "spring_timeout"
-                    else make_order_status_ok
-                ),
-                # #331 소관인 임베딩 최근접·거리컷·택일·확장은 재구현하지 않는다 — raw exact
-                # match 만 대역한다(이슈 #381 D5, `fakes.make_exact_match_category_mapping`).
-                map_categories=make_exact_match_category_mapping(),
+        # search 실패(spring_timeout)가 최우선 — 검색 자체가 안 되면 결과 건수는 의미가 없다.
+        # 그다음 constraint_strength=overspecified_zero 는 **정의상 검색 0건**이다 — 0건을 돌려주는
+        # recording 대역(`RecordingFilteringSearch(products=[])`)을 써서 표현 가능한 필터를 적용해도
+        # 항상 0건이라는 목적은 만족하면서 경계 도달 filters 도 기록한다(이슈 #381 D2·D4 —
+        # overspecified_zero 재검토: `PAIR_CATALOG` 표본으로는 필터를 실제로 적용해도 0건이 자연
+        # 발생하지 않아 주입을 유지, README "관측 재생성 이력" 참조).
+        #
+        # **실제로 도는 것은 `zero_result` 종료뿐이다 — 자동완화·완화칩은 돌지 않는다(#425 판정: 정의된
+        # 동작, 갭 아님).** combo-0031 에 present 인 필터축은 `price_min` 하나뿐인데,
+        # `app.agents.buyer.recommendation.relaxation.FIELD_TO_ATTR` 에 `price_min`(와이어명
+        # `priceMin`)이 없어(완화 축은 `priceMax`·`ratingMin`·`brand`·`color` 뿐, 모듈 docstring
+        # "비카테고리 조건(가격 상한·평점 하한·브랜드·색상)만 한 단계 푼다") `build_relaxation_
+        # candidates(filters, settings) == []` 다 — config 로도 `priceMin` 을 완화 축에 넣을 수 없다
+        # (`app.core.config.Settings._require_known_relaxation_chip_fields` 가 기동 시점에
+        # `FIELD_TO_ATTR` 밖 이름을 거부). 그 결과 `stream_recommendation`(recommendation/graph.py)의
+        # `may_auto_relax` 게이트가 False, 자동완화 루프(`if not candidates and not underspecified:`)는
+        # 진입해도 후보가 비어 0회 반복, 완화 칩 블록(`if not underspecified and (not candidates or
+        # len(candidates) < settings.relaxation_min_results):`)도 진입해도 probe 후보가 비어 칩
+        # 0개다. README 「알려진 관측 한계」의 `overspecified_zero` 항목 참조.
+        # 그 외(normal)는 `fakes.make_recording_filtering_search()`(대역 카탈로그 `PAIR_CATALOG`)를
+        # 써서 search 콜러블이 실제로 받은 필터를 기록한다 — [#426] 대역이 `SearchBackend` 자리에
+        # 서므로 Spring 와이어 축(keyword·category·price·brand·color)은 대역이, AI 사후필터 축
+        # (rating_min·attr_conditions)은 배포 코드가 실제로 적용한다(`fakes.RecordingFilteringSearch`).
+        if degrade == "spring_timeout":
+            raw_search = failing_search
+        elif axes.get("constraint_strength") == "overspecified_zero":
+            raw_search = make_recording_filtering_search(products=[])
+        else:
+            raw_search = make_recording_filtering_search()
+        search_calls: list = []
+
+        async def search(filters, exclude_product_ids=None):
+            # search 가 여러 번 불릴 수 있어(무필터 보충 재검색 등) 매 호출을 기록하고 첫 호출(주
+            # 검색)만 관측에 쓴다(pair_runner.py 와 같은 규약) — raw_search 가 실패해도(spring_timeout)
+            # 호출 자체는 일어났다는 사실과 그때 전달된 filters 는 남긴다.
+            search_calls.append(filters)
+            return await raw_search(filters, exclude_product_ids=exclude_product_ids)
+
+        push = RecordingPush()
+
+        # `run_buyer_turn` 은 담기 계열 Spring 호출(`add_fn`/`add_wishlist_fn`)을 주입 파라미터로
+        # 노출하지 않는다(`app/agents/buyer/graph.py::run_buyer_turn`·`cart/graph.py::stream_cart_add` 가 항상 기본값
+        # `spring_client.add_wishlist`/`add_to_cart` 를 씀) — search·order_status_fn 주입과 달리
+        # 여기는 모듈 함수를 직접 몽키패치해야 한다(HOME 러너의 `home_svc.get_catalog_store` 패턴과
+        # 동일). 패치 없이는 실 네트워크 호출이 나가 환경에 따라 결과가 달라진다(리뷰 R3 관측 중
+        # 발견 — 비결정론 원천). cart_add 는 R7(리뷰 라운드 2)에서 같은 공백을 발견해 추가했다 —
+        # wishlist_add 만 패치하고 cart_add 는 항상 성공으로 관측되던 채 defined 라벨("Spring 조회
+        # 실패를 잡아 degrade 처리")과 어긋나 있었다.
+        patch_add_wishlist = axes["intent"] == "wishlist_add" and degrade == "spring_timeout"
+        patch_add_to_cart = axes["intent"] == "cart_add" and degrade == "spring_timeout"
+        # [#386] 찜 **조회**(I-28)는 degrade 여부와 무관하게 늘 패치한다 — 담기 계열이 실패 주입
+        # 때만 패치하면 되는 것과 다르다. `get_wishlist` 는 정상 케이스에서도 호출되는데, 패치하지
+        # 않으면 로컬에 Spring 이 없을 때 실 네트워크 호출이 실패해 **degrade=none 케이스가 degrade 를
+        # 관측한다**(환경에 따라 결과가 뒤집힌다). wishlist_remove 도 대상 해소용으로 같은 함수를
+        # 부르므로 함께 잡는다 — 이 케이스가 이번 재생성으로 ci·degrade=none 조합이 되면서 그
+        # 공백이 드러났다.
+        patch_wishlist_read = axes["intent"] in ("wishlist_view", "wishlist_remove")
+        original_add_wishlist = spring_client.add_wishlist
+        original_add_to_cart = spring_client.add_to_cart
+        original_get_wishlist = spring_client.get_wishlist
+        original_remove_wishlist = spring_client.remove_wishlist
+        if patch_add_wishlist:
+            spring_client.add_wishlist = _failing_add_wishlist
+        if patch_add_to_cart:
+            spring_client.add_to_cart = _failing_add_to_cart
+        if patch_wishlist_read:
+            spring_client.get_wishlist = (
+                _failing_get_wishlist if degrade == "spring_timeout" else _ok_get_wishlist
             )
-        )
-    except Exception as exc:  # noqa: BLE001 - 안전망: cart_add/wishlist_add 는 CartError/
-        # WishlistError(+ SpringUnavailableError)를 개별 처리한다(#368/PR #374 로 해소, cart/
-        # graph.py:454 · cart/wishlist.py:245) — 정상 경로라면 여기 도달하지 않는다. 그래도
-        # 다른 축·미래 변경이 실제로 처리 안 된 예외를 내면(회귀) 관측 데이터에 조용히 사라지지
-        # 않고 남기려고 이 블록을 유지한다. 프로덕션에서는 core/stream.py 의 open_stream 범용
-        # catch-all(:688-705)이 error(INTERNAL) SSE 로 감싼다(통합 레벨, 이 하네스 범위 밖).
-        return {
-            "unhandledException": type(exc).__name__,
-            "note": (
-                "미처리 예외 안전망 — 정상 경로라면 cart_add/wishlist_add 의 개별 except 가 이미 "
-                "잡아 action(*_FAILED)+done 으로 degrade 한다(#368/PR #374). 여기 도달했다면 그 "
-                "처리 범위 밖의 예외가 run_buyer_turn 을 직접 호출한 이 unit 경계에서 그대로 "
-                "전파된 것이다 — 관측 데이터에 남겨 회귀를 드러낸다."
+            spring_client.remove_wishlist = _ok_remove_wishlist
+
+        # [#426] attr_conditions 사후필터 계측 — 대역이 흉내 내는 게 아니라(그건 앱 판정 로직
+        # 재구현 금지 위반) **배포 함수가 실제로 호출됐는지·무엇을 걸렀는지**를 관측한다(HOME 러너의
+        # `profileHookInvoked`/`buildReasonsInvoked` 와 같은 계열, § `_observe_home`).
+        # 패치 대상이 `apply_ai_side_filters` 가 아니라 `_apply_attr_conditions` 인 이유 둘:
+        #   ① `apply_ai_side_filters` 는 rating_min 만 present 여도 호출돼 신호가 뭉개진다.
+        #      `_apply_attr_conditions` 는 `filters.attr_conditions` 가 truthy 일 때만 불린다
+        #      (`search_service.py` `if filters.attr_conditions:`) — 호출됨 == 이 축이 평가됨.
+        #   ② `recommendation/graph.py` 는 `from ... import apply_ai_side_filters` 로 이름을
+        #      바인딩해 가서 `search_service.apply_ai_side_filters` 패치가 안 먹지만,
+        #      `_apply_attr_conditions` 는 정의 모듈 전역으로 조회되므로 인기 상품 폴백 경로
+        #      (`_run_candidate_source`, search 대역이 아예 개입하지 않는 자리)까지 한 번에 잡힌다.
+        attr_post_filter_calls: list[tuple[int, int]] = []
+        original_apply_attr_conditions = search_service._apply_attr_conditions
+
+        def _apply_attr_conditions_spy(products, conditions):
+            result = original_apply_attr_conditions(products, conditions)
+            attr_post_filter_calls.append((len(products), len(result)))
+            return result
+
+        search_service._apply_attr_conditions = _apply_attr_conditions_spy
+        try:
+            events = await _collect(
+                run_buyer_turn(
+                    request,
+                    identity,
+                    llm=llm,
+                    search=search,
+                    push_fn=push,
+                    popular_fn=make_popular(),
+                    order_status_fn=(
+                        failing_order_status
+                        if axes["intent"] == "order_status" and degrade == "spring_timeout"
+                        else make_order_status_ok
+                    ),
+                    # #331 소관인 임베딩 최근접·거리컷·택일·확장은 재구현하지 않는다 — raw exact
+                    # match 만 대역한다(이슈 #381 D5, `fakes.make_exact_match_category_mapping`).
+                    map_categories=make_exact_match_category_mapping(),
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - 안전망: cart_add/wishlist_add 는 CartError/
+            # WishlistError(+ SpringUnavailableError)를 개별 처리한다(#368/PR #374 로 해소, cart/
+            # graph.py:454 · cart/wishlist.py:245) — 정상 경로라면 여기 도달하지 않는다. 그래도
+            # 다른 축·미래 변경이 실제로 처리 안 된 예외를 내면(회귀) 관측 데이터에 조용히 사라지지
+            # 않고 남기려고 이 블록을 유지한다. 프로덕션에서는 core/stream.py 의 open_stream 범용
+            # catch-all(:688-705)이 error(INTERNAL) SSE 로 감싼다(통합 레벨, 이 하네스 범위 밖).
+            return {
+                "unhandledException": type(exc).__name__,
+                "note": (
+                    "미처리 예외 안전망 — 정상 경로라면 cart_add/wishlist_add 의 개별 except 가 이미 "
+                    "잡아 action(*_FAILED)+done 으로 degrade 한다(#368/PR #374). 여기 도달했다면 그 "
+                    "처리 범위 밖의 예외가 run_buyer_turn 을 직접 호출한 이 unit 경계에서 그대로 "
+                    "전파된 것이다 — 관측 데이터에 남겨 회귀를 드러낸다."
+                ),
+            }
+        finally:
+            if patch_add_wishlist:
+                spring_client.add_wishlist = original_add_wishlist
+            if patch_add_to_cart:
+                spring_client.add_to_cart = original_add_to_cart
+            if patch_wishlist_read:
+                spring_client.get_wishlist = original_get_wishlist
+                spring_client.remove_wishlist = original_remove_wishlist
+            search_service._apply_attr_conditions = original_apply_attr_conditions
+        event_types = [e["type"] for e in events]
+        terminal = events[-1] if events else None
+        # action/token 이벤트는 degrade 결과(CART_ADD_FAILED reason 등)를 실어 나르는데, 예전엔
+        # `errorCode`(SSE `error` 전용)만 봐서 action 계열 degrade 결과가 observed 에 전혀 안
+        # 남았다 — R7/R8 실측을 데이터에도 남기려면 action 의 type·reason·message, token 의 text 도
+        # 있어야 한다("성공/실패"를 observed 만 보고 판단할 수 있어야 한다).
+        action_event = next((e for e in events if e["type"] == "action"), None)
+        token_events = [e for e in events if e["type"] == "token"]
+        observed = {
+            "eventTypes": event_types,
+            "terminal": terminal["type"] if terminal else None,
+            "finishReason": (
+                terminal["data"].get("finishReason")
+                if terminal and terminal["type"] == "done"
+                else None
+            ),
+            "errorCode": (
+                terminal["data"].get("code") if terminal and terminal["type"] == "error" else None
+            ),
+            "actionType": action_event["data"].get("type") if action_event else None,
+            "actionReason": action_event["data"].get("reason") if action_event else None,
+            "lastTokenText": token_events[-1]["data"].get("text") if token_events else None,
+            "pushCount": len(push.pushes),
+            "listType": push.pushes[0].list_type if push.pushes else None,
+            # pushCount 는 push **이벤트** 수다 — 필터가 결과를 실제로 줄였다는 가시적 결과를 재려면
+            # push 된 **상품** 수가 필요하다(이슈 #381 D3, pushCount 와 혼동 금지).
+            "pushProductCount": sum(len(entry.product_ids) for p in push.pushes for entry in p.lists),
+            # search 가 아예 안 불린 케이스(popular 경로·담기 계열 등)는 0 — "안 불렸다"와 "전부
+            # null 이었다"를 구별한다(이슈 #381 D3). 첫 호출(주 검색)만 searchFilters 에 싣는다.
+            "searchCallCount": len(search_calls),
+            "searchFilters": (search_filters_projection(search_calls[0]) if search_calls else None),
+            "unappliedSearchFilters": (
+                raw_search.unapplied_calls[0]
+                if isinstance(raw_search, RecordingFilteringSearch) and raw_search.unapplied_calls
+                else []
             ),
         }
+        # [#426] attr_conditions 축이 present 인 케이스에만 싣는다 — 그 축이 없는 행에까지 필드를
+        # 늘리면 `refresh-observed` diff 가 전 행으로 번져 케이스별 사람 판정이 불가능해진다.
+        # 첫 호출(주 검색/주 후보 확보) 기준 — `searchFilters`·`unappliedSearchFilters` 와 같은 규약.
+        # `invoked=true, input==output`(호출됐지만 안 걸렀다)과 `invoked=false`(아예 안 돌았다)를
+        # 데이터에서 구별한다.
+        if axes.get("attr_conditions") == "present":
+            first_call = attr_post_filter_calls[0] if attr_post_filter_calls else None
+            observed["attrConditionsPostFilter"] = {
+                "invoked": first_call is not None,
+                "inputCount": first_call[0] if first_call else 0,
+                "outputCount": first_call[1] if first_call else 0,
+            }
+        # 여러 관측 한계가 동시에 해당할 수 있다(예: combo-0038 unspecified+embedding_missing) —
+        # 단일 `note` 덮어쓰기는 먼저 붙인 한계를 지운다(리뷰 R4). 리스트로 전부 append.
+        notes: list[str] = []
+        if degrade == "embedding_missing":
+            notes.append(
+                "search 주입 경계는 search_service.py 임베딩 재정렬보다 상류 — degrade=none 과 "
+                "동일하게 실행됨(runner.py 모듈 docstring 참조)"
+            )
+        if (
+            axes["intent"] in ("wishlist_add", "wishlist_remove", "wishlist_view")
+            and axes["identity"] == "guest"
+        ):
+            notes.append(
+                "identity=guest 는 로그인 필요 게이트가 Spring 호출보다 먼저 걸려 이 케이스는 "
+                "SpringUnavailableError 미처리 갭(expected_behavior.status=partial 근거)을 실제로는 "
+                "밟지 않는다 — 그 갭은 identity=member 조합에서만 실측된다(README 리스크 참조)."
+            )
+        if axes.get("constraint_strength") == "overspecified_zero" and degrade != "spring_timeout":
+            notes.append(
+                "0건은 주입이며, 이 케이스에 present 인 필터축(price_min)이 완화 축이 아니라 "
+                "자동완화·완화칩은 돌지 않는다(#425 판정: 정의된 동작)"
+            )
+        if axes.get("constraint_strength") == "unspecified" and degrade != "none":
+            notes.append(
+                "조건 없는 턴은 후보 소스가 popular_fn(I-3) 이라(graph.py:797-830) 이 하네스의 "
+                "popular_fn fake 가 항상 성공해 search/rerank degrade 축은 관측되지 않는다 — "
+                "popular_fn 실패 시에만 _run_search() 로 폴백한다(코드 정의 동작, 갭 아님)."
+            )
+        if axes["intent"] in ("cart_add", "wishlist_add"):
+            # 리뷰 R9 — 이 케이스의 context 축은 none(decompose 입력 관점, 되묻기 컨텍스트 없음)
+            # 이지만, 담기 허용목록 게이트를 통과시키려고 세션 스토어엔 웜업 턴의 직전 추천이 이미
+            # 있다(`_warm_up_last_reco`) — 이 전제가 observed 데이터만 보면 안 드러나므로 명시한다.
+            notes.append(
+                "웜업으로 last_reco 채움(productId 101) — context 축은 decompose 입력 관점(none)이고 "
+                "세션 스토어 상태와는 별개다(runner.py::_warm_up_last_reco)."
+            )
+        if notes:
+            observed["notes"] = notes
     finally:
-        if patch_add_wishlist:
-            spring_client.add_wishlist = original_add_wishlist
-        if patch_add_to_cart:
-            spring_client.add_to_cart = original_add_to_cart
-        if patch_wishlist_read:
-            spring_client.get_wishlist = original_get_wishlist
-            spring_client.remove_wishlist = original_remove_wishlist
-        search_service._apply_attr_conditions = original_apply_attr_conditions
-    event_types = [e["type"] for e in events]
-    terminal = events[-1] if events else None
-    # action/token 이벤트는 degrade 결과(CART_ADD_FAILED reason 등)를 실어 나르는데, 예전엔
-    # `errorCode`(SSE `error` 전용)만 봐서 action 계열 degrade 결과가 observed 에 전혀 안
-    # 남았다 — R7/R8 실측을 데이터에도 남기려면 action 의 type·reason·message, token 의 text 도
-    # 있어야 한다("성공/실패"를 observed 만 보고 판단할 수 있어야 한다).
-    action_event = next((e for e in events if e["type"] == "action"), None)
-    token_events = [e for e in events if e["type"] == "token"]
-    observed = {
-        "eventTypes": event_types,
-        "terminal": terminal["type"] if terminal else None,
-        "finishReason": (
-            terminal["data"].get("finishReason")
-            if terminal and terminal["type"] == "done"
-            else None
-        ),
-        "errorCode": (
-            terminal["data"].get("code") if terminal and terminal["type"] == "error" else None
-        ),
-        "actionType": action_event["data"].get("type") if action_event else None,
-        "actionReason": action_event["data"].get("reason") if action_event else None,
-        "lastTokenText": token_events[-1]["data"].get("text") if token_events else None,
-        "pushCount": len(push.pushes),
-        "listType": push.pushes[0].list_type if push.pushes else None,
-        # pushCount 는 push **이벤트** 수다 — 필터가 결과를 실제로 줄였다는 가시적 결과를 재려면
-        # push 된 **상품** 수가 필요하다(이슈 #381 D3, pushCount 와 혼동 금지).
-        "pushProductCount": sum(len(entry.product_ids) for p in push.pushes for entry in p.lists),
-        # search 가 아예 안 불린 케이스(popular 경로·담기 계열 등)는 0 — "안 불렸다"와 "전부
-        # null 이었다"를 구별한다(이슈 #381 D3). 첫 호출(주 검색)만 searchFilters 에 싣는다.
-        "searchCallCount": len(search_calls),
-        "searchFilters": (search_filters_projection(search_calls[0]) if search_calls else None),
-        "unappliedSearchFilters": (
-            raw_search.unapplied_calls[0]
-            if isinstance(raw_search, RecordingFilteringSearch) and raw_search.unapplied_calls
-            else []
-        ),
-    }
-    # [#426] attr_conditions 축이 present 인 케이스에만 싣는다 — 그 축이 없는 행에까지 필드를
-    # 늘리면 `refresh-observed` diff 가 전 행으로 번져 케이스별 사람 판정이 불가능해진다.
-    # 첫 호출(주 검색/주 후보 확보) 기준 — `searchFilters`·`unappliedSearchFilters` 와 같은 규약.
-    # `invoked=true, input==output`(호출됐지만 안 걸렀다)과 `invoked=false`(아예 안 돌았다)를
-    # 데이터에서 구별한다.
-    if axes.get("attr_conditions") == "present":
-        first_call = attr_post_filter_calls[0] if attr_post_filter_calls else None
-        observed["attrConditionsPostFilter"] = {
-            "invoked": first_call is not None,
-            "inputCount": first_call[0] if first_call else 0,
-            "outputCount": first_call[1] if first_call else 0,
-        }
-    # 여러 관측 한계가 동시에 해당할 수 있다(예: combo-0038 unspecified+embedding_missing) —
-    # 단일 `note` 덮어쓰기는 먼저 붙인 한계를 지운다(리뷰 R4). 리스트로 전부 append.
-    notes: list[str] = []
-    if degrade == "embedding_missing":
-        notes.append(
-            "search 주입 경계는 search_service.py 임베딩 재정렬보다 상류 — degrade=none 과 "
-            "동일하게 실행됨(runner.py 모듈 docstring 참조)"
-        )
-    if (
-        axes["intent"] in ("wishlist_add", "wishlist_remove", "wishlist_view")
-        and axes["identity"] == "guest"
-    ):
-        notes.append(
-            "identity=guest 는 로그인 필요 게이트가 Spring 호출보다 먼저 걸려 이 케이스는 "
-            "SpringUnavailableError 미처리 갭(expected_behavior.status=partial 근거)을 실제로는 "
-            "밟지 않는다 — 그 갭은 identity=member 조합에서만 실측된다(README 리스크 참조)."
-        )
-    if axes.get("constraint_strength") == "overspecified_zero" and degrade != "spring_timeout":
-        notes.append(
-            "0건은 주입이며, 이 케이스에 present 인 필터축(price_min)이 완화 축이 아니라 "
-            "자동완화·완화칩은 돌지 않는다(#425 판정: 정의된 동작)"
-        )
-    if axes.get("constraint_strength") == "unspecified" and degrade != "none":
-        notes.append(
-            "조건 없는 턴은 후보 소스가 popular_fn(I-3) 이라(graph.py:797-830) 이 하네스의 "
-            "popular_fn fake 가 항상 성공해 search/rerank degrade 축은 관측되지 않는다 — "
-            "popular_fn 실패 시에만 _run_search() 로 폴백한다(코드 정의 동작, 갭 아님)."
-        )
-    if axes["intent"] in ("cart_add", "wishlist_add"):
-        # 리뷰 R9 — 이 케이스의 context 축은 none(decompose 입력 관점, 되묻기 컨텍스트 없음)
-        # 이지만, 담기 허용목록 게이트를 통과시키려고 세션 스토어엔 웜업 턴의 직전 추천이 이미
-        # 있다(`_warm_up_last_reco`) — 이 전제가 observed 데이터만 보면 안 드러나므로 명시한다.
-        notes.append(
-            "웜업으로 last_reco 채움(productId 101) — context 축은 decompose 입력 관점(none)이고 "
-            "세션 스토어 상태와는 별개다(runner.py::_warm_up_last_reco)."
-        )
-    if notes:
-        observed["notes"] = notes
+        _settings_for_case.category_leg_injection_enabled = _prev_injection
     return observed
 
 

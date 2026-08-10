@@ -73,6 +73,10 @@ def _perfect_results(n: int = N) -> list[CellResult]:
             overrides["resolved_product_id"] = (
                 expected.product_id if expected.product_id_rule == "screenExact" else None
             )
+        if cell.utterance.group == "named_category":
+            # [#443] 만점 표본 = leg 이 1개 이상 나온 경우(반대 방향 condition_only 는 기본값
+            # "" 이 그대로 만점이다 — 여기서만 덮어쓴다).
+            overrides["category_legs"] = "과일|과일"
         results.append(
             CellResult(
                 cell_id=cell.cell_id,
@@ -129,6 +133,8 @@ def test_expected_denominators_match_issue_240_shape() -> None:
         "cartQuantityPositive": 24,
         "cartQuantityNoSteal": 24,
         "cartQuantityRouting": 48,
+        # [#443] 상품군 명시 6발화 × none 컨텍스트 × N=8.
+        "namedCategoryHasLeg": 48,
     }
 
 
@@ -757,3 +763,139 @@ def test_condition_only_axis_counts_only_its_own_bucket() -> None:
     assert axes["general"].expected_denominator == 0
     assert axes["categoryAction3Way"].expected_denominator == 0
     assert axes["screenResolution"].expected_denominator == 0
+
+
+# ─────────── [#443] 상품군 명시 첫 턴 leg 산출(condition_only 의 반대 방향, #465) ───────────
+
+NAMED_CATEGORY_CELLS = [cell for cell in CELLS if cell.utterance.group == "named_category"]
+
+
+def _named_category_result(cell, *, category_legs: str, case: int = 2) -> CellResult:  # noqa: ANN001
+    return CellResult(
+        cell_id=cell.cell_id,
+        utterance_id=cell.utterance.utterance_id,
+        context_id=cell.context.context_id,
+        group="named_category",
+        samples=[
+            _sample(cell.cell_id, index, intent="recommend", category_legs=category_legs, case=case)
+            for index in range(N)
+        ],
+        attempts=N,
+        filled=True,
+    )
+
+
+def test_named_category_axis_scores_full_marks_when_a_leg_is_present() -> None:
+    assert len(NAMED_CATEGORY_CELLS) == 6, "상품군 명시 셀이 없다 — 픽스처가 어긋났다"
+    results = [
+        _named_category_result(cell, category_legs="음향가전 > 이어폰|과일")
+        for cell in NAMED_CATEGORY_CELLS
+    ]
+    axes = score_all(results, ANCHORS, n=N)
+    assert axes["namedCategoryHasLeg"].numerator == 48
+    assert axes["namedCategoryHasLeg"].denominator == 48
+
+
+def test_named_category_axis_distinguishes_zero_legs_from_a_present_leg() -> None:
+    """[#443 이슈 실측 재현] leg 이 0개면(D1 no_legs) 그 표본은 불충족이어야 한다 — 이슈가 지목한
+    실패(사용자가 상품군을 말했는데 파라미터 0개 payload)가 이 술어에 그대로 잡힌다.
+
+    [A-2 와 같은 이유] leg 있음/없음 **양쪽을 같은 테스트 안에서** 단언해 술어가 상수 함수가
+    아님을 못 박는다 — 두 방향을 한 테스트에 묶어야 "항상 True"·"항상 False" 두 변이가 모두 이
+    테스트 하나로 잡힌다(따로 떨어뜨리면 한쪽만 재는 사본이 된다)."""
+    cell = NAMED_CATEGORY_CELLS[0]
+    without_leg = _named_category_result(cell, category_legs="")
+    with_leg = _named_category_result(cell, category_legs="식품 > 과일|과일")
+    scored_without = score_all([without_leg], ANCHORS, n=N)["namedCategoryHasLeg"]
+    scored_with = score_all([with_leg], ANCHORS, n=N)["namedCategoryHasLeg"]
+    assert scored_without.numerator == 0
+    assert scored_without.denominator == N
+    assert scored_with.numerator == N
+    assert scored_with.denominator == N
+
+
+def test_named_category_axis_passes_a_sample_with_two_legs() -> None:
+    """leg 이 여러 개(#217 전개 산출)라도 "1개 이상" 술어는 여전히 정답이다."""
+    cell = NAMED_CATEGORY_CELLS[0]
+    result = _named_category_result(cell, category_legs="식품 > 과일|오렌지;식품 > 과일|귤")
+    axes = score_all([result], ANCHORS, n=N)
+    assert axes["namedCategoryHasLeg"].numerator == N
+
+
+def test_named_category_axis_counts_only_its_own_bucket() -> None:
+    """새 셀이 기존 축의 분모를 늘리면 안 된다 — 상품군 명시 셀만 채점해도 기존 축은 0이어야 한다."""
+    results = [
+        _named_category_result(cell, category_legs="과일|과일") for cell in NAMED_CATEGORY_CELLS
+    ]
+    axes = score_all(results, ANCHORS, n=N)
+    assert axes["mainIntent"].expected_denominator == 0
+    assert axes["general"].expected_denominator == 0
+    assert axes["categoryAction3Way"].expected_denominator == 0
+    assert axes["screenResolution"].expected_denominator == 0
+    assert axes["conditionOnlyNoCategoryQuery"].expected_denominator == 0
+
+
+def test_named_category_and_condition_only_axes_mirror_each_other_on_the_same_sample_shape() -> (
+    None
+):
+    """[#465] 두 축이 정확히 거울이라는 사실을 코드로 못 박는다 — 같은 leg 값이 한쪽에서 정답이면
+    반대쪽에서는 반드시 오답이어야 한다(같은 필드의 양쪽 끝이라 동시에 만점일 수 없다)."""
+    empty_result = _named_category_result(NAMED_CATEGORY_CELLS[0], category_legs="")
+    filled_result = _named_category_result(NAMED_CATEGORY_CELLS[0], category_legs="식품|과일")
+    condition_cell = CONDITION_ONLY_CELLS[0]
+    empty_condition = _condition_only_result(condition_cell, category_legs="")
+    filled_condition = _condition_only_result(condition_cell, category_legs="식품|과일")
+
+    assert score_all([empty_result], ANCHORS, n=N)["namedCategoryHasLeg"].numerator == 0
+    assert score_all([filled_result], ANCHORS, n=N)["namedCategoryHasLeg"].numerator == N
+    assert score_all([empty_condition], ANCHORS, n=N)["conditionOnlyNoCategoryQuery"].numerator == N
+    assert (
+        score_all([filled_condition], ANCHORS, n=N)["conditionOnlyNoCategoryQuery"].numerator == 0
+    )
+
+
+def test_diagnostics_count_named_category_empty_legs_and_case3() -> None:
+    """[#443] 진단 카운터 2개 — 요인 분리(공백률 × case 분포 상관)의 계측기."""
+    cell_a, cell_b = NAMED_CATEGORY_CELLS[0], NAMED_CATEGORY_CELLS[1]
+    results = [
+        # 4건은 leg 있음(case=2), 4건은 leg 없음(case=3) — #443 실측이 지목한 모양.
+        CellResult(
+            cell_id=cell_a.cell_id,
+            utterance_id=cell_a.utterance.utterance_id,
+            context_id=cell_a.context.context_id,
+            group="named_category",
+            samples=[
+                _sample(cell_a.cell_id, index, category_legs="식품|과일", case=2)
+                for index in range(4)
+            ]
+            + [_sample(cell_a.cell_id, index, category_legs="", case=3) for index in range(4, 8)],
+            attempts=8,
+            filled=True,
+        ),
+        # 다른 셀에서 leg 없이 case=2 로 나온 표본 — 공백이 case=3 판정과 항상 같이 가지는 않는다.
+        CellResult(
+            cell_id=cell_b.cell_id,
+            utterance_id=cell_b.utterance.utterance_id,
+            context_id=cell_b.context.context_id,
+            group="named_category",
+            samples=[
+                _sample(cell_b.cell_id, index, category_legs="", case=2) for index in range(2)
+            ],
+            attempts=2,
+            filled=True,
+        ),
+    ]
+    counts = diagnostics(results, ANCHORS)
+    assert counts["namedCategoryEmptyLegsCount"] == 4 + 2
+    assert counts["namedCategoryCase3Count"] == 4
+    # 다른 그룹의 진단 카운터를 오염시키지 않는다.
+    assert counts["reaskProductEchoCount"] == 0
+    assert counts["categoryScopeUnresolvedCount"] == 0
+
+
+def test_named_category_diagnostics_do_not_leak_into_other_groups() -> None:
+    """조건 전용 셀만 채점해도 상품군 명시 진단 카운터는 0이어야 한다 — 역방향 오염도 없다."""
+    results = [_condition_only_result(cell, category_legs="") for cell in CONDITION_ONLY_CELLS]
+    counts = diagnostics(results, ANCHORS)
+    assert counts["namedCategoryEmptyLegsCount"] == 0
+    assert counts["namedCategoryCase3Count"] == 0

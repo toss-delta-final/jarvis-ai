@@ -1,5 +1,7 @@
 # Changelog
 
+- **#465 category leg head 억제 기본 활성화** — 조건 전용 총칭 leg만 후처리로 제거한다(LLM 호출 0). 보호 대상 오발동 0건·조건 누출 런당 2건 제거를 근거로 기본 on 했으며, primary missRate는 병합 후 표적이 작아 개선되지 않았다.
+
 이 프로젝트의 주요 변경을 기록한다. 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/),
 버전은 [Semantic Versioning](https://semver.org/lang/ko/)을 따른다.
 
@@ -137,6 +139,10 @@
   §3.9.4 OPEN-P5 서술 사본 동기화, `SPEC-PROFILE-001`·`SPEC-PROFILE-GRAPH-149` OPEN 항목 갱신).
 
 ### Fixed
+- **#443 — 정본 카탈로그 사전으로 빈 `categoryQueries` leg를 결정론 보강** — 모델이 상품군을
+  말한 첫 추천 턴에서 leg를 비우던 결함을 `seller_categories.json` 스냅샷의 최장 일치로 보완한다.
+  N=24 독립 2런에서 `namedCategoryHasLeg` 98.6%·100.0%(문턱 83.7%),
+  `conditionOnlyNoCategoryQuery` 90.0%·92.5%(문턱 84.2%), condition_only 주입 0건이라 기본 on.
 - **#553 — 운영 배포 전면 중단 복구: `deploy.yml` 설명문의 빈 Actions 표현식** — `script: |` 은 YAML 블록 스칼라라 `#` 가 주석이 아니라 리터럴이고 Actions 가 그 안의 표현식도 평가한다. #539 가 넣은 설명문의 **내용이 빈 표현식**이 문법 오류를 내 워크플로가 job 을 시작조차 못 했고(startup failure, run 2건 job 0개), 승격 #552 의 41커밋이 실서버에 반영되지 못했다. 설명문에서 표현식 리터럴을 걷어내고, 같은 블록에 "여기서는 표현식을 쓰지 않는다"는 경고를 남겼다. 로컬 YAML 파싱은 통과하므로 CI 로는 못 잡는 계열이라 `docs/lessons.md` 에 진단 단서(트리거 밖 브랜치에서도 run 생성 = startup failure)까지 기록했다.
 
 ### Fixed
@@ -348,6 +354,13 @@
   독립 어휘 앵커 4개를
   추가했다. 밝기·채도 수식어, 복합색, 데님 밝기 축은 확장 때 원래 조건을 잃으므로 보류했으며,
   코드·마케팅명 등 40건은 반려로 고정했다. 생성 JSON·SQL은 검수 오버레이에서 재파생한다.
+
+### Added
+- **#443/#465 — `evals/intent_probe` 에 `named_category` 6앵커·`namedCategoryHasLeg` 축 신설** —
+  상품군을 **명시한** 첫 턴("과일 추천해줘" 등)에서 `categoryQueries` leg 이 비는 결함을 재는
+  축이다. `conditionOnlyNoCategoryQuery`(#465, 조건 전용 턴은 leg 이 0개여야 정답)의 반대
+  방향 축이라 같은 필드의 양쪽 끝을 한 런에서 함께 읽는다 — 한쪽만 보고 채택 판정을 내리지
+  않기 위함.
 - **#358 — 개인화 그래프의 사용자 변경 경로에 저장 안전장치를 깔았다** (SPEC-PROFILE-GRAPH-149
   §5.4·§6.5·§7.1·§7.2). #356 이 배치 쓰기까지 만들었다면 이번은 **사용자가 직접 고치고 지우는**
   경로를 안전하게 만든다. `store.set_graph` 가 CAS 없는 blind overwrite 라 그 위에 네 층을 얹었다.
@@ -1511,6 +1524,20 @@
 - **#299 — 요청 바디 크기 상한** — 필드별 상한(`chat_message_max_chars`·`screen_products_raw_scan_max` 등)은 흩어져 있고 상한 없는 필드(`conditionActions` 등)도 계속 생기는데, 레이트 리밋(§2.8)은 요청 **건수**만 세 임의 크기 바디를 반복 전송할 수 있었다. `app/core/body_limit.py`에 `BodySizeLimitMiddleware`(순수 ASGI)를 신설해 `Content-Length` 초과는 바디를 읽기 전에, 헤더가 없는(chunked) 경우는 `receive`를 감싼 실수신 바이트 누적으로 상한(`request_body_max_bytes`, 기본 1MiB — 필드 상한이 절단 없이 받아들이는 최대 정상 페이로드의 약 4.8배)을 넘기면 거절한다. 초과 응답은 새 코드를 내지 않고 기존 `400 BAD_REQUEST` 봉투를 그대로 쓴다(§2.5에 413/`PAYLOAD_TOO_LARGE`가 없어 신설은 별도 명세 개정 대상) — 와이어 계약 변경 0. 미들웨어는 레이트 리밋 **바깥**(거대 바디가 JWT 서명 검증 비용·레이트 리밋 슬롯을 소모하지 않게)·CORS **안쪽**(400 응답에도 CORS 헤더가 실리게)에 등록한다.
 
 ### Docs
+- **#443/#465 — categoryQueries "넓은 상품군" 예시 한 줄(C5) 실측 후 기각, 프롬프트는 미변경** —
+  요인 분리 실측(`named_category` 6앵커, before 2런)으로 결함 원인을 상황 설명 유무·위치·case
+  판정이 아니라 **사용자가 말한 상품군의 추상도**로 좁혔다. 문면 후보 4종(빈 배열 2종·불릿
+  맨 앞 이동·예시 한 줄 C5)을 시도했고 전부 기각했다 — 채택 직전까지 갔던 C5 는 부분 셀
+  스크리닝에서 46/48 로 보였으나 전체 런 2회(N=8×6셀=48표본)에서 35·38/48 로 재현되지 않아
+  사전 등록 문턱(after 두 런 모두 before 최댓값 이상 + 평균 상승 ≥ +4/48) 미달로 기각했다.
+  **`decompose._SYSTEM` 은 한 글자도 바뀌지 않았다** — 계약·동작 변경 없음, `--dump-prompt`
+  sha256 앞 12자 `865ed6fd771e` 로 확인. #443/#465 양방향 실측 기준선 5런(`evals/intent_probe/
+  baselines/fast-2026-08-08-443-{before-1,before-2,cand5-1,cand5-2}`·`evals/underspecified_probe/
+  baselines/fast-2026-08-08-465-{before-1,cand5-1-partial}`)과 기각 근거는 각 디렉터리
+  README·`decompose.py` 의 `_SYSTEM` 바로 아래 주석에 남겼다. 반대 방향 비용으로 관측된
+  `categoryClear` 하락은 이미 등록된 **#463**, underspecified 재집계에서 드러난
+  `filters.attrConditions` 단독 차단은 이미 등록된 **#464** 의 소관이라 새 이슈는 만들지
+  않았다.
 - **#436 — api-spec 구현 반영 상태 표기 갱신(계약 불변, 서술만)** — I-24~I-28·§3.1 FE 수신
   두 지점의 상태 마커가 낡아 있어 #435 원인 추적이 "FE 수신부가 없어서인가"를 먼저 의심하며
   한 라운드를 버렸다. BE(`jarvis-backend` main `17bb44d`)·FE(`jarvis-frontend` main `08cd2c5`)를

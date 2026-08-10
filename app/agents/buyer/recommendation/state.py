@@ -147,6 +147,9 @@ class RouteDecision:
     total_budget: int | None = None
     # 카테고리 하이브리드 매핑(이슈 #59, 방식 A):
     category_queries: list[CategoryQuery] = field(default_factory=list)  # decompose 추측(매핑 전)
+    # [#443] 사전 기반 보강이 빈 모델 legs를 실제로 채웠는가. 모델이 원래 낸 leg와 구분해
+    # 측정 산출물에서 condition_only 주입 0건 하드 불변식을 재집계한다.
+    category_leg_injected: bool = False
     # 매핑 후 (canonical, query) leg 리스트(그래프가 채움; 신호 없거나 실패 시 빈 리스트 → 무필터,
     # #22) — fan-out 검색 leg 단위(§6).
     # query 는 그 카테고리 전용 검색 키워드. 대표 카테고리 = category_legs[0][0](칩·멀티턴 승계).

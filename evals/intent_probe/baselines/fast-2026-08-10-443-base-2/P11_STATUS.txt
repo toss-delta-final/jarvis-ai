@@ -1,0 +1,1 @@
+exit_code=0 system_prompt_sha12=a3f8f26cbb6e runner_sha12=e9934afbf06b category_leg_injection_enabled=false

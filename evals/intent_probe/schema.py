@@ -59,6 +59,12 @@ WISHLIST_REMOVE_GROUP = "wishlist_remove"
 # cart_quantity 가 남의 발화를 훔치지 않는가)을 갈라서 센다 — 가장 중요한 대조는 "하나 더
 # 담아줘"(합산, cart_add) 다(패킷 함정 2 와 같은 축).
 CART_QUANTITY_GROUP = "cart_quantity"
+# [#443] 상품군을 명시한 첫 턴(무프라이어)에서 decompose 가 `categoryQueries` leg 을 실제로
+# 채우는지 재는 그룹 — `CONDITION_ONLY_GROUP`(#344, 조건만 말하고 상품군은 없는 턴이 leg 을
+# 비우는지)과 **정반대 방향**이다. 허용 컨텍스트가 `none` 하나뿐인 이유도 같다: 이 축의 정의가
+# "무프라이어 컨텍스트에서 상품군을 명시한 첫 턴"이라 다른 컨텍스트(직전 추천·장바구니 등)가
+# 섞이면 "첫 턴"이라는 전제가 깨진다.
+NAMED_CATEGORY_GROUP = "named_category"
 GROUPS = frozenset(
     {
         "cart_control",
@@ -73,6 +79,7 @@ GROUPS = frozenset(
         WISHLIST_VIEW_GROUP,
         WISHLIST_REMOVE_GROUP,
         CART_QUANTITY_GROUP,
+        NAMED_CATEGORY_GROUP,
     }
 )
 # [#313] group → 허용 컨텍스트 매핑. "이 축이 무엇을 재는가"의 선언 그 자체다 — 여기 한 줄이
@@ -106,6 +113,9 @@ GROUP_ALLOWED_CONTEXTS: dict[str, frozenset[str]] = {
     # `wishlist_remove` 와 같은 이유). 대상 항목 해소는 결정론 계층(`quantity.py::
     # _resolve_quantity_target`)이 장바구니 조회 결과에서 하지, decompose 컨텍스트가 가르지 않는다.
     CART_QUANTITY_GROUP: frozenset({"none"}),
+    # [#443] 이 축의 정의가 "무프라이어(none) 컨텍스트에서 상품군을 명시한 첫 턴"이므로
+    # 허용 컨텍스트는 `none` 하나뿐이다(`condition_only` 와 같은 이유 — [#344 라운드 3]).
+    NAMED_CATEGORY_GROUP: frozenset({"none"}),
 }
 INTENTS = (
     "recommend",
@@ -194,6 +204,10 @@ WISHLIST_REMOVE_AXIS_IDS = frozenset(
 CART_QUANTITY_AXIS_IDS = frozenset(
     {"cartQuantityPositive", "cartQuantityNoSteal", "cartQuantityRouting"}
 )
+# [#443] 상품군 명시 첫 턴 축 — 커밋된 기준선 어디에도 **존재하지 않는다.** 반대 방향 축
+# `conditionOnlyNoCategoryQuery`(#344)와 정의가 정확히 거울이다: 한쪽은 "leg 0개가 정답"
+# (조건만 말한 턴), 이쪽은 "leg 1개 이상이 정답"(상품군을 명시한 턴).
+NAMED_CATEGORY_AXIS_IDS = frozenset({"namedCategoryHasLeg"})
 AXIS_IDS = (
     LEGACY_AXIS_IDS
     | CATEGORY_ACTION_AXIS_IDS
@@ -202,6 +216,7 @@ AXIS_IDS = (
     | WISHLIST_VIEW_AXIS_IDS
     | WISHLIST_REMOVE_AXIS_IDS
     | CART_QUANTITY_AXIS_IDS
+    | NAMED_CATEGORY_AXIS_IDS
 )
 # [#300, F-2] productIdRule → 그 규칙이 재는 컴포넌트 축. `screenResolution`(합계 축)은 모든
 # screen 발화가 공통으로 선언해야 하므로 이 맵에는 넣지 않는다 —
@@ -666,6 +681,7 @@ class Utterance(CamelModel):
                     | SCREEN_AXIS_IDS
                     | CONDITION_ONLY_AXIS_IDS
                     | WISHLIST_VIEW_AXIS_IDS
+                    | NAMED_CATEGORY_AXIS_IDS
                 )
             )
             if others:
@@ -696,6 +712,7 @@ class Utterance(CamelModel):
                     | CONDITION_ONLY_AXIS_IDS
                     | WISHLIST_VIEW_AXIS_IDS
                     | WISHLIST_REMOVE_AXIS_IDS
+                    | NAMED_CATEGORY_AXIS_IDS
                 )
             )
             if others:
@@ -708,6 +725,39 @@ class Utterance(CamelModel):
                 f"{self.utterance_id}: {sorted(declared & CART_QUANTITY_AXIS_IDS)} 는 "
                 f"group='{CART_QUANTITY_GROUP}' 발화만 선언할 수 있습니다 "
                 "— 다른 그룹이 섞이면 신규 축의 분모가 정의(수량 변경 6발화)와 어긋납니다"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _named_category_group_is_isolated(self) -> "Utterance":
+        """[#443] 상품군 명시 첫 턴 축도 기존 축과 표본을 섞지 않는다 — 앞의 네 검증자와 같은
+        이유(`_condition_only_group_is_isolated` 와 특히 같은 모양 — 반대 방향 축이다).
+        """
+        declared = set(self.axes)
+        if self.group == NAMED_CATEGORY_GROUP:
+            others = sorted(
+                declared
+                & (
+                    LEGACY_AXIS_IDS
+                    | CATEGORY_ACTION_AXIS_IDS
+                    | SCREEN_AXIS_IDS
+                    | CONDITION_ONLY_AXIS_IDS
+                    | WISHLIST_VIEW_AXIS_IDS
+                    | WISHLIST_REMOVE_AXIS_IDS
+                    | CART_QUANTITY_AXIS_IDS
+                )
+            )
+            if others:
+                raise ValueError(
+                    f"{self.utterance_id}: 상품군 명시 발화는 기존 축 {others} 를 선언할 수 "
+                    "없습니다 — 새 셀이 기존 축의 분모를 늘리면 커밋된 기준선과 그 축을 비교할 "
+                    "수 없게 됩니다"
+                )
+        elif declared & NAMED_CATEGORY_AXIS_IDS:
+            raise ValueError(
+                f"{self.utterance_id}: {sorted(declared & NAMED_CATEGORY_AXIS_IDS)} 는 "
+                f"group='{NAMED_CATEGORY_GROUP}' 발화만 선언할 수 있습니다 "
+                "— 다른 그룹이 섞이면 신규 축의 분모가 정의(상품군 명시 6발화)와 어긋납니다"
             )
         return self
 

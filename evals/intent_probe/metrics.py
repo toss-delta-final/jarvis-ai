@@ -14,7 +14,13 @@ from typing import Any
 from dataclasses import replace
 
 from evals.intent_probe.runner import CellResult, Sample
-from evals.intent_probe.schema import AnchorSet, CATEGORY_ACTION_GROUP, SCREEN_GROUP, Utterance
+from evals.intent_probe.schema import (
+    AnchorSet,
+    CATEGORY_ACTION_GROUP,
+    NAMED_CATEGORY_GROUP,
+    SCREEN_GROUP,
+    Utterance,
+)
 
 # #240 코멘트가 쓴 8축 한 줄 요약(237/144/93/27/8/48/32/15)의 순서를 그대로 보존한다.
 ISSUE_240_AXIS_ORDER = (
@@ -121,8 +127,27 @@ def _condition_only_no_category_query(sample: Sample, _: Utterance, __: AnchorSe
     않았는가(leg 이 0개 — `sample.category_legs` 는 `serialize_category_legs` 가 빈 리스트를
     빈 문자열로 만든다, `runner.serialize_category_legs([]) == ""`). leg 을 하나라도 내면
     불충족이다 — 그 텍스트가 임베딩 앵커로 흘러 #222 확장이 무관 카테고리로 fan-out 하는
-    입구가 된다."""
+    입구가 된다.
+
+    [#443] 이 술어는 `_named_category_has_leg` 와 **정확히 거울**이다 — 이쪽은 "leg 0개가
+    정답"(조건만 말한 턴), 저쪽은 "leg 1개 이상이 정답"(상품군을 명시한 턴). 같은 필드
+    (`categoryQueries`)의 양쪽 끝을 재는 두 축이라 한쪽만 보고 프롬프트를 고치면 안 된다
+    (#465) — 채택 판정은 두 축을 함께 읽는다."""
     return sample.category_legs == ""
+
+
+def _named_category_has_leg(sample: Sample, _: Utterance, __: AnchorSet) -> bool:
+    """[#443] 상품군을 명시한 첫 턴에서 decompose 가 `categoryQueries` leg 을 **1개 이상**
+    못박았는가(`sample.category_legs != ""` — leg 이 하나라도 있으면 `serialize_category_legs`
+    가 빈 문자열이 아닌 값을 낸다). leg 이 하나도 없으면 불충족이다 — 사용자가 상품군을 말했는데
+    파라미터 0개 payload 로 떨어지면 #217 전개 → #222 확장 폴백이라는 불필요한 LLM 호출 1회 +
+    fan-out 검색 N건이 붙는다(#443 실측: 지연 14.52s).
+
+    [#465] 이 술어는 `_condition_only_no_category_query` 와 **정확히 거울**이다 — 저쪽은
+    "leg 0개가 정답"(조건만 말한 턴), 이쪽은 "leg 1개 이상이 정답"(상품군을 명시한 턴). 같은
+    필드의 양쪽 끝을 재는 두 축이라 한쪽만 보고 채택 판정을 내리면 안 된다 — 두 축을 함께
+    읽는다."""
+    return sample.category_legs != ""
 
 
 @dataclass(frozen=True)
@@ -336,13 +361,35 @@ AXES: tuple[AxisSpec, ...] = (
         axis_id="conditionOnlyNoCategoryQuery",
         title="조건 전용 categoryQueries 비움",
         numerator="categoryLegs(leg 원문 직렬화)가 빈 문자열인 표본 수 — decompose 가 이 발화에서 "
-        "categoryQueries 를 하나도 못박지 않은 경우",
+        "categoryQueries 를 하나도 못박지 않은 경우. [#443] 반대 방향 축 namedCategoryHasLeg "
+        "(상품군을 명시한 턴은 leg 이 1개 이상이어야 정답)과 정확히 거울이다 — 같은 필드의 "
+        "양쪽 끝이라 한쪽만 보고 채택 판정을 내리지 않는다(#465)",
         denominator="조건 전용 5발화 × none 컨텍스트 × N (N=8 이면 40)",
         predicate=_condition_only_no_category_query,
         not_comparable_with=(
             "baselines/fast-2026-08-04 (이 축이 존재하지 않던 런)",
             "baselines/fast-2026-08-05-84 (이 축이 존재하지 않던 런)",
             "baselines/fast-2026-08-05-300-screen (이 축이 존재하지 않던 런)",
+        ),
+    ),
+    # [#443] 상품군 명시 첫 턴 축 — 이 이슈의 confirmatory-primary(evals/README.md 규약 5,
+    # 사전 등록) 지표다. 커밋된 기준선 어디에도 존재하지 않는 신규 축이라 v6 이하 표와 직접
+    # 비교하지 않는다.
+    AxisSpec(
+        axis_id="namedCategoryHasLeg",
+        title="상품군 명시 첫 턴 leg 산출 (confirmatory-primary)",
+        numerator="categoryLegs(leg 원문 직렬화)가 빈 문자열이 **아닌** 표본 수 — decompose 가 이 "
+        "발화에서 categoryQueries leg 을 1개 이상 못박은 경우. [#465] 반대 방향 축 "
+        "conditionOnlyNoCategoryQuery(조건 전용 턴은 leg 이 0개여야 정답)와 정확히 거울이다 — "
+        "같은 필드의 양쪽 끝이라 한쪽만 보고 채택 판정을 내리지 않는다",
+        denominator="상품군 명시 6발화 × none 컨텍스트 × N (N=8 이면 48)",
+        predicate=_named_category_has_leg,
+        not_comparable_with=(
+            "baselines/fast-2026-08-04 (이 축이 존재하지 않던 런)",
+            "baselines/fast-2026-08-05-84 (이 축이 존재하지 않던 런)",
+            "baselines/fast-2026-08-05-300-screen (이 축이 존재하지 않던 런)",
+            "baselines/fast-2026-08-07-430-* (이 축이 존재하지 않던 런)",
+            "baselines/fast-2026-08-07-430-v6-* (이 축이 존재하지 않던 런)",
         ),
     ),
     # [#386] 찜 목록 조회 축. `wishlist_view` intent 를 신설하면서 "보여줘" 계열이
@@ -552,13 +599,20 @@ def diagnostics(results: list[CellResult], anchors: AnchorSet) -> dict[str, Any]
     - `categoryClearOnRefineCount` (#84) — 리파인 발화가 `clear` 로 확정됐다. 이 변경이 만들 수
       있는 **유일한 새 회귀 모양**(리파인 턴의 카테고리가 풀림)이라 정확도와 따로 센다
       (lessons 「정확도 지표만 보지 말고 실패의 모양을 갈라 센다」).
+    - `namedCategoryEmptyLegsCount` (#443) — 상품군 명시 첫 턴에서 leg 이 0개(`namedCategoryHasLeg`
+      의 미충족 표본 수와 같다). 요인 분리의 계측기 — case 분포·상황 선행/후행 등과 교차 집계하는
+      출발점이다(#443 「할 일」 1번).
+    - `namedCategoryCase3Count` (#443) — 상품군 명시 첫 턴에서 산출 `case == 3`(상황·목적만 있고
+      무엇을 살지는 말하지 않음)으로 나온 표본 수. #443 「할 일」 2번이 가르라고 한 요인 중
+      "case=3 오분류가 공백을 유발하는가" 축의 계측기다.
 
     카테고리 카운터 둘(`categoryScopeUnresolvedCount`·`categoryClearOnRefineCount`)은
     `category_action` 그룹 표본만 본다 — `reaskProductEchoCount` 가 전환 셀만 보는 것과 같은
     규약이다. 다른 그룹(장바구니·general)은 승계 가드에 닿지도 않아 섞으면 분모가 뜻을 잃는다.
 
     [#300] screen 카운터 셋(`screenPromptLayerHitCount`·`screenResolverOverrideCount`·
-    `screenOutOfListConfirmCount`)도 같은 규약으로 `screen` 그룹 표본만 본다.
+    `screenOutOfListConfirmCount`)도 같은 규약으로 `screen` 그룹 표본만 본다. [#443]
+    `namedCategoryEmptyLegsCount`·`namedCategoryCase3Count` 도 `named_category` 그룹 표본만 본다.
     """
     echo = 0
     nulls = 0
@@ -567,8 +621,17 @@ def diagnostics(results: list[CellResult], anchors: AnchorSet) -> dict[str, Any]
     screen_prompt_layer_hit = 0
     screen_resolver_override = 0
     screen_out_of_list_confirm = 0
+    named_category_empty_legs = 0
+    named_category_case3 = 0
     by_id = _utterances_by_id(anchors)
     for result in results:
+        if result.group == NAMED_CATEGORY_GROUP:
+            for sample in result.samples:
+                if sample.category_legs == "":
+                    named_category_empty_legs += 1
+                if sample.case == 3:
+                    named_category_case3 += 1
+            continue
         if result.group == CATEGORY_ACTION_GROUP:
             utterance = by_id.get(result.utterance_id)
             expected = utterance.expected.category_action if utterance else None
@@ -619,6 +682,8 @@ def diagnostics(results: list[CellResult], anchors: AnchorSet) -> dict[str, Any]
         "screenPromptLayerHitCount": screen_prompt_layer_hit,
         "screenResolverOverrideCount": screen_resolver_override,
         "screenOutOfListConfirmCount": screen_out_of_list_confirm,
+        "namedCategoryEmptyLegsCount": named_category_empty_legs,
+        "namedCategoryCase3Count": named_category_case3,
         "definition": {
             "reaskProductEchoCount": "전환 셀에서 cart.productId 가 되물음 상품과 같은 표본 수 "
             "— 사용자가 고르지 않은 옵션으로 옛 상품이 담기는 위험한 실패",
@@ -634,6 +699,12 @@ def diagnostics(results: list[CellResult], anchors: AnchorSet) -> dict[str, Any]
             "를 확정한 표본 수(None 강제 되물음도 포함)",
             "screenOutOfListConfirmCount": "최종 productId 가 None 도 아니고 두 목록(screen ∪ "
             "screenLastRecommendations) 안에도 없는 표본 수 — 위험한 실패, 0 이어야 한다",
+            "namedCategoryEmptyLegsCount": "상품군 명시 첫 턴에서 categoryLegs 가 빈 문자열인 "
+            "표본 수(namedCategoryHasLeg 의 미충족 표본 수와 같다) — #443 이 재는 공백률의 요인 "
+            "분리(상황 선행/후행·추상도·수식어)를 samples.csv 재집계로 지탱하는 계측기",
+            "namedCategoryCase3Count": "상품군 명시 첫 턴에서 산출 case 가 3(상황·목적만 있고 "
+            "무엇을 살지는 말하지 않음)으로 나온 표본 수 — #443 이 가르라고 한 공백 유발 요인 중 "
+            "'case 오분류' 축의 계측기",
         },
     }
 

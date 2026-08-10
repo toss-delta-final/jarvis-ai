@@ -43,13 +43,15 @@ uv run python -m evals.intent_probe --out artifacts/no-scope --no-classifier
 uv run python -m evals.intent_probe --dump-prompt system.txt
 ```
 
-기본 규모: 79셀 × N=8 = 632콜(decompose) **+ 120콜**(카테고리 15셀 × N — 범위 해제 분류기)
-= **752콜**, 45rpm 페이서라 런당 약 17~19분.
-`fast`(gpt-5-nano) 기준 런당 대략 USD 0.11 — 2026-08-04 실측($0.086 / 1.27M tokens, 424콜)을
+기본 규모: 91셀 × N=8 = 728콜(decompose) **+ 120콜**(카테고리 15셀 × N — 범위 해제 분류기)
+= **848콜**, 45rpm 페이서라 런당 약 19~21분.
+`fast`(gpt-5-nano) 기준 런당 대략 USD 0.12 — 2026-08-04 실측($0.086 / 1.27M tokens, 424콜)을
 콜 수 비례로 환산한 추정이다(#84 이 카테고리 11셀을 더해 424 → 512, #300 이 screen 6셀을 더해
-512 → 592, #344 라운드 2 가 조건 전용 5셀을 더해 592 → 632). 분류기 88콜은 프롬프트가 짧고
-(`max_tokens=32`) 콜당 ≈0.35k 라 비용·TPM 영향이 작지만 **페이서는 지나므로**(rpm 예산에 포함)
-위 소요 추정에는 넣었다. **screen 6셀·조건 전용 5셀은 분류기를 태우지 않는다** — 둘 다
+512 → 592, #344 라운드 2 가 조건 전용 5셀을 더해 592 → 632, **#386 이 찜 조회 6셀을 더해
+632 → 680**[이 문단이 그 갱신을 놓치고 있었다 — 이번에 바로잡는다], **#443 이 상품군 명시
+6셀을 더해 680 → 728**). 분류기 88콜은 프롬프트가 짧고(`max_tokens=32`) 콜당 ≈0.35k 라
+비용·TPM 영향이 작지만 **페이서는 지나므로**(rpm 예산에 포함) 위 소요 추정에는 넣었다.
+**screen 6셀·조건 전용 5셀·찜 조회 6셀·상품군 명시 6셀은 분류기를 태우지 않는다** — 전부
 `priorFilters` 에 `category` 가 없어 게이트(`prior_category` 가 있어야 호출)가 열리지 않는다
 (D-6 실측 확인, `baselines/fast-2026-08-05-300-screen/`).
 
@@ -158,10 +160,13 @@ before `11c6fe3bfa0c` 2런 vs after `81e3770e1340` 3런. **깎인 독립 축은 
 
 `fixtures/anchors_b.json`(기본) / `fixtures/anchors_a.json`. 스크립트는 이 파일만 읽는다.
 
-- 발화 51개 — 장바구니 대조군 6 · 지시대명사 4 · 옵션 답변 4 · 전환 7 · order_status 2 · general 2
+- 발화 63개 — 장바구니 대조군 6 · 지시대명사 4 · 옵션 답변 4 · 전환 7 · order_status 2 · general 2
   · **카테고리 승계 15**(리파인 4 · 리셋 4 · 교체 3 · **혼합 4**, #84) · **screen 지시어 해소 6**
   (확정 4 · 되물음 1 · 확정금지 1, #300 — #118 이관) · **조건 전용 5**(#344 라운드 2 — 카테고리
-  어휘 없이 조건만 말하는 턴이 `categoryQueries` 를 비우는지)
+  어휘 없이 조건만 말하는 턴이 `categoryQueries` 를 비우는지) · **찜 목록 조회 6**(양성 3 · 음성
+  대조 3, #386) · **상품군 명시 6**(대조군 1 · 상황 선행 1 · 상황 후행 1 · 추상도 1 · 일반화 1 ·
+  수식어 1, #443 — 조건 전용의 반대 방향)[이 목록이 #386 을 51 → 57 로 반영하지 못한 채였다 —
+  이번에 57 → 63 과 함께 바로잡는다]
 - 컨텍스트 9종 — `none` / `lastRecommendations` / `pendingCart` / `categoryPrior` /
   **`screenSingle`/`screenTriple`/`screenFive`/`screenNine`/`screenNamed`**(#300)
 - **group → 허용 컨텍스트 매핑(#313)** — 어떤 group 이 어떤 컨텍스트를 선언할 수 있는지는
@@ -173,6 +178,8 @@ before `11c6fe3bfa0c` 2런 vs after `81e3770e1340` 3런. **깎인 독립 축은 
   | `category_action` | `categoryPrior` 만 |
   | `screen` | screen 컨텍스트(`screenSingle`/`screenTriple`/`screenFive`/`screenNine`/`screenNamed`) 중 1개 |
   | `condition_only` | `none` 만(#344 라운드 2·3) |
+  | `wishlist_view` | `none` 만(#386) |
+  | `named_category` | `none` 만(#443 — `condition_only` 와 같은 이유: 무프라이어 첫 턴만 잰다) |
   | `cart_control` · `demonstrative` · `order_status` · `general` | `none` / `lastRecommendations` / `pendingCart` — 특수 컨텍스트 선언 불가 |
 
   다음 사람이 컨텍스트를 추가할 때 **이 매핑에 한 줄을 넣지 않으면 아무 발화도 그것을 못 쓴다**
@@ -221,6 +228,7 @@ before `11c6fe3bfa0c` 2런 vs after `81e3770e1340` 3런. **깎인 독립 축은 
 | `screenNoHallucination` | 최종 productId != expected.forbiddenProductId | 1×1×8 = 8 |
 | `screenResolution` | 위 셋의 합(각 셀은 자신의 규칙으로만 채점) | 6×1×8 = 48 |
 | `conditionOnlyNoCategoryQuery` | 조건 전용 발화("평점 좋은 걸로 보여줘" 등)에서 `categoryQueries`(leg)가 하나도 없음(#344 라운드 2) | 5×1×8 = 40 |
+| `namedCategoryHasLeg` | 상품군 명시 첫 턴("과일 추천해줘" 등)에서 `categoryQueries`(leg)가 1개 이상 있음 — `conditionOnlyNoCategoryQuery` 의 거울(#443, confirmatory-primary) | 6×1×8 = 48 |
 
 **혼합 발화 축(`categoryMixedReplace`)을 `categoryReplace` 와 섞지 않는다**(라운드 3). 새 카테고리를
 지목하면서 동시에 "아무거나"류 표현을 쓰는 발화는 초판 판정 순서에서 사용자가 말한 카테고리가
@@ -273,15 +281,19 @@ before `11c6fe3bfa0c` 2런 vs after `81e3770e1340` 3런. **깎인 독립 축은 
 "되물음 상품이 아닌 상품" 이었다 — **두 표의 숫자를 직접 비교하면 안 된다.** 축마다
 `notComparableWith` 를 달아 산출물에도 그 경고가 실린다.
 
-진단 카운터 7개(합불 아님): `reaskProductEchoCount`(되물음 상품을 그대로 담음 — 사용자가 고르지
+진단 카운터 9개(합불 아님): `reaskProductEchoCount`(되물음 상품을 그대로 담음 — 사용자가 고르지
 않은 옵션으로 옛 상품이 담기는 **위험한 실패**), `productIdNullCount`(못 고르고 null — 되물음이
 유지되는 **안전한 퇴화**), #84 의 둘 — `categoryScopeUnresolvedCount`(전용 분류기가
 판정하지 못한 표본 = 분류기의 침묵률. 3분기 축을 신뢰할 수 있는지의 근거다),
 `categoryClearOnRefineCount`(리파인 발화가 `clear` 로 확정됐다 — 이 변경이 만들 수 있는 **유일한
-새 회귀 모양**이라 정확도와 따로 센다), 그리고 #300 의 셋 — `screenPromptLayerHitCount`·
-`screenResolverOverrideCount`·`screenOutOfListConfirmCount`(아래 「screen 지시어 해소」 절).
-카테고리 둘은 카테고리 셀만, screen 셋은 screen 셀만 본다(전환 카운터가 전환 셀만 보는 것과 같은
-규약 — 다른 그룹은 그 가드에 닿지도 않는다).
+새 회귀 모양**이라 정확도와 따로 센다), #300 의 셋 — `screenPromptLayerHitCount`·
+`screenResolverOverrideCount`·`screenOutOfListConfirmCount`(아래 「screen 지시어 해소」 절), 그리고
+#443 의 둘 — `namedCategoryEmptyLegsCount`(상품군 명시 첫 턴에서 leg 이 0개인 표본 수 —
+`namedCategoryHasLeg` 의 미충족 표본 수와 같다)·`namedCategoryCase3Count`(같은 셀에서 산출
+`case` 가 3 으로 나온 표본 수 — 공백률과 case 오분류의 상관을 재는 계측기, 아래 「상품군 명시 첫
+턴」 절).
+카테고리 둘은 카테고리 셀만, screen 셋은 screen 셀만, 상품군 명시 둘은 named_category 셀만
+본다(전환 카운터가 전환 셀만 보는 것과 같은 규약 — 다른 그룹은 그 가드에 닿지도 않는다).
 
 ## 조건 전용 발화 categoryQueries 비움(#344 라운드 2)
 
@@ -296,6 +308,31 @@ before `11c6fe3bfa0c` 2런 vs after `81e3770e1340` 3런. **깎인 독립 축은 
 **이 셀은 100% 통과를 만들려고 프롬프트를 고치는 것이 목적이 아니다** — 지금 현실(오케스트레이터
 실측, 2026-08-06, category_probe none 슬라이스 40표본: 10건 누출, ~25%)을 회귀 없이 기록하는
 것이 목적이다. 프롬프트 수정은 이 축의 범위 밖(별도 이슈)이다.
+
+## 상품군 명시 첫 턴 leg 산출(#443) — 위 축의 반대 방향(#465)
+
+상품군을 **명시한** 첫 턴("나 아기 키우는데 과일 추천해줘")에서 `decompose` 가 `categoryQueries`
+leg 을 하나도 못박지 못하면, 파라미터 0개 payload 로 떨어져 `#217` 전개 → `#222` 확장 폴백이라는
+불필요한 LLM 호출 1회 + fan-out 검색 N건이 붙는다 — 운영 실측(2026-08-07)에서 같은 발화가 회차마다
+`categoryQueries: ["과일"]`(검색 1건)/`categoryQueries: []`(검색 4~8건·지연 14.52s) 두 갈래로 갈렸다
+(이슈 본문). `namedCategoryHasLeg` 축이 이 불변식("leg 이 1개 이상 나와야 한다")을 decompose 계약
+단계에서 고정한다.
+
+**이 축은 `conditionOnlyNoCategoryQuery` 와 정확히 거울이다** — 같은 필드(`categoryQueries`)의
+양쪽 끝을 잰다: 조건만 말한 턴은 leg 이 **0개**여야 정답이고, 상품군을 명시한 턴은 leg 이 **1개
+이상**이어야 정답이다. `#443`(안 채움)과 `#465`(지어냄)은 반대 방향 결함이라 **한쪽만 보고
+프롬프트를 고치면 다른 쪽이 나빠질 수 있다** — 채택 판정은 두 축을 같은 표에서 함께 읽는다.
+
+앵커 6발화는 **요인 분리 설계**다(상황 설명 없음의 대조군 · 운영 실측 발화(상황 선행) · 상황 후행
+· 구체 상품명(추상도) · 다른 상황·다른 상품군(일반화) · 가격·평가 수식어). 각 발화의 `note` 에
+어느 요인을 잡는지 적혀 있다. `samples.csv` 에 산출 `case` 와 leg 원문(`categoryLegs`)이 남으므로
+런을 다시 돌리지 않고 "공백률 × case 분포" 상관을 재집계할 수 있다.
+
+⚠️ **`named-category-006`(수식어 셀)은 001~005 와 성격이 다르다.** 상품명(`텀블러`)·상황 어휘는
+`_SYSTEM` 과 겹치지 않지만, 수식어 `가성비` 자체는 `_SYSTEM` 의 categoryQueries 불릿 수식어 제거
+규칙(`"가격·평가 수식어(\"갓성비\", \"가성비\", \"저렴한\")와 상황 설명 ... 은 빼세요"`)에 문면으로
+등장한다 — 이 셀이 만점이어도 그것은 **일반화의 증거가 아니라 명시된 규칙이 지켜지는가의
+증거**다(`legs_probe` 의 `promptExample` 규약과 같은 이유).
 
 ## screen 지시어 해소(#118 이관, #300)
 
