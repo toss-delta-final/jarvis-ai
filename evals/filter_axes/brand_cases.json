@@ -1,0 +1,33 @@
+{
+  "schemaVersion": "1.0.0",
+  "datasetVersion": "fax-brand-1.0.0",
+  "note": "브랜드 추출 축 앵커 (#466). 스크립트(brand_probe.py)는 이 파일만 읽는다(evals/README.md 규약7). positive 의 brand 는 발화에 등장하는 표기 그대로여야 한다 — verbatim 판정의 기준값이다.",
+  "positives": [
+    {"caseId": "fax-brand-p01", "brand": "삼성", "utterance": "삼성 제품 아무거나", "sourceCaseId": "buy-under-0005", "note": "underspecified_probe 앵커 승계 — #466 실측에서 오탐이 가장 많이 쏠린 발화."},
+    {"caseId": "fax-brand-p02", "brand": "삼성", "utterance": "삼성 거 뭐 있어?"},
+    {"caseId": "fax-brand-p03", "brand": "LG", "utterance": "LG 제품 아무거나"},
+    {"caseId": "fax-brand-p04", "brand": "LG", "utterance": "LG 거 뭐 있어?", "note": "under-wa-0002('LG 가전 아무거나 있어?')와 같은 축 — 영문 표기 브랜드."},
+    {"caseId": "fax-brand-p05", "brand": "애플", "utterance": "애플 제품 아무거나", "note": "번안 결함의 대표 표본 — before 에서 4/4 가 'Apple' 로 나갔다."},
+    {"caseId": "fax-brand-p06", "brand": "애플", "utterance": "애플 거 뭐 있어?"},
+    {"caseId": "fax-brand-p07", "brand": "나이키", "utterance": "나이키 제품 아무거나"},
+    {"caseId": "fax-brand-p08", "brand": "나이키", "utterance": "나이키 거 뭐 있어?"},
+    {"caseId": "fax-brand-p09", "brand": "아디다스", "utterance": "아디다스 제품 아무거나"},
+    {"caseId": "fax-brand-p10", "brand": "아디다스", "utterance": "아디다스 거 뭐 있어?"},
+    {"caseId": "fax-brand-p11", "brand": "다이슨", "utterance": "다이슨 제품 아무거나", "note": "before 0/6 — 추출 자체가 안 되던 브랜드."},
+    {"caseId": "fax-brand-p12", "brand": "다이슨", "utterance": "다이슨 거 뭐 있어?"},
+    {"caseId": "fax-brand-p13", "brand": "설화수", "utterance": "설화수 제품 아무거나", "note": "중견 국내 브랜드 — after 에도 가장 약한 축."},
+    {"caseId": "fax-brand-p14", "brand": "설화수", "utterance": "설화수 거 뭐 있어?"},
+    {"caseId": "fax-brand-p15", "brand": "크록스", "utterance": "크록스 제품 아무거나", "note": "before 에서 'Crocs' 로 번안됐다."},
+    {"caseId": "fax-brand-p16", "brand": "크록스", "utterance": "크록스 거 뭐 있어?"},
+    {"caseId": "fax-brand-p17", "brand": "동국제약", "utterance": "동국제약 제품 아무거나", "note": "before 0/6."},
+    {"caseId": "fax-brand-p18", "brand": "동국제약", "utterance": "동국제약 거 뭐 있어?"},
+    {"caseId": "fax-brand-p19", "brand": "락앤락", "utterance": "락앤락 제품 아무거나", "note": "before 0/6."},
+    {"caseId": "fax-brand-p20", "brand": "락앤락", "utterance": "락앤락 거 뭐 있어?"}
+  ],
+  "negatives": [
+    {"caseId": "fax-brand-n01", "utterance": "이어폰 추천해줘", "note": "상품명만 — 브랜드로 승격되면 안 된다."},
+    {"caseId": "fax-brand-n02", "utterance": "5만원 이하 아무거나 추천해줘", "note": "제약-축만."},
+    {"caseId": "fax-brand-n03", "utterance": "집들이 선물 추천해줘", "note": "상황·목적만(case 3)."},
+    {"caseId": "fax-brand-n04", "utterance": "평점 높은 거 보여줘", "note": "차단-축(ratingMin)만."}
+  ]
+}
