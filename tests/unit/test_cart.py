@@ -1323,7 +1323,7 @@ async def test_get_cart_non_string_scalar_purchase_state_degrades(
     assert view.items[0].purchase_state is None
 
 
-# ─────────── spring_client 배선 (I-24 삭제, 이슈 #116, 🔶 초안) ───────────
+# ─────────── spring_client 배선 (I-24 삭제, 이슈 #116, 확정 2026-08-05) ───────────
 
 
 async def test_delete_cart_item_success_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1451,7 +1451,7 @@ async def test_delete_cart_item_rejects_two_identity_queries() -> None:
         await sc.delete_cart_item(55, user_id=1, guest_id="guest-uuid-1")
 
 
-# ─────────── spring_client 배선 (I-26/I-27/I-28 찜, 이슈 #117, 🔶 초안) 은 tests/unit/test_wishlist.py ───────────
+# ─────────── spring_client 배선 (I-26/I-27/I-28 찜, 이슈 #117, 확정 2026-08-05) 은 tests/unit/test_wishlist.py ───────────
 
 
 # ─────────── 리뷰 수정 회귀 (Fix 1~4) ───────────

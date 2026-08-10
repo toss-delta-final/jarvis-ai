@@ -1,12 +1,14 @@
 """#395 — I-1 응답 다이어트(협의 2·1) 회귀 — 계약 무변경, 방어적.
 
 `docs/specs/PROPOSAL-I1-DIET-395.md` 가 BE 에 요청하는 필드 제외를 지금 파서(`spring_client.
-_parse_search_response`)와 사후필터(`search_service`)가 이미 견딘다는 것을 고정한다. BE 가 아직
-아무것도 바꾸지 않았어도 통과해야 한다 — "지금도 안전하다"가 제안서 §7 의 근거다.
+_parse_search_response`)와 사후필터(`search_service`)가 이미 견딘다는 것을 고정한다. **BE 배포
+(2026-08-08) 전에도 통과했고, 배포 후 실 응답 형태(2026-08-10 운영 실측)도 그대로 통과한다** —
+방어적 성격은 그대로 유지한다(BE 가 이 필드들을 다시 보내도 깨지지 않는다).
 
 6번은 버그 고정이 아니라 **"그래서 `totalCount` 가 필요하다"는 §4 주장의 근거를 코드로 고정**하는
 것이다 — `ProductSearchResult.total_count` 가 실제 매칭 전체 수가 아니라 **받은 개수**를 따라가는
-현재 동작을 실증한다(BE 가 `size` 상한을 도입하면 이 값은 "전체 매칭 수"가 아니게 된다).
+현재 동작을 실증한다(`size` 상한은 #395, 2026-08-07 로 재도입 폐지가 확정됐다 — 이 값은 그
+폐지 판단의 근거로 남는다).
 """
 
 from __future__ import annotations
@@ -163,10 +165,11 @@ def test_truncated_response_parses_and_total_count_follows_received_count() -> N
     """[§4 근거 고정] `size` 상한으로 절단된 응답도 정상 파싱되고, `total_count` 는
     **받은 개수**를 따라간다 — 매칭 전체 수가 아니다.
 
-    이 테스트는 버그 재현이 아니다. BE 가 `size` 상한을 도입하면(§4) `total_count` 가
-    "전체 매칭 수"라는 암묵적 전제가 깨진다는 것을 코드로 고정해, `totalCount` 필드 동반이
-    §4 협의의 필수 조건임을 보인다(추천 그래프의 0건 판정·자동완화·완화칩 estCount 가 이 값을
-    소비한다 — `app/agents/buyer/recommendation/graph.py`).
+    이 테스트는 버그 재현이 아니다. `total_count` 가 "전체 매칭 수"가 아니라 **받은 개수**를
+    따라간다는 사실은 그대로이고, 그래서 이 값은 `size` 상한을 **다시 도입하려면 `totalCount`
+    가 반드시 동반돼야 한다는 폐지 판단(#395, 2026-08-07 확정 — `docs/api-spec.md` §4.6 요청
+    표 `size` 노트)의 근거로 남는다**(추천 그래프의 0건 판정·자동완화·완화칩 estCount 가 이
+    값을 소비한다 — `app/agents/buyer/recommendation/graph.py`).
     """
     full_items = [{**_CONSUMED_BASE, "productId": i} for i in range(1, 11)]  # 실제 매칭 10건
 
@@ -180,3 +183,62 @@ def test_truncated_response_parses_and_total_count_follows_received_count() -> N
 
     assert truncated.total_count == 3  # 매칭 전체(10)가 아니라 받은 개수(3)를 따라간다
     assert len(truncated.products) == 3
+
+
+def test_live_deployed_item_shape_2026_08_10_parses_and_consumes() -> None:
+    """[§11] 2026-08-10 운영 실측(6,128건 전건 4키 부재) 응답 형태를 고정한다.
+
+    실제 운영이 보내는 최상위 11개 키 전부(productId·name·summary·attributes·categoryName·
+    brandName·price·rating·reviewCount·options·optionCount)와, attributes 실측 상위 축
+    (브랜드·제조국·색상·사이즈·소재)만 담은 항목이 파싱되는지, 4키(`_extra`·`_source_pid`·
+    `_domain`·`_category`)가 실제로 없는지, 그리고 파싱 후 소비 경로(명시 속성 하드매칭·
+    평점 하한 사후필터)가 살아 있는지(불일치 조건이 실제로 탈락하는지까지)를 함께 고정한다.
+    """
+
+    def _live_item(pid: int, *, material: str, rating: float) -> dict:
+        return {
+            "productId": pid,
+            "name": f"상품{pid}",
+            "summary": "운영 실측 요약",
+            "attributes": {
+                "브랜드": "브랜드A",
+                "제조국": "대한민국",
+                "색상": "네이비",
+                "사이즈": "M",
+                "소재": material,
+            },
+            "categoryName": "패션의류 > 티셔츠",
+            "brandName": "브랜드A",
+            "price": 29000,
+            "rating": rating,
+            "reviewCount": 5,
+            "options": ["화이트/M", "블랙/M"],
+            "optionCount": 2,
+        }
+
+    items = [
+        _live_item(1, material="린넨", rating=4.5),  # 소재 일치 + 평점 통과 → 잔존
+        _live_item(2, material="폴리에스터", rating=4.8),  # 소재 불일치 → 탈락
+        _live_item(3, material="린넨", rating=3.0),  # 평점 미달 → 탈락
+    ]
+    result = spring_client._parse_search_response(_envelope(items))
+    assert len(result.products) == 3
+
+    for product in result.products:
+        attrs = product.attributes or {}
+        for key in ("_extra", "_source_pid", "_domain", "_category"):
+            assert key not in attrs
+
+    matched, mismatched, _ = result.products
+    # 소비처 1: search_service._matches_attr_conditions — 일치·불일치 양쪽 판정이 실제로 갈린다.
+    assert search_service._matches_attr_conditions(matched, {"소재": "린넨"})
+    assert not search_service._matches_attr_conditions(mismatched, {"소재": "린넨"})
+
+    # 소비처 2: apply_ai_side_filters — 평점 하한 경로까지 함께 태운다.
+    filters = ProductSearchFilters(
+        keyword="티셔츠", rating_min=4.0, attr_conditions={"소재": "린넨"}
+    )
+    filtered_ids = {
+        p.product_id for p in search_service.apply_ai_side_filters(result.products, filters)
+    }
+    assert filtered_ids == {1}  # 2=소재 불일치, 3=평점 미달

@@ -1153,6 +1153,50 @@
       },
       "axes": ["wishlistViewNoSteal", "wishlistViewRouting"],
       "note": "[#386] 음성 대조 — \"찜한\"은 지시 대상을 수식할 뿐이고 이 발화의 동사는 담기다. config.wishlist_reference_markers 와 decompose 판정 사다리 1)이 이미 세운 규약이라, 찜 조회 규칙을 더한 뒤에도 그대로여야 한다(강한 신호 우선)."
+    },
+    {
+      "utteranceId": "wishlist-remove-001",
+      "group": "wishlist_remove",
+      "text": "찜한 거 빼줘",
+      "contexts": ["none"],
+      "expected": {
+        "intent": "wishlist_remove"
+      },
+      "axes": ["wishlistRemovePositive", "wishlistRemoveRouting"],
+      "note": "[#440] 이슈 본문 재현 케이스. 사다리 1-1) \"찜 빼줘\"·\"찜 해제해줘\" → wishlist_remove 는 #116/#117(3eb505c, 2026-08-05)이 이슈 #440 등록 이전에 이미 넣었다 — 그래서 #440 은 프롬프트를 고치지 않았다. 무수정 프롬프트 실측에서 양성 2셀이 8/8 이라 문면 수정의 상한 이득이 0 이고, 넓히면 wishlist-remove-003(\"찜닭 빼줘\")의 거짓양성을 악화시킨다. 결정론 계층(intent_guard 인접 결합 + wishlist 해소 근거 게이트)이 프롬프트 판정과 무관하게 올바른 동작을 보장한다."
+    },
+    {
+      "utteranceId": "wishlist-remove-002",
+      "group": "wishlist_remove",
+      "text": "찜해둔 거 지워줘",
+      "contexts": ["none"],
+      "expected": {
+        "intent": "wishlist_remove"
+      },
+      "axes": ["wishlistRemovePositive", "wishlistRemoveRouting"],
+      "note": "[#440] 같은 부류 변형. 사다리 1-1)이 #116/#117 때 이미 넣은 규칙이라 #440 은 프롬프트를 고치지 않았다(wishlist-remove-001 note 참조 — 무수정 실측 8/8, 문면 수정의 상한 이득이 0). 결정론 계층(intent_guard 인접 결합 + wishlist 해소 근거 게이트)이 프롬프트 판정과 무관하게 올바른 동작을 보장한다."
+    },
+    {
+      "utteranceId": "wishlist-remove-003",
+      "group": "wishlist_remove",
+      "text": "찜닭 빼줘",
+      "contexts": ["none"],
+      "expected": {
+        "intent": "cart_remove"
+      },
+      "axes": ["wishlistRemoveNoSteal", "wishlistRemoveRouting"],
+      "note": "[#440] 거짓양성 대조(음식명) — \"찜닭\"의 \"찜\"이 어절 경계를 통과하지 못해 인접 결합이 걸리지 않는다. 프롬프트 계층은 이 발화를 여전히 wishlist_remove 로 보낸다(0/8 오답) — 이 셀의 목적은 그 불일치를 기록하는 것이다. 결정론 계층이 (a) 찜 삭제를 막고 (b) wishlist_remove → cart_remove 역방향 정정(#440 후속)으로 장바구니 삭제까지 이어준다."
+    },
+    {
+      "utteranceId": "wishlist-remove-004",
+      "group": "wishlist_remove",
+      "text": "장바구니에서 빼줘",
+      "contexts": ["none"],
+      "expected": {
+        "intent": "cart_remove"
+      },
+      "axes": ["wishlistRemoveNoSteal", "wishlistRemoveRouting"],
+      "note": "[#440] 잠식 대조 — 새 인접 결합 규칙이 cart_remove(\"장바구니에서 빼줘\")를 잠식하지 않는지 잰다. 사다리 1-1)이 #116/#117 때 이미 넣은 규칙이라 #440 은 프롬프트를 고치지 않았다(wishlist-remove-001 note 참조). 결정론 계층(intent_guard 인접 결합 + wishlist 해소 근거 게이트)이 프롬프트 판정과 무관하게 올바른 동작을 보장한다. wishlist-remove-005(\"찜한 거 담아줘\")는 wishlist-view-006 과 발화가 겹쳐 중복 셀을 만들지 않고 이 축에서 뺐다 — 기존 셀이 이미 재고 있다."
     }
   ]
 }
