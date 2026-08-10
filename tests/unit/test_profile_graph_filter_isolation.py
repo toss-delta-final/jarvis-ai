@@ -89,6 +89,10 @@ _GRAPH_MODULE_PATHS = sorted(
 # (`spring_client.search_filter_axes` 가 payload 축의 단일 출처인 것과 같은 규약).
 _FILTER_AXES = set(ProductSearchFilters.model_fields)
 
+# 필터 타입이 사는 모듈. 이 하나만 금지한다 — 상위 패키지로 넓히면 투영 계층이 쓰는
+# `app.schemas.profile_graph` 가 함께 걸린다.
+_FILTER_MODULE = ProductSearchFilters.__module__
+
 # 필터 모양 판정 임계. 1 로 두면 `limit`·`category` 같은 흔한 이름 하나로 오탐이 난다.
 _FILTER_SHAPE_MIN_OVERLAP = 2
 
@@ -113,6 +117,47 @@ def _public_functions(tree: ast.Module) -> list[ast.FunctionDef | ast.AsyncFunct
     ]
 
 
+def _import_targets(tree: ast.Module, module_name: str) -> set[str]:
+    """이 모듈이 끌어들이는 대상의 **완전한 점 표기 경로**를 전부 낸다.
+
+    `node.module` 문자열을 그대로 대조하면 같은 물건을 가리키는 다른 표기를 놓친다 —
+    `from app.schemas import spring`(`node.module` 이 `"app.schemas"`)나 상대 import
+    (`from ..schemas.spring import X`)가 그렇다. 그래서 `module` 과 `alias` 를 이어 붙인
+    **대상 경로**를 만들어 대조한다. 상대 경로는 파일 위치로 절대 경로를 복원한다.
+    """
+    package = module_name.rsplit(".", 1)[0]
+    targets: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            targets.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                parts = package.split(".")
+                base = ".".join(parts[: len(parts) - (node.level - 1)])
+                if node.module:
+                    base = f"{base}.{node.module}"
+            else:
+                base = node.module or ""
+            targets.add(base)
+            targets.update(f"{base}.{alias.name}" if base else alias.name for alias in node.names)
+    return targets
+
+
+def _references_filter_type(tree: ast.Module) -> bool:
+    """`ProductSearchFilters` 라는 이름을 **어떤 형태로든** 만지는가.
+
+    import 경로 대조만으로는 반환형에도 안 드러나고 파라미터·내부 변수로만 쓰이는 경로가 남는다
+    (`from app import schemas` 후 `schemas.spring.ProductSearchFilters` 같은 표기). 식별자
+    자체를 보면 import 표기와 무관하게 잡힌다. AST 라 주석·문자열은 세지 않는다 — docstring 에서
+    이 타입을 **언급**하는 것은 위반이 아니라 설명이다.
+    """
+    return any(
+        (isinstance(node, ast.Name) and node.id == "ProductSearchFilters")
+        or (isinstance(node, ast.Attribute) and node.attr == "ProductSearchFilters")
+        for node in ast.walk(tree)
+    )
+
+
 def _field_names(obj: type) -> set[str]:
     """필터 모양 판정을 위한 필드명 집합 — BaseModel · dataclass · TypedDict 를 모두 본다."""
     if isinstance(obj, type) and issubclass(obj, BaseModel):
@@ -127,29 +172,87 @@ def _field_names(obj: type) -> set[str]:
 # ─────────── 정적 — REQ-PGRAPH-110 ───────────
 
 
-def test_graph_modules_do_not_import_the_search_filter_type() -> None:
+def test_graph_modules_do_not_reach_the_search_filter_type() -> None:
     """그래프 모듈은 검색 필터 타입을 **알지 못한다** (REQ-PGRAPH-110).
 
     함수 안 지연 import 도 `ast.walk` 가 잡는다. **`app.schemas` 전체를 금지하지는 않는다** —
     투영 계층(`graph_projection`)이 와이어 모델 `app.schemas.profile_graph` 를 정당하게 쓴다.
-    금지 대상은 필터 타입이 사는 모듈 하나다.
+    금지 대상은 필터 타입이 사는 모듈 하나이고, 접두 매칭(`"app.schemas" in ...`)으로 넓히면
+    그 정당한 import 가 즉시 오탐이 된다.
+
+    두 각도로 본다 — **경로**(`_import_targets`)와 **식별자**(`_references_filter_type`).
+    경로만 보면 `from app import schemas` 후 `schemas.spring.X` 같은 표기를 놓치고, 식별자만
+    보면 모듈을 통째로 끌어와 다른 이름으로 쓰는 경로를 놓친다. 둘을 겹쳐야 "어떤 표기로도
+    닿지 못한다"가 된다(PR #565 리뷰).
     """
     assert len(_GRAPH_MODULE_PATHS) >= _MIN_GRAPH_MODULES, "검사 대상 모듈이 사라졌다 — glob 확인"
     offenders: list[str] = []
     for path in _GRAPH_MODULE_PATHS:
-        for node in ast.walk(_parse(path)):
-            if isinstance(node, ast.ImportFrom) and node.module == "app.schemas.spring":
-                offenders.append(f"{_module_name(path)}: from app.schemas.spring import ...")
-            elif isinstance(node, ast.Import):
-                offenders += [
-                    f"{_module_name(path)}: import {alias.name}"
-                    for alias in node.names
-                    if alias.name == "app.schemas.spring"
-                ]
+        tree, where = _parse(path), _module_name(path)
+        reached = sorted(
+            target
+            for target in _import_targets(tree, where)
+            if target == _FILTER_MODULE or target.startswith(f"{_FILTER_MODULE}.")
+        )
+        if reached:
+            offenders.append(f"{where}: imports {reached}")
+        if _references_filter_type(tree):
+            offenders.append(f"{where}: ProductSearchFilters 식별자를 쓴다")
     assert offenders == [], (
-        "그래프 모듈이 검색 필터 타입을 import 한다 — INV-PGRAPH-ORDER 위반 경로가 열렸다: "
-        f"{offenders}"
+        f"그래프 모듈이 검색 필터 타입에 닿는다 — INV-PGRAPH-ORDER 위반 경로가 열렸다: {offenders}"
     )
+
+
+@pytest.mark.parametrize(
+    ("spelling", "source"),
+    [
+        # `node.module` 이 "app.schemas" 라 경로 문자열 대조를 빠져나간다. 반환형에도 안 드러난다.
+        (
+            "from-package",
+            "from app.schemas import spring\ndef f(x: spring.ProductSearchFilters): ...",
+        ),
+        # 상대 경로 — `node.module` 이 "schemas.spring" 이라 절대 경로 대조가 빗나간다.
+        (
+            "relative",
+            "from ...schemas.spring import ProductSearchFilters\ndef f(x):\n    y: ProductSearchFilters = x",
+        ),
+        # 패키지만 끌어와 점 접근 — **식별자 검사만** 잡는다.
+        (
+            "attribute-chain",
+            "from app import schemas\ndef f(x):\n    y = schemas.spring.ProductSearchFilters()",
+        ),
+        # 별칭 — **경로 검사만** 잡는다(식별자가 소스에 안 나온다).
+        ("aliased", "import app.schemas.spring as sp\ndef f(): ..."),
+        # 함수 안 지연 import — 모듈 최상위만 보면 놓친다.
+        ("lazy", "def f():\n    from app.schemas.spring import ProductSearchFilters"),
+    ],
+)
+def test_import_guard_catches_evasive_spellings(spelling: str, source: str) -> None:
+    """가드가 **표기를 바꾼 우회**를 잡는가 (PR #565 리뷰).
+
+    위 가드는 통과 상태만으로는 "지키고 있다"와 "안 보고 있다"가 구분되지 않는다. 우회 표기를
+    실제로 심어 잡히는 것을 여기서 고정한다 — 리뷰가 지적한 두 형태(`from-package`·`relative`)와
+    그 지적을 일반화한 셋을 함께 둔다.
+
+    `attribute-chain` 은 식별자 검사만, `aliased`·`lazy` 는 경로 검사만 잡는다 — **두 각도가
+    모두 필요하다는 실증**이라 한쪽을 지우면 이 표에서 바로 드러난다.
+    """
+    tree = ast.parse(source)
+    targets = _import_targets(tree, "app.agents.profile.probe")
+    reached = any(t == _FILTER_MODULE or t.startswith(f"{_FILTER_MODULE}.") for t in targets)
+    assert reached or _references_filter_type(tree), f"{spelling} 표기가 가드를 빠져나간다"
+
+
+def test_import_guard_allows_the_wire_schema() -> None:
+    """투영 계층이 쓰는 `app.schemas.profile_graph` 는 걸리지 않는다.
+
+    접두 매칭(`"app.schemas" in ...`)으로 넓히자는 안이 여기서 깨진다 — 금지 대상은 필터 타입이
+    사는 모듈 하나다.
+    """
+    tree = ast.parse("from app.schemas.profile_graph import GraphEdgeView\ndef f(): ...")
+    targets = _import_targets(tree, "app.agents.profile.probe")
+    assert not any(t == _FILTER_MODULE or t.startswith(f"{_FILTER_MODULE}.") for t in targets)
+    assert not _references_filter_type(tree)
 
 
 def test_graph_modules_define_no_filter_shaped_type() -> None:
