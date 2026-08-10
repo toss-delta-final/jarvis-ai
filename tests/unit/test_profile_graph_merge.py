@@ -165,34 +165,10 @@ def test_decay_clock_is_one_snapshot_per_batch(settings: Settings) -> None:
     assert {e.decay_evaluated_at for e in document.edges} == {NOW}
 
 
-def test_carried_pin_confidence_decays_to_the_batch_clock(settings: Settings) -> None:
-    """이월되는 edge 의 확신도는 **이번 배치 시각으로** 감쇠한다 — 옛 값이 박제되면 안 된다.
-
-    근거가 사라진 pin 은 계속 이월되는데, 확신도를 그대로 두면 반감기를 여러 번 넘긴 값이
-    방금 관측된 edge 와 같은 자로 비교된다 — `_truncate` 의 `-confidence` 정렬에서 7개월 묵은
-    0.95 가 방금 들어온 0.5 를 이기고 살아남는다. `decay_evaluated_at` 이 존재하는 이유가
-    "이 값이 언제 기준인가"를 남기기 위해서인데, 그걸 갱신하지 않으면 필드가 뜻을 잃는다.
-    """
-    stale = "2026-01-01T00:00:00+00:00"
-    existing = _document_of(
-        [
-            _stored_edge(
-                "삼성",
-                user_intent=_pin(),
-                confidence=0.95,
-                decay_evaluated_at=stale,
-                last_observed_at=stale,
-            )
-        ]
-    )
-
-    document = build_graph_document([], existing=existing, settings=settings, now=NOW)
-
-    carried = document.edges[0]
-    assert carried.user_intent is not None  # 보존 자체는 그대로다(REQ-PGRAPH-031)
-    assert carried.confidence < 0.95  # 7개월치 감쇠가 반영됐다
-    assert carried.decay_evaluated_at == NOW
-    assert carried.last_observed_at == stale  # 관측 **사실**은 시간이 지나도 안 바뀐다
+# `test_carried_pin_confidence_decays_to_the_batch_clock`(#356)은 #359 에서 뒤집혀
+# 「pin 불변」절의 `test_carried_pin_confidence_does_not_decay_while_pinned` 가 됐다 —
+# 감쇠는 `confidence` 변경이고 REQ-PGRAPH-031 [HARD] 가 그것을 금지한다. 뒤집은 근거는
+# 그 테스트 docstring 에 있다.
 
 
 # ─────────── 병합 (REQ-PGRAPH-015) ───────────
@@ -721,6 +697,255 @@ def test_supersede_does_not_touch_unrelated_nodes(settings: Settings) -> None:
     document = build_graph_document(facts, existing=empty_document(NOW), settings=settings, now=NOW)
 
     assert {e.status for e in document.edges} == {"active"}
+
+
+# ─────────── pin 불변 (REQ-PGRAPH-031 [HARD]·035) ───────────
+#
+# §6.4 의 제목이 「기능이 연극이 되지 않게 하는 조항」이다. 사용자가 고친 취향이 다음 배치에
+# 되돌아오면 편집 기능은 겉모습만 남는다. 기계가 갱신해도 되는 것은
+# `evidence_count`·`evidence_by_source`·`last_observed_at`·`challenge_count` 뿐이고
+# `status`·`predicate`·`promoted`·`confidence` 는 손대면 안 된다.
+
+
+def _pinned_edge(label: str = "소니", **overrides: object) -> GraphEdge:
+    """실제 `graph_mutations._pin` 이 새기는 모양 — `origin="user"` 와 `user_intent` 가 함께 온다.
+
+    기존 `_stored_edge(user_intent=_pin())` 은 `origin` 이 `"machine"` 인 채로 남아 **실물과
+    다르다.** 그 픽스처로 origin 기반 판정을 재면 새 코드 경로를 하나도 안 밟은 채 초록불이
+    된다(거짓 초록불). 여기서는 둘을 함께 세운다 — 그 동반 관계 자체는
+    `test_pin_producer_sets_both_origin_user_and_user_intent` 가 잠근다.
+    """
+    base: dict = {
+        "user_intent": _pin(),
+        "origin": "user",
+        "source_latest": "user",
+        "confidence": 1.0,
+        "promoted": True,
+    }
+    base.update(overrides)
+    return _stored_edge(label, **base)
+
+
+def _build_pin_safe(
+    facts: list[FactRecord],
+    *,
+    existing: GraphDocument,
+    settings: Settings,
+    caplog: pytest.LogCaptureFixture,
+    now: str = NOW,
+) -> GraphDocument:
+    """배치를 돌리되 **터미널 게이트가 발화하지 않았음**을 함께 단언한다.
+
+    `_reassert_pins` 는 [HARD] 최종 보증이라 앞 단계가 pin 을 망가뜨려도 결과를 고쳐 놓는다.
+    그래서 결과만 재면 `_merge_edge`·`_carried_tombstones`·`_resolve_conflicts` 의 pin 분기를
+    통째로 지워도 테스트가 초록불이다(실제로 변이 검증에서 61건 전부 통과했다) — **국소 수정에
+    테스트가 없는 상태**가 된다.
+
+    그래서 불변식을 하나 더 세운다: **정상 경로에서 게이트는 아무것도 바꾸지 않는다.**
+    게이트가 무언가 되돌렸다면 그것은 상류 단계가 [HARD] 를 어겼다는 뜻이고, 여기서 잡힌다.
+    """
+    with caplog.at_level(logging.WARNING, logger="app.agents.profile.graph_merge"):
+        document = build_graph_document(facts, existing=existing, settings=settings, now=now)
+    assert "profile_graph_pin_reasserted" not in caplog.text, (
+        "터미널 게이트가 발화했다 — 앞 단계(_merge_edge·_carried_tombstones·_resolve_conflicts)"
+        " 중 하나가 pin 의 [HARD] 필드를 건드렸다는 뜻이다."
+    )
+    return document
+
+
+def test_pinned_edge_wins_conflict_even_when_the_opposing_observation_is_more_recent(
+    settings: Settings, caplog: pytest.LogCaptureFixture
+) -> None:
+    """REQ-PGRAPH-035 — 우선순위 비교는 `(origin 클래스, last_observed_at, confidence, edge_id)`.
+
+    **클래스가 먼저이고 최신성은 클래스 안에서 적용된다.** 현행 승자 판정은 `origin` 을 안 봐서
+    방금 관측된 기계 `avoids` 가 오래된 사용자 pin 을 이기고 `superseded` 로 강등한다 —
+    REQ-PGRAPH-031 이 [HARD] 로 금지한 `status` 변경이다.
+
+    pin 이 recency 에서 불리한 것은 우연이 아니라 구조다: `graph_mutations._pin` 은
+    `last_observed_at` 을 갱신하지 않으므로 **만들어진 직후부터** 최신성 비교에서 진다.
+    """
+    stale = "2026-01-01T00:00:00+00:00"
+    existing = _document_of([_pinned_edge("소니", last_observed_at=stale)])
+    # 방금 관측된 반대 취향 — 최신성만 보면 이쪽이 이긴다.
+    facts = [_fact("f1", triples=[_triple("brand:소니", "avoids", label="소니")])]
+
+    document = _build_pin_safe(facts, existing=existing, settings=settings, caplog=caplog)
+
+    pinned = _edge_by_key(document, "likes|brand:소니")
+    assert pinned is not None
+    assert pinned.status == "active"  # [HARD] 기계가 사용자 편집을 강등하지 못한다
+    assert pinned.superseded_by is None
+    opposing = _edge_by_key(document, "avoids|brand:소니")
+    assert opposing is not None and opposing.status == "superseded"
+
+
+def test_pinned_edge_freezes_confidence_and_promoted_when_new_evidence_arrives(
+    settings: Settings, caplog: pytest.LogCaptureFixture
+) -> None:
+    """관측이 새로 들어와도 pin 의 `confidence`·`promoted` 는 승계한다 (REQ-PGRAPH-031 [HARD]).
+
+    **관측 기록 자체는 계속한다** — 사용자 편집이 시스템을 눈멀게 만들면 나중에 "왜 이걸
+    추천했나"에 답할 근거가 사라진다. 그래서 `evidence_count`·`last_observed_at` 은 갱신된다.
+    """
+    existing = _document_of([_pinned_edge("소니")])
+    # 확신도를 끌어내릴 만큼 약한 관측 — 기계 재계산이 살아 있으면 1.0 이 이 값 근처로 떨어진다.
+    facts = [
+        _fact("f1", created_at=NOW, triples=[_triple("brand:소니", label="소니", salience=0.1)])
+    ]
+
+    document = _build_pin_safe(facts, existing=existing, settings=settings, caplog=caplog)
+
+    edge = _edge_by_key(document, "likes|brand:소니")
+    assert edge is not None
+    assert edge.confidence == 1.0  # 동결
+    assert edge.promoted is True  # 동결
+    assert edge.predicate == "likes"
+    assert edge.status == "active"
+    assert edge.evidence_count == 1  # 관측은 계속 기록한다
+    assert edge.last_observed_at == NOW
+    assert edge.decay_evaluated_at == NOW  # 시계는 배치당 1회 고정을 유지한다
+
+
+def test_user_edit_survives_repeated_consolidation_batches(
+    settings: Settings, caplog: pytest.LogCaptureFixture
+) -> None:
+    """AC-PGRAPH-09 — 같은 취향을 재파생시키는 관측을 여러 배치 주입해도 사용자 수정이 유지된다.
+
+    개별 단계를 재는 위 두 테스트와 달리 **배치를 실제로 여러 번 돌린다.** 리포에 이 성질을
+    끝에서 끝까지 재는 테스트가 없었다 — `test_profile_graph_apply.py` 는 사용자 변경 경로만
+    검증하고 배치 재실행을 안 돌린다.
+    """
+    document = _document_of([_pinned_edge("소니")])
+    facts = [
+        _fact("f1", created_at="2026-08-02T00:00:00+00:00", triples=[_triple(salience=0.2)]),
+        _fact(
+            "f2",
+            created_at="2026-08-03T00:00:00+00:00",
+            triples=[_triple("brand:소니", "avoids", label="소니")],
+        ),
+    ]
+
+    for _ in range(3):
+        document = _build_pin_safe(facts, existing=document, settings=settings, caplog=caplog)
+
+    edge = _edge_by_key(document, "likes|brand:소니")
+    assert edge is not None
+    assert (edge.predicate, edge.status, edge.confidence, edge.promoted) == (
+        "likes",
+        "active",
+        1.0,
+        True,
+    )
+    assert edge.user_intent is not None
+    assert edge.last_observed_at == "2026-08-02T00:00:00+00:00"  # 관측은 반영된다
+
+
+def test_carried_pin_confidence_does_not_decay_while_pinned(
+    settings: Settings, caplog: pytest.LogCaptureFixture
+) -> None:
+    """근거가 사라져 이월되는 pin 도 확신도를 깎지 않는다 (REQ-PGRAPH-031 [HARD]).
+
+    **이 테스트는 `test_carried_pin_confidence_decays_to_the_batch_clock`(#356)을 뒤집은 것이다.**
+    그 테스트의 근거는 *"7개월 묵은 0.95 가 방금 관측된 0.5 를 이기고 살아남는다"* — 즉 서로 다른
+    시각으로 잰 확신도가 `_truncate` 정렬과 `_resolve_conflicts` 승자 판정에서 같은 자로 비교되는
+    것이었다. 그 우려는 #359 가 **두 판정 모두에서 pin 을 확신도 비교 밖으로 빼면서** 사라졌다:
+    승자 판정은 pin 을 최우선 키로 올리고(REQ-PGRAPH-035), 절단은 pin 을 아예 자르지 않는다.
+    남는 것은 [HARD] 쪽이다 — 감쇠는 `confidence` 변경이고 REQ-PGRAPH-031 이 그것을 금지한다.
+
+    `decay_evaluated_at` 은 계속 `now` 로 찍는다. 얼려 두면 "이 값이 언제 기준인가"가 뜻을 잃고
+    `test_decay_clock_is_one_snapshot_per_batch` 의 구조적 가드도 깨진다.
+    """
+    stale = "2026-01-01T00:00:00+00:00"
+    existing = _document_of(
+        [_pinned_edge("삼성", confidence=0.95, decay_evaluated_at=stale, last_observed_at=stale)]
+    )
+
+    document = _build_pin_safe([], existing=existing, settings=settings, caplog=caplog)
+
+    carried = document.edges[0]
+    assert carried.user_intent is not None
+    assert carried.confidence == 0.95  # 7개월이 지나도 깎이지 않는다
+    assert carried.decay_evaluated_at == NOW
+    assert carried.last_observed_at == stale  # 관측 **사실**은 시간이 지나도 안 바뀐다
+
+
+def test_reassert_pins_rescues_a_pin_even_if_an_earlier_stage_corrupted_it(
+    settings: Settings,
+) -> None:
+    """터미널 게이트를 **직접** 부른다 — 앞 단계가 실수해도 [HARD] 4필드가 복원되는가.
+
+    앞 세 테스트는 각 단계가 스스로 옳음을 재고, 이 테스트는 **그 단계들을 못 믿을 때의 보증**을
+    잰다. 미래에 병합 단계가 하나 더 생겨도 자동으로 보호되는 것이 게이트의 존재 이유다.
+    lessons 2026-08-10 「방어를 추가하는 커밋에 그 방어가 없으면 깨지는 테스트를 같은 커밋에」.
+    """
+    from app.agents.profile.graph_merge import _reassert_pins
+
+    prior = _pinned_edge("소니")
+    corrupted = prior.model_copy(
+        update={
+            "status": "superseded",
+            "superseded_by": "e_deadbeefdeadbeef",
+            "predicate": "avoids",
+            "promoted": False,
+            "confidence": 0.01,
+        }
+    )
+
+    restored = _reassert_pins([corrupted], prior={prior.edge_key: prior})
+
+    assert len(restored) == 1
+    edge = restored[0]
+    assert (edge.status, edge.predicate, edge.promoted, edge.confidence) == (
+        "active",
+        "likes",
+        True,
+        1.0,
+    )
+    assert edge.superseded_by is None  # `active` 로 되돌렸으면 패자 표식도 함께 걷는다
+
+
+def test_reassert_pins_leaves_unpinned_edges_alone(settings: Settings) -> None:
+    """게이트는 pin 에만 손댄다 — 기계 edge 의 정상적인 강등·supersede 를 되돌리면 안 된다."""
+    from app.agents.profile.graph_merge import _reassert_pins
+
+    prior = _stored_edge("애플", status="active", confidence=0.9, promoted=True)
+    demoted = prior.model_copy(
+        update={"status": "superseded", "confidence": 0.1, "promoted": False}
+    )
+
+    restored = _reassert_pins([demoted], prior={prior.edge_key: prior})
+
+    assert restored == [demoted]
+
+
+def test_pin_producer_sets_both_origin_user_and_user_intent(settings: Settings) -> None:
+    """`origin == "user"` ⟺ `user_intent is not None` 를 잠근다.
+
+    병합 엔진은 pin 판정에 `_is_pinned`(`user_intent`)를 쓰고 REQ-PGRAPH-035 는 "origin 클래스"라고
+    적는다. 두 표현이 같은 것을 가리키는 근거는 **생산자가 하나뿐**이라는 사실이다 — 그 사실을
+    여기서 고정한다. 배치는 `origin` 에 `"user"` 를 쓸 수 없다(`_merge_edge` 는 prior 승계 또는
+    `"machine"`).
+    """
+    from app.agents.profile.graph_models import make_edge_key
+    from app.agents.profile.graph_mutations import _pin as pin_edge
+
+    node = GraphNode(node_id="brand:소니", type="brand", label="소니", verified=True)
+    key = make_edge_key("likes", node.node_id)
+
+    pinned = pin_edge(
+        _stored_edge("소니"),
+        key=key,
+        edge_id=make_edge_id(key),
+        node=node,
+        intent=_pin(kind="correct"),
+        now=NOW,
+    )
+
+    assert pinned.origin == "user"
+    assert pinned.user_intent is not None
+    assert pinned.status == "active"
+    assert pinned.promoted is True  # 사용자 명시 취향은 게이트 판정을 기다리지 않는다
 
 
 # ─────────── 정렬·절단 ───────────

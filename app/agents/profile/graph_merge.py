@@ -133,6 +133,8 @@ def build_graph_document(
     # 넘겨 보존)를 한 규칙으로 덮고, "상한을 넘겼다"가 아니라 "버린 게 있다"라는 뜻이 그대로 산다.
     before_truncation = len(edges)
     edges = _truncate(edges, settings.profile_graph_max_edges)
+    # [HARD] 최종 보증 — 앞 단계 중 하나라도 pin 을 건드렸으면 여기서 되돌린다(REQ-PGRAPH-031).
+    edges = _reassert_pins(edges, prior=prior)
 
     nodes = _nodes_for(edges, observations, existing)
     document = GraphDocument(
@@ -224,14 +226,26 @@ def _merge_edge(
     `status`·`suppressed_at`·`user_intent` 는 **기존 값을 그대로 승계한다** — 새 근거가 들어왔다고
     사용자가 지운 취향을 되살리지 않는다(REQ-PGRAPH-022/023). `promoted` 는 `status` 와 직교라
     별도로 판정한다.
+
+    **pin 이 걸려 있으면 `confidence`·`promoted` 도 승계한다**(REQ-PGRAPH-031 [HARD], #359).
+    사용자가 고친 취향에 기계 관측이 하나만 들어와도 감쇠 가중 EMA 가 최상급 확신도를 덮어써
+    다음 배치에서 강등까지 이어졌다 — 편집이 조용히 되돌려지는 가장 흔한 경로다.
+    `predicate` 는 여기서 따로 고정하지 않는다: `edge_key = "{predicate}|{node_id}"` 라
+    `prior` 는 정의상 `head` 와 같은 predicate 다(고정 코드를 두면 도달 불가능한 죽은 분기가 된다).
+    **관측 기록은 계속한다** — `evidence_*`·`last_observed_at`·`decay_evaluated_at` 은 pin 이어도
+    갱신된다. 사용자 편집이 시스템을 눈멀게 만들면 나중에 근거를 제시할 수 없다.
     """
     head = observations[-1]  # 정렬된 마지막 = 최신 관측
     by_source: dict[str, int] = {}
     for obs in observations:
         by_source[obs.source] = by_source.get(obs.source, 0) + 1
 
-    confidence = _confidence(observations, settings=settings, now=now)
-    promoted = _promoted(confidence, prior=prior, settings=settings)
+    if prior is not None and _is_pinned(prior):
+        confidence = prior.confidence
+        promoted = prior.promoted
+    else:
+        confidence = _confidence(observations, settings=settings, now=now)
+        promoted = _promoted(confidence, prior=prior, settings=settings)
 
     first_observed = observations[0].observed_at
     if prior is not None:
@@ -364,6 +378,12 @@ def _carried_tombstones(
     이기고 살아남는다. `decay_evaluated_at` 이 존재하는 이유가 "이 값이 언제 기준인가"를 남기기
     위해서인데, 갱신하지 않으면 그 필드가 뜻을 잃는다.
 
+    **단 pin 은 감쇠시키지 않는다**(REQ-PGRAPH-031 [HARD], #359). 감쇠는 `confidence` 변경이고
+    [HARD] 가 그것을 금지한다. 위 우려는 #359 가 두 판정 모두에서 pin 을 확신도 비교 밖으로
+    빼면서 사라졌다 — 승자 판정은 pin 을 최우선 키로 올리고(`_resolve_conflicts`), 절단은 pin 을
+    아예 자르지 않는다(`_truncate`). `decay_evaluated_at` 은 pin 이어도 `now` 로 계속 찍는다:
+    얼려 두면 그 필드가 뜻을 잃고, pin 이 풀리는 경로가 생기는 순간 누적 감쇠가 한꺼번에 걸린다.
+
     감쇠는 `decay_evaluated_at → now` 로 **누적** 적용한다(관측이 남아 있는 edge 는 `_confidence`
     가 매 배치 전량 재계산하지만, 여기는 근거가 없어 재계산할 원본이 없다). 반감기 지수는
     `0.5^(Δ1/h) · 0.5^(Δ2/h) = 0.5^((Δ1+Δ2)/h)` 라 나눠 적용해도 값이 같고, 입력이 같으면 결과도
@@ -377,8 +397,12 @@ def _carried_tombstones(
             continue
         if edge.status == "active" and edge.user_intent is None:
             continue
-        decayed = round(
-            edge.confidence * _decay_factor(edge.decay_evaluated_at, now, half_life), _ROUND
+        decayed = (
+            edge.confidence
+            if _is_pinned(edge)
+            else round(
+                edge.confidence * _decay_factor(edge.decay_evaluated_at, now, half_life), _ROUND
+            )
         )
         carried.append(
             edge.model_copy(
@@ -401,9 +425,25 @@ def _resolve_conflicts(edges: list[GraphEdge]) -> list[GraphEdge]:
     주석에 있다 — 열거하면 kind 가 늘 때 등록을 빠뜨리고, 그 결과는 "선호한다 + 싫어한다"가
     **둘 다 active 로 살아남아 요약 LLM 에 함께 들어가는** 것이다.
 
-    승자 선정은 recency-wins 다(REQ-PROF-033): `(last_observed_at, confidence, edge_id)` 최댓값.
-    마지막 키까지 가야 동률에서도 전순서가 성립한다. 진 **쪽만** 표시한다 — 승자가 긍정이면
-    부정들만, 부정이면 긍정들만 `superseded` 다. 같은 편끼리는 모순이 아니라서 건드리지 않는다.
+    승자 선정은 recency-wins 다(REQ-PROF-033): `(origin 클래스, last_observed_at, confidence,
+    edge_id)` 최댓값. 마지막 키까지 가야 동률에서도 전순서가 성립한다. 진 **쪽만** 표시한다 —
+    승자가 긍정이면 부정들만, 부정이면 긍정들만 `superseded` 다. 같은 편끼리는 모순이 아니라서
+    건드리지 않는다.
+
+    **REQ-PGRAPH-035 를 집행하는 것은 이 정렬 키다** — `_reassert_pins` 터미널 게이트가 아니다.
+    클래스가 먼저이고 최신성은 클래스 **안에서** 적용된다. 게이트는 다른 요구사항
+    (REQ-PGRAPH-031)의 심층 방어이고, 그것이 있다고 이 키를 지우면 pin 이 이번 배치에 실제로
+    강등됐다가 게이트가 되돌리는 모양이 되어 `challenge_count` 같은 맥락 판정이 어긋난다.
+
+    origin 클래스의 코드 표현은 `_is_pinned` 다. `origin` 필드(`Literal["machine","user"]`)로도
+    같은 판정이 나오지만 — 생산자가 `graph_mutations._pin` 하나뿐이라 두 값이 항상 함께 움직인다
+    (`test_pin_producer_sets_both_origin_user_and_user_intent` 가 그 동반 관계를 잠근다) —
+    `_truncate` 가 이미 `_is_pinned` 를 쓰므로 한 파일 안에 pin 정의를 둘 두지 않는다.
+
+    **[HARD] 진 쪽에 pin 이 오지 않는다.** pin 이 최우선 키라 pin 은 pin 에게만 질 수 있고,
+    같은 노드에 반대 극성 pin 이 둘 생기는 것은 사용자 수정이 구 edge 를 tombstone 으로 보내므로
+    정상 경로에서 만들어지지 않는다. 그래도 만들어졌다면 게이트가 둘 다 `active` 로 되돌린다 —
+    사용자 의사를 기계가 정리하지 않는 쪽이 REQ-PGRAPH-031 이 정한 방향이다.
     """
     by_node: dict[str, list[GraphEdge]] = {}
     for edge in edges:
@@ -418,7 +458,8 @@ def _resolve_conflicts(edges: list[GraphEdge]) -> list[GraphEdge]:
             continue
 
         winner = max(
-            negatives + positives, key=lambda e: (e.last_observed_at, e.confidence, e.edge_id)
+            negatives + positives,
+            key=lambda e: (_is_pinned(e), e.last_observed_at, e.confidence, e.edge_id),
         )
         losers = negatives if winner.predicate in _POSITIVE_PREDICATES else positives
         resolved[winner.edge_key] = winner.model_copy(
@@ -512,6 +553,54 @@ def _truncate(edges: list[GraphEdge], limit: int) -> list[GraphEdge]:
         key=lambda e: (e.status == "active", -e.confidence, e.edge_id),
     )
     return kept + rest[: limit - len(kept)]
+
+
+def _reassert_pins(edges: list[GraphEdge], *, prior: dict[str, GraphEdge]) -> list[GraphEdge]:
+    """터미널 게이트 — pin 의 [HARD] 4필드를 `prior` 값으로 되돌린다 (REQ-PGRAPH-031, #359).
+
+    앞 단계들(`_merge_edge`·`_carried_tombstones`·`_resolve_conflicts`)이 각자 pin 을 존중하므로
+    정상 경로에서 이 게이트는 아무것도 바꾸지 않는다. 그런데도 두는 이유는 **[HARD] 불변식을
+    한 곳에서 보증하기 위해서**다 — 네 번째 병합 단계가 생기거나 기존 단계가 리팩터로 pin 분기를
+    잃어도 여기서 잡힌다. lessons 2026-08-06 「HARD 불변식과 방어용 상한이 만나면 우선순위를
+    안 적은 쪽이 조용히 진다」의 반대 방향 적용이다: 불변식 쪽에 최종 발언권을 준다.
+
+    **복원 대상은 REQ-PGRAPH-031 이 열거한 4개 정확히** — `status`·`predicate`·`promoted`·
+    `confidence`. 기계가 갱신해도 되는
+    `evidence_count`·`evidence_by_source`·`last_observed_at`·`challenge_count` 와 배치 시계
+    `decay_evaluated_at` 은 손대지 않는다.
+
+    `status` 는 **`prior` 가 `active` 일 때만** 되돌린다. 이 이슈 이전에 잘못 `superseded` 로 박힌
+    pin 까지 복원 대상으로 삼으면 그 상태가 영구 고착되고, 방금 `_revive_orphan_superseded` 가
+    한 복구를 게이트가 되돌린다. 되돌릴 때는 `superseded_by` 도 함께 걷는다 — `active` 인데
+    패자 표식이 남으면 사라진 승자를 가리키는 dangling 참조가 된다.
+
+    `_truncate` **다음**에 둔다. 이름 그대로 터미널이어야 나중에 단계가 끼어들어도 마지막이
+    보장된다. 절단은 pin 을 아예 자르지 않으므로(`_truncate`) 순서가 pin 생존에 영향을 주지는
+    않지만, 그 사실에 기대지 않는다.
+    """
+    restored: list[GraphEdge] = []
+    for edge in edges:
+        origin = prior.get(edge.edge_key)
+        if origin is None or not _is_pinned(origin):
+            restored.append(edge)
+            continue
+        update: dict = {
+            "predicate": origin.predicate,
+            "promoted": origin.promoted,
+            "confidence": origin.confidence,
+        }
+        if origin.status == "active":
+            update["status"] = "active"
+            update["superseded_by"] = None
+        if all(getattr(edge, field) == value for field, value in update.items()):
+            restored.append(edge)  # 정상 경로 — model_copy 로 새 객체를 만들지 않는다
+            continue
+        logger.warning(
+            "profile_graph_pin_reasserted",
+            extra={"edge_id": edge.edge_id, "fields": sorted(update)},
+        )
+        restored.append(edge.model_copy(update=update))
+    return restored
 
 
 def _nodes_for(
