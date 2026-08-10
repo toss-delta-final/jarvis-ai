@@ -602,6 +602,16 @@ P1)은 "발표에서 증명할 주장에 필요한가" 기준으로는 전부 �
   값으로 갱신했다(상세는 F3·F4 처리 내역 참조). `ablation`·`intent_probe`·`benchmark`·
   `personalization/baselines/live-v1`은 이 병합으로 변경되지 않았다(`git diff cc9f6b17^ cc9f6b17
   --stat` 로 확인) — C1·C2·C4·§2 C3 의 라이브 대조 수치는 그대로 유효하다.
+- **⚠️ in-flight 레인 경고**(`gh pr view 564`로 직접 확인, 2026-08-10): **PR #564**
+  (`NyongCho/fix-443-465-categoryqueries-axes` → `dev`, 이슈 #443·#465)가 **OPEN**이고 아직
+  `dev`에 병합되지 않았다(`mergeStateStatus=BEHIND`). 이 PR 은 `decompose` 파싱을 바꾸고(조건
+  전용 턴의 총칭 leg 제거) `intent_probe`·`underspecified_probe` 에 신규 축과 2026-08-10 자
+  신규 baseline 을 더한다. **병합되면** §2 C2 가 인용한 `…-v6-adopted-*` 계보는 더 이상 출고판이
+  아니게 되고, §3-3 의 과소지정(`judgmentAccuracy`) 수치도 낡는다 — §4 "'최신 timestamp' ≠
+  '출고판' 규칙"과 [jarvis-ai#361](https://github.com/toss-delta-final/jarvis-ai/issues/361)
+  사례(위 항목)와 같은 함정이다. **[jarvis-ai#154](https://github.com/toss-delta-final/jarvis-ai/issues/154)는
+  발표 전 PR #564 병합 여부를 확인하고, 병합됐다면 §2 C2 의 baseline 과 §3-3 의 과소지정 수치를
+  재지정해야 한다. 병합 전(현재 이 문서가 인용한) 수치를 병합 후에도 그대로 인용하지 않는다.**
 
 ---
 
