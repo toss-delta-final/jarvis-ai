@@ -52,6 +52,11 @@ GROUP_COUNTS = {
     # 잠식 대조 "장바구니에서 빼줘"). "찜한 거 담아줘"(#386 대조)는 wishlist-view-006 과 발화가
     # 겹쳐 중복 셀을 만들지 않고 뺐다(기존 셀이 이미 재고 있다) — 그래서 패킷 5셀이 아니라 4셀.
     "wishlist_remove": 4,
+    # [#285, I-25 §4.13 — 4단계] 장바구니 수량 변경 라우팅 — 양성 3("3개로 바꿔줘"류) · 음성
+    # 대조 3(합산 "하나 더 담아줘"[가장 중요, 패킷 함정 2] · 삭제 "이어폰 빼줘" · 조회 "장바구니
+    # 보여줘"). combo_matrix 는 이 intent 를 재지 않기로 결정했으므로(axes.json
+    # cart_quantity_not_generated) 라우팅 회귀는 이 그룹이 전담한다.
+    "cart_quantity": 6,
     # [#443] 상품군을 명시한 첫 턴에서 categoryQueries leg 이 나오는지 — `condition_only` 의
     # 반대 방향 축. 요인 분리(대조군·상황 선행/후행·추상도·일반화·수식어) 6발화.
     "named_category": 6,
@@ -106,8 +111,10 @@ def test_cell_count_matches_group_context_product() -> None:
     # 발화 × 컨텍스트: 대조군 18 + 지시대명사 12 + 옵션 4 + 전환 7 + 주문 6 + 일반 6
     # + [#84] 카테고리 15(단일 컨텍스트) + [#300] screen 6(단일 컨텍스트)
     # + [#344 라운드 2] 조건 전용 5(단일 컨텍스트)
-    # + [#386] 찜 조회 6 + [#440] 찜 해제 4 + [#443] 상품군 명시 6(전부 단일 컨텍스트) = 95
-    assert len(cells) == 95
+    # + [#386] 찜 조회 6(단일 컨텍스트) + [#440] 찜 해제 4(단일 컨텍스트)
+    # + [#285, I-25 §4.13] 수량 변경 6(단일 컨텍스트) = 95
+    # + [#386] 찜 조회 6 + [#440] 찜 해제 4 + [#443] 상품군 명시 6 + [#285] 수량 변경 6(전부 단일 컨텍스트) = 101
+    assert len(cells) == 101
     per_group: dict[str, int] = {}
     for cell in cells:
         per_group[cell.utterance.group] = per_group.get(cell.utterance.group, 0) + 1
@@ -123,6 +130,7 @@ def test_cell_count_matches_group_context_product() -> None:
         "condition_only": 5,
         "wishlist_view": 6,
         "wishlist_remove": 4,
+        "cart_quantity": 6,
         "named_category": 6,
     }
 

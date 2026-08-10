@@ -145,6 +145,97 @@ def test_resolve_plan_question_default_keeps_backward_compat() -> None:
     assert resolved.wants_chart is False
 
 
+# ── [#531] wants_chart_keyword — 레인 선판정과 resolve_plan 이 공유하는 정본 ──────
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "매출 차트 보여줘",
+        "매출 그래프 보여줘",
+        "재고 시각화해줘",
+        "전환율 도표로 보여줘",
+        "최근 7일 매출 그려줘",
+        "전환율 분석하고 그래프로 보여줘",  # 문장 중간 — 전체 매칭이 아니라 존재 검사다
+    ],
+)
+def test_wants_chart_keyword_detects_vocabulary(message: str) -> None:
+    """차트 어휘 5종은 발화 어디에 있든 True — api/seller.py ②.5 가 이 판정에 걸린다."""
+    assert pipeline.wants_chart_keyword(message) is True
+
+
+@pytest.mark.parametrize(
+    "message",
+    ["최근 7일 매출 보여줘", "지난달 매출이 왜 떨어졌어?", "신규 주문 뭐 있어?", ""],
+)
+def test_wants_chart_keyword_ignores_plain_lookup(message: str) -> None:
+    """차트 어휘가 없으면 False — 조회 발화 전체가 analysis 로 끌려가면 #180 이 무너진다."""
+    assert pipeline.wants_chart_keyword(message) is False
+
+
+def test_resolve_plan_shares_keyword_check_with_lane_precheck() -> None:
+    """resolve_plan 의 키워드 보강과 레인 선판정이 같은 함수를 쓴다(어휘 분기 방지).
+
+    두 경로가 각자 정규식을 들면, 선판정이 analysis 로 보낸 발화를 resolve_plan 이
+    wants_chart=False 로 판정해 차트 없는 보고서만 나오는 조용한 불일치가 생긴다.
+    """
+    question = "이번달 매출 그래프 보여줘"
+    assert pipeline.wants_chart_keyword(question) is True
+    resolved = pipeline.resolve_plan(
+        _plan(wants_chart=False),
+        today=dt.date(2026, 8, 9),
+        recent_default_days=7,
+        question=question,
+    )
+    assert resolved.wants_chart is True
+
+
+def test_resolve_plan_promotes_chart_only_when_planner_leaves_analyses_empty() -> None:
+    """[#531] 차트 어휘 + 빈 analyses 는 되묻기가 아니라 chart_only 승격이다.
+
+    선판정이 analysis 레인으로 보낸 차트 발화를 planner 가 chart_only 로 못 잡고
+    analyses 까지 비우면 예전에는 "어떤 분석을 원하시는지..." 되묻기로 끝났다 —
+    ASCII 아트가 되묻기로 바뀔 뿐 좌표(report.charts[])는 여전히 나가지 못한다.
+    """
+    resolved = pipeline.resolve_plan(
+        _plan(analyses=[], chart_only=False),
+        today=dt.date(2026, 8, 9),
+        recent_default_days=7,
+        question="이번달 매출 그래프 보여줘",
+    )
+
+    assert resolved.chart_only is True
+    assert resolved.wants_chart is True
+    assert resolved.analyses == ()
+
+
+def test_resolve_plan_clarification_wins_over_chart_promotion() -> None:
+    """planner 가 되물을 이유를 댔으면 차트 승격이 그것을 덮지 않는다.
+
+    clarification 은 "계획이 성립하지 않는다"는 구체적 신호라 어휘 검사보다 강하다.
+    """
+    plan = _plan(analyses=[], clarification="어떤 상품의 그래프를 원하시나요?")
+
+    with pytest.raises(ValueError, match="어떤 상품"):
+        pipeline.resolve_plan(
+            plan,
+            today=dt.date(2026, 8, 9),
+            recent_default_days=7,
+            question="그래프 보여줘",
+        )
+
+
+def test_resolve_plan_empty_analyses_without_chart_word_still_raises() -> None:
+    """[회귀] 차트 어휘가 없으면 빈 analyses 는 그대로 되묻기다 — 승격이 번지지 않는다."""
+    with pytest.raises(ValueError, match="어떤 분석"):
+        pipeline.resolve_plan(
+            _plan(analyses=[]),
+            today=dt.date(2026, 8, 9),
+            recent_default_days=7,
+            question="지난달 매출이 왜 떨어졌어?",
+        )
+
+
 def test_resolve_plan_chart_period_expr_resolved_separately() -> None:
     """[#504] 차트 전용 기간 표현은 본 기간과 별도로 환산돼 chart_from/to 에 담긴다."""
     plan = _plan(period_expr="지난달", chart_period_expr="최근 7일")

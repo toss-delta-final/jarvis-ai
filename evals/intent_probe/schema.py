@@ -52,6 +52,13 @@ WISHLIST_VIEW_GROUP = "wishlist_view"
 # 계층이 이 발화를 어디로 보내는가"의 기록일 뿐이고, 실제 정답 보증은 결정론 계층
 # (`intent_guard.has_wishlist_remove_evidence` + `wishlist.py` 해소 근거 게이트)이 맡는다.
 WISHLIST_REMOVE_GROUP = "wishlist_remove"
+# [#285, I-25 §4.13 — 4단계] 장바구니 수량 변경(치환) 라우팅 축 — `WISHLIST_VIEW_GROUP`(#386) 과
+# 같은 패턴이다. combo_matrix 는 build_decompose_json 으로 intent 를 강제 주입해 라우팅을 재지
+# 않기로 결정했으므로(evals/combo_matrix/axes.json 의 `cart_quantity_not_generated` excludes 규칙
+# 참조), 라우팅 회귀는 여기서만 잰다. 양성(치환 표현 → cart_quantity)과 음성(합산·삭제·조회 —
+# cart_quantity 가 남의 발화를 훔치지 않는가)을 갈라서 센다 — 가장 중요한 대조는 "하나 더
+# 담아줘"(합산, cart_add) 다(패킷 함정 2 와 같은 축).
+CART_QUANTITY_GROUP = "cart_quantity"
 # [#443] 상품군을 명시한 첫 턴(무프라이어)에서 decompose 가 `categoryQueries` leg 을 실제로
 # 채우는지 재는 그룹 — `CONDITION_ONLY_GROUP`(#344, 조건만 말하고 상품군은 없는 턴이 leg 을
 # 비우는지)과 **정반대 방향**이다. 허용 컨텍스트가 `none` 하나뿐인 이유도 같다: 이 축의 정의가
@@ -71,6 +78,7 @@ GROUPS = frozenset(
         CONDITION_ONLY_GROUP,
         WISHLIST_VIEW_GROUP,
         WISHLIST_REMOVE_GROUP,
+        CART_QUANTITY_GROUP,
         NAMED_CATEGORY_GROUP,
     }
 )
@@ -101,6 +109,10 @@ GROUP_ALLOWED_CONTEXTS: dict[str, frozenset[str]] = {
     # "이 축이 무엇을 재는가"의 선언 그 자체(#313)라, 안 쓰는 값을 열어 두면 다음 사람이 그
     # 축에 다른 컨텍스트 셀을 얹어 분모를 흔들 수 있다.
     WISHLIST_REMOVE_GROUP: frozenset({"none"}),
+    # [#285, I-25 §4.13] 수량 변경도 지칭 해소 대상이 없다 — `none` 하나로 둔다(`wishlist_view`/
+    # `wishlist_remove` 와 같은 이유). 대상 항목 해소는 결정론 계층(`quantity.py::
+    # _resolve_quantity_target`)이 장바구니 조회 결과에서 하지, decompose 컨텍스트가 가르지 않는다.
+    CART_QUANTITY_GROUP: frozenset({"none"}),
     # [#443] 이 축의 정의가 "무프라이어(none) 컨텍스트에서 상품군을 명시한 첫 턴"이므로
     # 허용 컨텍스트는 `none` 하나뿐이다(`condition_only` 와 같은 이유 — [#344 라운드 3]).
     NAMED_CATEGORY_GROUP: frozenset({"none"}),
@@ -119,6 +131,9 @@ INTENTS = (
     # 재지 않는 값이 정답지에 생긴다).
     "wishlist_remove",
     "cart_remove",
+    # [#285, I-25 §4.13 — 4단계] 수량 변경 축을 신설하며 추가. 음성 대조에 `cart_add`·
+    # `cart_remove`·`cart_view`(전부 이미 위에 있음)가 필요하다.
+    "cart_quantity",
 )
 CATEGORY_ACTIONS = ("carry", "clear", "replace")
 # [#300] screen 셀의 productIdRule 3종. 이슈 본문은 "2종"이라 했지만 실제 셀은 세 모양이다 —
@@ -180,6 +195,15 @@ WISHLIST_VIEW_AXIS_IDS = frozenset(
 WISHLIST_REMOVE_AXIS_IDS = frozenset(
     {"wishlistRemovePositive", "wishlistRemoveNoSteal", "wishlistRemoveRouting"}
 )
+# [#285, I-25 §4.13 — 4단계] 장바구니 수량 변경 축 — `WISHLIST_VIEW_AXIS_IDS` 와 같은 3분할이다.
+# 커밋된 기준선 어디에도 **존재하지 않는다**(그 시점엔 intent 자체가 없었다):
+#   · `cartQuantityPositive` — 치환 표현("N개로 바꿔줘")이 실제로 cart_quantity 로 가는가
+#   · `cartQuantityNoSteal`  — 합산·삭제·조회(cart_add/cart_remove/cart_view) 를 훔치지 않는가
+#     (음성 대조 — 가장 중요한 대조는 "하나 더 담아줘" → cart_add, 패킷 함정 2 와 같은 축)
+#   · `cartQuantityRouting`  — 위 둘의 합계
+CART_QUANTITY_AXIS_IDS = frozenset(
+    {"cartQuantityPositive", "cartQuantityNoSteal", "cartQuantityRouting"}
+)
 # [#443] 상품군 명시 첫 턴 축 — 커밋된 기준선 어디에도 **존재하지 않는다.** 반대 방향 축
 # `conditionOnlyNoCategoryQuery`(#344)와 정의가 정확히 거울이다: 한쪽은 "leg 0개가 정답"
 # (조건만 말한 턴), 이쪽은 "leg 1개 이상이 정답"(상품군을 명시한 턴).
@@ -191,6 +215,7 @@ AXIS_IDS = (
     | CONDITION_ONLY_AXIS_IDS
     | WISHLIST_VIEW_AXIS_IDS
     | WISHLIST_REMOVE_AXIS_IDS
+    | CART_QUANTITY_AXIS_IDS
     | NAMED_CATEGORY_AXIS_IDS
 )
 # [#300, F-2] productIdRule → 그 규칙이 재는 컴포넌트 축. `screenResolution`(합계 축)은 모든
@@ -342,6 +367,8 @@ class Expected(CamelModel):
         # 빼줘")에 필요하다.
         "wishlist_remove",
         "cart_remove",
+        # [#285, I-25 §4.13 — 4단계] cart_quantity 축 신설로 추가.
+        "cart_quantity",
     ]
     option_id: int | None = None
     product_id_rule: Literal[
@@ -671,6 +698,37 @@ class Utterance(CamelModel):
         return self
 
     @model_validator(mode="after")
+    def _cart_quantity_group_is_isolated(self) -> "Utterance":
+        """[#285, I-25 §4.13 — 4단계] 장바구니 수량 변경 축도 기존 축과 표본을 섞지 않는다 —
+        앞의 다섯 검증자와 같은 이유(`_wishlist_view_group_is_isolated` 참조)."""
+        declared = set(self.axes)
+        if self.group == CART_QUANTITY_GROUP:
+            others = sorted(
+                declared
+                & (
+                    LEGACY_AXIS_IDS
+                    | CATEGORY_ACTION_AXIS_IDS
+                    | SCREEN_AXIS_IDS
+                    | CONDITION_ONLY_AXIS_IDS
+                    | WISHLIST_VIEW_AXIS_IDS
+                    | WISHLIST_REMOVE_AXIS_IDS
+                    | NAMED_CATEGORY_AXIS_IDS
+                )
+            )
+            if others:
+                raise ValueError(
+                    f"{self.utterance_id}: 수량 변경 발화는 기존 축 {others} 를 선언할 수 없습니다 "
+                    "— 새 셀이 기존 축의 분모를 늘리면 커밋된 기준선과 그 축을 비교할 수 없게 됩니다"
+                )
+        elif declared & CART_QUANTITY_AXIS_IDS:
+            raise ValueError(
+                f"{self.utterance_id}: {sorted(declared & CART_QUANTITY_AXIS_IDS)} 는 "
+                f"group='{CART_QUANTITY_GROUP}' 발화만 선언할 수 있습니다 "
+                "— 다른 그룹이 섞이면 신규 축의 분모가 정의(수량 변경 6발화)와 어긋납니다"
+            )
+        return self
+
+    @model_validator(mode="after")
     def _named_category_group_is_isolated(self) -> "Utterance":
         """[#443] 상품군 명시 첫 턴 축도 기존 축과 표본을 섞지 않는다 — 앞의 네 검증자와 같은
         이유(`_condition_only_group_is_isolated` 와 특히 같은 모양 — 반대 방향 축이다).
@@ -686,6 +744,7 @@ class Utterance(CamelModel):
                     | CONDITION_ONLY_AXIS_IDS
                     | WISHLIST_VIEW_AXIS_IDS
                     | WISHLIST_REMOVE_AXIS_IDS
+                    | CART_QUANTITY_AXIS_IDS
                 )
             )
             if others:

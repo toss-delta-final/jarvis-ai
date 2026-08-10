@@ -91,6 +91,56 @@ def test_personalized_returns_camel_case_contract_surface() -> None:
     assert isinstance(data["items"][0]["productId"], int)
 
 
+def test_opted_out_member_gets_no_profile_even_with_signals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """**중지 회원은 시그널이 있어도 `NO_PROFILE`** (api-spec §3.7 v0.32.7·§3.9.5, #359).
+
+    v0.22.0 은 근거를 *"프로필 벡터 항을 빼면 개인화 근거가 남지 않으므로 기존 판정 기준에 그대로
+    걸린다"* 로 적었는데 성립하지 않는다 — 이 요청은 `recentlyViewedProductIds` 가 있어 그
+    임베딩만으로 질의 벡터가 만들어지고, 항만 빼면 `PERSONALIZED` 가 나간다. 중지는 판정 기준의
+    **결과가 아니라 그보다 앞서는 단락**이다.
+
+    같은 요청이 중지 없이는 `PERSONALIZED` 라는 것은 위
+    `test_personalized_returns_camel_case_contract_surface` 가 이미 고정한다 — 그래서 이 테스트가
+    공허하지 않다.
+    """
+
+    async def _disabled(user_id, *, on_error):  # noqa: ANN001
+        return False
+
+    monkeypatch.setattr(svc, "personalization_enabled", _disabled)
+
+    r = client.post(_URL, json=_body())
+
+    assert r.status_code == 200
+    data = r.json()
+    assert data["outcome"] == "NO_PROFILE"
+    assert data["items"] == []
+
+
+def test_unknown_personalization_state_drops_the_profile_but_keeps_ranking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """플래그 판정 불가는 **degrade** 다 — 프로필 항만 빠지고 랭킹은 계속한다.
+
+    플래그도 pg-profile 에 있으므로 그 조회 실패는 api-spec §3.7 「HOME 실패 모드」의
+    `profile_unavailable`(200 · 프로필 항만 빠짐 · 남은 근거로 판정)에 해당한다. `False` 로
+    접어 `NO_PROFILE` 을 강제하면 그 표와 충돌한다 — 소비 fail-closed 는 "프로필을 쓰지
+    않는다" 로 실현되고, 시그널까지 버릴 근거는 중지가 **확인됐을 때**뿐이다.
+    """
+
+    async def _unknown(user_id, *, on_error):  # noqa: ANN001
+        return None
+
+    monkeypatch.setattr(svc, "personalization_enabled", _unknown)
+
+    r = client.post(_URL, json=_body())
+
+    assert r.status_code == 200
+    assert r.json()["outcome"] == "PERSONALIZED"  # 시그널로 계속 랭킹한다
+
+
 def test_items_order_is_the_ranking_and_carries_no_position() -> None:
     """배열 순서가 곧 순위 — position 을 싣지 않는다(§3.7)."""
     r = client.post(_URL, json=_body(limit=10))
@@ -682,7 +732,7 @@ def test_total_wall_clock_is_bounded_by_budget_not_per_call_sum(
     async def run() -> float:
         t = _time.perf_counter()
         try:
-            await svc.rank_home(req)
+            await svc.rank_home(req, request_id="wall-clock-budget-test")
         except svc.UpstreamTimeout:
             return _time.perf_counter() - t
         pytest.fail("예산 초과인데 504 가 나오지 않았다")
@@ -964,7 +1014,13 @@ def test_profile_text_never_reaches_the_response(monkeypatch: pytest.MonkeyPatch
 def test_log_has_fixed_safe_key_set_only(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """관측 로그에 프로필 원문·상품 id·모델 식별자·토큰이 남지 않는다(§3.7·§6.3)."""
+    """`home_reco_request` 관측 로그(§6.3 b)에 프로필 원문·상품 id·모델 식별자·토큰이 남지 않는다.
+
+    [이슈 #140] `recommend_provenance`(§6.3 d)는 같은 로거로 나가지만 **의도적으로**
+    productId·listId 를 싣는다(CH-5 가 인증 불필요 공개 조회라 PII 가 아니다, §6 v2 표) — 그
+    검사는 `9001`/`1001` 배제 대상에서 뺀다. 프로필 원문·모델 식별자·토큰은 두 로그 어디에도
+    남으면 안 되므로 전체 레코드를 계속 검사한다.
+    """
     secret = "사용자는 캠핑을 좋아한다"
 
     async def _profile(user_id: str | None) -> dict | None:
@@ -989,8 +1045,17 @@ def test_log_has_fixed_safe_key_set_only(
         )
         for r in records
     )
-    for banned in (secret, "캠핑", "claude", "haiku", "9001", "1001", "right-token"):
+    for banned in (secret, "캠핑", "claude", "haiku", "right-token"):
         assert banned not in blob, f"로그에 {banned!r} 가 남았다"
+
+    # `home_reco_request` 는 `log_structured` 가 아니라 `logger.info(json.dumps(...))` 로 직접
+    # 나가 LogRecord 에 `event` extra 가 없다(#469 관례) — 메시지를 파싱해 이벤트로 가려낸다.
+    request_log = next(
+        r for r in records if json.loads(r.getMessage()).get("event") == "home_reco_request"
+    )
+    request_blob = request_log.getMessage()
+    for banned in ("9001", "1001"):
+        assert banned not in request_blob, f"home_reco_request 로그에 {banned!r} 가 남았다"
 
 
 def test_log_records_outcome_and_counts(
