@@ -65,6 +65,33 @@ async def test_all_three_tables_exist(pool) -> None:
     }
 
 
+async def test_disabled_spans_column_is_added_to_an_existing_table(pool) -> None:
+    """구 볼륨에도 `disabled_spans` 가 붙는다 (#359, REQ-PGRAPH-055).
+
+    `CREATE TABLE IF NOT EXISTS` 는 **기존 테이블을 갱신하지 않는다** — #358 로 이미 테이블이
+    생긴 환경에서는 새 컬럼이 영영 안 생기고, 감쇠 정지가 조용히 죽는다(조회가 실패하거나
+    구간이 늘 빈 목록). 컬럼을 지우고 마이그레이션을 다시 돌려 그 경로를 실제로 밟는다.
+    """
+    async with pool.connection() as conn:
+        await conn.execute(
+            "ALTER TABLE profile_personalization_state DROP COLUMN IF EXISTS disabled_spans"
+        )
+
+    await graph_journal._ensure_schema(pool)
+
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "SELECT data_type, is_nullable FROM information_schema.columns "
+            "WHERE table_name = 'profile_personalization_state' "
+            "AND column_name = 'disabled_spans'"
+        )
+        row = await cur.fetchone()
+
+    assert row is not None, "구 볼륨에 disabled_spans 가 추가되지 않았다"
+    assert row[0] == "jsonb"
+    assert row[1] == "NO"  # NOT NULL — 기본값 '[]' 로 채워진다
+
+
 async def test_audit_action_vocabulary_is_enforced_by_the_database(pool) -> None:
     """액션 어휘 4종은 DB 가 거부한다 — 애플리케이션 단언만으로는 우회 경로가 남는다.
 
