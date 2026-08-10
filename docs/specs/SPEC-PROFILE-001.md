@@ -1,9 +1,9 @@
 ---
 id: SPEC-PROFILE-001
-version: 0.9.0
+version: 0.10.0
 status: draft
 created: 2026-07-10
-updated: 2026-08-09
+updated: 2026-08-10
 author: navis
 priority: high
 issue_number: 79
@@ -21,6 +21,7 @@ issue_number: 79
 
 ## HISTORY
 
+- **v0.10.0 (2026-08-10, 이슈 #321)** — **OPEN-P5(대화 보존 기간)를 해소했다** — `conversation_turns`(완료 대화 전사록)의 보존 기간이 신설 `conversation_retention_days`(config 주입, 기본 **90일**)로 확정됐다. 값은 감사 원장 `graph_audit_retention_days`(`SPEC-PROFILE-GRAPH-149` §11, 기본 90일)와 **의도적으로 짝지었다** — 감사 행이 지문만 남기므로(REQ-PGRAPH-081) 원문 대조 상대는 전사록뿐인데, 전사록이 감사 원장보다 먼저 지워지면 그 사이 구간이 조사 불가능해진다. 이 관계는 **기동 시점 fail-fast** 검증기(`conversation_retention_days <= graph_audit_retention_days`)로 강제한다. **삭제 주체는 별도 스케줄러 job**(`conversation_retention_sweep`, 기본 1시간 주기)이며 유계 배치(`ORDER BY created_at LIMIT` + `FOR UPDATE SKIP LOCKED`, 배치당 짧은 트랜잭션 1개)로 지운다 — `run_session_context_sweep`(sole lifecycle authority, 60초 주기)에 얹지 않았다: 그쪽 except 경로의 의미("activity lease 가 다음 sweep 에서 복구")가 실패한 DELETE 의 의미와 다르고 주기도 60배 과하다. **"처리 전 세션 버퍼"는 이 항목의 범위가 아니다** — 그쪽(`ProfileStore.append_session_ctx`)은 이미 별개 lifecycle(`profile_session_idle_timeout_s`/idle sweep, 세션 종료 시 consolidation 소비)로 관리되고 있어 새 시간 기반 삭제 정책이 필요하지 않았다. 요구사항 신설·삭제 없음, 파이프라인 동작·저장소 구성·게이트 규칙 무변경, **와이어 계약(엔드포인트·SSE 이벤트·필드·오류 코드) 불변** — `turns_for()`·`get_turn()` 의 프로덕션 호출부가 없어 전사록은 감사·상관관계 조회 전용이다. 같은 커밋이 하드 PII 저장 게이트(`app/core/pii.py`, `SPEC-PROFILE-GRAPH-149` REQ-PGRAPH-071)도 구현했다 — "기억해" hot-path·세션 델타 승격·요약 재작성 어느 경로로도 하드 PII(전화번호·주민번호·카드번호·계좌번호·이메일·시크릿 토큰)가 저장 전에 전량 폐기되도록 닫았다(그래프 트리플의 `label`/`anchorPhrase` 포함). 동반 개정: api-spec v0.32.9 · `SPEC-PROFILE-GRAPH-149` v0.3.3.
 - **v0.9.0 (2026-08-09, 이슈 #499)** — `SPEC-PROFILE-GRAPH-149`·api-spec v0.32.0 의 **undo 폐기**에 동기화했다. **v0.8.0 이 등재한 문장 3건이 되돌아간다.** (1) **REQ-PROF-034 (a) 개별 삭제 = 억제 후 물리 삭제 → 즉시 물리 삭제** — 되돌리기 API(I-35·`M-14`)가 2026-08-07 정본에서 폐기되면서 undo 창이 지킬 대상이 사라졌다. **영구 tombstone(재파생 차단)은 유지**한다 — 없애면 세션 버퍼 flush 가 지운 취향을 되살린다. (2) **좁은 예외 2건 → 1건**(민감 파생 보존기간 만료만). "개별 삭제 undo 창 만료"는 예외가 *해소*된 게 아니라, 유예가 사라져 **애초에 기계 경로가 아니게 된** 것이다 — 분류 정정이다. (3) **AC-PROF-31 재작성** — 인수 기준에서 복구 단계를 제거하고 "즉시 물리 삭제 + 영구 재파생 차단"으로 좁혔다. 요구사항 신설·삭제 없음, 파이프라인 동작 무변경.
 - **v0.8.1 (2026-08-06, 이슈 #356)** — OPEN-G0 착수에 맞춘 **보강**(요구사항 신설·삭제 없음, 계약 무개정). (1) **REQ-PROF-086의 단계 분담 명확화** — 트리플의 *식별자 확정*은 1단계(게이트 통과 직후 결정론적 resolver)이고 2단계는 확정분을 병합해 `("graph", user_id)` 문서로 산출한다. 배치마다 재-resolve 하면 거리 임계·통제 어휘가 바뀔 때 같은 fact 가 다른 `node_id` 로 붙어 **tombstone 을 우회**하므로, 결정론을 기능 요구로 못박은 `SPEC-PROFILE-GRAPH-149` REQ-PGRAPH-010과 충돌한다. (2) **§5.3 `graph_triples` 소유 관계 명시** — 이 필드는 *그 fact 가 낳은* 트리플의 증거 측 기록이고, 정본 집계는 `("graph", user_id)/"v1"` 단일 문서다(신규 SPEC §7.1 "fact 항목은 증거 저장소로 유지하고 값에 필드만 더한다"). 필드명·타입은 v0.7.0 선언 그대로 쓴다 — 새 이름을 만들지 않는다. OPEN-P12는 여전히 **해소가 아니라 진행 중**이다. v0.8.0(#322)의 삭제 계약 개정과 충돌하지 않는다 — 본 보강은 *트리플을 만드는 쪽*이고 v0.8.0은 *지우는 쪽*이며, undo 창·원문 물리 삭제는 사용자 변경 경로라 #150/#358 소관이다.
 - **v0.8.0 (2026-08-06, 이슈 #322)** — `SPEC-PROFILE-GRAPH-149` v0.2.0·api-spec v0.26.0 의 삭제 계약 개정에 동기화했다. **v0.7.0 이 단정한 문장 2건이 뒤집힌다.** (1) **REQ-PROF-034 (a) 개별 삭제** — "억제(tombstone), 이력 보존, 복구 가능"에서 **"즉시 억제 → undo 창(`graph_undo_window_s`, 기본 5분) → 원문 물리 삭제, 재승격 차단용 tombstone 만 잔존"** 으로 개정. AC-PROF-31 도 같이 고쳤다. (2) **REQ-PROF-034 "좁은 예외 1건·유일"** → **2건** — 민감 파생 보존기간 만료(REQ-PGRAPH-077)에 더해 개별 삭제 undo 창 만료(REQ-PGRAPH-025)가 기계 경로 하드 삭제의 두 번째 지점이다. 성격이 다르다는 점을 명시했다(전자는 기계가 판정해 개시, 후자는 **사용자 요청의 지연 집행**이라 "기계가 조용히 지우는 것"에 애초에 해당하지 않는다). (3) **REQ-PROF-085·AC-PROF-32 전사록 보존 반전** — 전체 초기화가 이제 `conversation_turns`(해당 `user_id` 행 전체)도 물리 삭제하고 **변경 감사 로그만 보존**한다. 근거는 REQ-PROF-034 가 이미 채택한 논거의 연장이며(적용 범위 한정, 예외 신설 아님) 새 원칙을 만들지 않는다. 대화 기록은 `pg-profile` 에만 있고 Spring 에 사본이 없어 **AI 단독 완결**이다(#322 선결 확인). 세션 종료(I-20/D6)는 여전히 전사록을 지우지 않는다 — 로그아웃은 삭제 요청이 아니다. (4) **OPEN-P5 관계 명시(해소 아님)** — 전사록 TTL 은 **시간 경과** 트리거이고 REQ-PROF-085 는 **사용자 명시 요청** 트리거다. #322 는 초기화 트리거만 확정했고 TTL 은 여전히 미정이나, "사용자가 원하면 지울 수 있다"는 최소 보장이 확보돼 긴급도는 내려간다. 파이프라인 동작·저장소 구성·게이트 규칙은 무변경이다.

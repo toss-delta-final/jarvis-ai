@@ -1,6 +1,6 @@
 ---
 id: SPEC-PROFILE-GRAPH-149
-version: 0.3.2
+version: 0.3.3
 status: draft
 created: 2026-08-05
 updated: 2026-08-10
@@ -31,6 +31,21 @@ issue_number: 149
 
 ## HISTORY
 
+- **v0.3.3 (2026-08-10, 이슈 #321)** — **REQ-PGRAPH-071·073 이 코드로 이행됐다** — 이 이슈가 그
+  [HARD] 조항 두 개의 구현이다. 하드 PII(전화번호·주민번호·카드번호·계좌번호·이메일·시크릿
+  토큰) 결정론적 탐지·치환을 단일 정본 `app/core/pii.py`(순수·동기·무 I/O, 예외 없음)로
+  신설하고, "기억해" hot-path(`record_remember`)·세션 델타 승격(`ProfileStore.add_fact`,
+  triple 의 `label`/`anchorPhrase` 포함)·요약 재작성(`set_summary`, `_embed_summary` 외부
+  호출 이전)이 **같은 쓰기 경계**를 통과하도록 배선했다(REQ-PGRAPH-073 "기억해 hot-path도
+  같은 쓰기 경계를 통과해야" 요구를 충족) — 히트 시 저장 전 전량 폐기하고 파생 취향도 만들지
+  않는다(REQ-PGRAPH-071). 세션 버퍼(`append_session_ctx`)와 LangSmith 콘텐츠 트레이스는
+  **치환**(저장물이 아니라 델타 추출 LLM 입력·관측이라 REQ-PGRAPH-071 의 "저장" 관문과는
+  다른 경계). **OPEN-G6 잔여가 닫혔다** — §9 가 "전사록 자연 만료 TTL 은 `SPEC-PROFILE-001`
+  OPEN-P5 미정이라 별건으로 남는다"고 파킹해 뒀는데, 그 OPEN-P5 가 `conversation_retention_days`
+  (기본 90일, 본 SPEC 의 `graph_audit_retention_days` 와 의도적으로 짝지음)로 확정되며 잔여가
+  해소됐다. 요구사항 신설·삭제 없음(기존 [HARD] 조항의 구현일 뿐), 저장 모델·API 규칙 무변경,
+  **와이어 계약(api-spec §3.8·§3.9) 불변**. 동반 개정: api-spec v0.32.9 ·
+  `SPEC-PROFILE-001` v0.10.0.
 - **v0.3.2 (2026-08-10, 이슈 #358)** — **구현이 드러낸 세 지점을 명세에 반영**했다(요구사항 신설
   없음, 와이어 계약 무개정 — 저장 계층 서술 정밀화). (1) **§7.1 테이블 2개 → 3개** — "감사 겸
   저널" 하나로는 [HARD]를 못 지킨다. REQ-PGRAPH-043이 원장에 "최초 응답 본문을 그대로" 담게 하는데
