@@ -45,6 +45,7 @@ from pydantic import BaseModel, ValidationError
 
 from app.core.config import get_settings
 from app.core.tracing import TraceNode, current_request_trace, trace_span
+from app.pipelines import brand_aliases
 from app.schemas.spring import (
     AccountEventsResult,
     AddToCartRequest,
@@ -610,7 +611,10 @@ def _client(*, timeout: float | None = None) -> httpx.AsyncClient:
 
 
 def _search_query_params(
-    filters: ProductSearchFilters, *, color_values: list[str] | None = None
+    filters: ProductSearchFilters,
+    *,
+    color_values: list[str] | None = None,
+    brand_values: list[str] | None = None,
 ) -> dict:
     """decompose 필터 → BE I-1 GET 쿼리 파라미터 (§4.6, C-15).
 
@@ -636,7 +640,12 @@ def _search_query_params(
         # 다중 브랜드 전량 전송(방법 D) — httpx 가 brandName=A&brandName=B 반복 파라미터로
         # 직렬화 → BE IN 필터(#100 P1). 조건칩(state)도 전 브랜드를 표시하므로 요청·표시가 일치한다.
         # 빈/공백 요소는 제거(LLM 이 [""] 등을 낼 수 있음 — brandName= 빈값 전송 방지, #127 리뷰).
-        brands = [b for b in filters.brand if b and b.strip()]
+        # [#466] `brand_values` 는 법인 표기 확장(`app.pipelines.brand_aliases`)의 결과다 —
+        # None 이면 종전대로 원문을 싣는다. 확장값은 **사용자 원문을 먼저 포함**하는 가산 목록
+        # 이라(그 함수의 계약) 여기서 원문과 합치지 않는다. 조건칩은 `filters.brand`(원문)를
+        # 그대로 보므로 확장이 표시에 새지 않는다.
+        source = filters.brand if brand_values is None else brand_values
+        brands = [b for b in source if b and b.strip()]
         if brands:
             params["brandName"] = brands
     if filters.color and filters.color.strip():
@@ -868,7 +877,14 @@ async def search_products(filters: ProductSearchFilters) -> ProductSearchResult:
         except Exception:
             # 색상 확장은 보조 품질 경로다. DB 장애가 본 검색을 죽이지 않게 기존 단수로 degrade.
             _log.warning("색상 동의어 확장 실패 — 원문 단수 color로 검색", exc_info=True)
-    params = _search_query_params(filters, color_values=color_values)
+    # [#466] 브랜드 법인 표기 확장 — 순수 함수라 DB·네트워크 의존이 없어 색상처럼 try 로
+    # 감싸지 않는다(삼킬 실패가 없다). 꺼져 있으면 None → 와이어가 종전과 바이트 동일하다.
+    brand_values = brand_aliases.brand_wire_values(
+        filters.brand,
+        enabled=settings.brand_alias_expansion_enabled,
+        cap=settings.brand_alias_max_values,
+    )
+    params = _search_query_params(filters, color_values=color_values, brand_values=brand_values)
     attempts = settings.spring_max_retries + 1
     # [#132] 검색 1회의 **총시간** 상한. `spring_search_timeout_s` 는 httpx 에 스칼라로 주입돼
     # connect/read/write/pool 네 시계가 되는데 `read` 는 **청크 사이 간격** 상한이라, 바디가
