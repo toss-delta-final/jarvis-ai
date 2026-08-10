@@ -2957,6 +2957,280 @@ async def test_cart_add_empty_options_falls_back_to_hint_names() -> None:
     assert all(ch not in token for ch in ("\x1b", "​"))
 
 
+# ─────────── 색상 동의어 등가·조건 미충족 고지 (이슈 #454) ───────────
+#
+# 사전 적재는 `_cart_option_required_text` 호출 전에 `spring_client._load_color_synonym_map` 을
+# 거친다(graph.py::_load_cart_color_synonyms) — 그 함수를 몽키패치해 라이브 DB 없이 구동한다.
+
+_BLACK_SYNONYMS = {"검정": ["블랙", "검정", "흑색"], "블랙": ["블랙", "검정", "흑색"]}
+
+
+def _mock_synonym_map(mapping: dict) -> object:
+    async def _load(settings):
+        return mapping
+
+    return _load
+
+
+async def test_cart_add_color_equivalence_narrows_reask_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(2-A 이득) 조건어 "검정" + 옵션명 "블랙" — 사전이 있으면 되물음 문구가 블랙 두 건으로 좁혀진다."""
+    monkeypatch.setattr(
+        "app.services.spring_client._load_color_synonym_map", _mock_synonym_map(_BLACK_SYNONYMS)
+    )
+    store = CartStateStore()
+    options = [
+        CartOption(option_id=1, name="블랙 / M"),
+        CartOption(option_id=2, name="블랙 / L"),
+        CartOption(option_id=3, name="화이트 / M"),
+    ]
+
+    async def add_fn(req):
+        raise CartOptionRequired(options)
+
+    events = await _run_add(
+        store,
+        CartIntent(product_id=1, quantity=1),
+        add_fn,
+        message="아무거나 담아줘",
+        condition_terms=("검정",),
+    )
+
+    assert "action" not in _types(events)
+    token = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert "말씀하신 조건에 맞는 옵션이에요" in token
+    assert "블랙 / M" in token and "블랙 / L" in token
+    assert "화이트 / M" not in token
+
+
+async def test_cart_add_color_equivalence_does_not_feed_autoselect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(R1 불변, §454) 조건어·발화가 색상 동의어 표기라도 자동 선택 근거(R1)는 등가를 보지 않는다
+    — 등가는 되물음 문구 좁히기(R2)에만 적용된다. 단일 "블랙" 후보 하나뿐이라, R1 이 등가를
+    (버그로) 봤다면 후보가 정확히 1개로 좁혀져 되묻지 않고 자동 담겼을 것이다."""
+    monkeypatch.setattr(
+        "app.services.spring_client._load_color_synonym_map", _mock_synonym_map(_BLACK_SYNONYMS)
+    )
+    store = CartStateStore()
+    calls: list[int | None] = []
+    options = [CartOption(option_id=1, name="블랙"), CartOption(option_id=2, name="화이트")]
+
+    async def add_fn(req):
+        calls.append(req.option_id)
+        raise CartOptionRequired(options)
+
+    events = await _run_add(
+        store,
+        CartIntent(product_id=1, quantity=1),
+        add_fn,
+        message="검정 담아줘",
+        condition_terms=("검정",),
+    )
+
+    assert calls == [None]  # 재호출(자동 선택) 없음 — R1 은 등가를 몰라 후보를 못 좁힌다
+    assert "action" not in _types(events)
+    token = next(e for e in events if e["type"] == "token")["data"]["text"]
+    # 되물음 문구(R2)는 등가로 좁혀진다 — 자동 선택만 안 될 뿐 문구는 여전히 2-A 이득을 본다.
+    assert "블랙" in token and "화이트" not in token
+
+
+async def test_cart_add_no_synonym_dictionary_degrades_to_today_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(사전 없음 degrade) 사전이 `None` 이면(적재 결과 없음) 결과가 오늘과 완전히 동일하다."""
+    monkeypatch.setattr(
+        "app.services.spring_client._load_color_synonym_map", _mock_synonym_map(None)
+    )
+    store = CartStateStore()
+    options = [CartOption(option_id=1, name="블랙"), CartOption(option_id=2, name="화이트")]
+
+    async def add_fn(req):
+        raise CartOptionRequired(options)
+
+    events = await _run_add(
+        store,
+        CartIntent(product_id=1, quantity=1),
+        add_fn,
+        message="아무거나 담아줘",
+        condition_terms=("검정",),
+    )
+
+    token = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert token == f"옵션을 선택해 주세요: {_options_text(options)}. 어떤 걸로 담을까요?"
+
+
+async def test_cart_add_unresolved_color_condition_reports_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(2-B 발동) 조건어 "빨강" — 색상 축은 있지만(블랙/화이트) 매칭이 하나도 없으면 "없다"고
+    단정하지 않고 "찾지 못했어요"로만 안내하고 전체 옵션을 보여준다(패킷 §3 문구 그대로)."""
+    mapping = {
+        "빨강": ["빨강", "레드"],
+        "블랙": ["블랙", "검정"],
+        "화이트": ["화이트", "흰색"],
+    }
+    monkeypatch.setattr(
+        "app.services.spring_client._load_color_synonym_map", _mock_synonym_map(mapping)
+    )
+    store = CartStateStore()
+    options = [CartOption(option_id=1, name="블랙 / M"), CartOption(option_id=2, name="화이트 / M")]
+
+    async def add_fn(req):
+        raise CartOptionRequired(options)
+
+    events = await _run_add(
+        store,
+        CartIntent(product_id=1, quantity=1),
+        add_fn,
+        message="빨강 담아줘",
+        condition_terms=("빨강",),
+    )
+
+    assert "action" not in _types(events)
+    token = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert token == (
+        "'빨강' 조건에 맞는 옵션은 찾지 못했어요. "
+        f"고를 수 있는 옵션은 이거예요: {_options_text(options)}. "
+        "이 중에서 고르시거나 다른 상품을 말씀해 주세요."
+    )
+    assert "없어요" not in token and "품절" not in token  # 단정 금지(패킷 §3)
+
+
+async def test_cart_add_no_color_axis_keeps_todays_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    """(2-B 미발동① — 색상 축 없음) 옵션명이 사이즈뿐이면 색상 조건이 안 맞아도 오늘 문구 그대로다."""
+    mapping = {"빨강": ["빨강", "레드"]}
+    monkeypatch.setattr(
+        "app.services.spring_client._load_color_synonym_map", _mock_synonym_map(mapping)
+    )
+    store = CartStateStore()
+    options = [
+        CartOption(option_id=1, name="S"),
+        CartOption(option_id=2, name="M"),
+        CartOption(option_id=3, name="L"),
+    ]
+
+    async def add_fn(req):
+        raise CartOptionRequired(options)
+
+    events = await _run_add(
+        store,
+        CartIntent(product_id=1, quantity=1),
+        add_fn,
+        message="빨강 담아줘",
+        condition_terms=("빨강",),
+    )
+
+    token = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert token == f"옵션을 선택해 주세요: {_options_text(options)}. 어떤 걸로 담을까요?"
+
+
+async def test_cart_add_no_condition_terms_keeps_todays_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(2-B 미발동② — 조건어 없음) 조건어가 아예 없으면 사전이 있어도 오늘 문구 그대로다."""
+    monkeypatch.setattr(
+        "app.services.spring_client._load_color_synonym_map", _mock_synonym_map(_BLACK_SYNONYMS)
+    )
+    store = CartStateStore()
+    options = [CartOption(option_id=1, name="블랙"), CartOption(option_id=2, name="화이트")]
+
+    async def add_fn(req):
+        raise CartOptionRequired(options)
+
+    events = await _run_add(
+        store, CartIntent(product_id=1, quantity=1), add_fn, message="아무거나 담아줘"
+    )
+
+    token = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert token == f"옵션을 선택해 주세요: {_options_text(options)}. 어떤 걸로 담을까요?"
+
+
+async def test_cart_add_color_condition_fully_matched_keeps_todays_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(2-B 미발동③ — 전건 일치) 조건에 전 옵션이 맞으면(등가 포함) "찾지 못했어요" 문구를 내지
+    않는다 — `condition_matched_all` 이 이 케이스를 "0건 좁힘"과 갈라주지 않으면 여기서 거짓
+    안내("찾지 못했다")가 나간다."""
+    monkeypatch.setattr(
+        "app.services.spring_client._load_color_synonym_map", _mock_synonym_map(_BLACK_SYNONYMS)
+    )
+    store = CartStateStore()
+    options = [CartOption(option_id=1, name="블랙 / M"), CartOption(option_id=2, name="블랙 / L")]
+
+    async def add_fn(req):
+        raise CartOptionRequired(options)
+
+    events = await _run_add(
+        store,
+        CartIntent(product_id=1, quantity=1),
+        add_fn,
+        message="검정 담아줘",
+        condition_terms=("검정",),
+    )
+
+    token = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert token == f"옵션을 선택해 주세요: {_options_text(options)}. 어떤 걸로 담을까요?"
+    assert "찾지 못했어요" not in token
+
+
+async def test_cart_add_color_synonym_config_off_keeps_todays_behavior(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(설정 off) `cart_option_color_synonym_enabled=False` 면 사전을 아예 조회하지 않고
+    오늘 동작 그대로다."""
+    monkeypatch.setattr(get_settings(), "cart_option_color_synonym_enabled", False)
+    monkeypatch.setattr(
+        "app.services.spring_client._load_color_synonym_map",
+        lambda settings: pytest.fail("설정 off 인데 사전을 조회했다"),
+    )
+    store = CartStateStore()
+    options = [CartOption(option_id=1, name="블랙"), CartOption(option_id=2, name="화이트")]
+
+    async def add_fn(req):
+        raise CartOptionRequired(options)
+
+    events = await _run_add(
+        store,
+        CartIntent(product_id=1, quantity=1),
+        add_fn,
+        message="아무거나 담아줘",
+        condition_terms=("검정",),
+    )
+
+    token = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert token == f"옵션을 선택해 주세요: {_options_text(options)}. 어떤 걸로 담을까요?"
+
+
+async def test_cart_add_synonym_load_failure_degrades_without_crashing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(사전 적재 실패) 적재가 예외를 던져도 담기 흐름이 죽지 않고 오늘 문구로 degrade한다."""
+
+    async def _raise(settings):
+        raise RuntimeError("catalog offline")
+
+    monkeypatch.setattr("app.services.spring_client._load_color_synonym_map", _raise)
+    store = CartStateStore()
+    options = [CartOption(option_id=1, name="블랙"), CartOption(option_id=2, name="화이트")]
+
+    async def add_fn(req):
+        raise CartOptionRequired(options)
+
+    events = await _run_add(
+        store,
+        CartIntent(product_id=1, quantity=1),
+        add_fn,
+        message="아무거나 담아줘",
+        condition_terms=("검정",),
+    )
+
+    assert "action" not in _types(events)
+    token = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert token == f"옵션을 선택해 주세요: {_options_text(options)}. 어떤 걸로 담을까요?"
+
+
 async def test_cart_state_store_option_hint_round_trip_and_pruning(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
