@@ -48,6 +48,62 @@ async def test_semantic_query_lands_on_filters() -> None:
     assert d.filters.semantic_query == "시원한 여름 셔츠"
 
 
+async def test_leg_suppression_keeps_attr_condition_turn_in_real_parse_flow() -> None:
+    decision = await _run(
+        _raw(
+            semanticQuery="",
+            categoryQueries=[{"category": None, "query": "가성비 좋은 거"}],
+            attrConditions={"소재": "린넨"},
+        ),
+        leg_head_suppression=True,
+        leg_generic_heads=frozenset({"거"}),
+        leg_condition_terms=frozenset({"가성비"}),
+    )
+    assert decision.category_queries[0].query == "가성비 좋은 거"
+
+
+async def test_category_leg_injection_does_not_escape_missing_dictionary_in_real_parse_flow(
+    tmp_path,
+) -> None:
+    """[#443 F-1] 사전 경로가 없으면 decompose는 빈 legs라는 기존 동작으로 저하한다."""
+    decision = await _run(
+        _raw(categoryQueries=[]),
+        category_leg_injection=True,
+        category_leg_injection_path=str(tmp_path / "missing.json"),
+    )
+    assert decision.category_queries == []
+    assert decision.category_leg_injected is False
+
+
+async def test_category_leg_injection_marks_only_its_own_added_leg() -> None:
+    """[#443] 표본은 모델 leg와 사전 주입 leg를 구분해 하드 불변식을 재집계할 수 있어야 한다."""
+    decision = await decompose(
+        _FakeLLM(_raw(categoryQueries=[])),
+        query="과일 추천해줘",
+        prior_filters=None,
+        profile_summary=None,
+        tier="fast",
+        category_leg_injection=True,
+    )
+    assert decision.category_leg_injected is True
+
+
+async def test_category_leg_injection_runs_before_suppression_without_refilling_suppressed_leg() -> None:
+    """[#443] 모델의 총칭 leg를 #465가 비운 뒤 사전 주입이 다시 채우면 안 된다."""
+    decision = await decompose(
+        _FakeLLM(_raw(categoryQueries=[{"category": None, "query": "가성비 좋은 거"}])),
+        query="과일 가성비 좋은 거 추천해줘",
+        prior_filters=None,
+        profile_summary=None,
+        tier="fast",
+        category_leg_injection=True,
+        leg_head_suppression=True,
+        leg_generic_heads=frozenset({"거"}),
+        leg_condition_terms=frozenset({"가성비"}),
+    )
+    assert decision.category_queries == []
+
+
 async def test_semantic_query_falls_back_to_user_query_when_missing() -> None:
     """semanticQuery 누락/빈값 시 사용자 발화(query)로 폴백한다(재정렬이 항상 입력을 갖도록)."""
     d = await _run(_raw(semanticQuery=""))

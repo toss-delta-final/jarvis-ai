@@ -316,6 +316,11 @@ def test_route_decision_axes_are_all_classified() -> None:
         # category_legs 가 이미 blocking 에 있으므로 같은 이유로 여기가 맞다(category_expanded 와
         # 동형).
         "category_legs_restored",
+        # [#443] 사전 기반 leg 보강이 **발동했는가**의 진단 표식일 뿐이다. 보강이 후보 소스를
+        # 실제로 가르는 경로는 `category_queries`/`category_legs` 를 채우는 것이고 그건 이미
+        # blocking 이 계상한다 — 이 불리언을 blocking 에 넣으면 같은 사실을 두 번 세는 중복이다
+        # (`category_expanded` 를 여기 둔 것과 같은 이유).
+        "category_leg_injected",
     }
 
     assert {f.name for f in fields(RouteDecision)} == (

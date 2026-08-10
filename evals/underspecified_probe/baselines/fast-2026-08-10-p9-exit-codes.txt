@@ -1,0 +1,9 @@
+before-1 exit=0
+before-1 prompt=5d5a71b0ab09 unfilled=0
+before-2 exit=0
+before-2 prompt=5d5a71b0ab09 unfilled=0
+postprocess-1 exit=0
+postprocess-1 prompt=5d5a71b0ab09 unfilled=0
+postprocess-2 exit=0
+postprocess-2 prompt=5d5a71b0ab09 unfilled=0
+P9_ARMS_COMPLETE

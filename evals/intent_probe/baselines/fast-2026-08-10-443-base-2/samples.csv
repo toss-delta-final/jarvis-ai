@@ -1,0 +1,265 @@
+cellId,utteranceId,contextId,group,sampleIndex,intent,productId,optionId,quantity,case,scopedToPrevious,hasCategorySignal,scopeFree,categoryLegs,categoryLegInjected,categoryLegsEchoPrior,resolvedCategoryAction,resolvedProductId,screenResolverFired,screenResolutionReason,latencyMs
+condition-only-001|none,condition-only-001,none,condition_only,0,recommend,,,1,2,False,True,,|무슨 물건든지 5만원 이하,False,False,replace,,False,,4217
+condition-only-001|none,condition-only-001,none,condition_only,1,recommend,,,1,2,False,False,,,False,False,carry,,False,,2346
+condition-only-001|none,condition-only-001,none,condition_only,2,recommend,,,1,2,False,False,,,False,False,carry,,False,,2283
+condition-only-001|none,condition-only-001,none,condition_only,3,recommend,,,1,2,False,False,,,False,False,carry,,False,,3192
+condition-only-001|none,condition-only-001,none,condition_only,4,recommend,,,1,2,False,False,,,False,False,carry,,False,,2278
+condition-only-001|none,condition-only-001,none,condition_only,5,recommend,,,1,2,False,False,,,False,False,carry,,False,,2760
+condition-only-001|none,condition-only-001,none,condition_only,6,recommend,,,1,2,False,False,,,False,False,carry,,False,,2301
+condition-only-001|none,condition-only-001,none,condition_only,7,recommend,,,1,2,False,False,,,False,False,carry,,False,,2045
+condition-only-001|none,condition-only-001,none,condition_only,8,recommend,,,1,2,False,False,,,False,False,carry,,False,,2377
+condition-only-001|none,condition-only-001,none,condition_only,9,recommend,,,1,2,False,False,,,False,False,carry,,False,,1962
+condition-only-001|none,condition-only-001,none,condition_only,10,recommend,,,1,2,False,False,,,False,False,carry,,False,,2258
+condition-only-001|none,condition-only-001,none,condition_only,11,recommend,,,1,2,False,False,,,False,False,carry,,False,,34609
+condition-only-001|none,condition-only-001,none,condition_only,12,recommend,,,1,2,False,False,,,False,False,carry,,False,,4033
+condition-only-001|none,condition-only-001,none,condition_only,13,recommend,,,1,2,False,False,,,False,False,carry,,False,,2635
+condition-only-001|none,condition-only-001,none,condition_only,14,recommend,,,1,2,False,True,,|5만원 이하 아무거나,False,False,replace,,False,,2817
+condition-only-001|none,condition-only-001,none,condition_only,15,recommend,,,1,2,False,False,,,False,False,carry,,False,,2616
+condition-only-001|none,condition-only-001,none,condition_only,16,recommend,,,1,2,False,False,,,False,False,carry,,False,,1658
+condition-only-001|none,condition-only-001,none,condition_only,17,recommend,,,1,2,False,True,,|5만원 이하 아무거나,False,False,replace,,False,,3335
+condition-only-001|none,condition-only-001,none,condition_only,18,recommend,,,1,2,False,False,,,False,False,carry,,False,,2606
+condition-only-001|none,condition-only-001,none,condition_only,19,recommend,,,1,2,False,False,,,False,False,carry,,False,,2570
+condition-only-001|none,condition-only-001,none,condition_only,20,recommend,,,1,2,False,False,,,False,False,carry,,False,,2508
+condition-only-001|none,condition-only-001,none,condition_only,21,recommend,,,1,2,False,False,,,False,False,carry,,False,,2748
+condition-only-001|none,condition-only-001,none,condition_only,22,recommend,,,1,2,False,False,,,False,False,carry,,False,,36271
+condition-only-001|none,condition-only-001,none,condition_only,23,recommend,,,1,2,False,True,,|5만원 이하 아무거나,False,False,replace,,False,,4586
+condition-only-002|none,condition-only-002,none,condition_only,0,recommend,,,1,2,False,True,,|평점 높은 상품,False,False,replace,,False,,2936
+condition-only-002|none,condition-only-002,none,condition_only,1,recommend,,,1,2,False,False,,,False,False,carry,,False,,2517
+condition-only-002|none,condition-only-002,none,condition_only,2,recommend,,,1,2,False,False,,,False,False,carry,,False,,2526
+condition-only-002|none,condition-only-002,none,condition_only,3,recommend,,,1,2,False,False,,,False,False,carry,,False,,2405
+condition-only-002|none,condition-only-002,none,condition_only,4,recommend,,,1,2,False,False,,,False,False,carry,,False,,2394
+condition-only-002|none,condition-only-002,none,condition_only,5,recommend,,,1,2,False,False,,,False,False,carry,,False,,2402
+condition-only-002|none,condition-only-002,none,condition_only,6,recommend,,,1,2,False,False,,,False,False,carry,,False,,2407
+condition-only-002|none,condition-only-002,none,condition_only,7,recommend,,,1,2,False,False,,,False,False,carry,,False,,2568
+condition-only-002|none,condition-only-002,none,condition_only,8,recommend,,,1,2,False,False,,,False,False,carry,,False,,2348
+condition-only-002|none,condition-only-002,none,condition_only,9,recommend,,,1,2,False,False,,,False,False,carry,,False,,2255
+condition-only-002|none,condition-only-002,none,condition_only,10,recommend,,,1,2,False,False,,,False,False,carry,,False,,2392
+condition-only-002|none,condition-only-002,none,condition_only,11,recommend,,,1,2,False,False,,,False,False,carry,,False,,2166
+condition-only-002|none,condition-only-002,none,condition_only,12,recommend,,,1,2,False,False,,,False,False,carry,,False,,33672
+condition-only-002|none,condition-only-002,none,condition_only,13,recommend,,,1,2,False,False,,,False,False,carry,,False,,3321
+condition-only-002|none,condition-only-002,none,condition_only,14,recommend,,,1,2,False,False,,,False,False,carry,,False,,2778
+condition-only-002|none,condition-only-002,none,condition_only,15,recommend,,,1,2,False,False,,,False,False,carry,,False,,1793
+condition-only-002|none,condition-only-002,none,condition_only,16,recommend,,,1,2,False,False,,,False,False,carry,,False,,2813
+condition-only-002|none,condition-only-002,none,condition_only,17,recommend,,,1,2,False,True,,|평점 높은 상품,False,False,replace,,False,,3380
+condition-only-002|none,condition-only-002,none,condition_only,18,recommend,,,1,2,False,False,,,False,False,carry,,False,,2575
+condition-only-002|none,condition-only-002,none,condition_only,19,recommend,,,1,2,False,False,,,False,False,carry,,False,,2828
+condition-only-002|none,condition-only-002,none,condition_only,20,recommend,,,1,2,False,False,,,False,False,carry,,False,,2219
+condition-only-002|none,condition-only-002,none,condition_only,21,recommend,,,1,2,False,False,,,False,False,carry,,False,,2626
+condition-only-002|none,condition-only-002,none,condition_only,22,recommend,,,1,2,False,False,,,False,False,carry,,False,,2208
+condition-only-002|none,condition-only-002,none,condition_only,23,recommend,,,1,2,False,True,,|평점 좋은 거,False,False,replace,,False,,32828
+condition-only-003|none,condition-only-003,none,condition_only,0,recommend,,,1,3,False,False,,,False,False,carry,,False,,3481
+condition-only-003|none,condition-only-003,none,condition_only,1,recommend,,,1,3,False,False,,,False,False,carry,,False,,2417
+condition-only-003|none,condition-only-003,none,condition_only,2,recommend,,,1,3,False,False,,,False,False,carry,,False,,2186
+condition-only-003|none,condition-only-003,none,condition_only,3,recommend,,,1,3,False,False,,,False,False,carry,,False,,2342
+condition-only-003|none,condition-only-003,none,condition_only,4,recommend,,,1,3,False,False,,,False,False,carry,,False,,2427
+condition-only-003|none,condition-only-003,none,condition_only,5,recommend,,,1,3,False,False,,,False,False,carry,,False,,2357
+condition-only-003|none,condition-only-003,none,condition_only,6,recommend,,,1,3,False,False,,,False,False,carry,,False,,2181
+condition-only-003|none,condition-only-003,none,condition_only,7,recommend,,,1,3,False,False,,,False,False,carry,,False,,2747
+condition-only-003|none,condition-only-003,none,condition_only,8,recommend,,,1,3,False,False,,,False,False,carry,,False,,2097
+condition-only-003|none,condition-only-003,none,condition_only,9,recommend,,,1,3,False,False,,,False,False,carry,,False,,2318
+condition-only-003|none,condition-only-003,none,condition_only,10,recommend,,,1,3,False,False,,,False,False,carry,,False,,2697
+condition-only-003|none,condition-only-003,none,condition_only,11,recommend,,,1,3,False,False,,,False,False,carry,,False,,35619
+condition-only-003|none,condition-only-003,none,condition_only,12,recommend,,,1,3,False,False,,,False,False,carry,,False,,3326
+condition-only-003|none,condition-only-003,none,condition_only,13,recommend,,,1,3,False,False,,,False,False,carry,,False,,2129
+condition-only-003|none,condition-only-003,none,condition_only,14,recommend,,,1,3,False,False,,,False,False,carry,,False,,2625
+condition-only-003|none,condition-only-003,none,condition_only,15,recommend,,,1,3,False,True,,|인기 많은 거,False,False,replace,,False,,3221
+condition-only-003|none,condition-only-003,none,condition_only,16,recommend,,,1,3,False,True,,|인기 많은 거,False,False,replace,,False,,2621
+condition-only-003|none,condition-only-003,none,condition_only,17,recommend,,,1,3,False,False,,,False,False,carry,,False,,1844
+condition-only-003|none,condition-only-003,none,condition_only,18,recommend,,,1,3,False,False,,,False,False,carry,,False,,2703
+condition-only-003|none,condition-only-003,none,condition_only,19,recommend,,,1,3,False,False,,,False,False,carry,,False,,2467
+condition-only-003|none,condition-only-003,none,condition_only,20,recommend,,,1,3,False,False,,,False,False,carry,,False,,2964
+condition-only-003|none,condition-only-003,none,condition_only,21,recommend,,,1,3,False,False,,,False,False,carry,,False,,2383
+condition-only-003|none,condition-only-003,none,condition_only,22,recommend,,,1,2,False,False,,,False,False,carry,,False,,2727
+condition-only-003|none,condition-only-003,none,condition_only,23,recommend,,,1,2,False,True,,|인기 많은 거,False,False,replace,,False,,31434
+condition-only-004|none,condition-only-004,none,condition_only,0,recommend,,,1,2,False,False,,,False,False,carry,,False,,3442
+condition-only-004|none,condition-only-004,none,condition_only,1,recommend,,,1,2,False,False,,,False,False,carry,,False,,2329
+condition-only-004|none,condition-only-004,none,condition_only,2,recommend,,,1,2,False,True,,|무료배송 상품,False,False,replace,,False,,3229
+condition-only-004|none,condition-only-004,none,condition_only,3,recommend,,,1,2,False,False,,,False,False,carry,,False,,2675
+condition-only-004|none,condition-only-004,none,condition_only,4,recommend,,,1,2,False,False,,,False,False,carry,,False,,2358
+condition-only-004|none,condition-only-004,none,condition_only,5,recommend,,,1,2,False,False,,,False,False,carry,,False,,2366
+condition-only-004|none,condition-only-004,none,condition_only,6,recommend,,,1,2,False,False,,,False,False,carry,,False,,1890
+condition-only-004|none,condition-only-004,none,condition_only,7,recommend,,,1,2,False,False,,,False,False,carry,,False,,2284
+condition-only-004|none,condition-only-004,none,condition_only,8,recommend,,,1,2,False,False,,,False,False,carry,,False,,2218
+condition-only-004|none,condition-only-004,none,condition_only,9,recommend,,,1,2,False,False,,,False,False,carry,,False,,2626
+condition-only-004|none,condition-only-004,none,condition_only,10,recommend,,,1,2,False,False,,,False,False,carry,,False,,2891
+condition-only-004|none,condition-only-004,none,condition_only,11,recommend,,,1,2,False,False,,,False,False,carry,,False,,34515
+condition-only-004|none,condition-only-004,none,condition_only,12,recommend,,,1,2,False,False,,,False,False,carry,,False,,3956
+condition-only-004|none,condition-only-004,none,condition_only,13,recommend,,,1,2,False,False,,,False,False,carry,,False,,5364
+condition-only-004|none,condition-only-004,none,condition_only,14,recommend,,,1,2,False,False,,,False,False,carry,,False,,2431
+condition-only-004|none,condition-only-004,none,condition_only,15,recommend,,,1,2,False,False,,,False,False,carry,,False,,2436
+condition-only-004|none,condition-only-004,none,condition_only,16,recommend,,,1,2,False,False,,,False,False,carry,,False,,2177
+condition-only-004|none,condition-only-004,none,condition_only,17,recommend,,,1,2,False,False,,,False,False,carry,,False,,2247
+condition-only-004|none,condition-only-004,none,condition_only,18,recommend,,,1,2,False,False,,,False,False,carry,,False,,2472
+condition-only-004|none,condition-only-004,none,condition_only,19,recommend,,,1,2,False,False,,,False,False,carry,,False,,2666
+condition-only-004|none,condition-only-004,none,condition_only,20,recommend,,,1,2,False,False,,,False,False,carry,,False,,2590
+condition-only-004|none,condition-only-004,none,condition_only,21,recommend,,,1,2,False,False,,,False,False,carry,,False,,2430
+condition-only-004|none,condition-only-004,none,condition_only,22,recommend,,,1,2,False,False,,,False,False,carry,,False,,31729
+condition-only-004|none,condition-only-004,none,condition_only,23,recommend,,,1,2,False,False,,,False,False,carry,,False,,3208
+condition-only-005|none,condition-only-005,none,condition_only,0,recommend,,,1,3,False,False,,,False,False,carry,,False,,2692
+condition-only-005|none,condition-only-005,none,condition_only,1,recommend,,,1,3,False,False,,,False,False,carry,,False,,2332
+condition-only-005|none,condition-only-005,none,condition_only,2,recommend,,,1,2,False,False,,,False,False,carry,,False,,3034
+condition-only-005|none,condition-only-005,none,condition_only,3,recommend,,,1,2,False,False,,,False,False,carry,,False,,3596
+condition-only-005|none,condition-only-005,none,condition_only,4,recommend,,,1,2,False,False,,,False,False,carry,,False,,3036
+condition-only-005|none,condition-only-005,none,condition_only,5,recommend,,,1,2,False,False,,,False,False,carry,,False,,3527
+condition-only-005|none,condition-only-005,none,condition_only,6,recommend,,,1,3,False,False,,,False,False,carry,,False,,3208
+condition-only-005|none,condition-only-005,none,condition_only,7,recommend,,,1,2,False,False,,,False,False,carry,,False,,3221
+condition-only-005|none,condition-only-005,none,condition_only,8,recommend,,,1,3,False,False,,,False,False,carry,,False,,1940
+condition-only-005|none,condition-only-005,none,condition_only,9,recommend,,,1,3,False,False,,,False,False,carry,,False,,1736
+condition-only-005|none,condition-only-005,none,condition_only,10,recommend,,,1,2,False,False,,,False,False,carry,,False,,2427
+condition-only-005|none,condition-only-005,none,condition_only,11,recommend,,,1,3,False,True,,|가성비 좋은 거,False,False,replace,,False,,30047
+condition-only-005|none,condition-only-005,none,condition_only,12,recommend,,,1,2,False,False,,,False,False,carry,,False,,3105
+condition-only-005|none,condition-only-005,none,condition_only,13,recommend,,,1,2,False,False,,,False,False,carry,,False,,2717
+condition-only-005|none,condition-only-005,none,condition_only,14,recommend,,,1,3,False,False,,,False,False,carry,,False,,2733
+condition-only-005|none,condition-only-005,none,condition_only,15,recommend,,,1,3,False,True,,|가성비 좋은 거,False,False,replace,,False,,3437
+condition-only-005|none,condition-only-005,none,condition_only,16,recommend,,,1,2,False,False,,,False,False,carry,,False,,3156
+condition-only-005|none,condition-only-005,none,condition_only,17,recommend,,,1,2,False,False,,,False,False,carry,,False,,2683
+condition-only-005|none,condition-only-005,none,condition_only,18,recommend,,,1,2,False,False,,,False,False,carry,,False,,1859
+condition-only-005|none,condition-only-005,none,condition_only,19,recommend,,,1,3,False,False,,,False,False,carry,,False,,3581
+condition-only-005|none,condition-only-005,none,condition_only,20,recommend,,,1,2,False,False,,,False,False,carry,,False,,3484
+condition-only-005|none,condition-only-005,none,condition_only,21,recommend,,,1,2,False,False,,,False,False,carry,,False,,3242
+condition-only-005|none,condition-only-005,none,condition_only,22,recommend,,,1,2,False,False,,,False,False,carry,,False,,2720
+condition-only-005|none,condition-only-005,none,condition_only,23,recommend,,,1,3,False,False,,,False,False,carry,,False,,31432
+named-category-001|none,named-category-001,none,named_category,0,recommend,,,1,3,False,False,,,False,False,carry,,False,,2359
+named-category-001|none,named-category-001,none,named_category,1,recommend,,,1,3,False,False,,,False,False,carry,,False,,2790
+named-category-001|none,named-category-001,none,named_category,2,recommend,,,1,3,False,False,,,False,False,carry,,False,,2804
+named-category-001|none,named-category-001,none,named_category,3,recommend,,,1,3,False,False,,,False,False,carry,,False,,3263
+named-category-001|none,named-category-001,none,named_category,4,recommend,,,1,3,False,False,,,False,False,carry,,False,,2611
+named-category-001|none,named-category-001,none,named_category,5,recommend,,,1,3,False,False,,,False,False,carry,,False,,3601
+named-category-001|none,named-category-001,none,named_category,6,recommend,,,1,3,False,True,,|과일,False,False,replace,,False,,2717
+named-category-001|none,named-category-001,none,named_category,7,recommend,,,1,3,False,True,,|과일,False,False,replace,,False,,2910
+named-category-001|none,named-category-001,none,named_category,8,recommend,,,1,3,False,False,,,False,False,carry,,False,,2759
+named-category-001|none,named-category-001,none,named_category,9,recommend,,,1,3,False,True,,|과일,False,False,replace,,False,,2925
+named-category-001|none,named-category-001,none,named_category,10,recommend,,,1,3,False,False,,,False,False,carry,,False,,2612
+named-category-001|none,named-category-001,none,named_category,11,recommend,,,1,3,False,False,,,False,False,carry,,False,,27778
+named-category-001|none,named-category-001,none,named_category,12,recommend,,,1,3,False,True,,|과일,False,False,replace,,False,,6918
+named-category-001|none,named-category-001,none,named_category,13,recommend,,,1,3,False,True,,|과일,False,False,replace,,False,,4347
+named-category-001|none,named-category-001,none,named_category,14,recommend,,,1,3,False,True,,|과일,False,False,replace,,False,,2858
+named-category-001|none,named-category-001,none,named_category,15,recommend,,,1,3,False,False,,,False,False,carry,,False,,1939
+named-category-001|none,named-category-001,none,named_category,16,recommend,,,1,3,False,True,,|과일,False,False,replace,,False,,4369
+named-category-001|none,named-category-001,none,named_category,17,recommend,,,1,3,False,False,,,False,False,carry,,False,,3346
+named-category-001|none,named-category-001,none,named_category,18,recommend,,,1,3,False,False,,,False,False,carry,,False,,1748
+named-category-001|none,named-category-001,none,named_category,19,recommend,,,1,3,False,True,,|과일,False,False,replace,,False,,3212
+named-category-001|none,named-category-001,none,named_category,20,recommend,,,1,3,False,False,,,False,False,carry,,False,,2899
+named-category-001|none,named-category-001,none,named_category,21,recommend,,,1,3,False,True,,|과일,False,False,replace,,False,,3200
+named-category-001|none,named-category-001,none,named_category,22,recommend,,,1,3,False,False,,,False,False,carry,,False,,25865
+named-category-001|none,named-category-001,none,named_category,23,recommend,,,1,3,False,False,,,False,False,carry,,False,,2607
+named-category-002|none,named-category-002,none,named_category,0,recommend,,,1,3,False,True,,|과일,False,False,replace,,False,,2965
+named-category-002|none,named-category-002,none,named_category,1,recommend,,,1,3,False,False,,,False,False,carry,,False,,3212
+named-category-002|none,named-category-002,none,named_category,2,recommend,,,1,3,False,True,,|과일,False,False,replace,,False,,3305
+named-category-002|none,named-category-002,none,named_category,3,recommend,,,1,3,False,False,,,False,False,carry,,False,,2763
+named-category-002|none,named-category-002,none,named_category,4,recommend,,,1,3,False,True,,|과일,False,False,replace,,False,,2552
+named-category-002|none,named-category-002,none,named_category,5,recommend,,,1,3,False,False,,,False,False,carry,,False,,2385
+named-category-002|none,named-category-002,none,named_category,6,recommend,,,1,3,False,True,,|과일,False,False,replace,,False,,2182
+named-category-002|none,named-category-002,none,named_category,7,recommend,,,1,3,False,True,,|아기 과일 추천,False,False,replace,,False,,3111
+named-category-002|none,named-category-002,none,named_category,8,recommend,,,1,3,False,True,,|과일,False,False,replace,,False,,3942
+named-category-002|none,named-category-002,none,named_category,9,recommend,,,1,3,False,False,,,False,False,carry,,False,,31905
+named-category-002|none,named-category-002,none,named_category,10,recommend,,,1,3,False,True,,|아기 간식 과일,False,False,replace,,False,,3101
+named-category-002|none,named-category-002,none,named_category,11,recommend,,,1,3,False,True,,|과일,False,False,replace,,False,,4676
+named-category-002|none,named-category-002,none,named_category,12,recommend,,,1,3,False,False,,,False,False,carry,,False,,2708
+named-category-002|none,named-category-002,none,named_category,13,recommend,,,1,3,False,True,,|과일,False,False,replace,,False,,3525
+named-category-002|none,named-category-002,none,named_category,14,recommend,,,1,3,False,True,,|아기 과일 추천,False,False,replace,,False,,3128
+named-category-002|none,named-category-002,none,named_category,15,recommend,,,1,3,False,False,,,False,False,carry,,False,,2403
+named-category-002|none,named-category-002,none,named_category,16,recommend,,,1,3,False,True,,|과일,False,False,replace,,False,,3018
+named-category-002|none,named-category-002,none,named_category,17,recommend,,,1,3,False,True,,|과일,False,False,replace,,False,,3860
+named-category-002|none,named-category-002,none,named_category,18,recommend,,,1,3,False,True,,|아기 간식용 과일,False,False,replace,,False,,3247
+named-category-002|none,named-category-002,none,named_category,19,recommend,,,1,3,False,True,,|과일,False,False,replace,,False,,29016
+named-category-002|none,named-category-002,none,named_category,20,recommend,,,1,3,False,False,,,False,False,carry,,False,,2677
+named-category-002|none,named-category-002,none,named_category,21,recommend,,,1,3,False,True,,|과일,False,False,replace,,False,,2647
+named-category-002|none,named-category-002,none,named_category,22,recommend,,,1,3,False,True,,|아기 간식 과일,False,False,replace,,False,,4897
+named-category-002|none,named-category-002,none,named_category,23,recommend,,,1,3,False,True,,|과일 추천,False,False,replace,,False,,2901
+named-category-003|none,named-category-003,none,named_category,0,recommend,,,1,3,False,True,,|과일,False,False,replace,,False,,1970
+named-category-003|none,named-category-003,none,named_category,1,recommend,,,1,3,False,False,,,False,False,carry,,False,,3304
+named-category-003|none,named-category-003,none,named_category,2,recommend,,,1,3,False,True,,|과일,False,False,replace,,False,,2790
+named-category-003|none,named-category-003,none,named_category,3,recommend,,,1,3,False,True,,|과일,False,False,replace,,False,,2672
+named-category-003|none,named-category-003,none,named_category,4,recommend,,,1,3,False,False,,,False,False,carry,,False,,3455
+named-category-003|none,named-category-003,none,named_category,5,recommend,,,1,3,False,True,,|과일,False,False,replace,,False,,4558
+named-category-003|none,named-category-003,none,named_category,6,recommend,,,1,3,False,True,,|과일,False,False,replace,,False,,3123
+named-category-003|none,named-category-003,none,named_category,7,recommend,,,1,3,False,True,,|과일,False,False,replace,,False,,2455
+named-category-003|none,named-category-003,none,named_category,8,recommend,,,1,3,False,True,,|과일,False,False,replace,,False,,28309
+named-category-003|none,named-category-003,none,named_category,9,recommend,,,1,3,False,True,,|과일,False,False,replace,,False,,3403
+named-category-003|none,named-category-003,none,named_category,10,recommend,,,1,3,False,True,,|과일,False,False,replace,,False,,3093
+named-category-003|none,named-category-003,none,named_category,11,recommend,,,1,3,False,False,,,False,False,carry,,False,,2615
+named-category-003|none,named-category-003,none,named_category,12,recommend,,,1,3,False,True,,|과일,False,False,replace,,False,,2641
+named-category-003|none,named-category-003,none,named_category,13,recommend,,,1,3,False,False,,,False,False,carry,,False,,2334
+named-category-003|none,named-category-003,none,named_category,14,recommend,,,1,3,False,True,,|과일,False,False,replace,,False,,1946
+named-category-003|none,named-category-003,none,named_category,15,recommend,,,1,3,False,True,,|과일,False,False,replace,,False,,2924
+named-category-003|none,named-category-003,none,named_category,16,recommend,,,1,3,False,True,,|과일,False,False,replace,,False,,2504
+named-category-003|none,named-category-003,none,named_category,17,recommend,,,1,3,False,False,,,False,False,carry,,False,,3926
+named-category-003|none,named-category-003,none,named_category,18,recommend,,,1,3,False,True,,|과일,False,False,replace,,False,,3979
+named-category-003|none,named-category-003,none,named_category,19,recommend,,,1,3,False,True,,|과일,False,False,replace,,False,,2930
+named-category-003|none,named-category-003,none,named_category,20,recommend,,,1,3,False,False,,,False,False,carry,,False,,28410
+named-category-003|none,named-category-003,none,named_category,21,recommend,,,1,3,False,False,,,False,False,carry,,False,,2428
+named-category-003|none,named-category-003,none,named_category,22,recommend,,,1,3,False,True,,|과일,False,False,replace,,False,,2783
+named-category-003|none,named-category-003,none,named_category,23,recommend,,,1,3,False,False,,,False,False,carry,,False,,2119
+named-category-004|none,named-category-004,none,named_category,0,recommend,,,1,3,False,True,,|유아용 물티슈,False,False,replace,,False,,5490
+named-category-004|none,named-category-004,none,named_category,1,recommend,,,1,3,False,True,,|유아용 물티슈,False,False,replace,,False,,4831
+named-category-004|none,named-category-004,none,named_category,2,recommend,,,1,3,False,True,,|유아용 물티슈,False,False,replace,,False,,2582
+named-category-004|none,named-category-004,none,named_category,3,recommend,,,1,3,False,True,,|유아용 물티슈,False,False,replace,,False,,2891
+named-category-004|none,named-category-004,none,named_category,4,recommend,,,1,3,False,True,,|유아용 물티슈,False,False,replace,,False,,3160
+named-category-004|none,named-category-004,none,named_category,5,recommend,,,1,3,False,True,,육아용품|유아용 물티슈,False,False,replace,,False,,2948
+named-category-004|none,named-category-004,none,named_category,6,recommend,,,1,3,False,True,,|유아용 물티슈,False,False,replace,,False,,3221
+named-category-004|none,named-category-004,none,named_category,7,recommend,,,1,3,False,True,,|유아용 물티슈,False,False,replace,,False,,4170
+named-category-004|none,named-category-004,none,named_category,8,recommend,,,1,3,False,True,,육아용품|유아용 물티슈,False,False,replace,,False,,3124
+named-category-004|none,named-category-004,none,named_category,9,recommend,,,1,3,False,True,,|유아용 물티슈,False,False,replace,,False,,2795
+named-category-004|none,named-category-004,none,named_category,10,recommend,,,1,3,False,True,,|유아용 물티슈,False,False,replace,,False,,3778
+named-category-004|none,named-category-004,none,named_category,11,recommend,,,1,3,False,True,,|유아용 물티슈,False,False,replace,,False,,18031
+named-category-004|none,named-category-004,none,named_category,12,recommend,,,1,3,False,True,,|유아용 물티슈,False,False,replace,,False,,2596
+named-category-004|none,named-category-004,none,named_category,13,recommend,,,1,3,False,True,,육아용품|유아용 물티슈,False,False,replace,,False,,5815
+named-category-004|none,named-category-004,none,named_category,14,recommend,,,1,3,False,True,,|유아용 물티슈,False,False,replace,,False,,2881
+named-category-004|none,named-category-004,none,named_category,15,recommend,,,1,3,False,True,,|유아용 물티슈,False,False,replace,,False,,3225
+named-category-004|none,named-category-004,none,named_category,16,recommend,,,1,3,False,True,,|유아용 물티슈,False,False,replace,,False,,2487
+named-category-004|none,named-category-004,none,named_category,17,recommend,,,1,3,False,True,,|유아용 물티슈,False,False,replace,,False,,2063
+named-category-004|none,named-category-004,none,named_category,18,recommend,,,1,3,False,True,,|유아용 물티슈,False,False,replace,,False,,2764
+named-category-004|none,named-category-004,none,named_category,19,recommend,,,1,3,False,True,,|유아용 물티슈,False,False,replace,,False,,2948
+named-category-004|none,named-category-004,none,named_category,20,recommend,,,1,3,False,False,,,False,False,carry,,False,,2710
+named-category-004|none,named-category-004,none,named_category,21,recommend,,,1,3,False,True,,|유아용 물티슈,False,False,replace,,False,,2551
+named-category-004|none,named-category-004,none,named_category,22,recommend,,,1,3,False,True,,|유아용 물티슈,False,False,replace,,False,,2877
+named-category-004|none,named-category-004,none,named_category,23,recommend,,,1,3,False,True,,|유아용 물티슈,False,False,replace,,False,,2557
+named-category-005|none,named-category-005,none,named_category,0,recommend,,,1,3,False,True,,|텐트,False,False,replace,,False,,3415
+named-category-005|none,named-category-005,none,named_category,1,recommend,,,1,3,False,True,,|텐트,False,False,replace,,False,,3068
+named-category-005|none,named-category-005,none,named_category,2,recommend,,,1,3,False,True,,|텐트,False,False,replace,,False,,3380
+named-category-005|none,named-category-005,none,named_category,3,recommend,,,1,3,False,True,,|텐트,False,False,replace,,False,,2734
+named-category-005|none,named-category-005,none,named_category,4,recommend,,,1,3,False,True,,|텐트,False,False,replace,,False,,3763
+named-category-005|none,named-category-005,none,named_category,5,recommend,,,1,3,False,True,,|텐트,False,False,replace,,False,,2772
+named-category-005|none,named-category-005,none,named_category,6,recommend,,,1,3,False,True,,|캠핑 텐트,False,False,replace,,False,,3162
+named-category-005|none,named-category-005,none,named_category,7,recommend,,,1,3,False,True,,|캠핑 텐트,False,False,replace,,False,,3391
+named-category-005|none,named-category-005,none,named_category,8,recommend,,,1,3,False,True,,|텐트 캠핑,False,False,replace,,False,,2660
+named-category-005|none,named-category-005,none,named_category,9,recommend,,,1,3,False,True,,|텐트,False,False,replace,,False,,2942
+named-category-005|none,named-category-005,none,named_category,10,recommend,,,1,3,False,True,,|텐트,False,False,replace,,False,,2937
+named-category-005|none,named-category-005,none,named_category,11,recommend,,,1,3,False,True,,|텐트,False,False,replace,,False,,2947
+named-category-005|none,named-category-005,none,named_category,12,recommend,,,1,3,False,True,,|텐트,False,False,replace,,False,,18436
+named-category-005|none,named-category-005,none,named_category,13,recommend,,,1,3,False,True,,|텐트,False,False,replace,,False,,3069
+named-category-005|none,named-category-005,none,named_category,14,recommend,,,1,3,False,False,,,False,False,carry,,False,,3015
+named-category-005|none,named-category-005,none,named_category,15,recommend,,,1,3,False,True,,|텐트,False,False,replace,,False,,5969
+named-category-005|none,named-category-005,none,named_category,16,recommend,,,1,3,False,True,,|텐트,False,False,replace,,False,,2757
+named-category-005|none,named-category-005,none,named_category,17,recommend,,,1,3,False,True,,|캠핑 텐트,False,False,replace,,False,,2899
+named-category-005|none,named-category-005,none,named_category,18,recommend,,,1,3,False,True,,|캠핑 텐트,False,False,replace,,False,,3007
+named-category-005|none,named-category-005,none,named_category,19,recommend,,,1,3,False,True,,|텐트,False,False,replace,,False,,3429
+named-category-005|none,named-category-005,none,named_category,20,recommend,,,1,3,False,True,,|텐트,False,False,replace,,False,,2591
+named-category-005|none,named-category-005,none,named_category,21,recommend,,,1,3,False,True,,|캠핑 텐트,False,False,replace,,False,,1982
+named-category-005|none,named-category-005,none,named_category,22,recommend,,,1,3,False,True,,|텐트,False,False,replace,,False,,3328
+named-category-005|none,named-category-005,none,named_category,23,recommend,,,1,3,False,True,,|캠핑 텐트,False,False,replace,,False,,2348
+named-category-006|none,named-category-006,none,named_category,0,recommend,,,1,2,False,True,,|텀블러,False,False,replace,,False,,3830
+named-category-006|none,named-category-006,none,named_category,1,recommend,,,1,2,False,True,,|텀블러,False,False,replace,,False,,2869
+named-category-006|none,named-category-006,none,named_category,2,recommend,,,1,2,False,True,,|텀블러,False,False,replace,,False,,2942
+named-category-006|none,named-category-006,none,named_category,3,recommend,,,1,2,False,True,,|텀블러,False,False,replace,,False,,2849
+named-category-006|none,named-category-006,none,named_category,4,recommend,,,1,2,False,True,,주방용품|텀블러,False,False,replace,,False,,3511
+named-category-006|none,named-category-006,none,named_category,5,recommend,,,1,2,False,True,,|텀블러,False,False,replace,,False,,3513
+named-category-006|none,named-category-006,none,named_category,6,recommend,,,1,2,False,True,,|텀블러,False,False,replace,,False,,3099
+named-category-006|none,named-category-006,none,named_category,7,recommend,,,1,2,False,True,,|텀블러,False,False,replace,,False,,2715
+named-category-006|none,named-category-006,none,named_category,8,recommend,,,1,2,False,True,,|텀블러,False,False,replace,,False,,2464
+named-category-006|none,named-category-006,none,named_category,9,recommend,,,1,2,False,True,,주방용품|텀블러,False,False,replace,,False,,3513
+named-category-006|none,named-category-006,none,named_category,10,recommend,,,1,2,False,True,,|템플러,False,False,replace,,False,,19253
+named-category-006|none,named-category-006,none,named_category,11,recommend,,,1,2,False,True,,|텀블러,False,False,replace,,False,,2871
+named-category-006|none,named-category-006,none,named_category,12,recommend,,,1,2,False,True,,|텀블러,False,False,replace,,False,,2555
+named-category-006|none,named-category-006,none,named_category,13,recommend,,,1,2,False,False,,,False,False,carry,,False,,2935
+named-category-006|none,named-category-006,none,named_category,14,recommend,,,1,2,False,True,,|텀블러,False,False,replace,,False,,2821
+named-category-006|none,named-category-006,none,named_category,15,recommend,,,1,2,False,True,,|텀블러,False,False,replace,,False,,2948
+named-category-006|none,named-category-006,none,named_category,16,recommend,,,1,2,False,False,,,False,False,carry,,False,,2779
+named-category-006|none,named-category-006,none,named_category,17,recommend,,,1,2,False,True,,주방/리빙|텀블러,False,False,replace,,False,,2967
+named-category-006|none,named-category-006,none,named_category,18,recommend,,,1,2,False,False,,,False,False,carry,,False,,2085
+named-category-006|none,named-category-006,none,named_category,19,recommend,,,1,2,False,True,,주방용품|텀블러,False,False,replace,,False,,2660
+named-category-006|none,named-category-006,none,named_category,20,recommend,,,1,3,False,True,,|템블러,False,False,replace,,False,,2907
+named-category-006|none,named-category-006,none,named_category,21,recommend,,,1,2,False,True,,|텀블러,False,False,replace,,False,,3218
+named-category-006|none,named-category-006,none,named_category,22,recommend,,,1,2,False,True,,|텀블러,False,False,replace,,False,,2960
+named-category-006|none,named-category-006,none,named_category,23,recommend,,,1,2,False,True,,|텀블러,False,False,replace,,False,,2708

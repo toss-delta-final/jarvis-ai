@@ -35,7 +35,8 @@ def test_dry_run_writes_every_artifact(tmp_path: Path) -> None:
     results = _results(out)
     # [#285, I-25 §4.13 — 4단계] 수량 변경 6셀 추가로 89 → 95(§4-2, `test_intent_probe_fixtures.py`
     # 와 같은 총합. #440 이전엔 85였다).
-    assert results["cellCount"] == 95
+    # [#440] 찜 해제 4셀 추가로 85 → 89(§4-2, `test_intent_probe_fixtures.py` 와 같은 총합).
+    assert results["cellCount"] == 101
     assert results["unfilledCells"] == []
     assert results["dryRun"] is True
 
@@ -89,7 +90,7 @@ def test_report_header_carries_prompt_tier_fixture(tmp_path: Path) -> None:
     results = _results(out)
     assert results["prompt"]["sha12"] in report
     assert "tier=fast" in report
-    assert "intent-probe-anchors-b-v6" in report
+    assert "intent-probe-anchors-b-v8" in report
     assert "이건 골든셋이 아니다" in report
 
 
@@ -155,14 +156,16 @@ def test_pacer_snapshot_is_recorded(tmp_path: Path) -> None:
     assert _run(out, "--rpm", "5") == 0
     pacer = _results(out)["pacer"]
     assert pacer["maxRpm"] == 5
-    # 셀 95 × N=2 (decompose) + 카테고리 15셀 × 2 (범위 해제 분류기) = 220.
+    # 셀 101 × N=2 (decompose) + 카테고리 15셀 × 2 (범위 해제 분류기) = 232.
     # [#84] 분류기도 **페이서를 지난다** — 레이트 예산에 빠지면 실 런에서 429 가 난다.
     # [#300] screen 6셀은 분류기를 태우지 않는다(직전 카테고리가 없다) — 셀 수만 늘어난다.
     # [#344 라운드 2] 조건 전용 5셀도 분류기를 태우지 않는다(직전 카테고리가 없는 none 컨텍스트).
     # [#386] 찜 조회 6셀도 같다(none 컨텍스트). [#440] 찜 해제 4셀도 같다(none 컨텍스트,
     # 85 → 89 로 셀 수만 늘어났다). [#285, I-25 §4.13 — 4단계] 수량 변경 6셀도 같다(none
     # 컨텍스트, 직전 카테고리 없음) — 89 → 95 로 셀 수만 늘어난다.
-    assert pacer["acquireCount"] == 95 * 2 + 15 * 2
+    # [#386] 찜 조회 6셀·[#440] 찜 해제 4셀·[#443] 상품군 명시 6셀도 같다(전부 none 컨텍스트)
+    # — [#285] 수량 변경 6셀까지 85 → 101 로 셀 수만 늘어난다.
+    assert pacer["acquireCount"] == 101 * 2 + 15 * 2
     assert pacer["waitCount"] > 0
 
 
@@ -337,6 +340,30 @@ def test_screen_cells_do_not_call_the_category_scope_classifier(tmp_path: Path) 
     """screen 컨텍스트는 직전 카테고리를 싣지 않는다 — 분류기가 호출되지 않는다(D-6 실측 근거)."""
     out = tmp_path / "run"
     assert _run(out, "--case-ids", "screen-001,screen-002") == 0
+    pacer = _results(out)["pacer"]
+    # decompose 2셀 × N=2 만 페이서를 지난다 — 분류기 호출이 없다.
+    assert pacer["acquireCount"] == 2 * 2
+
+
+def test_report_exposes_named_category_axis_and_diagnostics(tmp_path: Path) -> None:
+    """[#443] 새 축·진단 카운터가 report.md·results.json 배관에 실제로 실리는지 — dry-run 이라
+    수치 자체는 의미 없다(가짜 LLM), 배관 확인용이다."""
+    out = tmp_path / "run"
+    assert _run(out) == 0
+    report = (out / "report.md").read_text(encoding="utf-8")
+    results = _results(out)
+    assert "namedCategoryHasLeg" in results["axes"]
+    assert "`namedCategoryHasLeg`" in report
+    assert results["axes"]["namedCategoryHasLeg"]["expectedDenominator"] == 12  # 6발화 × N=2
+    assert "namedCategoryEmptyLegsCount" in results["diagnostics"]
+    assert "namedCategoryCase3Count" in results["diagnostics"]
+
+
+def test_named_category_cells_do_not_call_the_category_scope_classifier(tmp_path: Path) -> None:
+    """[#443] `none` 컨텍스트는 직전 카테고리를 싣지 않는다 — 분류기가 호출되지 않는다
+    (`condition_only`·`screen` 과 같은 이유)."""
+    out = tmp_path / "run"
+    assert _run(out, "--case-ids", "named-category-001,named-category-002") == 0
     pacer = _results(out)["pacer"]
     # decompose 2셀 × N=2 만 페이서를 지난다 — 분류기 호출이 없다.
     assert pacer["acquireCount"] == 2 * 2
