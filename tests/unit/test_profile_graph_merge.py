@@ -102,10 +102,18 @@ def test_merge_signature_has_no_llm_or_io_seam() -> None:
     """병합에 LLM·임베딩·저장소를 넘길 자리가 없어야 한다(REQ-PROF-032/033).
 
     누가 실수로 인자를 더하면 여기서 막힌다 — mock 으로 "안 불렸다"를 재는 것보다 강한 보장이다.
+
+    **[#359] 허용 집합에 `decay_pause_spans` 를 더했다.** REQ-PGRAPH-055(중지 기간 감쇠 정지)는
+    배치가 "언제부터 언제까지 시간이 흐르지 않은 것으로 볼지" 를 알아야 집행되는데, 그 값을
+    순수 함수 **밖에서** 읽어 인자로 넣는 것이 이 가드의 취지와 어긋나지 않는다 — 불변 스칼라
+    입력이라 재생 동일성(REQ-PGRAPH-015)이 유지되고, 함수 안에서 저장소를 만지지 않는다.
+    아래 부정 단언이 그 취지를 직접 잰다(허용 집합만 넓히면 가드가 느슨해진다).
     """
     params = set(inspect.signature(build_graph_document).parameters)
 
-    assert params == {"facts", "existing", "settings", "now"}
+    assert params == {"facts", "existing", "settings", "now", "decay_pause_spans"}
+    # 넓힌 것은 허용 목록이지 성질이 아니다 — I/O·LLM 이음매는 여전히 없어야 한다.
+    assert not {"llm", "embed", "store", "client", "pool"} & params
 
 
 # ─────────── 재생 동일성 (REQ-PGRAPH-015) ───────────
@@ -169,6 +177,138 @@ def test_decay_clock_is_one_snapshot_per_batch(settings: Settings) -> None:
 # 「pin 불변」절의 `test_carried_pin_confidence_does_not_decay_while_pinned` 가 됐다 —
 # 감쇠는 `confidence` 변경이고 REQ-PGRAPH-031 [HARD] 가 그것을 금지한다. 뒤집은 근거는
 # 그 테스트 docstring 에 있다.
+
+
+# ─────────── 중지 기간 감쇠 정지 (REQ-PGRAPH-055) ───────────
+#
+# C7 이 중지 중 배치를 멈췄지만 그것만으로는 감쇠가 안 멈춘다 — `_confidence` 는
+# `decay_evaluated_at` 을 안 보고 **관측 시각부터 `now` 까지** 매 배치 새로 계산하므로,
+# 6개월 중지 후 재개하면 첫 배치에서 6개월치가 그대로 걸린다. "데이터는 보존된다"가 거짓이 된다.
+
+
+def _span(from_: str, to: str) -> dict:
+    return {"from": from_, "to": to}
+
+
+def test_paused_span_is_subtracted_from_the_decay_clock(settings: Settings) -> None:
+    """중지 구간만큼 시간이 안 흐른 것으로 본다 — 같은 관측이 덜 감쇠한다."""
+    observed = "2026-02-01T00:00:00+00:00"
+    facts = [_fact("f1", created_at=observed)]
+
+    without = build_graph_document(facts, existing=empty_document(NOW), settings=settings, now=NOW)
+    with_pause = build_graph_document(
+        facts,
+        existing=empty_document(NOW),
+        settings=settings,
+        now=NOW,
+        # 관측 이후 통째로 중지돼 있었다.
+        decay_pause_spans=(_span("2026-03-01T00:00:00+00:00", "2026-07-01T00:00:00+00:00"),),
+    )
+
+    assert with_pause.edges[0].confidence > without.edges[0].confidence
+
+
+def test_span_outside_the_interval_changes_nothing(settings: Settings) -> None:
+    """관측 구간과 안 겹치는 중지는 감쇠에 영향이 없다 — 총량이 아니라 **겹침**으로 잰다.
+
+    누적 스칼라(총 중지 시간)를 최신 구간부터 소진하는 방식이면 여기서 틀린다: 중지 창이
+    관측보다 **앞**에 있어도 감쇠를 깎아 준다.
+    """
+    facts = [_fact("f1", created_at="2026-06-01T00:00:00+00:00")]
+    baseline = build_graph_document(facts, existing=empty_document(NOW), settings=settings, now=NOW)
+
+    document = build_graph_document(
+        facts,
+        existing=empty_document(NOW),
+        settings=settings,
+        now=NOW,
+        # 관측보다 한참 전에 끝난 중지.
+        decay_pause_spans=(_span("2026-01-01T00:00:00+00:00", "2026-02-01T00:00:00+00:00"),),
+    )
+
+    assert document.edges[0].confidence == baseline.edges[0].confidence
+
+
+def test_partial_overlap_subtracts_only_the_overlapping_part(settings: Settings) -> None:
+    """구간이 걸쳐 있으면 **겹친 만큼만** 뺀다."""
+    facts = [_fact("f1", created_at="2026-06-01T00:00:00+00:00")]
+    full = build_graph_document(
+        facts,
+        existing=empty_document(NOW),
+        settings=settings,
+        now=NOW,
+        decay_pause_spans=(_span("2026-06-01T00:00:00+00:00", "2026-07-01T00:00:00+00:00"),),
+    )
+    half = build_graph_document(
+        facts,
+        existing=empty_document(NOW),
+        settings=settings,
+        now=NOW,
+        # 절반이 관측 앞이라 겹치는 것은 6/1~6/16 뿐이다.
+        decay_pause_spans=(_span("2026-05-17T00:00:00+00:00", "2026-06-16T00:00:00+00:00"),),
+    )
+    none = build_graph_document(facts, existing=empty_document(NOW), settings=settings, now=NOW)
+
+    assert none.edges[0].confidence < half.edges[0].confidence < full.edges[0].confidence
+
+
+def test_carried_edges_also_honour_paused_spans(settings: Settings) -> None:
+    """근거가 사라져 이월되는 edge 도 같은 규칙을 쓴다 — 두 감쇠 경로가 갈리면 안 된다."""
+    stale = "2026-02-01T00:00:00+00:00"
+    existing = _document_of(
+        [
+            _stored_edge(
+                "애플",
+                status="superseded",
+                superseded_by=make_edge_id("avoids|brand:애플"),
+                confidence=0.9,
+                decay_evaluated_at=stale,
+            )
+        ]
+    )
+    spans = (_span("2026-03-01T00:00:00+00:00", "2026-07-01T00:00:00+00:00"),)
+
+    without = build_graph_document([], existing=existing, settings=settings, now=NOW)
+    with_pause = build_graph_document(
+        [], existing=existing, settings=settings, now=NOW, decay_pause_spans=spans
+    )
+
+    assert with_pause.edges[0].confidence > without.edges[0].confidence
+
+
+def test_replay_stays_identical_with_paused_spans(settings: Settings) -> None:
+    """같은 입력이면 같은 문서다 (REQ-PGRAPH-015) — 새 인자가 재생 동일성을 깨지 않는다."""
+    facts = [_fact("f1", created_at="2026-02-01T00:00:00+00:00")]
+    spans = (_span("2026-03-01T00:00:00+00:00", "2026-07-01T00:00:00+00:00"),)
+
+    first = build_graph_document(
+        facts, existing=empty_document(NOW), settings=settings, now=NOW, decay_pause_spans=spans
+    )
+    second = build_graph_document(
+        facts, existing=empty_document(NOW), settings=settings, now=NOW, decay_pause_spans=spans
+    )
+
+    assert first.model_dump(mode="json") == second.model_dump(mode="json")
+
+
+def test_malformed_span_is_ignored_instead_of_killing_the_batch(settings: Settings) -> None:
+    """모양이 깨진 구간은 무시한다 — 저장 payload 하나가 배치를 죽이면 안 된다.
+
+    `_elapsed_days` 가 파싱 실패를 0일로 흡수하는 것과 같은 취지다(그 docstring). 감쇠를 덜
+    빼는 쪽(=보수적)으로 열화한다.
+    """
+    facts = [_fact("f1", created_at="2026-02-01T00:00:00+00:00")]
+    baseline = build_graph_document(facts, existing=empty_document(NOW), settings=settings, now=NOW)
+
+    document = build_graph_document(
+        facts,
+        existing=empty_document(NOW),
+        settings=settings,
+        now=NOW,
+        decay_pause_spans=({"from": "not-a-date", "to": None}, {}, "쓰레기"),  # type: ignore[arg-type]
+    )
+
+    assert document.edges[0].confidence == baseline.edges[0].confidence
 
 
 # ─────────── 병합 (REQ-PGRAPH-015) ───────────

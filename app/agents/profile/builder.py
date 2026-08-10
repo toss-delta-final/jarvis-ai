@@ -215,8 +215,27 @@ async def consolidate(user_id: str, *, llm, settings) -> ConsolidationResult:
     부수로 중지 기간에는 감쇠도 진행되지 않는다(REQ-PGRAPH-055) — 배치가 안 돌기 때문인데,
     그것만으로는 부족하고 재개 시 누적 오프셋 차감이 필요하다(C8).
     """
-    if await personalization_enabled(user_id, on_error=True) is False:
-        return ConsolidationResult.NO_WORK
+    # [#359] 플래그와 중지 구간을 **한 번에** 읽는다 — 같은 단일 행이라 왕복을 나눌 이유가 없다.
+    # 구간은 감쇠에서 차감된다(REQ-PGRAPH-055): 중지 중 배치를 멈추는 것만으로는 부족하다.
+    # `_confidence` 는 `decay_evaluated_at` 을 안 보고 관측 시각부터 `now` 까지 매 배치 새로
+    # 계산하므로, 6개월 중지 후 재개하면 첫 배치에서 6개월치가 그대로 걸린다.
+    from app.agents.profile import graph_journal
+
+    paused_spans: list[dict] = []
+    try:
+        state = await graph_journal.get_personalization_state(user_id=int(user_id))
+    except (TypeError, ValueError):
+        state = None  # 숫자가 아닌 신원 — 플래그 대상이 아니다(게이트와 같은 규약)
+    except Exception:
+        # 조회 실패는 **중지로 접지 않는다** — NO_WORK 로 돌리면 pg 블립이 지속되는 동안 켜진
+        # 사용자의 프로필이 영영 갱신되지 않는데 로그 말고는 드러날 신호가 없다.
+        logger.warning("personalization_state_unavailable", exc_info=True)
+        state = None
+    if state is not None:
+        if not state.enabled:
+            return ConsolidationResult.NO_WORK
+        paused_spans = state.disabled_spans
+
     store = await get_profile_store()
     now = _now_iso()
 
@@ -225,7 +244,13 @@ async def consolidate(user_id: str, *, llm, settings) -> ConsolidationResult:
         if not facts:
             return ConsolidationResult.NO_WORK
         existing = await store.get_graph(user_id) or await _bootstrap_document(user_id, now)
-        document = build_graph_document(facts, existing=existing, settings=settings, now=now)
+        document = build_graph_document(
+            facts,
+            existing=existing,
+            settings=settings,
+            now=now,
+            decay_pause_spans=paused_spans,
+        )
         await store.set_graph(user_id, document)
         summary_input = _summary_input(document, facts)
         # **LLM 왕복 전에** 요약 seq 를 읽어 둔다 (#323 잔여, #358). 아래 `set_summary` 는 락을

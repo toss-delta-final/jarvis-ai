@@ -1433,6 +1433,10 @@ class Settings(BaseSettings):
     # **`0` 은 신호를 끈다** — `count >= threshold` 로 순진하게 쓰면 0 에서 항상 참이 되어 규약과
     # 정반대로 동작하므로 `graph_models.is_pin_challenged` 가 특례로 가른다.
     graph_pin_challenge_count: int = Field(default=3, ge=0)
+    # 중지 구간 목록(`profile_personalization_state.disabled_spans`)의 최대 길이 (REQ-PGRAPH-055).
+    # 넘으면 가장 오래된 두 구간을 bounding span 으로 병합한다 — 감쇠를 **덜 빼는**(취향을 더
+    # 오래 살리는) 쪽으로 틀리므로 보수적이다. 감쇠 정지 자체를 끄는 스위치가 아니다.
+    graph_decay_pause_spans_max: int = Field(default=50, ge=1)
     # confidence 감쇠 반감기(일). 이 키가 없으면 강등이 **구조적으로 도달 불가**하다 — 게이트가
     # salience >= profile_gate_threshold 인 관측만 저장하므로 감쇠 없이는 confidence 가 승격 임계
     # 아래로 내려갈 수 없고, 히스테리시스가 형식만 만족된다(SPEC v0.1.1 §11 보강).

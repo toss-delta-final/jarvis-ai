@@ -65,6 +65,10 @@ _NEGATIVE_PREDICATE = "avoids"
 _POSITIVE_PREDICATES: frozenset[str] = frozenset({"prefers", "likes", "interestedIn"})
 _ROUND = 6  # 고정 소수점 — 부동소수 꼬리가 재생 동일성을 깨지 않게(REQ-PGRAPH-015)
 _SECONDS_PER_DAY = 86400.0
+# 개인화 중지 구간 `[{"from": iso, "to": iso}, …]` (REQ-PGRAPH-055). 저장 위치는 그래프 문서가
+# 아니라 `profile_personalization_state` 다 — 문서에 두면 중지·재개가 문서를 고치게 되어 §3.9.5
+# 응답의 `graphVersion`·감사·멱등 원장이 전부 거짓이 된다(SPEC §7.1).
+PausedSpans = Sequence[dict]
 
 logger = logging.getLogger(__name__)
 
@@ -108,8 +112,14 @@ def build_graph_document(
     existing: GraphDocument,
     settings: Settings,
     now: str,
+    decay_pause_spans: PausedSpans = (),
 ) -> GraphDocument:
-    """확정 트리플 + 기존 문서 → 새 문서. LLM·임베딩·저장소 접근 0회."""
+    """확정 트리플 + 기존 문서 → 새 문서. LLM·임베딩·저장소 접근 0회.
+
+    `decay_pause_spans` 는 **개인화 중지 구간**이다(REQ-PGRAPH-055) — 그만큼 시간이 흐르지 않은
+    것으로 보고 감쇠에서 뺀다. 호출부(`builder.consolidate`)가 상태 테이블에서 읽어 넣는다.
+    불변 입력이라 재생 동일성(REQ-PGRAPH-015)과 "저장소 이음매 없음"(REQ-PROF-032/033)이 유지된다.
+    """
     observations, unprojected = _collect(facts)
     prior = {edge.edge_key: edge for edge in existing.edges}
 
@@ -126,10 +136,16 @@ def build_graph_document(
         grouped.setdefault(obs.edge_key, []).append(obs)
 
     edges = [
-        _merge_edge(obs_list, prior=prior.get(key), settings=settings, now=now)
+        _merge_edge(
+            obs_list, prior=prior.get(key), settings=settings, now=now, paused=decay_pause_spans
+        )
         for key, obs_list in grouped.items()
     ]
-    edges.extend(_carried_tombstones(existing, seen=set(grouped), settings=settings, now=now))
+    edges.extend(
+        _carried_tombstones(
+            existing, seen=set(grouped), settings=settings, now=now, paused=decay_pause_spans
+        )
+    )
     # `grouped` = 이번 배치에 관측이 실제로 있었던 edge_key — `challenge_count` 가 배치 횟수가
     # 아니라 반대 관측 건수를 세게 하는 유일한 입력이다(REQ-PGRAPH-033).
     edges = _resolve_conflicts(edges, observed=set(grouped))
@@ -226,6 +242,7 @@ def _merge_edge(
     prior: GraphEdge | None,
     settings: Settings,
     now: str,
+    paused: PausedSpans = (),
 ) -> GraphEdge:
     """같은 `edge_key` 로 수렴한 관측을 하나의 edge 로 (REQ-PGRAPH-015).
 
@@ -250,7 +267,7 @@ def _merge_edge(
         confidence = prior.confidence
         promoted = prior.promoted
     else:
-        confidence = _confidence(observations, settings=settings, now=now)
+        confidence = _confidence(observations, settings=settings, now=now, paused=paused)
         promoted = _promoted(confidence, prior=prior, settings=settings)
 
     first_observed = observations[0].observed_at
@@ -285,7 +302,9 @@ def _merge_edge(
     )
 
 
-def _confidence(observations: list[_Observation], *, settings: Settings, now: str) -> float:
+def _confidence(
+    observations: list[_Observation], *, settings: Settings, now: str, paused: PausedSpans = ()
+) -> float:
     """감쇠 가중 EMA — 관측을 시간순으로 처음부터 재계산한다.
 
     증분 갱신이 아니라 전량 재계산이라 재생 동일성이 자동으로 성립한다. 순서가 실제로
@@ -299,33 +318,59 @@ def _confidence(observations: list[_Observation], *, settings: Settings, now: st
     previous: str | None = None
     for obs in observations:
         if previous is not None:
-            confidence *= _decay_factor(previous, obs.observed_at, half_life)
+            confidence *= _decay_factor(previous, obs.observed_at, half_life, paused)
         confidence = round(confidence + (1.0 - confidence) * obs.salience, _ROUND)
         previous = obs.observed_at
     if previous is not None:
-        confidence = round(confidence * _decay_factor(previous, now, half_life), _ROUND)
+        confidence = round(confidence * _decay_factor(previous, now, half_life, paused), _ROUND)
     return max(0.0, min(1.0, confidence))
 
 
-def _decay_factor(start: str, end: str, half_life_days: float) -> float:
-    days = _elapsed_days(start, end)
+def _decay_factor(start: str, end: str, half_life_days: float, paused: PausedSpans = ()) -> float:
+    days = _elapsed_days(start, end, paused)
     if days <= 0.0:
         return 1.0
     return 0.5 ** (days / half_life_days)
 
 
-def _elapsed_days(start: str, end: str) -> float:
+def _elapsed_days(start: str, end: str, paused: PausedSpans = ()) -> float:
     """못 재면 0일로 본다 — 재지 못한 시간을 감쇠로 추측하지 않는다.
 
     `TypeError` 를 함께 잡는 이유는 `datetime` 뺄셈이 **naive-aware 혼합에서 `ValueError` 가
     아니라 `TypeError`** 를 내기 때문이다. 지금은 양쪽 소스가 모두 aware 지만(`_now_iso` 와
     store 의 `created_at`), 파싱만 막는 가드는 그 전제가 깨지는 순간 배치를 통째로 죽인다.
+
+    **[#359] 개인화 중지 구간은 흐르지 않은 것으로 본다**(REQ-PGRAPH-055). `[start, end]` 와
+    실제로 **겹친 만큼만** 뺀다 — 총 중지 시간(스칼라)을 최신 구간부터 소진하는 방식이면
+    관측보다 앞에 있던 중지까지 감쇠를 깎아 준다. 수집도 함께 멈추므로 중지 구간 안에는 관측이
+    없고, 따라서 모든 구간은 관측 사이 또는 마지막 관측 이후에 있다.
     """
     try:
-        delta = datetime.fromisoformat(end) - datetime.fromisoformat(start)
+        begin = datetime.fromisoformat(start)
+        finish = datetime.fromisoformat(end)
+        seconds = (finish - begin).total_seconds()
     except (ValueError, TypeError):
         return 0.0
-    return delta.total_seconds() / _SECONDS_PER_DAY
+    return max(0.0, seconds - _paused_seconds(begin, finish, paused)) / _SECONDS_PER_DAY
+
+
+def _paused_seconds(begin: datetime, finish: datetime, paused: PausedSpans) -> float:
+    """`[begin, finish]` 와 중지 구간들의 겹침(초). 모양이 깨진 항목은 무시한다.
+
+    저장 payload 하나가 배치를 죽이면 안 된다(`_observation` 과 같은 취지). 무시하면 감쇠를
+    **덜 빼는** 쪽 — 즉 취향을 더 오래 살리는 보수적 방향으로 열화한다.
+    """
+    total = 0.0
+    for span in paused:
+        try:
+            start = datetime.fromisoformat(span["from"])
+            end = datetime.fromisoformat(span["to"])
+        except (KeyError, TypeError, ValueError, IndexError):
+            continue
+        overlap = (min(finish, end) - max(begin, start)).total_seconds()
+        if overlap > 0:
+            total += overlap
+    return total
 
 
 def _promoted(confidence: float, *, prior: GraphEdge | None, settings: Settings) -> bool:
@@ -364,7 +409,12 @@ def _valid_from(prior: GraphEdge | None, *, promoted: bool, now: str) -> str | N
 
 
 def _carried_tombstones(
-    existing: GraphDocument, *, seen: set[str], settings: Settings, now: str
+    existing: GraphDocument,
+    *,
+    seen: set[str],
+    settings: Settings,
+    now: str,
+    paused: PausedSpans = (),
 ) -> list[GraphEdge]:
     """이번 배치에 근거가 없는 edge 중 **보존 대상만** 살린다.
 
@@ -407,7 +457,8 @@ def _carried_tombstones(
             edge.confidence
             if _is_pinned(edge)
             else round(
-                edge.confidence * _decay_factor(edge.decay_evaluated_at, now, half_life), _ROUND
+                edge.confidence * _decay_factor(edge.decay_evaluated_at, now, half_life, paused),
+                _ROUND,
             )
         )
         carried.append(
