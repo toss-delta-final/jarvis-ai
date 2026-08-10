@@ -446,6 +446,18 @@ class Settings(BaseSettings):
     # off — 운영은 `deploy.yml` env 로 켠다(미등록 시 빈 문자열 폴백은 위와 동일).
     color_synonym_array_contract_ready: bool = False
 
+    # ── 브랜드 법인 표기 확장 (#466, `app.pipelines.brand_aliases`) ──
+    # 색상과 달리 **기본 on** 이다. 색상 확장은 DB 사전을 읽어야 해서 DB 없는 환경에서 연결
+    # 시도만 남지만(위), 브랜드 확장은 순수 함수라 의존이 없다. 그리고 이 플래그가 고치는 것은
+    # 결함이다 — 운영 시드 실측으로 "삼성" 발화가 78건 중 7건(9.0%), "LG" 가 38건 중 1건(2.6%)
+    # 에만 닿는다. 하방은 유계다: 확장은 **가산적**이고 exact IN 이라 미존재 이름은 BE 가 무시
+    # 한다(api-spec §4.6). off 로 두면 와이어가 바이트 단위로 종전과 같다.
+    brand_alias_expansion_enabled: bool = True
+    # `brandName` 반복 파라미터 개수 상한 — 계약에 상한은 없지만(§4.6) URL 길이는 유계여야
+    # 한다. 사용자 원문이 **먼저** 채워지므로 상한에 걸려도 종전 동작을 잃지 않는다
+    # (`brand_aliases.expand_brands`). 0 이면 확장 없이 원문으로 검색한다.
+    brand_alias_max_values: int = Field(default=12, ge=0)
+
     @field_validator(
         "color_synonym_expansion_enabled", "color_synonym_array_contract_ready", mode="before"
     )
