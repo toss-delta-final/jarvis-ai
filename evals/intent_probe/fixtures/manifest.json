@@ -1,8 +1,8 @@
 {
-  "provenance": "reconstructed-from-issue-240-and-pr-239; category_action group added by #84 (mixed utterances in round 3); screen cells absorbed from #118 by #300; condition_only group added by #344 round 2; wishlist_view group added by #386; wishlist_remove group added by #440",
+  "provenance": "reconstructed-from-issue-240-and-pr-239; category_action group added by #84 (mixed utterances in round 3); screen cells absorbed from #118 by #300; condition_only group added by #344 round 2; wishlist_view group added by #386; wishlist_remove group added by #440; cart_quantity group added by #285 (I-25 §4.13, 4단계)",
   "sha256": {
-    "anchors_a.json": "ebadd4fda0b3ad285981b943684eac0d8d7a1aa698144fabf64ad684ce33a02e",
-    "anchors_b.json": "c172e38462a45c0025c172c90d272b7e8950850426d7ad186539cba360296890"
+    "anchors_a.json": "2831fc38891cf46418d2ff2f7cfb272742182059c3707f498af81c00bd1cfca7",
+    "anchors_b.json": "9f92defff497dc91017f489bba47ffecc55e73be5e9a0d19669084df135b5616"
   },
   "version": "intent-probe-anchors-manifest-v6"
 }
