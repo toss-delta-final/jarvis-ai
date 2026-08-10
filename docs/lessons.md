@@ -13,6 +13,41 @@
 
 ---
 
+## [2026-08-11] 판정 라벨만 비교하는 회귀 테스트는 수치 드리프트를 통과시킨다
+- 증상: #361 착수 중 개인화 평가 baseline 이 **다른 케이스 집합을 설명하고 있는 것**을 발견했다.
+  `run_manifest.datasetHash` 가 `d16eb0e9…`(dev 96건)인데 현행 골든셋은 `675520d9…`(109건)였고,
+  arm 별 nDCG@10 이 전부 움직여 있었다(clean 0.734 → 0.686, 주 비교 meanDelta 0.304 → 0.258).
+  그런데 `uv run pytest` 는 계속 초록불이었다.
+- 원인: 유일한 baseline 대조 테스트가 `overreach.json` 의 **verdict 문자열만**(`"regression"` /
+  `"pass"`) 비교했다. 판정 라벨은 굵어서 케이스가 13건 늘고 점수가 5% 움직여도 값이 안 바뀐다.
+  게다가 그 baseline 은 **더러운 워킹트리**(`dirty: true`)에서, 이 저장소 히스토리에 없는
+  `commitSha` 로 생성돼 있어 무엇을 잰 것인지 재현조차 불가능했다.
+- 규칙: **"baseline 을 회귀시키지 않는다"를 문서로 적었으면 그 수치를 비교하는 assert 를 같이
+  넣는다.** verdict·pass/fail 같은 파생 라벨만 보는 테스트는 무회귀를 집행하지 못한다.
+- 규칙(추가): **수치를 비교하기 전에 분모를 먼저 비교한다.** 케이스 수가 달라진 상태의 nDCG
+  일치는 무회귀가 아니라 우연이다. `caseCount`·`ndcgCaseCount` 를 선행 assert 로 둔다.
+- 규칙(추가): **평가 산출물은 깨끗한 워킹트리에서 생성한다.** `build_run_manifest` 가
+  `git status --porcelain` 으로 `dirty` 를 박으므로, 더러운 상태로 커밋하면 그 baseline 이
+  무엇을 잰 것인지 영원히 확정할 수 없다. 데이터셋을 바꾸는 PR 은 baseline 재생성까지가 범위다.
+- 관련: `tests/eval/test_personalization_eval.py::test_default_weight_ndcg_matches_committed_baseline` ·
+  `evals/personalization/baselines/dev-v2/README.md` · `evals/metrics/run_manifest.py:56,73` ·
+  SPEC-PROFILE-GRAPH-149 REQ-PGRAPH-114 · 이슈 #361·#474·#333
+
+## [2026-08-11] 필터를 무시하는 fake 로는 "후보가 줄지 않았다"를 증명할 수 없다
+- 증상: #361 의 `test_avoids_does_not_shrink_the_candidate_set` 이 통과했는데, 회원에게만 필터를
+  심는 변이를 넣어도 **여전히 통과**했다. 나머지 동등성 테스트 4건은 그 변이에서 정상적으로
+  실패했다.
+- 원인: 하네스가 쓰던 검색 대역(`tests/_fakes.FakeBackend` 계열)이 `filters` 를 받기만 하고
+  **무시한 채 고정 상품 3건을 돌려준다.** 그래서 후보 집합이 무슨 필터에도 항상 3건이었고,
+  "후보가 줄지 않았다"는 단언이 잴 대상 자체가 없었다.
+- 규칙: **"X 가 결과를 좁히지 않는다"를 재려면 대역이 X 를 실제로 적용해야 한다.** 좁힘을 재는
+  테스트에서 대역이 입력을 무시하면, 그 테스트는 성립하는 것이 아니라 **아무것도 재지 않는다**.
+- 규칙(추가): **회귀 테스트는 변이를 심어 실패하는 것을 보고 나서 커밋한다.** 초록불만으로는
+  "지키고 있다"와 "안 보고 있다"가 구분되지 않는다 — 이 결함도 통과 상태에서는 안 드러났고
+  변이 주입으로만 드러났다.
+- 관련: `tests/unit/test_profile_graph_filter_isolation.py::_RecordingSearch` ·
+  `tests/_graph_fixtures.py`(픽스처 값이 카탈로그와 교차해야 하는 이유도 같은 종류) · 이슈 #361
+
 ## [2026-08-11] 읽기에서 숨긴 것을 쓰기에서 안 숨기면, 상태 코드가 오라클이 된다
 - 증상: I-32(GET)는 `is_projected`(`active` + 민감 파생 제외)로 걸러 `superseded`·민감 파생 edge 를
   절대 안 보여주는데, I-33/I-34(PATCH/DELETE)의 대상 판정은 **`edge_id` 일치만** 봤다. PR 자동
