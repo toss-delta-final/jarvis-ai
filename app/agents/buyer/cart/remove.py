@@ -1,4 +1,9 @@
-"""장바구니 삭제 서브그래프 (이슈 #116, I-24 — 확정 2026-08-05, Spring 구현 진행 중).
+"""장바구니 삭제 서브그래프 (이슈 #116, I-24 — 확정 2026-08-05, Spring 구현됨).
+
+**[#285]** BE `jarvis-backend` main 실측(2026-08-08, BE PR #92·#93) — api-spec §4.12~4.16
+v0.31.3. 이 파일에 있던 "Spring 구현 진행 중" 표기는 그래서 지웠다. 같은 문구가 `config.py`·
+`spring_client.py`·`schemas/spring.py` 등에도 남아 있었는데, 이 배치가 함께 정정한다
+(`wishlist.py` 와 구조·어조를 맞춘 형제 모듈이다).
 
 `stream_cart_add` 가 `classify_cart_utterance` 로 "cart_remove" 로 판정하면 항상 위임받는다
 (패킷 §5.3·§5.4, 라운드 23 — 온/오프를 가리던 설정 필드 제거). 대상 해소는 결정론적이다 —
@@ -359,8 +364,8 @@ async def stream_cart_remove(
             )
         except CartError:
             # 한 항목이 실패해도 다른 항목은 계속 진행한다(실패 격리) — 여기서 return 하지 않는다.
-            # 🔶 I-24 협의 대상: 확장안은 CART_REMOVE_FAILED 에 reason 만 싣는다. 복수 삭제에서
-            # 어느 항목이 실패했는지 구분하려고 cartItemId 를 함께 싣는다 — 협의 안건에 올릴 것.
+            # [확정 2026-08-05] CART_REMOVE_FAILED 에 cartItemId 를 함께 싣는 확장안은 이미
+            # 채택됐다(api-spec §3.1 예시). 복수 삭제에서 어느 항목이 실패했는지 가르려고 싣는다.
             yield sse(
                 "action",
                 ActionData(

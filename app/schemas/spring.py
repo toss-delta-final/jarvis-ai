@@ -1212,7 +1212,8 @@ class SellerReviewStats(SellerAggregateModel):
     by_product: list[SellerReviewProductStat] = Field(default_factory=list)
 
 
-# ── 7. 장바구니 삭제 · 찜 (이슈 #116·#117, I-24~I-28 — 확정 2026-08-05, Spring 구현 진행 중) ──
+# ── 7. 장바구니 삭제 · 찜 (이슈 #116·#117, I-24~I-28 — 확정 2026-08-05, Spring 구현됨) ──
+# [#285] BE `jarvis-backend` main 실측(2026-08-08, BE PR #92·#93) — api-spec §4.12~4.16 v0.31.3.
 
 
 class AddWishlistRequest(CamelModel):
