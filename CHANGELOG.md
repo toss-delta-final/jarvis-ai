@@ -34,36 +34,8 @@
   기본 on(하방이 유계) · `BRAND_ALIAS_MAX_VALUES` 로 개수 상한.
 
 ### Added
-- **#466 — 브랜드 추출 축 프로브를 세웠다** (`evals/filter_axes/brand_probe.py` +
-  `brand_cases.json`, 수동 도구·CI 제외). 기존 축을 먼저 확인한 결과 재고 있는 것이 없었다 —
-  `evals/filter_axes` 의 `brand` 축은 goldenset dev 109건 중 라벨이 **1건뿐**이고,
-  `combo_matrix` 는 관측 전용, `underspecified_probe` 는 브랜드 앵커 2건으로 하류 판정만 잰다.
-  축 4종(`present`/`verbatim`/`expected`/`spurious`)을 분자·분모와 함께 낸다(규약8).
-
-### Docs
-- **#395 — I-1 응답 비대화 협의 3건을 종결하고 `docs/api-spec.md` §4.6 정본 사본에 반영했다**
-  (api-spec §4.6, v0.32.7). BE 협의는 이미 끝나고 배포도 완료됐다 — 이번 변경은 그 결론을
-  사본·코드 주석·테스트에 뒤늦게 동기화하는 것으로, **와이어 필드·엔드포인트·오류 코드는
-  전혀 바뀌지 않는다**. ① `size` 상한 재도입 요청 = **폐지 확정**(재개 계획 없음, `totalCount`
-  동반 요청도 함께 폐기). ② `attributes` 내부 미사용 4키(`_extra`·`_source_pid`·`_domain`·
-  `_category`) 제외 = BE 수용·배포 완료를 2026-08-10 운영 실측으로 확인 — 항목당 평균
-  **1,835 B → 1,105.7 B**, 무필터 전량 6,128건 **6.13 MiB**, 소요시간 중앙값 **2.09 s**(콜드
-  첫 호출은 3.20 s로 예산을 스칠 수 있음), 협의 착수 시점(2026-08-06) **7.74 s·12.3 MB** 대비
-  큰 폭 개선. ③ `rating`/`reviewCount` 비정규화 = **채택하지 않음** — BE가 캐싱안을 철회하고
-  커버링 인덱스(jarvis-backend PR #133)로 대체해 응답표 변경 없음. 코드 동작 변경은 없다(4키는
-  원래 `app/` 어디서도 읽지 않는다) — `SpringProduct.attributes`·`ProductSearchFilters`·
-  `_search_query_params`·추천 그래프 `estCount` 주석의 폐기된 전제만 정리했고, 회귀 테스트
-  1건(`test_live_deployed_item_shape_2026_08_10_parses_and_consumes`)으로 운영 응답 형태를
-  고정했다. 재현 스크립트 `scripts/measure_i1_live_395.py` 신설.
-
-### Changed
-- **#505 — 색상 동의어 정본을 2차 사람 검수해 부분 일치로 닿지 않는 독립 색명만 확대했다.**
-  `카멜→브라운`·`버건디→와인`처럼 자명한 표기 상이 40건을 승인하고, 실제 동의어 묶음이 있는
-  독립 어휘 앵커 4개를
-  추가했다. 밝기·채도 수식어, 복합색, 데님 밝기 축은 확장 때 원래 조건을 잃으므로 보류했으며,
-  코드·마케팅명 등 40건은 반려로 고정했다. 생성 JSON·SQL은 검수 오버레이에서 재파생한다.
 - **#359 — 사용자가 고친 취향을 기계 배치가 덮지 못하게 하고, 개인화 중지를 실제로 집행한다**
-  (`SPEC-PROFILE-GRAPH-149` §6.4·§6.6, v0.3.3 / api-spec §3.7 v0.32.9 — **와이어 계약 불변,
+  (`SPEC-PROFILE-GRAPH-149` §6.4·§6.6, v0.3.3 / api-spec §3.7 v0.32.10 — **와이어 계약 불변,
   Spring·FE 무변경**). #356 이 병합 엔진을, #358 이 저장 안전장치와 중지 플래그 테이블을
   깔았는데 **사용자 의사를 존중하는 로직이 하나도 안 들어가 있었다** — 고친 취향은 다음 배치가
   되돌렸고, `get_personalization_flag` 의 프로덕션 호출자는 0건이라 스위치를 꺼도 아무 일도
@@ -120,6 +92,46 @@
   - **미해결로 남긴 것**: 추천에 반영되는 범위가 화면 범위보다 넓다 — 요약 입력이 `promoted` 를
     보지 않아 **강등된 취향(약 40일 침묵)이 화면에서 사라진 뒤에도 추천을 움직인다.** 사용자가
     볼 수도 지울 수도 없다. 투영 경계 건이라 #360 에서 다룬다(같은 코멘트 5번 항목).
+- **#140 — 추천 실행 provenance 를 구조화 로그 `recommend_provenance` 로 남긴다** (api-spec
+  §6.3 (d) 신설). `recommendationRequestId` 는 I-21 와이어에 이미 있었지만(§4.2) 발급 3곳
+  (`graph.py` 메인/프로필 경로, `home_recommendation.py`) 어디서도 로그되지 않아 BE
+  `behavior_events.recommendation_request_id` 와 이을 AI 쪽 상관 기록이 0건이었다. 추천이
+  실제로 도달했을 때만(push 성공/홈 응답 반환) 목록 순서·`algorithmVersion`·`rankSource`
+  (닫힌 어휘 `rerank`/`search_order`/`repurchase_pin`/`expose_min_fill`/`profile_vector` —
+  rerank 가 수치 score 를 내지 않아 "무엇이 순위를 정했는지"로 번역)를 한 줄에 남긴다.
+  수치 score 가 없는 결정론 정책이라 IPS 용 `propensity` 상수를 심는 대신 `deterministic`
+  플래그로 정직하게 표시한다(근거는 `app/core/reco_provenance.py` docstring). 모델·버전은
+  로그 전용이며 홈 표면은 `rankerModel` 이 항상 `null`(§3.7 [HARD] 준수, 응답·SSE 불변).
+  튜너블 `RECO_ALGORITHM_VERSION`·`RERANK_PROMPT_VERSION`·`RECO_PROVENANCE_MAX_ITEMS`
+  신설(config 주입, 초과분은 silent cap 없이 `itemsTruncated=true`).
+- **#466 — 브랜드 추출 축 프로브를 세웠다** (`evals/filter_axes/brand_probe.py` +
+  `brand_cases.json`, 수동 도구·CI 제외). 기존 축을 먼저 확인한 결과 재고 있는 것이 없었다 —
+  `evals/filter_axes` 의 `brand` 축은 goldenset dev 109건 중 라벨이 **1건뿐**이고,
+  `combo_matrix` 는 관측 전용, `underspecified_probe` 는 브랜드 앵커 2건으로 하류 판정만 잰다.
+  축 4종(`present`/`verbatim`/`expected`/`spurious`)을 분자·분모와 함께 낸다(규약8).
+
+### Docs
+- **#395 — I-1 응답 비대화 협의 3건을 종결하고 `docs/api-spec.md` §4.6 정본 사본에 반영했다**
+  (api-spec §4.6, v0.32.7). BE 협의는 이미 끝나고 배포도 완료됐다 — 이번 변경은 그 결론을
+  사본·코드 주석·테스트에 뒤늦게 동기화하는 것으로, **와이어 필드·엔드포인트·오류 코드는
+  전혀 바뀌지 않는다**. ① `size` 상한 재도입 요청 = **폐지 확정**(재개 계획 없음, `totalCount`
+  동반 요청도 함께 폐기). ② `attributes` 내부 미사용 4키(`_extra`·`_source_pid`·`_domain`·
+  `_category`) 제외 = BE 수용·배포 완료를 2026-08-10 운영 실측으로 확인 — 항목당 평균
+  **1,835 B → 1,105.7 B**, 무필터 전량 6,128건 **6.13 MiB**, 소요시간 중앙값 **2.09 s**(콜드
+  첫 호출은 3.20 s로 예산을 스칠 수 있음), 협의 착수 시점(2026-08-06) **7.74 s·12.3 MB** 대비
+  큰 폭 개선. ③ `rating`/`reviewCount` 비정규화 = **채택하지 않음** — BE가 캐싱안을 철회하고
+  커버링 인덱스(jarvis-backend PR #133)로 대체해 응답표 변경 없음. 코드 동작 변경은 없다(4키는
+  원래 `app/` 어디서도 읽지 않는다) — `SpringProduct.attributes`·`ProductSearchFilters`·
+  `_search_query_params`·추천 그래프 `estCount` 주석의 폐기된 전제만 정리했고, 회귀 테스트
+  1건(`test_live_deployed_item_shape_2026_08_10_parses_and_consumes`)으로 운영 응답 형태를
+  고정했다. 재현 스크립트 `scripts/measure_i1_live_395.py` 신설.
+
+### Changed
+- **#505 — 색상 동의어 정본을 2차 사람 검수해 부분 일치로 닿지 않는 독립 색명만 확대했다.**
+  `카멜→브라운`·`버건디→와인`처럼 자명한 표기 상이 40건을 승인하고, 실제 동의어 묶음이 있는
+  독립 어휘 앵커 4개를
+  추가했다. 밝기·채도 수식어, 복합색, 데님 밝기 축은 확장 때 원래 조건을 잃으므로 보류했으며,
+  코드·마케팅명 등 40건은 반려로 고정했다. 생성 JSON·SQL은 검수 오버레이에서 재파생한다.
 - **#358 — 개인화 그래프의 사용자 변경 경로에 저장 안전장치를 깔았다** (SPEC-PROFILE-GRAPH-149
   §5.4·§6.5·§7.1·§7.2). #356 이 배치 쓰기까지 만들었다면 이번은 **사용자가 직접 고치고 지우는**
   경로를 안전하게 만든다. `store.set_graph` 가 CAS 없는 blind overwrite 라 그 위에 네 층을 얹었다.
