@@ -1,6 +1,6 @@
 ---
 id: SPEC-PROFILE-GRAPH-149
-version: 0.3.3
+version: 0.3.4
 status: draft
 created: 2026-08-05
 updated: 2026-08-10
@@ -31,7 +31,7 @@ issue_number: 149
 
 ## HISTORY
 
-- **v0.3.3 (2026-08-10, 이슈 #321)** — **REQ-PGRAPH-071·073 이 코드로 이행됐다** — 이 이슈가 그
+- **v0.3.4 (2026-08-10, 이슈 #321)** — **REQ-PGRAPH-071·073 이 코드로 이행됐다** — 이 이슈가 그
   [HARD] 조항 두 개의 구현이다. 하드 PII(전화번호·주민번호·카드번호·계좌번호·이메일·시크릿
   토큰) 결정론적 탐지·치환을 단일 정본 `app/core/pii.py`(순수·동기·무 I/O, 예외 없음)로
   신설하고, "기억해" hot-path(`record_remember`)·세션 델타 승격(`ProfileStore.add_fact`,
@@ -46,6 +46,29 @@ issue_number: 149
   해소됐다. 요구사항 신설·삭제 없음(기존 [HARD] 조항의 구현일 뿐), 저장 모델·API 규칙 무변경,
   **와이어 계약(api-spec §3.8·§3.9) 불변**. 동반 개정: api-spec v0.32.9 ·
   `SPEC-PROFILE-001` v0.10.0.
+- **v0.3.3 (2026-08-10, 이슈 #359)** — **집행 착수에 필요한 저장 규약 두 건**(요구사항 신설 없음,
+  와이어 계약 무개정 — api-spec 은 §3.7 근거 정정만 v0.32.7 로 별도 개정).
+  (1) **REQ-PGRAPH-005 절단 규약을 단일 상한 → 바구니별 상한으로 개정.** v0.2.2 는 상한 하나 안에서
+  밀려나는 **순서**만 정했는데, `superseded` 가 근거 0건이어도 영구 이월되면서 `active` 보다 먼저
+  보존되므로 **`superseded` 개수가 `상한 − |pin|` 에 이르면 `active` 가 하나도 안 남는다.** 밀려난
+  `active` 는 투영에 없어 `edgeId` 를 모르니 지울 수도 없는데 근거 fact 는 살아 있어 추천에는 계속
+  반영된다 — 지울수록 못 지우는 게 늘어나는 되먹임이다. 이슈 #150 코멘트(2026-08-09)가 이 결정을
+  *"#359·#360 에서 생산자를 붙일 때"* 로 예약해 뒀고, 그 코멘트가 든 근거 절반(사용자 삭제 표식이
+  자리를 먹는다)은 #499/#358 이 tombstone 을 `edges` 밖 별도 목록으로 빼면서 이미 해소돼 남은
+  `superseded` 잠식만 여기서 닫는다. 바구니 분리 기준은 **`status == "active"`** 이며, active 상한을
+  fact 상한과 같게 두면 `active ≤ 서로 다른 edge_key ≤ fact 수 ≤ 상한` 이라 **active 절단이 구조적으로
+  발동 불가**가 된다. `superseded` 의 실효 예산은 `상한 − |pin|` → 자기 상한 전량으로 **늘어나므로**
+  진 취향이 요약에 되살아나지 않게 하는 비대칭(§6.1)은 손실 없이 유지된다. pin 에 상한이 없어져
+  "지키느라 버렸다" 경고는 발화 조건을 잃으므로 **문서 총량 파생 임계**로 옮겼다(초과분은 정의상
+  pin 이라 새 튜너블이 없다).
+  (2) **§7.1 `profile_personalization_state` 에 중지 구간 목록(`disabled_spans`) 신설.**
+  REQ-PGRAPH-055(중지 기간 감쇠 정지)는 배치가 "언제부터 언제까지 시간이 흐르지 않은 것으로 볼지"를
+  알아야 집행되는데, 그 정보를 그래프 문서에 두면 중지·재개가 문서를 고치게 되어 §3.9.5 응답의
+  `graphVersion`·감사 before/after·멱등 원장 payload 가 전부 거짓이 되고(그 경로는 "그래프 문서는
+  안 바뀐다"를 전제로 같은 값을 싣는다) 그래프 잠금까지 잡아야 해 §7.2 의 "락을 두 개 쥐지 않는다"도
+  깨진다. 플래그 테이블은 락 없는 단일 행이라 둘 다 피한다.
+  §11 설정 목록에 `profile_graph_max_superseded_edges`·`profile_graph_max_tombstones`·
+  `graph_decay_pause_spans_max` 를 추가했다.
 - **v0.3.2 (2026-08-10, 이슈 #358)** — **구현이 드러낸 세 지점을 명세에 반영**했다(요구사항 신설
   없음, 와이어 계약 무개정 — 저장 계층 서술 정밀화). (1) **§7.1 테이블 2개 → 3개** — "감사 겸
   저널" 하나로는 [HARD]를 못 지킨다. REQ-PGRAPH-043이 원장에 "최초 응답 본문을 그대로" 담게 하는데
@@ -397,16 +420,46 @@ class GraphAuditRecord(BaseModel):
     문서는 늘 상한 이하라 **투영만으로는 절단 여부를 복원할 수 없다** — `len(edges) == 상한`
     추정도 "우연히 딱 상한인 정상 사용자"와 구분되지 않는다. 그래서 §5.3에 `truncated: bool`을
     두고 자른 쪽이 기록한다.
-  - **`truncated`의 뜻은 "상한을 넘겼다"가 아니라 "버린 게 있다"** 이다. 사용자 삭제(`suppressed`·pin)
-    만으로 상한을 넘겨 **전부 보존한** 경우는 거짓이다 — 자르지 않았으므로. 참이면 사용자에게
+  - **`truncated`의 뜻은 "상한을 넘겼다"가 아니라 "버린 게 있다"** 이다. pin만으로 상한을 넘겨
+    **전부 보존한** 경우는 거짓이다 — 자르지 않았으므로. 참이면 사용자에게
     "일부만 표시됨"을 안내할 근거가 된다.
-  - **[HARD, 신설 v0.2.2] 절단 우선순위** — 밀려나는 순서는 `active` → `superseded` →
-    (자르지 않음) `suppressed`·pin이다. `suppressed`·pin은 **상한보다 우선**하며, 그것만으로
-    상한을 넘으면 넘긴 채 보존하고 경고를 남긴다.
-  - **근거**: `superseded`는 근거 fact가 남아 있으면 다음 배치에 재파생·재판정으로 **자기복구**되지만
-    `suppressed`에는 복구 경로가 없다. 잘린 tombstone은 같은 `edge_key`가 새 `active`로 파생되는 것을
-    막지 못해 **지운 취향이 부활**하고, REQ-PGRAPH-022/023(억제 실효)이 조용히 무력화된다.
-    저장 폭주 방어는 삭제 실효보다 뒤에 선다.
+  - **[HARD, 개정 v0.3.3 / 이슈 #359] 상한은 하나가 아니라 바구니별로 나뉜다.** v0.2.2는 단일
+    상한 안에서 밀려나는 **순서**(`active` → `superseded` → 자르지 않음 `suppressed`·pin)만
+    정했는데, 그 구조는 자리 잠식을 막지 못한다.
+
+    | 바구니 | 상한 | 초과 시 |
+    |---|---|---|
+    | pin (`user_intent` 있음) | **없음** | 넘긴 채 보존 + 경고. REQ-PGRAPH-031 [HARD]가 상한보다 앞선다 |
+    | `active` (pin 아님) | `profile_graph_max_edges` | 확신도 낮은 순 폐기 |
+    | `superseded` | `profile_graph_max_superseded_edges` | 확신도 낮은 순 폐기 |
+    | tombstone 목록 | `profile_graph_max_tombstones` | `suppressed_at` 오래된 순 폐기 + 경고 |
+
+    **바구니 분리 기준은 `status == "active"`** — "사용자가 만든 것이냐"로 가르면 `superseded`가
+    active 바구니에 남아 잠식이 그대로 재현된다.
+  - **근거(잠식)**: 단일 상한에서는 보존 우선순위가 높은 쪽이 자리를 독차지한다.
+    `superseded`는 근거가 0건이어도 영구 이월되므로(§6.3) **단조 누적**되는데 `active`보다 먼저
+    보존되어, `superseded` 개수가 `상한 − |pin|`에 이르면 **`active`가 하나도 남지 않는다.**
+    밀려난 `active`는 투영에 안 실려 사용자가 `edgeId`를 모르고 따라서 지울 수도 없는데, 근거
+    fact는 살아 있어 요약·추천에는 계속 반영된다 — **지울수록 못 지우는 게 늘어나는 되먹임**이라
+    이 기능의 목적과 정반대다. (출처: 이슈 #150 코멘트 2026-08-09. 그 코멘트가 든 "사용자 삭제
+    표식이 자리를 먹는다"는 절반은 #499/#358이 tombstone을 `edges` 밖 별도 목록으로 빼면서
+    해소됐고, 남은 `superseded` 잠식을 여기서 닫는다.)
+  - **효과**: `active edge ≤ 서로 다른 edge_key ≤ fact 수 ≤ profile_max_facts`이므로, active 상한을
+    fact 상한과 같게 두면 **active 절단이 구조적으로 발동 불가**가 된다. "확률이 낮다"가 아니다.
+  - **`superseded` 보호는 약해지지 않는다.** 단일 상한에서 `superseded`의 실효 예산은
+    `상한 − |pin|`이었다. 분리하면 pin과 무관하게 자기 상한 전량을 받으므로 **항상 종전 이상**이다.
+    `superseded`가 잘리면 같은 fact가 다음 배치에 `active`로 간주되어 **진 취향이 요약에 되살아난다**는
+    비대칭(§6.1 근거)은 그대로 지켜진다 — 실현 방식이 "동률에서 이긴다"에서 "자기 예산을
+    보장받는다"로 바뀌었을 뿐이다.
+  - **경고는 총량 파생 임계로 낸다.** pin에 상한이 없으므로 "pin을 지키느라 남을 버렸다"는 사건
+    자체가 사라진다. 남는 관심사는 문서 총량 하나뿐이라
+    `len(edges) > profile_graph_max_edges + profile_graph_max_superseded_edges`일 때 경고한다 —
+    다른 두 바구니가 상한에 묶여 있으므로 **초과분은 정의상 pin**이고, 새 튜너블이 필요 없다.
+    "상한을 넘긴 문서"가 정리·초기화 신호라는 뜻은 그대로다.
+  - **잔여 리스크**: tombstone을 폐기하면 그 취향이 부활할 수 있다. 개별 삭제가 원문을 물리
+    삭제하므로 재파생할 fact가 대부분 없지만, edge의 근거 목록이 `graph_evidence_refs_max`로
+    잘려 있어 **목록 밖에 남은 fact까지 지웠다고 보장할 수 없다.** 확률은 낮으나 0은 아니며,
+    신경 쓰이면 `graph_evidence_refs_max`를 함께 올린다.
 - **REQ-PGRAPH-006** **[신설 v0.2.0, 이슈 #322]** `evidence_count`는 **내부 전용**이어야 하며 와이어에
   노출해서는 안 된다. 확신도는 `confidence` 3버킷으로만 표현한다.
   - **근거**: `profile_buffer_repeat_cap`(기본 2)이 같은 발화를 2회로 잘라 세션 버퍼에 담으므로
@@ -757,6 +810,15 @@ class GraphAuditRecord(BaseModel):
     같은 행을 지우면 감사까지 사라져 REQ-PGRAPH-062와 충돌한다. 보존 기간도 서로 다르다
     (REQ-PGRAPH-044). 구현은 원장 payload에도 라벨을 담지 않고, 재생 시 라벨은 현재 문서에서
     다시 읽어 조립한다.
+  - **[신설 v0.3.3 / 이슈 #359]** `profile_personalization_state`는 `enabled`·`disabled_at` 외에
+    **중지 구간 목록**(`disabled_spans`, jsonb `[{from, to}, …]`)을 갖는다. REQ-PGRAPH-055(중지 기간
+    감쇠 정지)를 집행하려면 배치가 "언제부터 언제까지 시간이 흐르지 않은 것으로 볼지"를 알아야
+    하는데, 그 정보를 **그래프 문서에 두면 안 된다** — 중지·재개가 문서를 고치면 §3.9.5 응답의
+    `graphVersion`·감사 before/after·멱등 원장 payload가 전부 거짓이 되고(그 경로는 "그래프 문서는
+    안 바뀐다"를 전제로 같은 값을 싣는다), 그래프 잠금까지 잡아야 해 §7.2의 "락을 두 개 쥐지
+    않는다"도 깨진다. 플래그 테이블은 락 없는 단일 행이라 둘 다 피한다.
+    구간 수는 `graph_decay_pause_spans_max`로 제한하고, 넘으면 **가장 오래된 두 구간을 그 둘을
+    포함하는 하나로 병합**한다(결정론적, 로그). 병합은 중지 시간을 과대계상하는 쪽이라 안전하다.
 - fact 항목은 **증거 저장소로 유지**하고 값에 필드만 더한다 — fact 쪽 스키마 마이그레이션은 없다.
 
 ### 7.2 변경별 경계
@@ -765,7 +827,7 @@ class GraphAuditRecord(BaseModel):
 |---|---|
 | 수정·삭제 | per-user 잠금 → **재전송이면 최초 응답 재생** → 대상 부재면 `404` → 원장 claim → 문서 read-modify-write(`revision` compare-and-set) → 문서 쓰기 → 감사 기록 → 원장 완료 |
 | 전체 초기화 | per-user 잠금 → 저널 기록 → 문서 교체(`revision` 유지·증가) → fact·요약·버퍼 삭제 → **전사록 삭제(`conversation_turns` where `user_id`)** → 저널 완료 |
-| 개인화 중지 | 플래그 테이블 단일 행 upsert(**락 없음**) + 요약 항목 사용 표식 하향(**요약 잠금 아래**) |
+| 개인화 중지 | 플래그 테이블 단일 행 upsert(**락 없음**) + 요약 항목 사용 표식 하향(**요약 잠금 아래**). **[v0.3.3]** 재개(`enabled=true`)는 같은 upsert 안에서 `disabled_at → now` 구간을 `disabled_spans`에 덧붙인다 — **그래프 문서는 여전히 건드리지 않는다** |
 
 **[개정 v0.3.2 / 구현 #358]** 위 표에서 셋을 정밀화했다.
 
@@ -923,12 +985,22 @@ v0.9.0 개정 조항과 상충 없음 + 회귀 테스트가 "되돌리면 깨지
 
 ### 설정 주입 (하드코딩 금지)
 
-`profile_graph_max_edges` · `profile_graph_label_max_chars` · `profile_graph_confidence_buckets` ·
+`profile_graph_max_edges` · **`profile_graph_max_superseded_edges`** · **`profile_graph_max_tombstones`** ·
+`profile_graph_label_max_chars` · `profile_graph_confidence_buckets` ·
 `graph_node_distance_max` · `graph_node_override_margin` · `graph_pin_challenge_count` ·
-`graph_demote_margin` · `graph_decay_half_life_days` · `graph_evidence_refs_max` ·
+`graph_demote_margin` · `graph_decay_half_life_days` · **`graph_decay_pause_spans_max`** ·
+`graph_evidence_refs_max` ·
 `graph_sensitive_retention_days` · `graph_audit_retention_days` · `graph_idempotency_ttl_h` ·
 `graph_require_verified_for_ranking` · `graph_seed_legs_max` · `graph_optout_cache_ttl_s`.
 승격 임계는 **기존 게이트 임계를 재사용**한다 — 두 번째 임계 키를 만들지 않는다.
+
+- **[신설 v0.3.3 / #359] 절단 상한 3종** — `profile_graph_max_edges`(active)·
+  `profile_graph_max_superseded_edges`·`profile_graph_max_tombstones`(REQ-PGRAPH-005).
+  `profile_graph_max_edges`는 **키 이름을 유지하되 뜻이 `active` 전용으로 좁아졌다** — 개명하면
+  운영 env·문서가 갈라지는데 얻는 것이 없다. **active 상한은 `profile_max_facts`와 같은 값으로
+  둔다**: 그래야 `active ≤ fact 수 ≤ 상한`이 성립해 active 절단이 발동 불가가 된다(REQ-PGRAPH-005).
+- **[신설 v0.3.3 / #359] `graph_decay_pause_spans_max`** — 중지 구간 목록의 최대 길이(§7.1).
+  넘으면 가장 오래된 두 구간을 병합한다. 감쇠 정지 자체를 끄는 스위치가 아니다.
 
 - **`graph_undo_window_s` ⛔ 폐기 v0.3.0** — v0.2.0 이 "개별 삭제 후 원문을 보관하는 유예(기본 300초)"로
   신설했으나, **되돌리기 API 폐기로 보관할 이유가 사라져 키 자체를 없앤다**(§6.3 REQ-PGRAPH-025).

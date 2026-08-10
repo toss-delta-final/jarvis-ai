@@ -1665,6 +1665,16 @@ class Settings(BaseSettings):
     # 강등 임계 = profile_gate_threshold - graph_demote_margin (REQ-PGRAPH-016 히스테리시스).
     # **승격 임계는 기존 게이트 임계를 재사용한다 — 두 번째 임계 키를 만들지 않는다**(§11).
     graph_demote_margin: float = Field(default=0.1, ge=0.0, lt=1.0)
+    # pin 된 취향에 반대 관측이 몇 건 쌓이면 `challenged` 를 켤지 (REQ-PGRAPH-033).
+    # **상태는 바꾸지 않는다** — 취향 변화의 반영은 명시적 사용자 동작으로만 일어나고, 이 값은
+    # FE 가 "다시 반영할까요?" 를 물을지 판단하는 동작 트리거다(api-spec §3.8).
+    # **`0` 은 신호를 끈다** — `count >= threshold` 로 순진하게 쓰면 0 에서 항상 참이 되어 규약과
+    # 정반대로 동작하므로 `graph_models.is_pin_challenged` 가 특례로 가른다.
+    graph_pin_challenge_count: int = Field(default=3, ge=0)
+    # 중지 구간 목록(`profile_personalization_state.disabled_spans`)의 최대 길이 (REQ-PGRAPH-055).
+    # 넘으면 가장 오래된 두 구간을 bounding span 으로 병합한다 — 감쇠를 **덜 빼는**(취향을 더
+    # 오래 살리는) 쪽으로 틀리므로 보수적이다. 감쇠 정지 자체를 끄는 스위치가 아니다.
+    graph_decay_pause_spans_max: int = Field(default=50, ge=1)
     # confidence 감쇠 반감기(일). 이 키가 없으면 강등이 **구조적으로 도달 불가**하다 — 게이트가
     # salience >= profile_gate_threshold 인 관측만 저장하므로 감쇠 없이는 confidence 가 승격 임계
     # 아래로 내려갈 수 없고, 히스테리시스가 형식만 만족된다(SPEC v0.1.1 §11 보강).
@@ -1672,12 +1682,23 @@ class Settings(BaseSettings):
     # edge 당 보관하는 근거 fact key 개수 상한(무제한 누적 방어).
     graph_evidence_refs_max: int = Field(default=20, ge=1)
     profile_graph_label_max_chars: int = Field(default=60, ge=1)
-    # 문서 edge 개수 상한. suppressed·superseded 는 영구 보존이라 단일 jsonb 가 단조 증가하므로
-    # 저장 폭주는 여기서 막는다. 다만 **사용자 삭제(suppressed·pin)에는 걸리지 않는다** — 절단이
-    # tombstone 을 지우면 지운 취향이 다음 배치에 active 로 부활하고 복구 경로가 없다. 밀리는
-    # 순서는 superseded(재파생으로 자기복구) → active 이고, 사용자 삭제만으로 이 값을 넘으면
-    # 넘긴 채 보존하고 경고한다(graph_merge._truncate).
+    # **`active` edge 전용 상한** (REQ-PGRAPH-005). 키 이름은 유지하되 #359 에서 뜻이 좁아졌다 —
+    # 개명하면 운영 env·문서가 갈라지는데 얻는 것이 없다.
+    # **`profile_max_facts` 와 같은 값으로 둔다**: active 는 서로 다른 edge_key 수를 넘을 수 없고
+    # 그것은 fact 수를 넘을 수 없으므로, 같게 두면 active 절단이 **구조적으로 발동 불가**가 된다.
+    # 값을 낮추면 그 보장이 사라진다.
     profile_graph_max_edges: int = Field(default=200, ge=1)
+    # **`superseded` 전용 상한** (신설 #359). 종전에는 단일 상한 안에서 superseded 가 active 보다
+    # 먼저 보존돼, 근거 0건이어도 영구 이월되는 superseded 가 쌓이면 **active 가 하나도 안 남는**
+    # 되먹임이 있었다(이슈 #150 코멘트). 바구니를 나누면 그 잠식이 사라지고, superseded 의 실효
+    # 예산은 종전 `상한 − |pin|` 에서 이 값 전량으로 **늘어난다**.
+    profile_graph_max_superseded_edges: int = Field(default=200, ge=1)
+    # tombstone(재파생 차단 표식) 목록 상한 (신설 #359). #499/#358 이 tombstone 을 edges 밖 별도
+    # 목록으로 빼면서 상한이 아예 없어졌다 — 항목당 필드 3개라 증가 폭은 작지만 단조 증가다.
+    # 넘으면 `suppressed_at` 오래된 순으로 버린다. 버린 취향이 부활할 잔여 리스크는 낮다:
+    # 개별 삭제가 원문을 물리 삭제하므로 재파생할 fact 가 대부분 없다. 다만 근거 목록이
+    # `graph_evidence_refs_max` 로 잘려 있어 0 은 아니며, 신경 쓰이면 그 값을 함께 올린다.
+    profile_graph_max_tombstones: int = Field(default=1000, ge=1)
     # 와이어 3버킷 라벨의 경계 2개. **버킷 경계는 계약이 아니다**(§6 공통 규약) — 내부 수치는
     # 노출하지 않고 라벨만 나간다.
     profile_graph_confidence_buckets: list[float] = Field(default_factory=lambda: [0.34, 0.67])

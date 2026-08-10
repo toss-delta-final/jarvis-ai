@@ -8,6 +8,7 @@ TestClient(app)를 `with`로 감싸야 lifespan 이 실제로 발동한다(경�
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 
 from fastapi.testclient import TestClient
@@ -55,6 +56,12 @@ def _patch_lifespan_dependencies(
         main_mod,
         "close_stream_registry",
         lambda: record("stream_registry"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "warm_graph_journal_pool",
+        lambda: record("warm_graph_journal_pool"),
         raising=False,
     )
     monkeypatch.setattr(main_mod, "start_scheduler", lambda: calls.append("start"))
@@ -143,16 +150,68 @@ async def test_lifespan_entry_calls_category_dictionary_startup_check(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_lifespan_warms_the_graph_journal_pool_before_serving(monkeypatch):
+    """기동 시 `graph_journal` 풀을 미리 연다 (#359).
+
+    이 풀은 pg-profile 에 붙는 **세 번째 풀**(BaseStore·advisory 와 별개)인데 `_close_owned_resources`
+    에 close 만 있고 open 이 없었다. 지금까지 무해했던 것은 첫 호출자가 항상 백그라운드
+    sweep(사용자 예산 밖)이었기 때문이다 — #359 의 중지 게이트가 **구매자 턴**을 첫 호출자로
+    바꾼다.
+
+    지연 초기화는 `pool.open(wait=True)`(`state_store_connect_timeout_s` 5s) + `_ensure_schema`
+    (`state_store_migration_timeout_s` 30s, advisory 잠금 + 테이블 3개 + 인덱스)이고 전 구간이
+    `_init_lock` 안이라 **동시 턴이 전부 직렬 대기**한다. first-token 상한은 10s다.
+    """
+    calls = []
+    _patch_lifespan_dependencies(monkeypatch, calls)
+
+    async with main_mod._lifespan(main_mod.app):
+        pass
+
+    assert "warm_graph_journal_pool" in calls
+    assert calls.index("warm_graph_journal_pool") < calls.index("start")
+
+
+@pytest.mark.asyncio
+async def test_lifespan_survives_graph_journal_pool_warm_failure(monkeypatch, caplog):
+    """워밍 실패가 기동을 막지 않는다 — 지연 초기화가 원래 하던 일을 그대로 하면 된다.
+
+    운영(`auth_mode == "jwks"`)에서 pg-profile 이 죽어 있으면 `_get_pool` 이 raise 하는데, 그것을
+    기동 실패로 승격시키면 **개인화와 무관한 구매자 턴까지 서버가 안 뜬다.** 워밍은 최적화이지
+    선결 조건이 아니다.
+    """
+
+    async def _boom():
+        raise RuntimeError("pg-profile down")
+
+    _patch_lifespan_dependencies(monkeypatch, calls := [])
+    monkeypatch.setattr(main_mod, "warm_graph_journal_pool", _boom, raising=False)
+
+    with caplog.at_level(logging.WARNING, logger="app.main"):
+        async with main_mod._lifespan(main_mod.app):
+            pass
+
+    assert "start" in calls  # 스케줄러는 그대로 뜬다
+    assert "graph_journal_pool_warm_failed" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_lifespan_closes_all_owned_resources_in_reverse_order(monkeypatch):
     calls = []
     _patch_lifespan_dependencies(monkeypatch, calls)
 
     async with main_mod._lifespan(main_mod.app):
-        assert calls == ["initialize", "initialize_stream_registry", "start"]
+        assert calls == [
+            "initialize",
+            "initialize_stream_registry",
+            "warm_graph_journal_pool",
+            "start",
+        ]
 
     assert calls == [
         "initialize",
         "initialize_stream_registry",
+        "warm_graph_journal_pool",
         "start",
         "stop",
         "stream_registry",
@@ -181,6 +240,7 @@ async def test_lifespan_continues_cleanup_after_resource_failure(monkeypatch, ca
     assert calls == [
         "initialize",
         "initialize_stream_registry",
+        "warm_graph_journal_pool",
         "start",
         "stop",
         "stream_registry",
@@ -216,6 +276,7 @@ async def test_lifespan_finishes_cleanup_before_propagating_task_cancellation(mo
     assert calls == [
         "initialize",
         "initialize_stream_registry",
+        "warm_graph_journal_pool",
         "start",
         "stop",
         "stream_registry",
@@ -302,6 +363,7 @@ async def test_lifespan_times_out_hung_resource_and_continues_cleanup(monkeypatc
     assert calls == [
         "initialize",
         "initialize_stream_registry",
+        "warm_graph_journal_pool",
         "start",
         "stop",
         "stream_registry",

@@ -24,7 +24,12 @@ async def read_profile_summary(user_id: str | None) -> dict | None:
         return None
     store = await get_profile_store()
     summary = await store.get_summary(user_id)
-    if summary is None:
+    if summary is None or not summary.usable:
+        # `usable=False` 는 개인화 중지가 내려 둔 표식이다(REQ-PGRAPH-100 이중 방어의 **2차**).
+        # 없는 것처럼 읽어 소비처 세 곳(rerank·홈 벡터·마이페이지)이 이미 갖고 있는 `None` 분기로
+        # 보낸다 — 추가 왕복이 0회인 것이 요점이다(`usable` 은 위 단일 get 이 이미 읽어 온 필드).
+        # **1차는 캐시 없는 플래그 조회**이고 호출부가 따로 한다: 요약 행이 아직 없는 회원이 먼저
+        # 끄면 표식을 내릴 자리가 없어 이 검사만으로는 구멍이 남는다.
         return None
     return {
         "markdown": summary.markdown,

@@ -341,18 +341,24 @@ class ProfileStore:
             f"profile:summary:{user_id}",
             _summary_lock(user_id),
         ):
+            # **무조건 읽는다**(#359). 종전에는 `embedding is None or expected_seq is not None`
+            # 일 때만 읽었는데, 그러면 임베딩이 성공하고 CAS 를 안 쓰는 호출에서 `existing` 이
+            # `None` 인 채로 아래 `usable` 이 `True` 로 리셋된다 — 개인화 중지가 조용히 풀린다.
+            # 지금 프로덕션이 안전한 유일한 이유는 `builder.consolidate` 가 늘 `expected_seq=` 를
+            # 넘기기 때문이고, **호출자 한 명의 규율에 [HARD] 보장을 걸어 둔 상태**였다.
+            # 추가 비용은 sleep-time 배치의 get 1회다.
+            #
+            # 폴백 조회 자체도 실패할 수 있다(pg-profile 일시 장애·타임아웃) — 여기서 안 잡으면
+            # 아래 요약 저장까지 통째로 죽어 "임베딩 실패가 요약 저장을 막지 않는다"는 보장이
+            # 깨진다(PR #213 리뷰). 벡터를 못 살리는 건 degrade, 요약 저장은 필수다.
             existing: ProfileSummary | None = None
-            if embedding is None or expected_seq is not None:
-                # 폴백 조회 자체도 실패할 수 있다(pg-profile 일시 장애·타임아웃) — 여기서 안 잡으면
-                # 아래 요약 저장까지 통째로 죽어 "임베딩 실패가 요약 저장을 막지 않는다"는 보장이
-                # 깨진다(PR #213 리뷰). 벡터를 못 살리는 건 degrade, 요약 저장은 필수다.
-                try:
-                    existing = await self.get_summary(user_id)
-                except Exception:
-                    logger.warning("profile_summary_embedding_carryover_failed")
-                    existing = None
-                if embedding is None:
-                    embedding = existing.embedding if existing else None
+            try:
+                existing = await self.get_summary(user_id)
+            except Exception:
+                logger.warning("profile_summary_embedding_carryover_failed")
+                existing = None
+            if embedding is None:
+                embedding = existing.embedding if existing else None
 
             current_seq = existing.seq if existing else 0
             if expected_seq is not None and expected_seq != current_seq:

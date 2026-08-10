@@ -41,6 +41,7 @@ if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 from app.agents.profile.graph_journal import close_pool as close_graph_journal_pool
+from app.agents.profile.graph_journal import warm_pool as warm_graph_journal_pool
 from app.agents.profile.processed_events import close_pool as close_processed_events_pool
 from app.agents.profile.session_activity import close_pool as close_session_activity_pool
 from app.agents.profile.store import close_store as close_profile_store
@@ -231,6 +232,23 @@ async def _check_category_dictionary_startup() -> None:
             raise
 
 
+async def _warm_graph_journal_pool() -> None:
+    """`graph_journal` 풀을 미리 열되 **실패해도 기동을 막지 않는다** (#359).
+
+    이 풀은 pg-profile 에 붙는 세 번째 풀(BaseStore·advisory 와 별개)인데 종료 목록에만 있고
+    시작 자리가 없었다. #359 가 중지 게이트를 구매자 hot-path 에 붙이면서 첫 호출자가 백그라운드
+    sweep 에서 **사용자 턴**으로 바뀌어, 지연 초기화(연결 5s + 마이그레이션 30s, `_init_lock`
+    직렬화) 비용을 first-token 10s 관문 안에서 물게 된다.
+
+    워밍은 최적화이지 선결 조건이 아니다 — 실패하면 지연 초기화가 원래 하던 일을 그대로 한다.
+    기동 실패로 승격시키면 개인화와 무관한 구매자 턴까지 서버가 안 뜬다.
+    """
+    try:
+        await warm_graph_journal_pool()
+    except Exception:  # noqa: BLE001 - 워밍 실패는 기동을 막지 않는다
+        logger.warning("graph_journal_pool_warm_failed", exc_info=True)
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Lifecycle migration 뒤 scheduler를 시작하고 owned resources를 역순 종료한다."""
@@ -242,6 +260,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         await initialize_session_lifecycle()
         # 공유 레지스트리 백엔드일 때만 스키마·풀을 준비한다(기본 memory 는 no-op).
         await initialize_stream_registry()
+        await _warm_graph_journal_pool()
         start_scheduler()
         scheduler_started = True
         yield
