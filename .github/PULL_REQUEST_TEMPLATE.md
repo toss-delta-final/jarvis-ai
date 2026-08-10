@@ -13,7 +13,7 @@
 - [ ] 기능/주제 완료 시 **CHANGELOG.md** `[Unreleased]` 갱신
 - [ ] 계약(엔드포인트·SSE·필드·오류) 변경 시 **api-spec 사본**(`docs/api-spec.md`) 동기화 — 정본 개정이 선행됐는지 확인
 - [ ] 개발 중 밟은 실수는 **docs/lessons.md**에 기록
-- [ ] 신원은 JWT `sub`에서만 도출 (요청 본문 신뢰 금지) · productId는 string
+- [ ] 신원은 JWT `sub`에서만 도출 (요청 본문 신뢰 금지) · 상품·장바구니 id는 숫자(BIGINT), 게스트 id만 UUID 문자열
 
 ## 리뷰 노트
 

@@ -343,6 +343,12 @@ defined 로 전환됐다. #426 directed 3건도 defined 로 추가됐다. 잔존
   카탈로그(#381 이전엔 `CATALOG_PRODUCTS` 3건 고정, 필터 미적용), 프로필 always-None(HOME). 실제
   카탈로그 분포·프로필 다양성에 따른 랭킹 품질은 `evals/goldenset`(#333) 소관 — 이 하네스는
   "경로가 죽지 않고 계약 형태를 지키며 표현 가능한 필터가 실제로 걸러지는가"만 잰다.
+- **`intent_cart_quantity_not_generated`(#285, I-25 §4.13)** — `cart_quantity` 는 이 매트릭스가
+  재지 않는다(`axes.json` excludes 로 어떤 leaf 에도 선택되지 않게 막음): 이 하네스는
+  `build_decompose_json` 으로 intent 를 강제 주입해 라우팅을 재지 않고, 수량 변경용 Spring
+  대역도 없다 — 값을 넣으면 65→73 케이스로 밀려 63/65건의 `expected_behavior.jsonl` 사람 판단이
+  다른 시나리오에 조용히 붙는다. 라우팅 회귀는 `evals/intent_probe` 의 `cart_quantity` 그룹이
+  잰다(`wishlist_view_context_none`/#386 과 같은 교환).
 
 ## 관측 재생성 이력 (#426, 2026-08-07)
 

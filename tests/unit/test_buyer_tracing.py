@@ -1085,6 +1085,7 @@ async def test_cart_merge_failure_marks_routed_cart_without_changing_frames(
         "type": "CART_ADDED",
         "message": "장바구니에 담았어요.",
         "cartItemId": 1,
+        "quantity": None,  # [#285] I-25 전용 필드 — CART_ADDED 는 쓰지 않아 항상 None
         "reason": None,
     }
 
