@@ -13,10 +13,11 @@ from typing import Any
 
 from evals.intent_probe.metrics import AxisResult, ISSUE_240_AXIS_ORDER, issue240_line
 from evals.intent_probe.runner import CellResult
+from evals.metrics.run_manifest import VOLATILE_MANIFEST_KEYS
 
 # 산출물 비교(결정론 테스트)에서 빼는 실행별 변동값.
-VOLATILE_JSON_KEYS = frozenset(
-    {"run", "dirty", "timestamp", "latencyMs", "totalWaitS", "maxWaitS", "correlationId"}
+VOLATILE_JSON_KEYS = VOLATILE_MANIFEST_KEYS | frozenset(
+    {"timestamp", "latencyMs", "totalWaitS", "maxWaitS", "correlationId"}
 )
 VOLATILE_CSV_COLUMNS = frozenset({"latencyMs"})
 

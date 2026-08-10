@@ -56,10 +56,12 @@ def spring(monkeypatch: pytest.MonkeyPatch) -> SpringStub:
     stub = SpringStub()
     settings = Settings(_env_file=None, internal_api_token=E2E_INTERNAL_TOKEN)
 
-    def _stub_client() -> httpx.AsyncClient:
+    def _stub_client(*, timeout: float | None = None) -> httpx.AsyncClient:
+        # [#427] search_products 만 timeout= 을 명시로 넘긴다 — 나머지 호출부는 None 이라
+        # 종전대로 spring_timeout_s 를 쓴다(_client 실구현과 같은 폴백 규약).
         return httpx.AsyncClient(
             base_url=settings.spring_base_url,
-            timeout=settings.spring_timeout_s,
+            timeout=timeout if timeout is not None else settings.spring_timeout_s,
             headers={"X-Internal-Token": settings.internal_api_token},
             transport=httpx.MockTransport(stub.handler),
         )

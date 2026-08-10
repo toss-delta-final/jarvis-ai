@@ -5,12 +5,14 @@
 같은 이유다 — 내부에서 현재시각을 읽으면 같은 관측을 두 번 재생해도 결과가 달라진다
 (REQ-PGRAPH-015 재생 동일성).
 
-이 파일이 지키는 불변식 중 조용히 깨지기 쉬운 것 둘:
-  - **tombstone 은 근거가 사라져도 남는다.** fact cap 트리밍(`profile_max_facts`)으로 증거가
-    밀려났다고 `suppressed` edge 를 지우면, 같은 취향이 다음 배치에 새 `active` edge 로 부활해
-    삭제가 조용히 무력화된다(AC-PROF-31).
-  - **절단도 사용자 삭제를 먼저 지킨다.** 상한을 넘겨 자를 때 tombstone 이 먼저 잘리면 같은 일이
-    벌어진다 — 그래서 `suppressed`·pin 은 상한보다 우선한다(`_truncate`).
+이 파일이 지키는 불변식 중 조용히 깨지기 쉬운 것 셋:
+  - **지운 취향은 재파생하지 않는다.** 사용자 삭제는 edge 를 물리 삭제하지만 근거 fact 는 살아
+    있으므로, `existing.tombstones` 로 차단하지 않으면 다음 배치가 같은 트리플에서 같은
+    `edge_id` 를 다시 만들어 삭제가 조용히 무력화된다(AC-PROF-31).
+  - **tombstone 은 이월된다.** 배치는 tombstone 을 만들지도 지우지도 않지만(그건 #358 의 사용자
+    변경 경로와 전체 초기화 몫), 새 문서에 옮겨 싣지 않으면 차단 목록을 잃는다.
+  - **절단은 pin 을 먼저 지킨다.** 사용자가 고정한 edge 가 상한 때문에 밀리면 그 편집이 사라진다
+    (REQ-PGRAPH-031). tombstone 은 `edges` 밖 별도 리스트라 절단 대상이 아니다.
 
 `logger` 는 있지만 판정 입력이 아니다 — 절단이 상한을 넘겨 보존한 사실만 알린다. 같은 관측을
 두 번 재생하면 로그와 무관하게 같은 문서가 나온다.
@@ -66,7 +68,12 @@ logger = logging.getLogger(__name__)
 
 
 def empty_document(now: str) -> GraphDocument:
-    """첫 배치 이전 상태. `revision=0` 에서 시작해 실질 변경마다 오른다."""
+    """첫 배치 이전 상태. `revision=0` 에서 시작해 실질 변경마다 오른다.
+
+    **`revision=0` 은 "문서가 아예 없던 최초 부트스트랩" 전용 의미다.** 전체 초기화는 이 함수를
+    쓰되 revision 을 이어받아 덮어써야 한다 — 되돌리면 같은 `If-Match` 가 서로 다른 상태를
+    가리킨다(REQ-PGRAPH-042). 그 집행은 #358 의 `reset_graph` 다.
+    """
     return GraphDocument(
         revision=0,
         nodes=[],
@@ -75,6 +82,7 @@ def empty_document(now: str) -> GraphDocument:
         truncated=False,
         purged_at=None,
         updated_at=now,
+        tombstones=[],
     )
 
 
@@ -103,8 +111,16 @@ def build_graph_document(
     observations, unprojected = _collect(facts)
     prior = {edge.edge_key: edge for edge in existing.edges}
 
+    # **지운 취향은 재파생하지 않는다** (AC-PROF-31, REQ-PGRAPH-026). 사용자가 지운 edge 는
+    # 문서에서 물리 삭제됐지만 그 근거 fact 는 살아 있으므로, 차단하지 않으면 다음 배치가 같은
+    # 트리플에서 같은 `edge_id` 를 다시 만들어 삭제가 조용히 무력화된다. 차단이 `edge_id` 로
+    # 성립하는 것은 그것이 `(predicate, node_id)` 파생이라 재파생 시 같은 값이 나오기 때문이다.
+    tombstoned = {tombstone.edge_id for tombstone in existing.tombstones}
+
     grouped: dict[str, list[_Observation]] = {}
     for obs in sorted(observations, key=lambda o: (o.observed_at, o.fact_key)):
+        if obs.edge_id in tombstoned:
+            continue
         grouped.setdefault(obs.edge_key, []).append(obs)
 
     edges = [
@@ -127,6 +143,10 @@ def build_graph_document(
         truncated=len(edges) < before_truncation,
         purged_at=existing.purged_at,
         updated_at=now,
+        # 배치는 tombstone 을 **만들지도 지우지도 않는다** — 사용자 변경 경로(#358)와 전체
+        # 초기화만 건드린다. 여기서 이월하지 않으면 다음 배치가 차단 목록을 잃고 지운 취향이
+        # 부활한다.
+        tombstones=list(existing.tombstones),
     )
     return _with_revision(document, existing, settings=settings)
 
@@ -328,9 +348,15 @@ def _carried_tombstones(
 ) -> list[GraphEdge]:
     """이번 배치에 근거가 없는 edge 중 **보존 대상만** 살린다.
 
-    `suppressed`·`superseded`·사용자 pin 은 근거가 0이어도 남긴다. 사라지면 같은 취향이 다음
-    배치에 새 `active` edge 로 부활해 삭제가 조용히 무력화된다(AC-PROF-31).
-    반대로 그냥 `active` 인 edge 는 근거가 없어지면 함께 사라진다 — 보존은 tombstone 한정이다.
+    `superseded`(진 취향 표식)와 사용자 pin 은 근거가 0이어도 남긴다. `superseded` 가 사라지면
+    그 fact 가 다시 `active` 로 간주되어 요약 LLM 이 모순된 두 취향을 함께 받고(`_truncate`
+    docstring 참조), pin 이 사라지면 사용자 편집이 조용히 되돌려진다(REQ-PGRAPH-031).
+    반대로 그냥 `active` 인 edge 는 근거가 없어지면 함께 사라진다 — 보존은 이 둘 한정이다.
+
+    **사용자 삭제(`suppressed`)는 여기 오지 않는다** — #499 로 즉시 물리 삭제가 되면서 `edges`
+    를 떠나 `GraphDocument.tombstones` 로 갔고, 재파생 차단은 `build_graph_document` 입구에서
+    한다. 그래서 "근거가 사라져도 삭제가 유지된다"는 보장이 이월이 아니라 **별도 리스트**로
+    성립한다 — 이월 로직이 어긋나도 삭제는 안 풀린다.
 
     **이월할 때 확신도를 이번 배치 시각으로 감쇠시킨다**(PR #410 리뷰). 안 그러면 마지막 관측
     시점의 값이 박제되어, `_truncate` 의 `-confidence` 정렬과 `_resolve_conflicts` 의 승자 판정이
@@ -429,15 +455,20 @@ def _revive_orphan_superseded(resolved: dict[str, GraphEdge]) -> list[GraphEdge]
     ]
 
 
-def _is_user_tombstone(edge: GraphEdge) -> bool:
-    """복구 경로가 없는 tombstone — 사용자 삭제(`suppressed`)와 pin(`user_intent`)."""
-    return edge.status == "suppressed" or edge.user_intent is not None
+def _is_pinned(edge: GraphEdge) -> bool:
+    """사용자가 고정한 edge — 기계가 덮지 못하고 절단으로도 버리지 않는다 (REQ-PGRAPH-031).
+
+    **사용자 삭제(`suppressed`)는 더 이상 여기 없다** — #499 로 즉시 물리 삭제가 되면서
+    `edges` 를 떠나 `GraphDocument.tombstones` 로 갔다. 그래서 절단이 삭제 표식을 지울 위험
+    자체가 사라졌고(별도 리스트라 절단 대상이 아니다), 여기서 지켜야 할 것은 pin 뿐이다.
+    """
+    return edge.user_intent is not None
 
 
 def _truncate(edges: list[GraphEdge], limit: int) -> list[GraphEdge]:
-    """상한 초과 시 절단 — **사용자 삭제는 상한보다 우선한다**.
+    """상한 초과 시 절단 — **사용자 편집(pin)은 상한보다 우선한다**.
 
-    **먼저 밀려나는 순서: `active` → `superseded` → (자르지 않음) `suppressed`·pin.**
+    **먼저 밀려나는 순서: `active` → `superseded` → (자르지 않음) pin.**
     직관과 반대로 보이지만 — 살아 있는 취향을 죽은 취향보다 먼저 버린다 — **잃는 것이 서로 다르다**
     (PR #410 리뷰에서 방향을 반대로 읽어 테스트로 고정한 지점):
 
@@ -447,17 +478,21 @@ def _truncate(edges: list[GraphEdge], limit: int) -> list[GraphEdge]:
     - `superseded` 가 잘리면 **진 취향이 요약에 되살아난다.** 위와 같은 규칙 때문에 그 fact 가
       `active` 로 간주되어, 요약 LLM 이 "소니를 좋아한다"와 "소니를 싫어한다"를 동시에 받는다.
       즉 `superseded` 는 죽은 데이터가 아니라 **"이 fact 를 요약에 넣지 마라"는 살아 있는 표식**이다.
-    - `suppressed`·pin 은 아예 자르지 않는다. 잘리면 `_carried_tombstones` 가 보존할 대상을 잃고
-      같은 취향이 다음 배치에 새 `active` 로 부활한다(AC-PROF-31). 이쪽만 복구 경로가 없다.
+    - pin 은 아예 자르지 않는다. 잘리면 **사용자 편집이 조용히 되돌려진다** — 기계 재파생에 덮이지
+      않는다는 보장(REQ-PGRAPH-031)이 상한 때문에 깨지면 그 기능이 존재할 이유가 없다.
+      `active`·`superseded` 는 재파생으로 자기복구되지만 이쪽만 복구 경로가 없다.
 
-    `suppressed`·pin 만으로 상한을 넘으면 상한을 넘긴 채 보존하고 경고한다 — 저장 폭주 방어보다
-    삭제 실효가 앞선다. 그 상태는 정리·초기화 신호이지(REQ-PGRAPH-005) 조용히 지울 근거가 아니다.
+    사용자 삭제는 이제 이 판정에 없다 — tombstone 이 `edges` 밖 별도 리스트라(#499) 절단이
+    삭제를 지울 위험 자체가 사라졌다.
+
+    pin 만으로 상한을 넘으면 상한을 넘긴 채 보존하고 경고한다 — 저장 폭주 방어보다 사용자 편집
+    보존이 앞선다. 그 상태는 정리·초기화 신호이지(REQ-PGRAPH-005) 조용히 지울 근거가 아니다.
     동률은 `edge_id` 로 갈라 절단 결과까지 결정론적으로 만든다.
     """
     if len(edges) <= limit:
         return edges
 
-    kept = [e for e in edges if _is_user_tombstone(e)]
+    kept = [e for e in edges if _is_pinned(e)]
     if len(kept) >= limit:
         if len(kept) > limit:
             logger.warning(
@@ -471,7 +506,7 @@ def _truncate(edges: list[GraphEdge], limit: int) -> list[GraphEdge]:
         return kept
 
     rest = sorted(
-        (e for e in edges if not _is_user_tombstone(e)),
+        (e for e in edges if not _is_pinned(e)),
         # 아래 slice 는 **앞쪽을 보존**한다. `status == "active"` 가 False(0) < True(1) 라
         # superseded 가 앞서고, 그래서 active 가 먼저 밀린다 — 의도대로다(docstring 근거 참조).
         key=lambda e: (e.status == "active", -e.confidence, e.edge_id),
@@ -571,4 +606,18 @@ def _fingerprint(document: GraphDocument, settings: Settings) -> str:
     ]
     # `truncated`·`unprojected_count` 는 **와이어에 나가는 값**이라(api-spec §3.8) 지문에 든다 —
     # 절단 여부가 뒤집히면 사용자가 보는 안내가 바뀌므로 실질 변경이다.
-    return repr((nodes, edges, document.unprojected_count, document.truncated, document.purged_at))
+    #
+    # tombstone 도 든다. 배치가 이걸 바꾸는 경로는 없지만(사용자 변경·초기화 전용), 지문에서
+    # 빼 두면 "지운 취향이 사라졌는데 revision 이 그대로"인 문서를 만들 수 있는 구멍이 남는다 —
+    # `edge_id` 목록만 넣어 라벨을 지문 계산에도 끌어들이지 않는다.
+    tombstones = sorted(tombstone.edge_id for tombstone in document.tombstones)
+    return repr(
+        (
+            nodes,
+            edges,
+            tombstones,
+            document.unprojected_count,
+            document.truncated,
+            document.purged_at,
+        )
+    )

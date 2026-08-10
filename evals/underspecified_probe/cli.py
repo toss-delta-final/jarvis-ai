@@ -15,6 +15,7 @@ from typing import Any
 
 from app.core.config import Settings, get_settings
 from evals.intent_probe.client import (
+    PacedLLM,
     build_live_delegate,
     build_probe_llm,
     resolve_system_prompt,
@@ -39,6 +40,11 @@ from evals.underspecified_probe.metrics import (
 )
 from evals.underspecified_probe.report import build_results, write_artifacts
 from evals.underspecified_probe.runner import JudgmentSettings, run_probe, unfilled_cells
+from evals.underspecified_probe.union import (
+    UnionPreflightError,
+    preflight_catalog,
+    union_tunable_report,
+)
 
 EXIT_OK = 0
 EXIT_REJECTED = 2
@@ -81,6 +87,12 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--dry-run", action="store_true", help="가짜 LLM — API 를 부르지 않는다")
     parser.add_argument("--seed", type=int, default=20260806)
+    parser.add_argument(
+        "--union",
+        action="store_true",
+        help="[#432] 기본 off — 카테고리 매핑·needs_expansion 보정 후 판정까지 실제로 태워 잰다"
+        "(pgvector·추가 LLM 콜 필요, --dry-run 이면 pg 접근 0으로 배관만 확인한다)",
+    )
     return parser
 
 
@@ -102,6 +114,34 @@ def _command(argv: list[str]) -> str:
     return "uv run python -m evals.underspecified_probe " + " ".join(
         shlex.quote(arg) for arg in argv
     )
+
+
+def union_extra_calls_per_sample(category_select_max_calls: int) -> int:
+    """[F-3, 리뷰 findings-432-r1] union 단계(카테고리 택일 + 전개)가 표본 1건당 추가로 부를 수
+    있는 LLM 콜 상한 — `category_select_max_calls`(원 매핑 + 재매핑의 택일 합, §4.4 — 재매핑
+    호출은 `select_max_calls=max(0, category_select_max_calls - mapping.select_calls)` 로
+    첫 매핑이 쓴 몫을 빼고 넘겨받으므로 **두 배가 아니라 합쳐서** 이 값이 상한이다) + 전개
+    LLM 1회(`expand_needs` 는 트리거당 최대 1콜)."""
+    return category_select_max_calls + 1
+
+
+def max_llm_calls(
+    *,
+    expected_calls: int,
+    attempt_multiplier: int,
+    union_enabled: bool,
+    category_select_max_calls: int,
+) -> int:
+    """[F-3] decompose 재시도 상한(`expected_calls * attempt_multiplier`)에 union 단계가 표본당
+    추가로 부를 수 있는 콜 수를 더한다. 반영하지 않으면 union 호출이 `BudgetTracker` 를 영구
+    exceeded 로 만들어 그 뒤 셀들의 decompose 호출까지 실패시킨다(union 실패 격리 원칙이 예산
+    축에서 깨진다, §2-6 항목2)."""
+    max_calls = expected_calls * attempt_multiplier
+    if union_enabled:
+        # union 단계는 채워진 표본(N개)마다 한 번만 돈다(재시도 없음) — 상한은 attempt_multiplier
+        # 가 아니라 목표 표본 수(expected_calls, "셀수×N") 기준으로 더한다.
+        max_calls += expected_calls * union_extra_calls_per_sample(category_select_max_calls)
+    return max_calls
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -135,8 +175,16 @@ def main(argv: list[str] | None = None) -> int:
     category_fanout_max = Settings.model_fields["category_fanout_max"].default
     repurchase_max = Settings.model_fields["dedup_repurchase_max"].default
     max_total_tokens = Settings.model_fields["model_eval_max_total_tokens_per_run"].default
+    # [F-3] category_select_max_calls 도 같은 이유로 고정값을 쓴다 — union 이 추가로 부를 콜
+    # 상한 산정에만 쓰이고, --union 이 아니면 이 값 자체가 결과에 영향을 주지 않는다.
+    category_select_max_calls = Settings.model_fields["category_select_max_calls"].default
     expected_calls = len(cells) * n
-    max_calls = expected_calls * args.attempt_multiplier
+    max_calls = max_llm_calls(
+        expected_calls=expected_calls,
+        attempt_multiplier=args.attempt_multiplier,
+        union_enabled=args.union,
+        category_select_max_calls=category_select_max_calls,
+    )
     budget = BudgetTracker(
         BudgetLimits(
             max_calls=max_calls,
@@ -146,15 +194,30 @@ def main(argv: list[str] | None = None) -> int:
     )
     limits = PacerLimits(max_rpm=args.rpm, max_tpm=args.tpm)
 
+    # [#432, §2-6 항목5] --union pre-flight — LLM 콜 이전에, --dry-run 이면 아예 건너뛴다
+    # (dry-run 은 pg 접근이 0이어야 한다). live_settings 는 union 튜너블 기록·경고에도 재사용한다.
+    live_settings: Settings | None = None
+    union_preflight: dict[str, Any] | None = None
+    if not args.dry_run:
+        live_settings = get_settings()
+    if args.union and not args.dry_run:
+        assert live_settings is not None
+        try:
+            union_preflight = preflight_catalog(live_settings.catalog_db_url)
+        except UnionPreflightError as exc:
+            print(f"--union pre-flight 거절: {exc}")
+            return EXIT_REJECTED
+
     if args.dry_run:
         delegate: Any = ScriptedDecomposeLLM(anchors)
         model_config = dict(DRY_RUN_MODEL_CONFIG)
         pacer = _virtual_pacer(limits)
         sleep = _no_sleep
     else:
+        assert live_settings is not None
         try:
             delegate, model_config = build_live_delegate(
-                runtime_settings=get_settings(),
+                runtime_settings=live_settings,
                 budget=budget,
                 pricing=PriceBook.load(DEFAULT_PRICING_PATH),
             )
@@ -165,6 +228,23 @@ def main(argv: list[str] | None = None) -> int:
         sleep = asyncio.sleep
 
     probe_llm = build_probe_llm(delegate, pacer=pacer, system=prompt_text)
+
+    # [#432, §2-4] union 단계 전용 LLM — decompose 프롬프트 오버라이드가 없는 PacedLLM(같은
+    # delegate·같은 pacer). --dry-run 이면 None 으로 둬 runner 가 표본마다 "건너뜀"을 기록한다.
+    union_llm: Any | None = None
+    union_tunables: dict[str, Any] | None = None
+    if args.union and not args.dry_run:
+        assert live_settings is not None
+        union_llm = PacedLLM(delegate, pacer=pacer)
+        union_tunables = union_tunable_report(live_settings)
+        differs = union_tunables["differsFromDefault"]
+        if differs:
+            print(
+                f"⚠️ --union 튜너블이 Settings 기본값과 다릅니다({', '.join(differs)}) — "
+                ".env 가 측정 대상을 조용히 바꿨을 수 있습니다",
+                file=sys.stderr,
+            )
+
     exit_code = EXIT_OK
     # [R2-1, legs_probe 승계] `run_cell` 은 BudgetExceeded 를 밖으로 던지지 않는다 — 예산이
     # 소진돼도 이미 모은 표본을 보존한 채 항상 30셀 전부를 정상 반환한다.
@@ -180,14 +260,17 @@ def main(argv: list[str] | None = None) -> int:
             category_fanout_max=category_fanout_max,
             repurchase_max=repurchase_max,
             sleep=sleep,
+            union_enabled=args.union,
+            union_llm=union_llm,
+            union_settings=live_settings if args.union else None,
         )
     )
     if budget.snapshot()["budgetExceeded"]:
         print(f"예산 초과로 중단: {budget.exceeded_reason} — 부분 산출물을 기록합니다")
         exit_code = EXIT_BUDGET
 
-    scored = score_all(results_cells, anchors)
-    diag = diagnostics(results_cells, anchors)
+    scored = score_all(results_cells, anchors, union_enabled=args.union)
+    diag = diagnostics(results_cells, anchors, union_enabled=args.union)
     baseline = compute_baseline(results_cells, anchors)
     rows = sample_rows(results_cells, anchors, JUDGMENT_SETTINGS)
     cause_summary = cause_axis_summary(rows)
@@ -216,7 +299,47 @@ def main(argv: list[str] | None = None) -> int:
         pacer=pacer.snapshot(),
         budget=budget.snapshot(),
         dry_run=args.dry_run,
+        union_enabled=args.union,
     )
+    union_manifest_section: dict[str, Any] | None = None
+    if args.union:
+        # [F-3] budget 산식 — dry-run·live 공통으로 남긴다(재현·감사용).
+        budget_call_formula = {
+            "expectedCalls": expected_calls,
+            "attemptMultiplier": args.attempt_multiplier,
+            "categorySelectMaxCalls": category_select_max_calls,
+            "unionExtraCallsPerSample": union_extra_calls_per_sample(category_select_max_calls),
+            "maxCalls": max_calls,
+            "formula": "maxCalls = expectedCalls*attemptMultiplier + expectedCalls*"
+            "(categorySelectMaxCalls+1) — union 은 표본당(재시도 없이) 최대 "
+            "categorySelectMaxCalls(원 매핑+재매핑 택일 합)+1(전개) 콜을 추가로 쓴다",
+        }
+        if args.dry_run:
+            union_manifest_section = {
+                "enabled": True,
+                "dryRunSkipped": True,
+                "budgetCallFormula": budget_call_formula,
+                "note": "--dry-run --union 은 pg 접근 0 — 배관만 확인했다(§2-6 항목5). "
+                "실측이 아니다(union 축은 전부 unionStageError 로 채워진다).",
+            }
+        else:
+            assert live_settings is not None and union_tunables is not None
+            assert union_preflight is not None
+            union_manifest_section = {
+                "enabled": True,
+                "dryRunSkipped": False,
+                "preflight": union_preflight,
+                "embeddingModelId": live_settings.embedding_model_id,
+                "tunables": union_tunables["actual"],
+                "tunableDefaults": union_tunables["defaults"],
+                "tunablesDifferFromDefault": union_tunables["differsFromDefault"],
+                "budgetCallFormula": budget_call_formula,
+                "embeddingCallsNotCountedInBudget": "union 이 추가로 부르는 임베딩 호출은 "
+                "예산·페이서에 안 잡힌다(§2-6 항목4) — 관측 비용은 LLM 콜만의 부분합이다.",
+                "revertStoreSideEffect": "_prepare_recommendation 끝부분이 get_revert_store() "
+                "를 부른다(pg-profile, 실패 시 InMemory 폴백) — 판정에 영향 없는 부작용이며 "
+                "로컬 dev DB 에 되돌리기 키가 쓰일 수 있다(§2-2).",
+            }
     manifest = build_underspecified_probe_manifest(
         command=_command(argv),
         seed=args.seed,
@@ -238,6 +361,7 @@ def main(argv: list[str] | None = None) -> int:
             axis_id: axis.as_dict()["definition"] for axis_id, axis in scored["axes"].items()
         },
         dry_run=args.dry_run,
+        union=union_manifest_section,
     )
     write_artifacts(
         args.out,
@@ -245,12 +369,23 @@ def main(argv: list[str] | None = None) -> int:
         manifest=manifest,
         cells=results_cells,
         sample_rows_payload=rows,
+        union_enabled=args.union,
     )
 
     primary = scored["axes"]["missRate"]
+    union_suffix = ""
+    if args.union:
+        union_after = scored["axes"].get("missRateAfterExpansion")
+        error_count = diag["unionStageErrorCount"]
+        union_suffix = (
+            f" · missRateAfterExpansion={union_after.numerator}/{union_after.denominator} "
+            f"· unionStageErrorCount={error_count}"
+            if union_after is not None
+            else f" · unionStageErrorCount={error_count}"
+        )
     print(
         f"missRate={primary.numerator}/{primary.denominator} · "
         f"셀 {len(results_cells)} · 못 채운 셀 {len(unfilled)} · "
-        f"prompt={prompt_identity.sha12} tier={args.tier} → {args.out}"
+        f"prompt={prompt_identity.sha12} tier={args.tier}{union_suffix} → {args.out}"
     )
     return exit_code

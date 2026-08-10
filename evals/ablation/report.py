@@ -9,7 +9,13 @@ import re
 from pathlib import Path
 from typing import Any
 
+from evals.metrics.run_manifest import VOLATILE_MANIFEST_KEYS
 from evals.model_eval.pricing import PriceBook
+
+# 산출물 비교(결정론 테스트)에서 빼는 실행별 변동값.
+VOLATILE_JSON_KEYS = VOLATILE_MANIFEST_KEYS | frozenset(
+    {"latencyMs", "correlationId", "perCaseTotalLatencyMs"}
+)
 
 
 def _mean(values: list[float]) -> float | None:
@@ -192,7 +198,7 @@ def _scrub_json(value: object) -> object:
         return value
     scrubbed: dict[str, object] = {}
     for key, item in value.items():
-        if key in {"run", "dirty", "latencyMs", "correlationId", "perCaseTotalLatencyMs"}:
+        if key in VOLATILE_JSON_KEYS:
             continue
         scrubbed[key] = _scrub_json(item)
     return scrubbed

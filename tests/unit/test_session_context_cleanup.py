@@ -164,7 +164,7 @@ async def test_active_stream_skips_phase_a_without_committing_finalizing(clock: 
     clock.advance(601)
     [claim] = await repo.claim_expired_contexts(600, 30, 1)
     registry = ActiveStreamRegistry()
-    assert registry.acquire("G1:T1", owner_id="G1", session_id="S1")
+    assert await registry.acquire("G1:T1", owner_id="G1", session_id="S1")
     coordinator = SessionLifecycleCoordinator(repo, registry)
 
     outcome = await coordinator.process_idle_transient(claim)
@@ -175,7 +175,7 @@ async def test_active_stream_skips_phase_a_without_committing_finalizing(clock: 
     with pytest.raises(SessionClaimConflict):
         await repo.get_finalization(claim.finalization_id)
 
-    registry.release("G1:T1")
+    await registry.release("G1:T1")
     [replacement] = await repo.claim_expired_contexts(600, 30, 1)
     assert replacement.finalization_id != claim.finalization_id
 
@@ -565,7 +565,7 @@ async def test_terminal_gate_is_durable_before_existing_stream_finishes(
     repo = SessionContextRepository(clock=clock)
     registry = ActiveStreamRegistry()
     await repo.touch(BuyerSessionInput("S1", "T1", "member", "7"))
-    assert registry.acquire("7:T1", owner_id="7", session_id="S1")
+    assert await registry.acquire("7:T1", owner_id="7", session_id="S1")
 
     async def clear_context(context_id: str, thread_ids: list[str]):
         from app.agents.buyer.session_state import CleanupCounts
@@ -585,7 +585,7 @@ async def test_terminal_gate_is_durable_before_existing_stream_finishes(
     context = await repo.get_context("S1")
     assert context is not None and context.state == "terminal"
     assert not task.done()
-    registry.release("7:T1")
+    await registry.release("7:T1")
     outcome = await task
     assert outcome.context.state == "terminal"
 

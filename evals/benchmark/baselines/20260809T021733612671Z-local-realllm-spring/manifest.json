@@ -1,0 +1,55 @@
+{
+  "bootstrap": {
+    "confidence": 0.95,
+    "resamples": 1000,
+    "seed": 20260803
+  },
+  "client_region": "local-wsl2",
+  "client_runtime": {
+    "httpx": "0.28.1",
+    "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+    "python": "3.12.3 (main, Jun 19 2026, 12:46:00) [GCC 13.3.0]"
+  },
+  "command": "/home/uuser/orca/workspaces/jarvis-ai/chore-438-loadtest-stub-provider/.venv/bin/python3 -m evals.benchmark.runner --base-url http://127.0.0.1:8200 --target-label local-realllm-spring --scenarios buyer_recommend --concurrency 1,5 --measured-requests 30 --server-log /tmp/claude-1000/-home-uuser-orca-workspaces-jarvis-ai-chore-438-loadtest-stub-provider/f76fafdc-fbbb-4d5a-be88-c49142fc78d8/scratchpad/bench/server-real.log --out-dir evals/benchmark/baselines --client-region local-wsl2 --instance-type local-dev-wsl2 --dependency-note 'LLM=실 벤더(openai: gpt-5-nano fast / gpt-5.6-luna smart). 같은 저장소 .env 기본 provider' --dependency-note 'Anthropic 키는 401(invalid x-api-key) 이라 이 격자는 openai 로만 떴다 — 벤더 간 비교가 아니라 스텁 대비 벤더 지연 기여분 산출용' --dependency-note '스텁 baseline 20260809T014442747650Z-local-stub-spring 과 같은 조건(같은 Spring·같은 시드·같은 커밋·같은 시나리오)에서 LLM 만 바꿔 떴다 — 두 baseline 의 차이가 벤더 지연 기여분이다' --dependency-note 'Spring 기동(로컬 8080) — I-1 200. I-21 은 400 이라 degradeReason=push_skipped 상시(BE 측 조건)' --dependency-note 'pg-catalog/pg-profile 로컬 컨테이너, product_document 6310건 전부 임베딩 보유' --dependency-note '타깃의 RATE_LIMIT_PER_MIN/HOUR 를 100000 으로 상향(앱 코드 무변경, 타깃 환경변수만)' --dependency-note '동일 호스트에서 다른 워크트리 레인이 pg 컨테이너를 공유한다 — 이웃 부하가 섞일 수 있다' --dependency-note '동시성 1~5 로 좁게 뜬다(이슈 #438 본문 — 전 격자를 실 LLM 으로 돌 이유가 없다)'",
+  "dependency_conditions": [
+    "LLM=실 벤더(openai: gpt-5-nano fast / gpt-5.6-luna smart). 같은 저장소 .env 기본 provider",
+    "Anthropic 키는 401(invalid x-api-key) 이라 이 격자는 openai 로만 떴다 — 벤더 간 비교가 아니라 스텁 대비 벤더 지연 기여분 산출용",
+    "스텁 baseline 20260809T014442747650Z-local-stub-spring 과 같은 조건(같은 Spring·같은 시드·같은 커밋·같은 시나리오)에서 LLM 만 바꿔 떴다 — 두 baseline 의 차이가 벤더 지연 기여분이다",
+    "Spring 기동(로컬 8080) — I-1 200. I-21 은 400 이라 degradeReason=push_skipped 상시(BE 측 조건)",
+    "pg-catalog/pg-profile 로컬 컨테이너, product_document 6310건 전부 임베딩 보유",
+    "타깃의 RATE_LIMIT_PER_MIN/HOUR 를 100000 으로 상향(앱 코드 무변경, 타깃 환경변수만)",
+    "동일 호스트에서 다른 워크트리 레인이 pg 컨테이너를 공유한다 — 이웃 부하가 섞일 수 있다",
+    "동시성 1~5 로 좁게 뜬다(이슈 #438 본문 — 전 격자를 실 LLM 으로 돌 이유가 없다)"
+  ],
+  "dependency_ids": {
+    "fastapi": "0.139.0",
+    "httpx": "0.28.1",
+    "pydantic": "2.13.4"
+  },
+  "ended_at_utc": "2026-08-09T02:22:13.951123+00:00",
+  "git_sha": {
+    "dirty": false,
+    "sha": "6381a1e1f04710688170294f383fb84efd3a0d0e"
+  },
+  "image": {
+    "unknown_reason": "not_provided",
+    "value": null
+  },
+  "instance_type": "local-dev-wsl2",
+  "lockfile_sha": "bc79d52c10d7cefba24d91d30408e0777ed75ae64d738e047d74bb325437ec9c",
+  "model_ids": [
+    "gpt-5-nano",
+    "gpt-5.6-luna"
+  ],
+  "price_table": {
+    "input_per_1k": {},
+    "output_per_1k": {}
+  },
+  "sample_size_rationale": null,
+  "started_at_utc": "2026-08-09T02:17:33.612671+00:00",
+  "target": {
+    "auth_mode_observed": "dev_guest",
+    "base_url": "http://127.0.0.1:8200",
+    "target_label": "local-realllm-spring"
+  }
+}

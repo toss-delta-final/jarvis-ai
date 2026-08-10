@@ -46,9 +46,26 @@ def _patch_lifespan_dependencies(
 
     monkeypatch.setattr(main_mod, "check_category_dictionary", category_check)
     monkeypatch.setattr(main_mod, "initialize_session_lifecycle", lambda: record("initialize"))
+    monkeypatch.setattr(
+        main_mod,
+        "initialize_stream_registry",
+        lambda: record("initialize_stream_registry"),
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "close_stream_registry",
+        lambda: record("stream_registry"),
+        raising=False,
+    )
     monkeypatch.setattr(main_mod, "start_scheduler", lambda: calls.append("start"))
     monkeypatch.setattr(main_mod, "stop_scheduler", lambda: calls.append("stop"))
     monkeypatch.setattr(main_mod, "close_session_lifecycle", lambda: record("session_lifecycle"))
+    monkeypatch.setattr(
+        main_mod,
+        "close_graph_journal_pool",
+        lambda: record("graph_journal_pool"),
+        raising=False,
+    )
     monkeypatch.setattr(
         main_mod,
         "close_profile_store",
@@ -131,15 +148,18 @@ async def test_lifespan_closes_all_owned_resources_in_reverse_order(monkeypatch)
     _patch_lifespan_dependencies(monkeypatch, calls)
 
     async with main_mod._lifespan(main_mod.app):
-        assert calls == ["initialize", "start"]
+        assert calls == ["initialize", "initialize_stream_registry", "start"]
 
     assert calls == [
         "initialize",
+        "initialize_stream_registry",
         "start",
         "stop",
+        "stream_registry",
         "session_lifecycle",
         "seller_history_store",
         "seller_checkpointer",
+        "graph_journal_pool",
         "profile_store",
         "session_activity_pool",
         "processed_events_pool",
@@ -160,11 +180,14 @@ async def test_lifespan_continues_cleanup_after_resource_failure(monkeypatch, ca
 
     assert calls == [
         "initialize",
+        "initialize_stream_registry",
         "start",
         "stop",
+        "stream_registry",
         "session_lifecycle",
         "seller_history_store",
         "seller_checkpointer",
+        "graph_journal_pool",
         "profile_store",
         "session_activity_pool",
         "processed_events_pool",
@@ -173,7 +196,7 @@ async def test_lifespan_continues_cleanup_after_resource_failure(monkeypatch, ca
         "advisory_pool",
     ]
     assert "lifespan resource cleanup failed resource=session_activity_pool" in caplog.text
-    assert "lifespan resource cleanup complete succeeded=8 failed=1" in caplog.text
+    assert "lifespan resource cleanup complete succeeded=10 failed=1" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -192,11 +215,14 @@ async def test_lifespan_finishes_cleanup_before_propagating_task_cancellation(mo
 
     assert calls == [
         "initialize",
+        "initialize_stream_registry",
         "start",
         "stop",
+        "stream_registry",
         "session_lifecycle",
         "seller_history_store",
         "seller_checkpointer",
+        "graph_journal_pool",
         "profile_store",
         "session_activity_pool",
         "processed_events_pool",
@@ -206,7 +232,7 @@ async def test_lifespan_finishes_cleanup_before_propagating_task_cancellation(mo
     ]
     assert task.cancelled()
     assert "lifespan resource cleanup cancelled resource=seller_history_store" in caplog.text
-    assert "lifespan resource cleanup complete succeeded=8 failed=1" in caplog.text
+    assert "lifespan resource cleanup complete succeeded=10 failed=1" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -275,11 +301,14 @@ async def test_lifespan_times_out_hung_resource_and_continues_cleanup(monkeypatc
 
     assert calls == [
         "initialize",
+        "initialize_stream_registry",
         "start",
         "stop",
+        "stream_registry",
         "session_lifecycle",
         "seller_history_store",
         "seller_checkpointer",
+        "graph_journal_pool",
         "profile_store",
         "session_activity_pool",
         "processed_events_pool",
@@ -288,7 +317,7 @@ async def test_lifespan_times_out_hung_resource_and_continues_cleanup(monkeypatc
         "advisory_pool",
     ]
     assert "lifespan resource cleanup timed out resource=seller_history_store" in caplog.text
-    assert "lifespan resource cleanup complete succeeded=8 failed=1" in caplog.text
+    assert "lifespan resource cleanup complete succeeded=10 failed=1" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -319,9 +348,11 @@ async def test_lifespan_uses_remaining_budget_before_resource_timeout(monkeypatc
         await main_mod._close_owned_resources()
 
     assert calls == [
+        "stream_registry",
         "session_lifecycle",
         "seller_history_store",
         "seller_checkpointer",
+        "graph_journal_pool",
         "profile_store",
         "session_activity_pool",
         "processed_events_pool",
@@ -330,7 +361,7 @@ async def test_lifespan_uses_remaining_budget_before_resource_timeout(monkeypatc
         "advisory_pool",
     ]
     assert "lifespan resource cleanup budget exhausted resource=session_lifecycle" in caplog.text
-    assert "lifespan resource cleanup complete succeeded=8 failed=1" in caplog.text
+    assert "lifespan resource cleanup complete succeeded=10 failed=1" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -349,8 +380,10 @@ async def test_lifespan_default_timeout_leaves_time_for_remaining_resources(monk
 
     monkeypatch.setattr(main_mod, "close_session_lifecycle", hang_first)
     for attribute, resource_name in (
+        ("close_stream_registry", "stream_registry"),
         ("close_seller_history_store", "seller_history_store"),
         ("close_seller_checkpointer", "seller_checkpointer"),
+        ("close_graph_journal_pool", "graph_journal_pool"),
         ("close_profile_store", "profile_store"),
         ("close_session_activity_pool", "session_activity_pool"),
         ("close_processed_events_pool", "processed_events_pool"),
@@ -369,9 +402,11 @@ async def test_lifespan_default_timeout_leaves_time_for_remaining_resources(monk
         await main_mod._close_owned_resources()
 
     assert calls == [
+        "stream_registry",
         "session_lifecycle",
         "seller_history_store",
         "seller_checkpointer",
+        "graph_journal_pool",
         "profile_store",
         "session_activity_pool",
         "processed_events_pool",
@@ -379,7 +414,8 @@ async def test_lifespan_default_timeout_leaves_time_for_remaining_resources(monk
         "pg_store",
         "advisory_pool",
     ]
-    assert completed == calls[1:]
+    # 첫 자원(stream_registry)은 정상 완료하고, 두 번째(session_lifecycle)만 매달린다.
+    assert completed == ["stream_registry", *calls[2:]]
     assert (
         "lifespan resource cleanup timed out resource=session_lifecycle timeout_s=5.0"
         in caplog.text
@@ -387,7 +423,7 @@ async def test_lifespan_default_timeout_leaves_time_for_remaining_resources(monk
     assert (
         "lifespan resource cleanup budget exhausted resource=session_lifecycle" not in caplog.text
     )
-    assert "lifespan resource cleanup complete succeeded=8 failed=1" in caplog.text
+    assert "lifespan resource cleanup complete succeeded=10 failed=1" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -406,8 +442,10 @@ async def test_lifespan_reserves_budget_for_every_remaining_close(monkeypatch, c
 
     monkeypatch.setattr(main_mod, "close_session_lifecycle", hang_first)
     for attribute, resource_name in (
+        ("close_stream_registry", "stream_registry"),
         ("close_seller_history_store", "seller_history_store"),
         ("close_seller_checkpointer", "seller_checkpointer"),
+        ("close_graph_journal_pool", "graph_journal_pool"),
         ("close_profile_store", "profile_store"),
         ("close_session_activity_pool", "session_activity_pool"),
         ("close_processed_events_pool", "processed_events_pool"),
@@ -438,9 +476,11 @@ async def test_lifespan_reserves_budget_for_every_remaining_close(monkeypatch, c
         await main_mod._close_owned_resources()
 
     assert calls == [
+        "stream_registry",
         "session_lifecycle",
         "seller_history_store",
         "seller_checkpointer",
+        "graph_journal_pool",
         "profile_store",
         "session_activity_pool",
         "processed_events_pool",
@@ -448,13 +488,13 @@ async def test_lifespan_reserves_budget_for_every_remaining_close(monkeypatch, c
         "pg_store",
         "advisory_pool",
     ]
-    assert completed == calls[1:]
+    assert completed == ["stream_registry", *calls[2:]]
     assert "lifespan resource cleanup timed out resource=session_lifecycle" in caplog.text
     assert (
         "lifespan resource cleanup budget exhausted resource=session_lifecycle" not in caplog.text
     )
     assert "lifespan resource cleanup budget exhausted resource=advisory_pool" not in caplog.text
-    assert "lifespan resource cleanup complete succeeded=8 failed=1" in caplog.text
+    assert "lifespan resource cleanup complete succeeded=10 failed=1" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -481,6 +521,7 @@ async def test_lifespan_preserves_floor_after_slow_resources_nearly_consume_budg
     )
     for attribute, resource_name in (
         ("close_seller_checkpointer", "seller_checkpointer"),
+        ("close_graph_journal_pool", "graph_journal_pool"),
         ("close_profile_store", "profile_store"),
         ("close_session_activity_pool", "session_activity_pool"),
         ("close_processed_events_pool", "processed_events_pool"),
@@ -513,7 +554,7 @@ async def test_lifespan_preserves_floor_after_slow_resources_nearly_consume_budg
     assert completed == calls[2:]
     assert "lifespan resource cleanup timed out resource=session_lifecycle" in caplog.text
     assert "lifespan resource cleanup budget exhausted resource=seller_history_store" in caplog.text
-    assert "lifespan resource cleanup complete succeeded=7 failed=2" in caplog.text
+    assert "lifespan resource cleanup complete succeeded=9 failed=2" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -540,9 +581,11 @@ async def test_lifespan_clamps_negative_allowance_and_warns_without_startup_fail
         await main_mod._close_owned_resources()
 
     assert calls == [
+        "stream_registry",
         "session_lifecycle",
         "seller_history_store",
         "seller_checkpointer",
+        "graph_journal_pool",
         "profile_store",
         "session_activity_pool",
         "processed_events_pool",
@@ -555,7 +598,7 @@ async def test_lifespan_clamps_negative_allowance_and_warns_without_startup_fail
         "lifespan resource cleanup budget exhausted resource=session_lifecycle timeout_s=0.0"
         in caplog.text
     )
-    assert "lifespan resource cleanup complete succeeded=0 failed=9" in caplog.text
+    assert "lifespan resource cleanup complete succeeded=0 failed=11" in caplog.text
 
 
 # --- 카테고리 사전 0행/0임베딩 기동 가드 (이슈 #401) ------------------------------------------
@@ -801,3 +844,35 @@ async def test_category_dictionary_startup_check_log_messages_stay_distinct_in_f
     # 두 원인이 서로의 문구를 침범하면 안 된다 — 진단이 뭉개졌다는 신호다.
     assert "failed unexpectedly" not in unreachable_log
     assert "could not reach the database" not in unexpected_log
+
+
+def test_every_pg_pool_module_is_wired_into_lifespan_shutdown() -> None:
+    """`close_pool` 을 가진 프로필 pg 모듈은 **전부** 앱 종료 배선에 있어야 한다.
+
+    새 pg 모듈을 만들고 `_close_owned_resources` 에 넣지 않으면 **운영에서 커넥션 풀이 샌다** —
+    재배포마다 유휴 커넥션이 쌓이고 `max_connections` 에 닿아서야 무관해 보이는 곳에서 연결
+    실패로 드러난다. 테스트 하니스(`tests/conftest.py::close_pg_pools_on_loop`)에는 배선했는데
+    **앱에는 빠뜨리는** 것이 실제로 일어나는 실수라(#358 에서 밟았다) 구조로 고정한다.
+
+    모듈 이름을 하드코딩하지 않는다 — 그러면 이 테스트도 같이 갱신해야 해서 "둘 다 잊는" 실패
+    모드가 그대로 남는다. 패키지를 훑어 `close_pool` 을 가진 모듈을 찾고, 그 함수 객체가
+    `app.main` 에 임포트돼 있는지로 판정한다(배선의 필요조건이며 누락 시 반드시 깨진다).
+    """
+    import importlib
+    import pkgutil
+
+    import app.agents.profile as profile_pkg
+
+    referenced = {value for value in vars(main_mod).values() if callable(value)}
+
+    missing = []
+    for module_info in pkgutil.iter_modules(profile_pkg.__path__):
+        module = importlib.import_module(f"{profile_pkg.__name__}.{module_info.name}")
+        close = getattr(module, "close_pool", None)
+        if close is not None and close not in referenced:
+            missing.append(module_info.name)
+
+    assert missing == [], (
+        f"pg 풀을 여는 모듈이 앱 종료 배선에서 빠졌다: {missing} — "
+        "app/main.py `_close_owned_resources` 에 추가한다"
+    )

@@ -12,7 +12,13 @@ import asyncio
 
 import pytest
 
-from app.agents.profile.graph_models import GraphDocument, GraphEdge, GraphNode
+from app.agents.profile.graph_models import (
+    GraphDocument,
+    GraphEdge,
+    GraphNode,
+    GraphTombstone,
+    make_edge_id,
+)
 from app.agents.profile.store import get_profile_store
 
 NOW = "2026-08-06T00:00:00+00:00"
@@ -192,19 +198,46 @@ async def test_graph_is_scoped_per_user() -> None:
     assert await store.get_graph("u2") is None
 
 
-async def test_suppressed_edge_survives_round_trip() -> None:
-    """tombstone 이 저장·재적재에서 상태를 잃으면 삭제가 무력화된다(REQ-PGRAPH-022)."""
+async def test_tombstone_survives_round_trip() -> None:
+    """차단 표식이 저장·재적재에서 사라지면 삭제가 무력화된다(REQ-PGRAPH-022)."""
     store = await get_profile_store()
-    document = _document(
-        edges=[_edge(status="suppressed", suppressed_at=NOW, evidence_count=0, evidence_refs=[])]
+    document = _document(edges=[])
+    document.tombstones.append(
+        GraphTombstone(edge_id=make_edge_id("likes|brand:소니"), suppressed_at=NOW)
     )
 
     await store.set_graph("u1", document)
     restored = await store.get_graph("u1")
 
     assert restored is not None
-    assert restored.edges[0].status == "suppressed"
-    assert restored.edges[0].suppressed_at == NOW
+    assert [t.edge_id for t in restored.tombstones] == [make_edge_id("likes|brand:소니")]
+    assert restored.tombstones[0].suppressed_at == NOW
+
+
+async def test_legacy_suppressed_edge_loses_its_label_on_read() -> None:
+    """구 문서를 읽으면 라벨 원문이 떨어진다 — 백필 잡 없이 읽는 즉시 수렴한다.
+
+    #499 이전에 저장된 문서에는 `status="suppressed"` edge 가 남아 있고, 그 `node_id` 는
+    `"brand:소니"` 라 **사용자가 지웠다고 믿는 문장의 원문이 그대로 있다.** 저장소에서 올라오는
+    이 지점이 그걸 떨굴 마지막 기회다.
+    """
+    store = await get_profile_store()
+    # `active` 로 만든 뒤 직렬화 결과를 손으로 뒤집는다 — `GraphDocument` 를 거쳐 만들면
+    # 검증 단계가 이미 흡수해 버려서 "구 표현"을 재현할 수 없다.
+    legacy = _document(edges=[_edge(evidence_count=0, evidence_refs=[])])
+    raw = legacy.model_dump(mode="json")
+    raw["edges"][0]["status"] = "suppressed"
+    raw["edges"][0]["suppressed_at"] = NOW
+    raw.pop("tombstones", None)  # 필드 자체가 없던 구 문서다
+    await store._store.aput(("graph", "u1"), "v1", raw)  # noqa: SLF001
+
+    restored = await store.get_graph("u1")
+
+    assert restored is not None
+    assert restored.edges == []
+    assert restored.nodes == []
+    assert "소니" not in repr(restored.model_dump(mode="json"))
+    assert [t.edge_id for t in restored.tombstones] == [make_edge_id("likes|brand:소니")]
 
 
 async def test_get_graph_returns_none_on_corrupt_document() -> None:

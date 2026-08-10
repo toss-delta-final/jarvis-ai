@@ -30,7 +30,7 @@ from langgraph.store.base import BaseStore
 from langgraph.store.memory import InMemoryStore
 from pydantic import ValidationError
 
-from app.agents.profile import processed_events, session_activity
+from app.agents.profile import graph_journal, processed_events, session_activity
 from app.agents.profile.graph_models import GraphDocument
 from app.core.config import get_settings
 from app.core.pg_resilience import (
@@ -53,6 +53,9 @@ _SESSION_KEY = "buffer"
 # 연결 풀에서 잡혀 store 트랜잭션과 결합되지 않아 다중 항목 원자성이 없고, N개로 쪼개면 전부
 # 찢어진 쓰기 상태를 만든다. 키를 "v1" 로 고정하는 것이 그 단일성의 표현이다.
 _GRAPH_KEY = "v1"
+# 전체 초기화가 훑는 fact 상한. `profile_max_facts`(200) 보다 넉넉히 잡아, cap 이 커진 뒤에도
+# "일부만 지워졌다"가 조용히 생기지 않게 한다 — 초기화는 남기면 안 되는 동작이다.
+_PURGE_SCAN_LIMIT = 10_000
 
 
 def _as_iso(value: object) -> str:
@@ -214,6 +217,14 @@ class ProfileSummary:
     markdown: str
     generated_at: str  # ISO-8601
     embedding: list[float] | None = None
+    # 단조 증가 쓰기 seq — 요약 compare-and-set 의 비교 대상이다(#323 잔여, #358).
+    # 잠금은 "동시에 쓰는 것"만 막는데, `consolidate` 는 그래프 락을 놓고 LLM 왕복(수 초)을 한
+    # 뒤에 쓰므로 그 창의 사용자 편집을 **시간상 겹치지 않은 채** 덮는다. 그건 CAS 로만 닫힌다.
+    # 구 요약은 키가 없어 0 으로 흡수된다.
+    seq: int = 0
+    # 개인화 중지가 내리는 사용 표식(REQ-PGRAPH-100). 본문은 그대로 두고 이 값만 내린다 —
+    # 중지는 삭제가 아니라서, 지우면 다시 켰을 때 되살릴 것이 없다. 구 요약은 True 로 흡수.
+    usable: bool = True
 
 
 @dataclass
@@ -253,9 +264,19 @@ class ProfileStore:
             generated_at=item.value["generated_at"],
             # 구 요약(embedding 신설 전)·임베딩 실패분은 키가 없다 — None 으로 흡수한다.
             embedding=list(embedding) if isinstance(embedding, list) and embedding else None,
+            # 신설 필드도 같은 규약으로 흡수한다 — 없다고 기존 사용자의 프로필이 사라지면 안 된다.
+            seq=int(item.value.get("seq", 0)),
+            usable=bool(item.value.get("usable", True)),
         )
 
-    async def set_summary(self, user_id: str, markdown: str, generated_at: str) -> None:
+    async def set_summary(
+        self,
+        user_id: str,
+        markdown: str,
+        generated_at: str,
+        *,
+        expected_seq: int | None = None,
+    ) -> bool:
         """요약을 저장한다. **[#148] 홈 추천용 취향 벡터를 함께 만들어 둔다.**
 
         여기는 sleep-time consolidation 경로라(요청 경로 아님) 임베딩 API 왕복을 감당할 수 있다.
@@ -272,6 +293,16 @@ class ProfileStore:
         먼저 읽은 쪽의 aput 이 나중에 실행돼 상대 쓰기를 소리 없이 덮어쓸 수 있다. `_embed_summary`
         (외부 Google API 왕복)는 저장된 상태를 읽지 않으므로 락 범위 밖에 둔다 — 락 안에 넣으면
         API 왕복(초 단위) 동안 다른 요약 쓰기가 불필요하게 막힌다.
+
+        **[#358] `expected_seq` 를 주면 compare-and-set 이다.** 잠금은 "동시에 쓰는 것"만 막는데,
+        `consolidate` 는 그래프 락을 놓고 LLM 왕복(수 초)을 한 뒤에 쓰므로 그 창의 사용자 편집을
+        **시간상 겹치지 않은 채** 덮는다(SPEC §7.4 "남은 부분"). 읽은 시점의 `seq` 를 지참하면
+        그 사이 바뀐 경우 쓰지 않고 `False` 를 돌려준다. `None` 이면 종전대로 무조건 쓴다.
+
+        `expected_seq=0` 과 `None` 은 **다른 뜻**이다 — 0 은 "요약이 없는 것을 봤다"이고 None 은
+        "검사하지 않는다"다. 0 을 falsy 로 흘려보내면 첫 요약 경합에서만 CAS 가 조용히 꺼진다.
+
+        돌려주는 값은 "실제로 썼는가"다.
         """
         embedding = await _embed_summary(markdown)
         async with mutation_lock(
@@ -279,17 +310,34 @@ class ProfileStore:
             f"profile:summary:{user_id}",
             _summary_lock(user_id),
         ):
-            if embedding is None:
+            existing: ProfileSummary | None = None
+            if embedding is None or expected_seq is not None:
                 # 폴백 조회 자체도 실패할 수 있다(pg-profile 일시 장애·타임아웃) — 여기서 안 잡으면
                 # 아래 요약 저장까지 통째로 죽어 "임베딩 실패가 요약 저장을 막지 않는다"는 보장이
                 # 깨진다(PR #213 리뷰). 벡터를 못 살리는 건 degrade, 요약 저장은 필수다.
                 try:
                     existing = await self.get_summary(user_id)
-                    embedding = existing.embedding if existing else None
                 except Exception:
                     logger.warning("profile_summary_embedding_carryover_failed")
-                    embedding = None
-            value: dict = {"markdown": markdown, "generated_at": generated_at}
+                    existing = None
+                if embedding is None:
+                    embedding = existing.embedding if existing else None
+
+            current_seq = existing.seq if existing else 0
+            if expected_seq is not None and expected_seq != current_seq:
+                # 내가 읽은 뒤로 바뀌었다 — 낡은 스냅샷으로 만든 요약이 사용자 편집을 덮지 않게
+                # 여기서 멈춘다. 호출부가 다시 읽고 판단한다.
+                logger.warning("profile_summary_cas_conflict")
+                return False
+
+            value: dict = {
+                "markdown": markdown,
+                "generated_at": generated_at,
+                "seq": current_seq + 1,
+                # 사용 표식은 승계한다 — 요약을 새로 썼다고 개인화 중지가 풀리면 안 된다
+                # (REQ-PGRAPH-063 과 같은 취지).
+                "usable": existing.usable if existing else True,
+            }
             if embedding is not None:
                 value["embedding"] = embedding
             await run_with_query_timeout(
@@ -299,6 +347,35 @@ class ProfileStore:
                     value,
                     index=False,  # 요약 전문은 semantic 인덱스 대상이 아니다(REQ-PROF-071 — facts 전용)
                 )
+            )
+            return True
+
+    async def mark_summary_usable(self, user_id: str, usable: bool) -> None:
+        """요약의 사용 표식만 내리거나 올린다 — 본문·벡터는 건드리지 않는다 (REQ-PGRAPH-100).
+
+        개인화 중지가 부르는 경로다. 중지는 **삭제가 아니라서** 본문을 지우면 사용자가 다시
+        켰을 때 되살릴 것이 없다. 요약이 없으면 조용히 넘어간다 — 중지 토글이 프로필 유무에
+        따라 실패하면 안 된다.
+
+        `seq` 는 올리지 않는다. 이 쓰기는 배치와 경합하는 내용 변경이 아니라 표식 전환이고,
+        올리면 진행 중인 배치의 정당한 CAS 를 이유 없이 실패시킨다.
+        """
+        async with mutation_lock(
+            self._store,
+            f"profile:summary:{user_id}",
+            _summary_lock(user_id),
+        ):
+            item = await run_with_query_timeout(
+                self._store.aget((_PROFILE_NS_ROOT, user_id), _SUMMARY_KEY)
+            )
+            if not item:
+                return
+            value = dict(item.value)
+            if bool(value.get("usable", True)) == usable:
+                return
+            value["usable"] = usable
+            await run_with_query_timeout(
+                self._store.aput((_PROFILE_NS_ROOT, user_id), _SUMMARY_KEY, value, index=False)
             )
 
     # ── 장기 fact (승격 결과·consolidation 입력) — fact 1개 = store item 1개(semantic 인덱스) ──
@@ -394,6 +471,81 @@ class ProfileStore:
                     )
 
     # ── 개인화 그래프 문서 (#356, SPEC-PROFILE-GRAPH-149 §5.3·§7.1) ──
+    async def purge_personal_data(self, user_id: str) -> dict[str, int]:
+        """전체 초기화 — fact·요약·세션버퍼를 물리 삭제한다 (#358, REQ-PGRAPH-061).
+
+        **그래프 문서와 전사록은 여기서 지우지 않는다.** 그래프는 호출부가 `revision` 을 이어받아
+        **교체**해야 하고(빈 문서로 지우면 revision 이 0 으로 되돌아간다 — REQ-PGRAPH-042),
+        전사록은 다른 저장소(pg-profile `conversation_turns`)라 소유자가 다르다.
+
+        세션 버퍼는 `("session_ctx", "{user_id}:{session_id}")` 라 사용자로 열거해야 찾을 수
+        있다 — 네임스페이스를 훑어 접두어가 맞는 것만 지운다. 다른 사용자의 버퍼를 건드리지
+        않도록 접두어는 `:` 까지 포함해 비교한다("35" 가 "358:..." 에 걸리지 않게).
+        """
+        counts = {"facts": 0, "summary": 0, "buffers": 0}
+
+        async with mutation_lock(self._store, f"profile:facts:{user_id}", _fact_lock(user_id)):
+            items = await run_with_query_timeout(
+                self._store.asearch((_FACTS_NS_ROOT, user_id), limit=_PURGE_SCAN_LIMIT)
+            )
+            for item in items:
+                await run_with_query_timeout(
+                    self._store.adelete((_FACTS_NS_ROOT, user_id), item.key)
+                )
+                counts["facts"] += 1
+
+        async with mutation_lock(self._store, f"profile:summary:{user_id}", _summary_lock(user_id)):
+            if await self.get_summary(user_id) is not None:
+                await run_with_query_timeout(
+                    self._store.adelete((_PROFILE_NS_ROOT, user_id), _SUMMARY_KEY)
+                )
+                counts["summary"] = 1
+
+        prefix = f"{user_id}:"
+        namespaces = await run_with_query_timeout(
+            self._store.alist_namespaces(prefix=(_SESSION_NS_ROOT,), max_depth=2)
+        )
+        for namespace in namespaces:
+            if len(namespace) < 2 or not namespace[1].startswith(prefix):
+                continue
+            async with mutation_lock(
+                self._store, f"profile:session:{namespace[1]}", _session_lock(namespace[1])
+            ):
+                await run_with_query_timeout(self._store.adelete(namespace, _SESSION_KEY))
+            counts["buffers"] += 1
+
+        return counts
+
+    async def delete_facts_backing(self, user_id: str, edge_ids: set[str]) -> int:
+        """주어진 edge 를 근거로 하는 fact 를 **물리 삭제**한다 (#358, REQ-PGRAPH-025 [HARD]).
+
+        사용자가 edge 를 지우면 라벨뿐 아니라 **그 근거 fact 원문까지** 그 자리에서 사라져야
+        한다 — 안 그러면 "지웠다"고 믿는 문장이 저장소에 그대로 남는다.
+
+        **한 fact 가 여러 취향을 담고 그중 하나만 지워졌어도 통째로 지운다.** 그 원문에는 지운
+        취향이 그대로 적혀 있어 살려 두면 다음 배치가 다시 읽는다 — 삭제가 이긴다. `_summary_input`
+        이 이미 같은 규칙(부분 일치도 통째 제외)을 쓰고 있어 두 경로가 일관된다.
+
+        판정은 fact 자신의 트리플로 한다 — edge 의 `evidence_refs` 는 `graph_evidence_refs_max`
+        로 잘린 저장용 목록이라, 그걸 쓰면 상한을 넘겨 언급된 오래된 근거가 지워지지 않고 남는다.
+        """
+        if not edge_ids:
+            return 0
+        removed = 0
+        async with mutation_lock(self._store, f"profile:facts:{user_id}", _fact_lock(user_id)):
+            items = await run_with_query_timeout(
+                self._store.asearch((_FACTS_NS_ROOT, user_id), limit=_PURGE_SCAN_LIMIT)
+            )
+            for item in items:
+                triples = item.value.get("graph_triples") or []
+                if not any(triple.get("edge_id") in edge_ids for triple in triples):
+                    continue
+                await run_with_query_timeout(
+                    self._store.adelete((_FACTS_NS_ROOT, user_id), item.key)
+                )
+                removed += 1
+        return removed
+
     def graph_lock(self, user_id: str) -> AbstractAsyncContextManager[None]:
         """그래프 문서 RMW 직렬화 잠금.
 
@@ -681,6 +833,7 @@ def reset_profile_store() -> None:
     set_store(InMemoryStore(index=_fallback_index_config()))
     processed_events.reset()
     session_activity.reset()
+    graph_journal.reset()  # 감사·멱등 원장·중지 플래그(#358)도 같은 격리 경계에 든다
     _init_lock = asyncio.Lock()
     _session_locks.clear()
     _fact_locks.clear()
