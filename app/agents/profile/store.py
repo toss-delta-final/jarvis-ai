@@ -33,12 +33,14 @@ from pydantic import ValidationError
 from app.agents.profile import graph_journal, processed_events, session_activity
 from app.agents.profile.graph_models import GraphDocument
 from app.core.config import get_settings
+from app.core.logging import safe_fingerprint
 from app.core.pg_resilience import (
     hardened_pg_conninfo,
     mutation_lock,
     run_with_query_timeout,
     state_store_pool_config,
 )
+from app.core.pii import contains_hard_pii, redact
 from app.pipelines.embedding import embed_texts
 
 logger = logging.getLogger(__name__)
@@ -77,6 +79,26 @@ def _normalize_utterance(text: str) -> str:
     타당성을 실측해야 하므로(docs/lessons.md 2026-07-30) 여기서 하지 않는다.
     """
     return " ".join(text.split()).casefold()
+
+
+def _fact_or_triples_contain_hard_pii(fact: str, graph_triples: list[dict] | None) -> bool:
+    """add_fact 초크포인트 판정 (이슈 #321) — fact 원문뿐 아니라 triple 의 `node.label`·
+    `node.resolution.anchor_phrase` 도 검사한다(payload 모양은 `resolver.ResolvedTriple.as_payload`).
+    `anchorPhrase` 는 `_DELTA_SYSTEM` 이 "발화에서 그대로 인용"하라고 지시하므로 fact 텍스트가
+    깨끗해도 이쪽에 원문 PII 가 남을 수 있다.
+    """
+    if contains_hard_pii(fact):
+        return True
+    for triple in graph_triples or ():
+        node = triple.get("node") if isinstance(triple, dict) else None
+        if not isinstance(node, dict):
+            continue
+        if contains_hard_pii(node.get("label")):
+            return True
+        resolution = node.get("resolution")
+        if isinstance(resolution, dict) and contains_hard_pii(resolution.get("anchor_phrase")):
+            return True
+    return False
 
 
 # key(conversation_key)별 asyncio.Lock — append_session_ctx/clear_session_ctx_upto 의
@@ -304,6 +326,15 @@ class ProfileStore:
 
         돌려주는 값은 "실제로 썼는가"다.
         """
+        # [이슈 #321] `_embed_summary` 가 외부(Google) API 로 나가기 **직전** 마지막 관문이다 —
+        # 임베딩 호출보다 먼저 검사해야 PII 가 외부로 나가지 않는다. 히트하면 쓰지 않고 기존
+        # 요약을 그대로 둔다("빈 요약으로 덮지 않는다" 규칙과 같은 취지 — 억제의 정반대 상태를
+        # 만들지 않는다).
+        if contains_hard_pii(markdown):
+            logger.warning(
+                "profile_summary_pii_blocked", extra={"user_fp": safe_fingerprint(user_id)}
+            )
+            return False
         embedding = await _embed_summary(markdown)
         async with mutation_lock(
             self._store,
@@ -416,6 +447,13 @@ class ProfileStore:
         graph_triples: list[dict] | None = None,
     ) -> None:
         if not fact:
+            return
+        # [이슈 #321] 초크포인트(심층 방어) — fact 뿐 아니라 triple 의 label·anchorPhrase 도
+        # 검사한다(`_DELTA_SYSTEM` 이 anchorPhrase 를 "발화 그대로 인용"하라고 지시하므로 여기가
+        # 두 번째 문이다). 어느 한쪽만 히트해도 **통째로 버린다**(REQ-PGRAPH-071 "파생 취향도
+        # 만들지 않는다") — fact 만 살리고 triple 만 버리는 절충은 하지 않는다.
+        if _fact_or_triples_contain_hard_pii(fact, graph_triples):
+            logger.warning("profile_fact_pii_blocked", extra={"user_fp": safe_fingerprint(user_id)})
             return
         settings = get_settings()
         # dedup 조회 상한 — cap 지정 시 cap 기준, 미지정(테스트 등)이면 profile_max_facts 기준.
@@ -591,6 +629,12 @@ class ProfileStore:
     async def append_session_ctx(
         self, key: str, text: str, *, cap: int | None = None, repeat_cap: int | None = None
     ) -> None:
+        if not text:
+            return
+        # [이슈 #321] 여기는 저장물이 아니라 델타 추출 LLM 의 입력이다 — 치환하면 그 LLM 이
+        # 원문 숫자를 애초에 못 봐서, 모델이 fact/label/anchorPhrase 로 옮겨 적는 세탁 경로가
+        # 구조적으로 닫힌다(드롭이 아니라 치환인 이유).
+        text, _ = redact(text)
         if not text:
             return
         async with mutation_lock(

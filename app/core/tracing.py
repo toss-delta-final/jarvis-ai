@@ -16,6 +16,7 @@ import hashlib
 import logging
 
 from app.core.logging import safe_fingerprint
+from app.core.pii import redact
 import re
 from typing import Any, Literal, Protocol
 from uuid import UUID, uuid4
@@ -339,6 +340,26 @@ class FakeTraceExporter:
         self.exported.append(nodes)
 
 
+def _maybe_redact(value: object) -> object:
+    """[이슈 #321] 콘텐츠 트레이스에 실기 전 하드 PII 를 치환한다(`settings.pii_redact_trace_content`).
+
+    문자열이 아닌 값(구조화 `extra_inputs` 등)은 그대로 둔다 — `redact()` 는 문자열 전용이고,
+    비문자열에 적용하면 fail-closed 경로가 값 전체를 지워버려 conditionActions 같은 구조화
+    입력이 손상된다. `_clip` 이 이후 단계에서 `repr()` 로 안전하게 문자열화한다.
+
+    `tracing.py` 의 기존 카나리아 검증(`validate_export_payload`)·면제 목록은 그대로 둔다 —
+    이 함수는 그 앞에서 치환만 하고, 검증기는 여전히 fail-closed 로 뒤를 지킨다.
+    """
+    if not isinstance(value, str):
+        return value
+    from app.core.config import get_settings  # noqa: PLC0415 - get_trace_factory 와 같은 지연 임포트
+
+    if not get_settings().pii_redact_trace_content:
+        return value
+    redacted, _ = redact(value)
+    return redacted
+
+
 class RequestTrace:
     """One request's root node and explicitly recorded child spans."""
 
@@ -444,11 +465,13 @@ class RequestTrace:
             return
         root = self._nodes[0]
         if input_text is not None:
-            root.inputs["message"] = self._clip(input_text)
+            root.inputs["message"] = self._clip(_maybe_redact(input_text))
         if extra_inputs:
-            root.inputs.update({key: self._clip(value) for key, value in extra_inputs.items()})
+            root.inputs.update(
+                {key: self._clip(_maybe_redact(value)) for key, value in extra_inputs.items()}
+            )
         if output_text is not None:
-            root.outputs["message"] = self._clip(output_text)
+            root.outputs["message"] = self._clip(_maybe_redact(output_text))
 
     def record_llm_content(
         self,
@@ -479,13 +502,13 @@ class RequestTrace:
         if node is None or node.run_type != "llm":
             return
         if system is not None:
-            node.inputs["system"] = self._clip(system)
+            node.inputs["system"] = self._clip(_maybe_redact(system))
         if user is not None:
-            node.inputs["user"] = self._clip(user)
+            node.inputs["user"] = self._clip(_maybe_redact(user))
         if transcript is not None:
-            node.inputs["transcript"] = self._clip(transcript)
+            node.inputs["transcript"] = self._clip(_maybe_redact(transcript))
         if output is not None:
-            node.outputs["content"] = self._clip(output)
+            node.outputs["content"] = self._clip(_maybe_redact(output))
 
     def record_span_content(
         self,
@@ -494,7 +517,15 @@ class RequestTrace:
         inputs: Mapping[str, object] | None = None,
         outputs: Mapping[str, object] | None = None,
     ) -> None:
-        """[#326] 임의 span 노드에 콘텐츠를 싣는다(콘텐츠 모드에서만) — Spring 페이로드용."""
+        """[#326] 임의 span 노드에 콘텐츠를 싣는다(콘텐츠 모드에서만) — Spring 페이로드용.
+
+        [F2, #321 리뷰 2라운드] **의도적으로 `_maybe_redact` 를 타지 않는다** — 누락이 아니다.
+        호출부는 `app/services/spring_client.py` 의 Spring `requestBody`/`responseBody` 하나뿐이고,
+        이 값은 `_LLM_CONTENT_KEYS` 밖이라 항상 strict 검증(`_validate_value`)을 받는다 — 발화
+        (lenient, `#321` 이 닫은 경로)와 위협 모델이 다르다. 백엔드 데이터에 고객 PII 가 섞이면
+        지금은 `validate_export_payload` 가 트레이스를 통째로 버리고, 그 시끄러운 실패 자체가
+        "업스트림이 PII 를 흘리고 있다"는 신호다. 여기서 치환해 버리면 그 신호가 조용해진다.
+        """
         if not self.captures_content:
             return
         if inputs:

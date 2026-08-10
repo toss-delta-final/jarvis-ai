@@ -49,7 +49,7 @@ async def test_start_scheduler_is_idempotent(monkeypatch):
     second = sched_mod.start_scheduler()
 
     assert first is second
-    assert len(first.get_jobs()) == 2
+    assert len(first.get_jobs()) == 3  # i17 + session_context_sweep + conversation_retention_sweep
 
 
 async def test_stop_scheduler_allows_fresh_restart(monkeypatch):
@@ -72,6 +72,32 @@ async def test_missing_google_key_skips_only_i17_but_keeps_idle_job(monkeypatch)
 
     assert scheduler.get_job(sched_mod._I17_JOB_ID) is None
     assert scheduler.get_job(sched_mod._SESSION_CONTEXT_JOB_ID) is not None
+
+
+async def test_start_scheduler_registers_conversation_retention_job_by_default(monkeypatch):
+    settings = Settings(
+        _env_file=None, google_api_key="", conversation_retention_sweep_interval_s=456.0
+    )
+    monkeypatch.setattr(sched_mod, "get_settings", lambda: settings)
+
+    scheduler = sched_mod.start_scheduler()
+
+    job = scheduler.get_job(sched_mod._CONVERSATION_RETENTION_JOB_ID)
+    assert job is not None
+    assert job.trigger.interval.total_seconds() == 456.0
+    assert job.max_instances == 1
+    assert job.coalesce is True
+
+
+async def test_start_scheduler_skips_conversation_retention_job_when_disabled(monkeypatch):
+    settings = Settings(
+        _env_file=None, google_api_key="", conversation_retention_sweep_enabled=False
+    )
+    monkeypatch.setattr(sched_mod, "get_settings", lambda: settings)
+
+    scheduler = sched_mod.start_scheduler()
+
+    assert scheduler.get_job(sched_mod._CONVERSATION_RETENTION_JOB_ID) is None
 
 
 async def test_idle_job_prevents_overlap_and_coalesces_missed_ticks(monkeypatch):

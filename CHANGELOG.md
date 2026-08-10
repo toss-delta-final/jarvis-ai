@@ -9,6 +9,42 @@
 
 ## [Unreleased]
 
+### Security
+- **#321 — "기억해" 원문의 하드 PII(전화번호·주민번호·카드번호·계좌번호·이메일·시크릿 토큰)가
+  게이트 없이 저장되던 결함을 막았다.** 신설 `app/core/pii.py`(순수·동기·무 I/O, 예외를 던지지
+  않는 결정론적 정규식 탐지기 — LLM 호출 추가 없음, 인라인 게이트가 첫 SSE 프레임 예산을 깎지
+  않게)를 저장 경계마다 다르게 배선했다: **fact 저장**(`record_remember`·`ProfileStore.add_fact`,
+  fact 뿐 아니라 개인화 그래프 triple 의 `label`/`anchorPhrase` 도 검사)과 **요약 저장**
+  (`set_summary`, `_embed_summary` 가 외부 Google API 로 나가기 직전 마지막 관문)은 히트 시
+  **전량 폐기**(SPEC-PROFILE-GRAPH-149 REQ-PGRAPH-071 — 파생 취향도 만들지 않는다), **세션 버퍼**
+  (`append_session_ctx`)와 **LangSmith 콘텐츠 트레이스**(`record_request_content`·
+  `record_llm_content`, `PII_REDACT_TRACE_CONTENT` 기본 on)는 **치환**(닫힌 어휘 placeholder —
+  버퍼 치환은 델타 추출 LLM 이 원문 숫자를 애초에 못 보게 해 fact/label/anchorPhrase 로 옮겨
+  적는 세탁 경로를 구조적으로 닫는다). `record_remember` 는 **절단 전 원문**을 검사한다 —
+  절단이 먼저면 `010-1234-` 처럼 번호가 잘려 정규식이 못 잡는다. 탐지는
+  `app/core/text.py::_security_skeleton` 위에서 해 zero-width 문자를 숫자 사이에 끼우는 우회를
+  막는다. 로그에는 이벤트명 + `safe_fingerprint(user_id)` 만 남기고 히트 클래스·매치 문자열·
+  카운트는 남기지 않는다(REQ-PGRAPH-075/076). `tracing.py` 의 기존 카나리아 검증기·면제 목록·
+  `_DELTA_SYSTEM` 계열 프롬프트는 변경하지 않았다.
+- **#321 — 대화 전사록(`conversation_turns`)에 처음으로 시간 기반 보존 정책을 도입했다**
+  (`SPEC-PROFILE-001` OPEN-P5 해소). 이 리포에 시간 기반 삭제 스윕이 없었다 —
+  `graph_audit_retention_days`(기본 90일)도 만료 행을 지우는 스윕이 없다. 신설
+  `conversation_retention_days`(기본 **90일**, `graph_audit_retention_days` 와 의도적으로
+  짝지음 — 감사 원장이 지문만 남기므로 원문 대조 상대는 전사록뿐이라, 전사록이 감사 원장보다
+  먼저 지워지면 그 사이 구간이 조사 불가능해진다)를 기동 시점 fail-fast 검증기로 강제한다.
+  삭제는 `app/pipelines/scheduler.py` 의 별도 job(`conversation_retention_sweep`, 기본 1시간
+  주기, `CONVERSATION_RETENTION_SWEEP_ENABLED` 기본 on)이 유계 배치로 수행 — `ORDER BY
+  created_at LIMIT` + `FOR UPDATE SKIP LOCKED`(동시 `finalize_assistant` UPDATE 를 건너뜀) +
+  배치당 짧은 트랜잭션 1개(장수 트랜잭션의 autovacuum 봉쇄 방지). PENDING 턴도 지운다 —
+  세션 lifecycle sweep 의 "진행 중 턴 보호" 규칙과 달리, 90일 된 PENDING 은 죽은 스트림이라
+  예외를 두면 TTL 이 지우려던 것이 정확히 그만큼 남는다. `conversation_turns (created_at)`
+  인덱스를 신설(`PgConversationStore.setup()` 멱등 마이그레이션 + `db/profile/init/`)해 스윕
+  조회가 풀스캔이 되지 않게 했다. `ConversationStoreProtocol` 에 `purge_expired_turns` 를
+  추가해 인메모리 구현도 같은 계약을 따른다(스윕 job 이 isinstance 분기 없이 양쪽을 다룬다).
+  와이어 계약(엔드포인트·SSE 이벤트·필드·오류 코드) 은 불변 — `turns_for()`/`get_turn()` 의
+  프로덕션 호출부가 없어 전사록은 감사·상관관계 조회 전용이다(`docs/api-spec.md` §3.9.4 C-23·
+  §3.9.4 OPEN-P5 서술 사본 동기화, `SPEC-PROFILE-001`·`SPEC-PROFILE-GRAPH-149` OPEN 항목 갱신).
+
 ### Fixed
 - **#466 — 브랜드-only 발화에서 `filters.brand` 가 비던 결함을 고쳤다** (#430 후속, 과소지정
   오탐의 근원). `decompose` 프롬프트에는 색상 전용 규칙만 있고 **브랜드 추출 규칙이 아예
