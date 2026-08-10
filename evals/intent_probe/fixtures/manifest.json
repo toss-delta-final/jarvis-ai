@@ -1,8 +1,8 @@
 {
   "provenance": "reconstructed-from-issue-240-and-pr-239; category_action group added by #84 (mixed utterances in round 3); screen cells absorbed from #118 by #300; condition_only group added by #344 round 2; wishlist_view group added by #386; wishlist_remove group added by #440",
   "sha256": {
-    "anchors_a.json": "d2ef4844a57f32e188ff8819ec4ad084484103932f1bd023029b072b99b5fcd5",
-    "anchors_b.json": "de8d8589afe4b6f0513ccf381da95fc34b4c181aa59bbabacd10111587dfc7b7"
+    "anchors_a.json": "ebadd4fda0b3ad285981b943684eac0d8d7a1aa698144fabf64ad684ce33a02e",
+    "anchors_b.json": "c172e38462a45c0025c172c90d272b7e8950850426d7ad186539cba360296890"
   },
   "version": "intent-probe-anchors-manifest-v6"
 }
