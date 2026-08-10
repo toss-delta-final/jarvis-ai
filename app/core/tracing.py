@@ -390,6 +390,16 @@ class RequestTrace:
     def root_id(self) -> UUID:
         return self._root_id
 
+    @property
+    def degrade_reason(self) -> str | None:
+        """[#140] 현재 우선순위가 적용된 단일 degrade 사유 — 읽기 전용.
+
+        `mark_degraded` 가 이미 `_preferred_degrade_reason` 으로 우선순위를 정본화해 두므로
+        여기서는 그 값을 그대로 읽기만 한다(로직 복제 금지).
+        """
+        reason = self._nodes[0].metadata.get("degradeReason")
+        return reason if isinstance(reason, str) else None
+
     def _start_span(
         self,
         *,
@@ -667,6 +677,11 @@ class NoopRequestTrace(RequestTrace):
 
     def record_provider_ttft(self, milliseconds: int) -> None:
         del milliseconds
+
+    @property
+    def degrade_reason(self) -> str | None:
+        """[#140] `RequestTrace.degrade_reason` 과 같은 읽기 전용 접근자 — Noop 경로용."""
+        return self._degrade_reason
 
     @property
     def captures_content(self) -> bool:

@@ -49,8 +49,14 @@ from app.agents.buyer.recommendation.state import (
     get_repurchase_store,
 )
 from app.core.config import _rescue_chain_stage_counts
-from app.core.logging import log_structured
+from app.core.logging import log_structured, safe_fingerprint
 from app.core.llm import LLMClient, LLMError, resolve_model_id
+from app.core.reco_provenance import (
+    ProvenanceItem,
+    ProvenanceList,
+    RankSource,
+    emit_recommendation_provenance,
+)
 from app.core.text import _strip_unsafe
 from app.core.tracing import current_request_trace, trace_span
 from app.services import spring_client
@@ -958,9 +964,10 @@ async def stream_recommendation(
                     if (text := profile_reason_by_id.get(pid))
                 ],
             )
+            profile_recommendation_request_id = str(uuid4())  # 정규 UUID 36자 — BE CHAR(36)
             profile_push = RecommendationPush(
                 session_id=request.session_id,
-                recommendation_request_id=str(uuid4()),  # 정규 UUID 36자 — BE CHAR(36)
+                recommendation_request_id=profile_recommendation_request_id,
                 list_type="PICK_ONE",
                 lists=[profile_entry],
             )
@@ -983,6 +990,38 @@ async def stream_recommendation(
                         session_id=request.session_id,
                         list_ids=[profile_entry.list_id],
                     ).model_dump(by_alias=True),
+                )
+                # [이슈 #140] provenance — 프로필 벡터 경로는 rerank 를 타지 않으므로 전 항목
+                # rankSource="profile_vector", rankerModel/promptVersion 은 null(§0.1 [HARD]).
+                profile_reason_pids = {r.product_id for r in profile_entry.reasons}
+                emit_recommendation_provenance(
+                    logger,
+                    settings=settings,
+                    request_id=request_id,
+                    recommendation_request_id=profile_recommendation_request_id,
+                    surface="chat",
+                    pipeline="profile_vector",
+                    prompt_version=None,
+                    ranker_model=None,
+                    personalized=True,
+                    deterministic=True,
+                    list_type="PICK_ONE",
+                    owner_fp=safe_fingerprint(identity.subject) if identity is not None else None,
+                    session_fp=safe_fingerprint(request.session_id),
+                    lists=[
+                        ProvenanceList(
+                            list_id=profile_entry.list_id,
+                            label=None,
+                            items=[
+                                ProvenanceItem(
+                                    product_id=pid,
+                                    rank_source="profile_vector",
+                                    has_reason=pid in profile_reason_pids,
+                                )
+                                for pid in exposed
+                            ],
+                        )
+                    ],
                 )
                 # 담기 해소용 보관 — [#435] 이 경로도 이제 상품명을 싣는다(AI 인덱스에 원본
                 # 컬럼은 없지만, 임베딩 입력으로 이미 조립된 `search_doc` 첫 줄에서 최선노력
@@ -2042,6 +2081,9 @@ async def stream_recommendation(
         if settings.progress_events_enabled:
             yield progress_frame("reranking", settings.progress_reranking_message)
         rerank_degraded = False
+        # [이슈 #140] rerank 실패 시엔 §2 판정 규칙상 전 항목 search_order 로 분류되므로
+        # 빈 집합으로 충분하다 — 성공 경로에서만 아래 스냅샷으로 채워진다.
+        rerank_ranked_ids: set[int] = set()
         try:
             with trace_span(
                 "llm.rerank",
@@ -2062,6 +2104,10 @@ async def stream_recommendation(
                     rating_min_requested=effective_filters.rating_min is not None,
                 )
             ranked_ids = [pid for pid, _ in rr.ranked]
+            # [이슈 #140] provenance rankSource 판정용 스냅샷 — pin 을 얹기 **전**의 rerank
+            # 순위 집합. `reason_by_id` 로 판정하지 않는다 — rerank 가 빈 rationale 을 줄 수
+            # 있어 오분류된다(§2 판정 방법).
+            rerank_ranked_ids = set(ranked_ids)
             reason_by_id = dict(rr.ranked)  # 상품별 근거(§4.2) — (productId, rationale) 튜플 → 맵
             comment = _strip_unsafe(rr.overall_comment)
         except LLMError:
@@ -2082,6 +2128,7 @@ async def stream_recommendation(
         # 휴리스틱이지 보장이 아니다. **후보에 남아 있는데 rerank 가 빠뜨린 것만** 앞에 얹어
         # "지목하면 다시 추천된다"를 강제한다 — rerank 가 이미 골랐으면 순서를 건드리지 않는다.
         # 근거(reason)는 없지만 §4.2 상 reasons 는 선택이고 degrade 경로도 같은 형태다.
+        pinned_ids: set[int] = set()  # [이슈 #140] provenance rankSource 판정용
         if repurchase_ids:
             already = set(ranked_ids)
             pinned = [
@@ -2089,6 +2136,7 @@ async def stream_recommendation(
                 for p in candidates
                 if p.product_id in repurchase_ids and p.product_id not in already
             ]
+            pinned_ids = set(pinned)
             ranked_ids = pinned + ranked_ids
         # 노출 개수 보정 + 목록 분할 — 보정·상한은 **목록 하나 기준**이다(REQ-REC-021 5~9개, v0.11.0).
         # 분할하지 않으면 목록이 하나뿐이라 종전과 같은 전역 보정·절단이다.
@@ -2591,6 +2639,50 @@ async def stream_recommendation(
                 session_id=request.session_id,
                 list_ids=[entry.list_id for entry in push.lists],
             ).model_dump(by_alias=True),
+        )
+
+        # [이슈 #140] provenance — push 에 실제로 실린 값을 그대로 반영한다(§2 판정 방법).
+        def _rank_source(pid: int) -> RankSource:
+            if rerank_degraded:
+                return "search_order"
+            if pid in pinned_ids:
+                return "repurchase_pin"
+            if pid in rerank_ranked_ids:
+                return "rerank"
+            return "expose_min_fill"
+
+        def _provenance_list(entry: RecommendationListEntry) -> ProvenanceList:
+            # 목록(entry)당 한 번만 만든다 — 항목(pid)마다 다시 만들지 않는다(프로필 경로의
+            # profile_reason_pids 와 같은 모양).
+            reason_pids = {r.product_id for r in entry.reasons}
+            return ProvenanceList(
+                list_id=entry.list_id,
+                label=entry.label,
+                items=[
+                    ProvenanceItem(
+                        product_id=pid,
+                        rank_source=_rank_source(pid),
+                        has_reason=pid in reason_pids,
+                    )
+                    for pid in entry.product_ids
+                ],
+            )
+
+        emit_recommendation_provenance(
+            logger,
+            settings=settings,
+            request_id=request_id,
+            recommendation_request_id=recommendation_request_id,
+            surface="chat",
+            pipeline="search_rerank",
+            prompt_version=None if rerank_degraded else settings.rerank_prompt_version,
+            ranker_model=None if rerank_degraded else resolve_model_id(settings, "smart"),
+            personalized=bool(profile),
+            deterministic=True,
+            list_type=list_type,
+            owner_fp=safe_fingerprint(identity.subject) if identity is not None else None,
+            session_fp=safe_fingerprint(request.session_id),
+            lists=[_provenance_list(entry) for entry in push.lists],
         )
         # 직전 추천을 장바구니 담기(productId 해소, 경로 B)용으로 보관 — **push 성공 후에만**.
         # push 실패로 카드가 노출되지 않았으면 저장하지 않아 "그거 담아줘"가 미노출 상품을 담지 않는다.

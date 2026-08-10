@@ -34,6 +34,18 @@
   기본 on(하방이 유계) · `BRAND_ALIAS_MAX_VALUES` 로 개수 상한.
 
 ### Added
+- **#140 — 추천 실행 provenance 를 구조화 로그 `recommend_provenance` 로 남긴다** (api-spec
+  §6.3 (d) 신설). `recommendationRequestId` 는 I-21 와이어에 이미 있었지만(§4.2) 발급 3곳
+  (`graph.py` 메인/프로필 경로, `home_recommendation.py`) 어디서도 로그되지 않아 BE
+  `behavior_events.recommendation_request_id` 와 이을 AI 쪽 상관 기록이 0건이었다. 추천이
+  실제로 도달했을 때만(push 성공/홈 응답 반환) 목록 순서·`algorithmVersion`·`rankSource`
+  (닫힌 어휘 `rerank`/`search_order`/`repurchase_pin`/`expose_min_fill`/`profile_vector` —
+  rerank 가 수치 score 를 내지 않아 "무엇이 순위를 정했는지"로 번역)를 한 줄에 남긴다.
+  수치 score 가 없는 결정론 정책이라 IPS 용 `propensity` 상수를 심는 대신 `deterministic`
+  플래그로 정직하게 표시한다(근거는 `app/core/reco_provenance.py` docstring). 모델·버전은
+  로그 전용이며 홈 표면은 `rankerModel` 이 항상 `null`(§3.7 [HARD] 준수, 응답·SSE 불변).
+  튜너블 `RECO_ALGORITHM_VERSION`·`RERANK_PROMPT_VERSION`·`RECO_PROVENANCE_MAX_ITEMS`
+  신설(config 주입, 초과분은 silent cap 없이 `itemsTruncated=true`).
 - **#466 — 브랜드 추출 축 프로브를 세웠다** (`evals/filter_axes/brand_probe.py` +
   `brand_cases.json`, 수동 도구·CI 제외). 기존 축을 먼저 확인한 결과 재고 있는 것이 없었다 —
   `evals/filter_axes` 의 `brand` 축은 goldenset dev 109건 중 라벨이 **1건뿐**이고,
