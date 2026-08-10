@@ -26,6 +26,23 @@ def test_health_ok() -> None:
     assert resp.json() == {"status": "ok"}
 
 
+def test_health_head_ok() -> None:
+    """[#574] HEAD /health 는 200 이다.
+
+    FastAPI 의 `APIRoute` 는 Starlette 의 순수 `Route` 와 달리 GET 등록 시 HEAD 를 자동으로
+    붙이지 않는다 — `@app.get` 만 쓰면 HEAD 가 **405** 로 떨어진다. 외부 업타임 모니터가
+    HEAD 만 보낼 수 있어 서비스가 살아 있어도 다운으로 보고됐다. 405 회귀를 여기서 막는다.
+    """
+    resp = client.head("/health")
+    assert resp.status_code == 200
+
+
+def test_health_head_has_no_body() -> None:
+    """[#574] HEAD 응답은 HTTP 규약대로 본문을 싣지 않는다."""
+    resp = client.head("/health")
+    assert resp.content == b""
+
+
 def _parse_sse(body: str) -> list[dict]:
     """SSE 본문에서 `data:` 라인의 JSON 이벤트를 순서대로 파싱한다."""
     events: list[dict] = []
