@@ -1,8 +1,10 @@
-"""찜 어댑터 (이슈 #117, I-26/I-27/I-28, 🔶 초안 — BE 협의 전) — spring_client 배선 단위 테스트.
+"""찜 어댑터 (이슈 #117, I-26/I-27/I-28 — 확정 2026-08-05, Spring 구현됨) — spring_client 배선
+단위 테스트.
 
-Spring 이 아직 이 엔드포인트를 구현하지 않아 실호출 통합 테스트는 하지 않는다(상대가 없다).
+[#285] BE `jarvis-backend` main 실측(2026-08-08, BE PR #92·#93) — api-spec §4.12~4.16 v0.31.3.
 `_client` 몽키패치로 라이브 Spring 없이 성공/오류 code → typed 예외 매핑과 query 파라미터 배선만
-고정한다(tests/unit/test_cart.py 의 `_CartClient`/`_CartResp` 패턴을 그대로 따른다).
+고정한다 — 단위 테스트라 라이브 의존을 두지 않는다(tests/unit/test_cart.py 의
+`_CartClient`/`_CartResp` 패턴을 그대로 따른다).
 """
 
 from __future__ import annotations
@@ -263,6 +265,20 @@ async def test_remove_wishlist_forbidden_maps_to_wishlist_error(
         sc,
         "_client",
         lambda: _WishlistClient(_WishlistResp(403, {"error": {"code": "AUTH_FORBIDDEN"}})),
+    )
+    with pytest.raises(sc.WishlistError):
+        await sc.remove_wishlist(42, user_id=1)
+
+
+async def test_remove_wishlist_500_maps_to_wishlist_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """§4.15 500 INTERNAL_ERROR → WishlistError(add_wishlist·delete_cart_item 의 500 매핑과
+    같은 낙성처인데 remove_wishlist 만 빠져 있었다, #285 T4)."""
+    import app.services.spring_client as sc
+
+    monkeypatch.setattr(
+        sc,
+        "_client",
+        lambda: _WishlistClient(_WishlistResp(500, {"error": {"code": "INTERNAL_ERROR"}})),
     )
     with pytest.raises(sc.WishlistError):
         await sc.remove_wishlist(42, user_id=1)
