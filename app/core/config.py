@@ -1427,6 +1427,12 @@ class Settings(BaseSettings):
     # 강등 임계 = profile_gate_threshold - graph_demote_margin (REQ-PGRAPH-016 히스테리시스).
     # **승격 임계는 기존 게이트 임계를 재사용한다 — 두 번째 임계 키를 만들지 않는다**(§11).
     graph_demote_margin: float = Field(default=0.1, ge=0.0, lt=1.0)
+    # pin 된 취향에 반대 관측이 몇 건 쌓이면 `challenged` 를 켤지 (REQ-PGRAPH-033).
+    # **상태는 바꾸지 않는다** — 취향 변화의 반영은 명시적 사용자 동작으로만 일어나고, 이 값은
+    # FE 가 "다시 반영할까요?" 를 물을지 판단하는 동작 트리거다(api-spec §3.8).
+    # **`0` 은 신호를 끈다** — `count >= threshold` 로 순진하게 쓰면 0 에서 항상 참이 되어 규약과
+    # 정반대로 동작하므로 `graph_models.is_pin_challenged` 가 특례로 가른다.
+    graph_pin_challenge_count: int = Field(default=3, ge=0)
     # confidence 감쇠 반감기(일). 이 키가 없으면 강등이 **구조적으로 도달 불가**하다 — 게이트가
     # salience >= profile_gate_threshold 인 관측만 저장하므로 감쇠 없이는 confidence 가 승격 임계
     # 아래로 내려갈 수 없고, 히스테리시스가 형식만 만족된다(SPEC v0.1.1 §11 보강).

@@ -948,6 +948,155 @@ def test_pin_producer_sets_both_origin_user_and_user_intent(settings: Settings) 
     assert pinned.promoted is True  # 사용자 명시 취향은 게이트 판정을 기다리지 않는다
 
 
+# ─────────── challenged 신호 (REQ-PGRAPH-033) ───────────
+#
+# pin 이후 반대 관측이 임계에 도달하면 표시만 하고 **상태는 바꾸지 않는다.** 취향 변화의 반영은
+# 명시적 사용자 동작으로만 일어난다 — `challenged` 는 FE 가 "다시 반영할까요?" 를 물을지 판단하는
+# 동작 트리거이지 표시용 값이 아니다(api-spec §3.8).
+
+
+def _opposing_fact(key: str, *, created_at: str) -> FactRecord:
+    """pin 된 `likes|brand:소니` 에 맞서는 반대 관측 한 건."""
+    return _fact(
+        key, created_at=created_at, triples=[_triple("brand:소니", "avoids", label="소니")]
+    )
+
+
+def test_challenge_count_rises_when_a_fresh_opposing_observation_arrives(
+    settings: Settings, caplog: pytest.LogCaptureFixture
+) -> None:
+    """pin 에 반대 관측이 새로 들어오면 카운터가 오른다 — **상태는 그대로다**(REQ-PGRAPH-033)."""
+    existing = _document_of([_pinned_edge("소니", last_observed_at="2026-01-01T00:00:00+00:00")])
+
+    document = _build_pin_safe(
+        [_opposing_fact("f1", created_at="2026-08-02T00:00:00+00:00")],
+        existing=existing,
+        settings=settings,
+        caplog=caplog,
+    )
+
+    edge = _edge_by_key(document, "likes|brand:소니")
+    assert edge is not None
+    assert edge.challenge_count == 1
+    assert (edge.status, edge.confidence, edge.promoted) == ("active", 1.0, True)  # 불변
+
+
+def test_challenge_count_does_not_rise_when_only_the_batch_repeats(
+    settings: Settings, caplog: pytest.LogCaptureFixture
+) -> None:
+    """**반대 관측이 아니라 배치 횟수를 세면 안 된다** — 이 커밋에서 가장 조심할 지점이다.
+
+    진 edge 는 근거가 0건이 돼도 `_carried_tombstones` 가 영구 이월하므로(§6.3), 승패만 보고
+    카운터를 올리면 **새 관측이 하나도 없어도 매 배치 conflict 가 다시 성립해** 카운터가 오른다.
+    idle sweep 이 60초 주기이니 `graph_pin_challenge_count=3` 이면 **3분 침묵만으로**
+    `challenged` 가 켜지고, FE 는 시간 경과만으로 "취향이 바뀌셨나요?" 를 띄운다.
+
+    그래서 판정 기준은 **이번 배치에 그 반대 `edge_key` 의 관측이 실제로 있었는가** 다.
+    """
+    existing = _document_of([_pinned_edge("소니", last_observed_at="2026-01-01T00:00:00+00:00")])
+    facts = [_opposing_fact("f1", created_at="2026-08-02T00:00:00+00:00")]
+
+    first = _build_pin_safe(facts, existing=existing, settings=settings, caplog=caplog)
+    assert _edge_by_key(first, "likes|brand:소니").challenge_count == 1  # type: ignore[union-attr]
+
+    # 같은 관측이 더는 없는 배치를 두 번 돌린다 — 이월된 avoids 는 그대로 남아 conflict 는
+    # 계속 성립하지만, **새 반대 관측은 0건**이다.
+    second = _build_pin_safe([], existing=first, settings=settings, caplog=caplog)
+    third = _build_pin_safe([], existing=second, settings=settings, caplog=caplog)
+
+    assert _edge_by_key(third, "likes|brand:소니").challenge_count == 1  # type: ignore[union-attr]
+
+
+def test_challenged_turns_true_at_the_configured_threshold_without_changing_state(
+    settings: Settings, caplog: pytest.LogCaptureFixture
+) -> None:
+    """임계에 도달하면 `challenged` 가 참이 되지만 상태·관계·확신도는 그대로다."""
+    from app.agents.profile.graph_models import is_pin_challenged
+
+    tight = Settings(_env_file=None, graph_pin_challenge_count=2)
+    document = _document_of([_pinned_edge("소니", last_observed_at="2026-01-01T00:00:00+00:00")])
+
+    for day, key in ((2, "f1"), (3, "f2")):
+        document = _build_pin_safe(
+            [_opposing_fact(key, created_at=f"2026-08-0{day}T00:00:00+00:00")],
+            existing=document,
+            settings=tight,
+            caplog=caplog,
+        )
+
+    edge = _edge_by_key(document, "likes|brand:소니")
+    assert edge is not None
+    assert edge.challenge_count == 2
+    assert is_pin_challenged(edge, settings=tight) is True
+    assert (edge.predicate, edge.status, edge.confidence, edge.promoted) == (
+        "likes",
+        "active",
+        1.0,
+        True,
+    )  # 취향 변화의 반영은 명시적 사용자 동작으로만
+
+
+def test_zero_threshold_turns_the_signal_off_instead_of_always_on() -> None:
+    """설정값 `0` 은 신호를 **끈다**(REQ-PGRAPH-033).
+
+    순진하게 `count >= threshold` 로 쓰면 `0` 에서 **항상 참**이 되어 규약과 정반대로 동작한다.
+    `ge=0` 이 그 값을 허용하므로 특례 분기가 없으면 그대로 새어 나간다.
+    """
+    from app.agents.profile.graph_models import is_pin_challenged
+
+    off = Settings(_env_file=None, graph_pin_challenge_count=0)
+    edge = _pinned_edge("소니", challenge_count=99)
+
+    assert is_pin_challenged(edge, settings=off) is False
+
+
+def test_unpinned_edge_is_never_challenged(settings: Settings) -> None:
+    """`challenged` 는 **사용자가 고친 항목**에만 붙는다 — 기계 edge 는 대상이 아니다."""
+    from app.agents.profile.graph_models import is_pin_challenged
+
+    assert is_pin_challenged(_stored_edge("소니", challenge_count=99), settings=settings) is False
+
+
+def test_fingerprint_ignores_challenge_count_but_tracks_challenged(settings: Settings) -> None:
+    """지문에는 **파생 `challenged` 만** 들어가고 원시 `challenge_count` 는 안 들어간다.
+
+    카운터를 지문에 두면 반대 관측이 들어올 때마다 revision 이 올라 #150 의 `If-Match` 토큰이
+    상시 무효가 된다 — `_fingerprint` docstring 이 `confidence` 에 대해 막으려던 바로 그 실패다.
+    반대로 `challenged` 는 api-spec §3.8 의 **와이어 노출 필드**라 지문에 있어야 한다: 값이
+    뒤집혔는데 revision 이 그대로면 FE 가 낡은 토큰으로 계속 쓴다.
+
+    배치를 돌려서 재지 않는 이유는 **공허해지기 때문**이다 — 카운터를 올리려면 반대 관측이
+    새로 있어야 하고, 그러면 그 edge 의 `last_observed_at` 이 함께 바뀌어 지문이 어차피
+    달라진다. 그 시나리오는 "카운터 때문에 올랐다"를 증명하지 못한다.
+    """
+    from app.agents.profile.graph_merge import _fingerprint
+
+    tight = Settings(_env_file=None, graph_pin_challenge_count=3)
+    below = _document_of([_pinned_edge("소니", challenge_count=1)])
+    also_below = _document_of([_pinned_edge("소니", challenge_count=2)])
+    crossed = _document_of([_pinned_edge("소니", challenge_count=3)])
+
+    # 임계 아래에서 카운터만 움직인 것은 와이어에 안 보인다.
+    assert _fingerprint(below, tight) == _fingerprint(also_below, tight)
+    # 임계를 넘으면 `challenged` 가 뒤집히므로 실질 변경이다.
+    assert _fingerprint(also_below, tight) != _fingerprint(crossed, tight)
+
+
+def test_revision_is_stable_when_only_challenge_count_moved(settings: Settings) -> None:
+    """지문 규칙이 `build_graph_document` 의 revision 판정까지 실제로 이어지는지."""
+    tight = Settings(_env_file=None, graph_pin_challenge_count=3)
+    existing = _document_of([_pinned_edge("소니", challenge_count=1)])
+    # 문서에 이미 실린 pin 을 근거 없이 이월시키되, 카운터만 손으로 올려 둔 상태로 다시 돌린다.
+    bumped = existing.model_copy(
+        update={"edges": [existing.edges[0].model_copy(update={"challenge_count": 2})]}
+    )
+
+    document = build_graph_document([], existing=bumped, settings=tight, now=NOW)
+
+    assert document.edges[0].challenge_count == 2
+    assert document.revision == bumped.revision  # 와이어에 안 보이는 변화다
+
+
 # ─────────── 정렬·절단 ───────────
 
 

@@ -32,6 +32,7 @@ from app.agents.profile.graph_models import (
     GraphEdge,
     GraphNode,
     Predicate,
+    is_pin_challenged,
 )
 from app.agents.profile.store import FactRecord
 from app.core.config import Settings
@@ -128,7 +129,9 @@ def build_graph_document(
         for key, obs_list in grouped.items()
     ]
     edges.extend(_carried_tombstones(existing, seen=set(grouped), settings=settings, now=now))
-    edges = _resolve_conflicts(edges)
+    # `grouped` = 이번 배치에 관측이 실제로 있었던 edge_key — `challenge_count` 가 배치 횟수가
+    # 아니라 반대 관측 건수를 세게 하는 유일한 입력이다(REQ-PGRAPH-033).
+    edges = _resolve_conflicts(edges, observed=set(grouped))
     # 절단 여부는 **개수 차이로** 판정한다 — `_truncate` 의 두 분기(일반 절단·사용자 삭제가 상한을
     # 넘겨 보존)를 한 규칙으로 덮고, "상한을 넘겼다"가 아니라 "버린 게 있다"라는 뜻이 그대로 산다.
     before_truncation = len(edges)
@@ -418,7 +421,7 @@ def _carried_tombstones(
     return carried
 
 
-def _resolve_conflicts(edges: list[GraphEdge]) -> list[GraphEdge]:
+def _resolve_conflicts(edges: list[GraphEdge], *, observed: set[str]) -> list[GraphEdge]:
     """같은 node 를 두고 상충하는 관계는 패자를 `superseded` 로 (REQ-PGRAPH-018) — **삭제하지 않는다**.
 
     상충은 **부정(`avoids`) vs 임의의 긍정**이다. 쌍을 열거하지 않는 이유는 `_NEGATIVE_PREDICATE`
@@ -444,6 +447,14 @@ def _resolve_conflicts(edges: list[GraphEdge]) -> list[GraphEdge]:
     같은 노드에 반대 극성 pin 이 둘 생기는 것은 사용자 수정이 구 edge 를 tombstone 으로 보내므로
     정상 경로에서 만들어지지 않는다. 그래도 만들어졌다면 게이트가 둘 다 `active` 로 되돌린다 —
     사용자 의사를 기계가 정리하지 않는 쪽이 REQ-PGRAPH-031 이 정한 방향이다.
+
+    **승자가 pin 이면 `challenge_count` 를 올린다**(REQ-PGRAPH-033) — 단 `observed` 에 든
+    edge_key, 즉 **이번 배치에 관측이 실제로 있었던** 패자에 한한다. 승패만 보고 올리면 배치
+    횟수를 세게 된다: 진 edge 는 근거가 0건이 돼도 `_carried_tombstones` 가 영구 이월하므로
+    새 반대 관측이 하나도 없어도 매 배치 conflict 가 다시 성립한다. idle sweep 이 60초 주기라
+    임계 3이면 **3분 침묵만으로** `challenged` 가 켜지고, FE 는 시간 경과만으로 "취향이
+    바뀌셨나요?" 를 띄운다. `challenged` 는 상태를 바꾸지 않지만 **사용자를 귀찮게 하는 것은
+    상태 변경 못지않은 비용**이다.
     """
     by_node: dict[str, list[GraphEdge]] = {}
     for edge in edges:
@@ -462,9 +473,12 @@ def _resolve_conflicts(edges: list[GraphEdge]) -> list[GraphEdge]:
             key=lambda e: (_is_pinned(e), e.last_observed_at, e.confidence, e.edge_id),
         )
         losers = negatives if winner.predicate in _POSITIVE_PREDICATES else positives
-        resolved[winner.edge_key] = winner.model_copy(
-            update={"status": "active", "superseded_by": None}
-        )
+        winner_update: dict = {"status": "active", "superseded_by": None}
+        if _is_pinned(winner):
+            fresh = sum(1 for edge in losers if edge.edge_key in observed)
+            if fresh:
+                winner_update["challenge_count"] = winner.challenge_count + fresh
+        resolved[winner.edge_key] = winner.model_copy(update=winner_update)
         for edge in losers:
             resolved[edge.edge_key] = edge.model_copy(
                 update={"status": "superseded", "superseded_by": winner.edge_id}
@@ -676,9 +690,14 @@ def _fingerprint(document: GraphDocument, settings: Settings) -> str:
     # `evidence_by_source`·`evidence_refs` 는 §5.2 내부 전용이다. fact cap 트리밍으로 오래된 근거가
     # 밀려나면 이 값들만 바뀌는데(last_observed_at 은 최댓값, first_observed_at 은 prior 승계),
     # 그때 revision 이 오르면 #150 의 If-Match 토큰이 와이어 무변경인데도 무효가 된다.
+    # `challenge_count` 도 같은 이유로 뺀다(#359) — 와이어에 나가는 것은 임계를 넘었는지
+    # (`challenged`)뿐이고 원시 카운터가 아니다. 지문에 두면 반대 관측이 들어올 때마다 revision 이
+    # 올라 #150 의 `If-Match` 토큰이 상시 무효가 된다. 대신 파생 `challenged` 를 아래에서 넣는다 —
+    # 그 값이 뒤집히는 것은 FE 가 보는 변화라 실질 변경이다.
     volatile_edge = {
         "decay_evaluated_at",
         "confidence",
+        "challenge_count",
         "evidence_count",
         "evidence_by_source",
         "evidence_refs",
@@ -688,6 +707,7 @@ def _fingerprint(document: GraphDocument, settings: Settings) -> str:
     for edge in document.edges:
         payload = {k: v for k, v in edge.model_dump(mode="json").items() if k not in volatile_edge}
         payload["confidence_bucket"] = _confidence_bucket(edge.confidence, bounds)
+        payload["challenged"] = is_pin_challenged(edge, settings=settings)
         edges.append(payload)
     nodes = [
         {k: v for k, v in node.model_dump(mode="json").items() if k not in volatile_node}
