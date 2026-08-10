@@ -26,6 +26,10 @@ from pydantic import ValidationError
 from app.agents.buyer._frames import progress as progress_frame
 from app.agents.buyer._frames import sse
 from app.agents.buyer.cart.graph import stream_cart_add, stream_cart_view
+from app.agents.buyer.cart.intent_guard import (
+    classify_cart_utterance,
+    has_wishlist_remove_evidence,
+)
 from app.agents.buyer.cart.options import condition_terms as cart_condition_terms
 from app.agents.buyer.cart.remove import stream_cart_remove
 from app.agents.buyer.cart.state import get_cart_store
@@ -71,7 +75,7 @@ from app.core.tracing import current_request_trace, trace_span
 from app.core.session_context import SessionStateUnavailable
 from app.core.text import _strip_unsafe
 from app.agents.buyer.recommendation.state import CartIntent, CategoryQuery
-from app.agents.buyer.screen_reference import resolve_screen_reference
+from app.agents.buyer.screen_reference import mentions_screen_reference, resolve_screen_reference
 from app.schemas.chat import CONDITION_FIELD_TO_FILTER, ConditionAction, DoneData, ErrorData
 from app.schemas.spring import ProductSearchFilters
 from app.services import search_service, spring_client
@@ -1150,9 +1154,38 @@ async def run_buyer_turn(
     #      않으므로(테스트로 고정) LLM 은 screen 상품의 id 도 이름도 알 경로가 없고, id 는
     #      화면에 표시되지 않아 사용자가 말할 수도 없다. screen 상품이 동시에 직전 추천이면
     #      `last_reco` 쪽으로 그대로 allowed 에 남는다 — 정상 경로는 하나도 닫히지 않는다.
+    # [#440 라운드 3 리뷰 F9] decompose 가 `cart_remove` 로 오분류한 찜 해제 발화를 **화면 해소
+    # 보다 먼저** 정정한다 — 정정 후 도착지가 `wishlist_remove` 이고, 그 흐름은 화면 순번 해소를
+    # 전제로 설계됐다(아래 화면 해소 블록 조건에 이 불리언을 더한다). 이전 라운드는 정정을
+    # `cart_remove` 분기 안에서, 화면 해소를 이미 지나온 뒤에 했다 — 그 상태에서 원시
+    # `decision.cart.product_id`(화면 순번이 아니라 decompose 가 문맥에서 고른 값)를 그대로
+    # `stream_wishlist_remove` 에 넘기면, 화면 3열+찜 2건 상황에서 "3번째 거 찜에서 빼줘"가
+    # 사용자가 가리킨 항목이 아니라 decompose 오추출 productId 를 지운다(재현 확인 — 같은
+    # 발화라도 decompose 가 `wishlist_remove` 를 직접 내면 정확히 해소되고 `cart_remove` 로
+    # 오분류하면 다른 항목이 삭제됐다. LLM 분류 결과에 따라 삭제 대상이 갈리는 것은 그 자체가
+    # 결함이다). `decision` 자체는 변형하지 않는다 — 트레이스·관측은 decompose 가 실제로 무엇을
+    # 냈는지 그대로 남아야 한다.
+    # [#440 라운드 9 리뷰 F24] 정정은 결정론 규칙이 LLM 산출(`cart_remove`)을 **덮어쓰는**
+    # 지점이다 — 관대한 라우팅(`classify_cart_utterance`)만으로 덮어쓰면 `"문구 '찜
+    # 해제해줘' 대신 키보드 빼줘"`(decompose `cart_remove`, 실제 의도는 장바구니 삭제)에서
+    # 인용된 찜 문구가 라우팅을 `wishlist_remove` 로 끌어가 **장바구니 삭제라는 사용자의 실제
+    # 요청을 삼킨다**(실측, 파괴적 — 찜은 지워지지 않지만 요청한 장바구니 삭제가 안 일어난다).
+    # `has_wishlist_remove_evidence`(발화 전체 앵커, F22)를 함께 요구해 확신 없이는 덮어쓰지
+    # 않는다 — decompose 가 **직접** `wishlist_remove` 를 내는 분기(아래, 이 불리언과 무관)는
+    # 게이트하지 않는다: 거긴 LLM 판단을 존중하고 해소기의 되물음이 안전판이다. 우리가 LLM 을
+    # **덮어쓸 때만** 근거를 요구한다.
+    corrected_to_wishlist_remove = (
+        decision.intent == "cart_remove"
+        and classify_cart_utterance(request.message, settings) == "wishlist_remove"
+        and has_wishlist_remove_evidence(request.message, settings)
+    )
     cart_intent = decision.cart or CartIntent()
     screen_reason: str | None = None
-    if decision.intent in ("cart_add", "wishlist_add", "wishlist_remove"):
+    screen_resolved = False
+    if (
+        decision.intent in ("cart_add", "wishlist_add", "wishlist_remove")
+        or corrected_to_wishlist_remove
+    ):
         # [#118] 화면 지시어는 **코드가 해소**한다 — 순번·좌표·"후보 1건" 은 결정적인 규칙이라
         # 확률적 계층에 맡길 이유가 없고, 맡겼더니 사용자가 말하지 않은 상품을 확정하는 일이
         # 잦았다(실측표는 screen_reference 모듈 docstring). `screen.products` 가 있는 턴에만
@@ -1183,6 +1216,56 @@ async def run_buyer_turn(
                 # 해소된 product_id 만 전달되면 화면 지시어 자체는 해소된다.
                 if resolved.product_id is None:
                     screen_reason = resolved.reason
+                # [#440 라운드 9 리뷰 F25] 해소기가 **실제로 상품을 확정했는지** 자체를 별도
+                # 불리언으로 남긴다 — `resolved` 를 이미 들고 있으니 새로 계산할 게 없다.
+                screen_resolved = resolved.product_id is not None
+
+    # [#440 라운드 6 리뷰 F18 → 라운드 8 리뷰 F21 → 라운드 9 리뷰 F25 → 라운드 10 리뷰 F27]
+    # F18 은 "화면이 있고(pending 이거나 해소기가 거부했다)"라는 **대리값**으로 이 신호를
+    # 만들었는데, 대리값이라 과대·과소 차단을 동시에 냈다. F21 은 `cart_intent.product_id is
+    # None` 으로 바꿨는데 이 값은 **출처를 잃는다**(해소기가 확정한 id 와 decompose 가 낸 id
+    # 를 구분 못 함). F25 는 **해소기 결과 자체**(`screen_resolved`, 위에서 남긴 값)로
+    # 출처 문제를 없앴다 — 필요한 것은 두 사실을 **직접** 보는 것이다: (1) 발화가 화면을
+    # **참조**하려 시도했는가 (2) 해소기가 그 시도를 **상품으로 확정**했는가(`screen_resolved`).
+    #
+    # **[라운드 10 리뷰 F27] 이 두 사실을 하나의 파생값(`screen_refused = mentions_screen_
+    # position and not screen_resolved`)으로 합쳐 넘기던 것을 그만둔다.** 화면 3번째가 503
+    # 으로 정확히 해소됐는데 찜 목록엔 77 하나뿐이면, 그 파생값은 `False`("위치를 가리켰고
+    # 해소도 성공했으니 거부 아님")가 되어 규칙 3(목록 1건 자동)이 무관한 77 을 지웠다(재현,
+    # 파괴적 — `screen_resolved=True` 를 "규칙 3 fallback 허용"으로 오독한 것). 규칙 2(문맥
+    # id)와 규칙 3(목록 1건 자동)은 이 신호를 **서로 다르게** 써야 한다 — 규칙 2 는 "위치를
+    # 가리켰는데 확정 못 했을 때만" 건너뛰면 되지만(파생값과 값이 같다), 규칙 3 은 "위치를
+    # 가리킨 이상 확정 성공 여부와 무관하게" 건너뛰어야 한다(사용자가 특정 위치를 지목했는데
+    # 그 지목이 목록 항목으로 안 이어지면 되물어야지, 목록에 하나 있다는 이유로 **다른 것**을
+    # 지우면 안 된다 — "코드가 고르는 규칙은 더 엄격해야 한다"는 이 이슈의 원칙). 파생값
+    # 하나로는 이 둘을 가를 수 없으므로 **원자 두 개를 그대로 넘긴다** — 파생값을 남기면
+    # 다음 사람이 어느 쪽을 고쳐야 할지 모른다(이 레인에서 이미 두 번 겪었다. `wishlist.py`
+    # docstring "라운드 10 리뷰 F27" 문단이 규칙별 계약을 명시한다).
+    #
+    # **[라운드 11 리뷰 F29]** 첫 원자는 "숫자 위치"(`mentions_screen_position`)가 아니라
+    # **"화면 참조 시도"**(`mentions_screen_reference` — 기존 정규식 네 개 **또는**
+    # `settings.screen_deictic_markers`, 새 마커 목록을 만들지 않는다)여야 한다 —
+    # `resolve_screen_reference` 자체가 지시대명사("이거")도 화면 참조로 처리하는데, 옛
+    # 헬퍼는 숫자 위치만 봐서 `"이거 찜에서 빼줘"`(화면 1건 501 로 확정, 찜엔 77 뿐)를 "위치
+    # 미언급"으로 오독해 규칙 3 이 무관한 77 을 지웠다(재현, 파괴적). 다만 **화면이 실제로
+    # 있을 때만** 의미가 있다 — 화면이 없는 턴까지 이 신호로 좁히면 `"이거 찜에서 빼줘"`(화면
+    # 없음)가 오늘과 달라진다(이 이슈 범위 밖의 회귀) — 화면이 없으면 규칙 3 은 그대로 정상
+    # 동작해야 한다.
+    #
+    # **[F29 구현 중 실측 수정]** 이 "화면이 있을 때만" 가드는 `screen is not None` 이지
+    # `bool(screen and screen.products)`(패킷의 원안 스니펫)가 아니다 — 후자는 `screen.
+    # products == []`(화면 객체는 왔지만 정제 후 상품이 0건)인 턴에서도 `screen_reference_
+    # attempted` 를 항상 `False` 로 묶어, 라운드 8(F21)이 고친 "빈 화면 + 위치 지시" 과소
+    # 차단(`test_empty_screen_products_still_blocks_an_out_of_range_position`)이 되살아난다
+    # (재현: `"99번째 거 찜에서 빼줘"`, `screen.products=[]`, 찜 1건 → 그 1건이 삭제됨). "화면이
+    # 없다"는 FE 가 `screen` 자체를 안 보냈다는 뜻이지, 화면은 왔는데 정제 후 상품이 비었다는
+    # 뜻이 아니다 — 후자는 여전히 "화면 참조를 시도했는데 확정할 게 없다"는 F21 의 원래 사례다.
+    #
+    # `stream_wishlist_remove`·`stream_cart_add` 세 위임 경로가 이 두 원자를 공유한다(아래 세
+    # 호출부, 중복 계산 금지).
+    screen_reference_attempted = screen is not None and mentions_screen_reference(
+        request.message, settings
+    )
 
     if decision.intent == "cart_add":
         if trace := current_request_trace():
@@ -1197,6 +1280,8 @@ async def run_buyer_turn(
                 message=request.message,
                 allowed_product_ids=allowed,
                 screen_reason=screen_reason,
+                screen_reference_attempted=screen_reference_attempted,
+                screen_resolved=screen_resolved,
                 # [이슈 #455] 누적 필터(prior) 우선 + 이번 턴 산출(decision.filters) — 옵션 되물음
                 # 좁히기의 조건어 원천. 담기 흐름 밖의 다른 라우팅·프롬프트는 건드리지 않는다.
                 condition_terms=cart_condition_terms(prior, decision.filters),
@@ -1215,10 +1300,39 @@ async def run_buyer_turn(
     # **도착지도 입력도 같아졌기 때문에**(화면 해소를 위에서 한 번만 수행해 `cart_intent` 를
     # 공유한다) 중복 판정이 동작을 바꾸지 않는다 — 결과가 다르면 그건 두 판별기가 이견을 낸
     # 것이지 이 라우팅의 결함이 아니다.
+    #
+    # **[#440] `cart_remove` 도 이제 세 번째 경로다.** decompose 사다리 1-3)("빼줘" → cart_remove)
+    # 이 "찜한 거 빼줘"류를 삭제로 오분류하면 `classify_cart_utterance` 2선 방어를 아예 거치지
+    # 않는다 — 그 판별기는 `cart/graph.py::stream_cart_add` 안에만 있어서 `cart_add` 로 온 발화만
+    # 본다. 위에서 계산해 둔 `corrected_to_wishlist_remove` 로 **정정**한다(`"wishlist_remove"`
+    # 일 때만 — 그 밖의 반환값, 기본값 `"cart_add"` 포함은 전부 무시하고 기존대로 삭제로 간다.
+    # 그러지 않으면 이 판별기의 기본값이 장바구니 삭제를 통째로 삼킨다).
+    #
+    # **[라운드 3 리뷰 F9] 정정한다면 `cart_intent` 는 반드시 화면 해소를 거친 값이어야 한다 —
+    # 이전 라운드의 "화면 해소를 못 거친 cart_intent 를 써도 기존 cart_remove 경로와 같은
+    # 조건이라 후퇴가 아니다"는 판단은 틀렸다.** 정정 후 도착지는 `stream_wishlist_remove` 이고
+    # 그 흐름은 화면 순번 해소를 전제로 만들어졌다 — 화면 3열+찜 2건, `"3번째 거 찜에서 빼줘"`,
+    # decompose 가 `cart_remove`·`productId=<다른 항목>` 을 내면, 화면 해소를 안 거친 원시
+    # productId 가 그대로 넘어가 사용자가 가리킨 항목이 아니라 그 오추출 항목이 삭제됐다(재현
+    # 확인). 그래서 `corrected_to_wishlist_remove` 를 화면 해소 블록 조건에도 넣어 `cart_intent`
+    # 자체가 이미 화면 순번을 반영한 값이 되게 했다(위 참조) — 판정은 여기서 **다시 부르지
+    # 않는다**(같은 판정을 두 번 부르면 이 저장소가 반복해 밟은 함정이다).
     if decision.intent == "cart_remove":
         if trace := current_request_trace():
             trace.set_lane("cart")
         with trace_span("buyer.graph.cart", "chain"):
+            if corrected_to_wishlist_remove:
+                async for frame in stream_wishlist_remove(
+                    identity=identity,
+                    cart=cart_intent,
+                    message=request.message,
+                    settings=settings,
+                    observer=observer,
+                    screen_reference_attempted=screen_reference_attempted,
+                    screen_resolved=screen_resolved,
+                ):
+                    yield frame
+                return
             async for frame in stream_cart_remove(
                 identity=identity,
                 message=request.message,
@@ -1250,12 +1364,22 @@ async def run_buyer_turn(
         if trace := current_request_trace():
             trace.set_lane("cart")
         with trace_span("buyer.graph.cart", "chain"):
+            # [#440 라운드 4 리뷰 F12, 라운드 6 리뷰 F18, 라운드 8 리뷰 F21, 라운드 10 리뷰 F27]
+            # 발화가 화면 위치를 가리키려 했는데 확정되지 못했으면(위 `screen_reference_attempted`·
+            # `screen_resolved` 계산 참조) 이 분기도 정정 경로와 똑같이 겪는다 — 화면 해소 블록은
+            # 원래부터 `wishlist_remove` intent 를 포함해(위 조건 참조) decompose 가 직접 이
+            # intent 를 내도 화면이 있으면 그 해소를 거친다. 거부/미해소됐는데
+            # `_resolve_wishlist_remove_target` 규칙 2·3 이 그 사실을 모른 채 문맥 id/목록 1건
+            # 으로 대신 확정하면, 해소기가 "되물음으로 가라"고 낸 신호를 조용히 덮어써 사용자가
+            # 가리키지 못한 항목이 삭제된다(재현 확인).
             async for frame in stream_wishlist_remove(
                 identity=identity,
                 cart=cart_intent,
                 message=request.message,
                 settings=settings,
                 observer=observer,
+                screen_reference_attempted=screen_reference_attempted,
+                screen_resolved=screen_resolved,
             ):
                 yield frame
         return

@@ -971,6 +971,634 @@ async def test_wishlist_add_ordinal_reference_is_resolved_by_code(
     assert added == [503]
 
 
+async def test_cart_remove_corrected_to_wishlist_remove_resolves_screen_ordinal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#440 라운드 3 리뷰 F9] 재현·수정 확인 — decompose 가 `cart_remove` 로 오분류한 찜 해제
+    발화가 `wishlist_remove` 로 정정될 때, 그 정정이 화면 순번 해소를 **거친 뒤**에 일어나야
+    한다. 정정을 화면 해소보다 뒤(옛 `cart_remove` 분기 안)에서 하면, 화면 3열+찜 2건 상황에서
+    `"3번째 거 찜에서 빼줘"` 가 사용자가 가리킨 항목(화면 3번째 = 503)이 아니라 decompose 가
+    문맥에서 잘못 고른 원시 productId(509)를 지운다 — 이 테스트는 `test_wishlist_add_ordinal_
+    reference_is_resolved_by_code` 와 같은 부류(화면 순번 해소가 모든 도착 경로에 연결돼야
+    한다)를 `cart_remove`→`wishlist_remove` 정정 경로에 대해 직접 잰다."""
+    import app.services.spring_client as sc
+    from app.schemas.spring import WishlistItem, WishlistView
+
+    removed: list[int] = []
+
+    async def fake_get_wishlist(user_id):  # noqa: ANN001
+        return WishlistView(
+            items=[
+                WishlistItem(product_id=503, name="화면 3번째 상품", purchase_state="AVAILABLE"),
+                WishlistItem(
+                    product_id=509, name="decompose 오추출 상품", purchase_state="AVAILABLE"
+                ),
+            ]
+        )
+
+    async def fake_remove_wishlist(product_id, *, user_id=None):  # noqa: ANN001
+        removed.append(product_id)
+        return None
+
+    monkeypatch.setattr(sc, "get_wishlist", fake_get_wishlist)
+    monkeypatch.setattr(sc, "remove_wishlist", fake_remove_wishlist)
+
+    products = [{"productId": 500 + i, "name": f"상품{i}"} for i in range(1, 10)]
+    request = BuyerChatRequest.model_validate(
+        _buyer_payload(
+            message="3번째 거 찜에서 빼줘",
+            threadId="t-screen-cart-remove-corrected",
+            screen={"pageType": "chat", "columns": 3, "products": products},
+        )
+    )
+    # decompose 는 cart_remove 로 오분류하면서 문맥에서 엉뚱한 이웃(509)을 골랐다고 가정 —
+    # 화면 순번(3번째 = 503)으로 코드가 덮어써야 한다.
+    llm = FakeLLM(decompose={"intent": "cart_remove", "cart": {"productId": 509}})
+    events = await _collect(_run_buyer_turn(request, _member(), llm=llm))
+    assert removed == [503]
+    action = next(e for e in events if e["type"] == "action")["data"]
+    assert action["type"] == "WISHLIST_REMOVED"
+
+
+async def test_cart_remove_corrected_to_wishlist_remove_screen_refusal_blocks_auto_select(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#440 라운드 4 리뷰 F12] 재현·수정 확인 — 화면 해소기가 순번을 **확정하지 못하고
+    거부**했으면(`ordinal_out_of_range`, 화면 3건인데 `"99번째"`) 정정 경로도 그 거부를
+    `_resolve_wishlist_remove_target` 규칙 2·3 까지 전달해야 한다. 안 그러면 찜이 1건일 때
+    규칙 3(목록 1건 자동)이 해소기의 거부를 모른 채 그 1건을 다시 골라 삭제한다 — 사용자가
+    가리키지 못한 화면 순번인데도 찜이 지워지는 파괴적 동작이다."""
+    import app.services.spring_client as sc
+    from app.schemas.spring import WishlistItem, WishlistView
+
+    removed: list[int] = []
+
+    async def fake_get_wishlist(user_id):  # noqa: ANN001
+        return WishlistView(
+            items=[WishlistItem(product_id=77, name="마우스", purchase_state="AVAILABLE")]
+        )
+
+    async def fake_remove_wishlist(product_id, *, user_id=None):  # noqa: ANN001
+        removed.append(product_id)
+        return None
+
+    monkeypatch.setattr(sc, "get_wishlist", fake_get_wishlist)
+    monkeypatch.setattr(sc, "remove_wishlist", fake_remove_wishlist)
+
+    products = [{"productId": 500 + i, "name": f"상품{i}"} for i in range(1, 4)]
+    request = BuyerChatRequest.model_validate(
+        _buyer_payload(
+            message="99번째 거 찜에서 빼줘",
+            threadId="t-screen-cart-remove-refused",
+            screen={"pageType": "chat", "columns": 3, "products": products},
+        )
+    )
+    # decompose 는 cart_remove 로 오분류하면서 찜에 있는 그 항목(77)을 productId 로 골랐다고
+    # 가정한다 — 화면 순번 해소는 3건뿐인 화면에서 99번째를 확정하지 못하고 거부해야 한다.
+    llm = FakeLLM(decompose={"intent": "cart_remove", "cart": {"productId": 77}})
+    events = await _collect(_run_buyer_turn(request, _member(), llm=llm))
+    assert removed == []
+    assert [e["type"] for e in events][-2:] == ["token", "done"]
+
+
+async def test_wishlist_remove_screen_refusal_blocks_auto_select(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#440 라운드 4 리뷰 F12] 같은 구멍이 **정정 경로가 아닌 기존 `wishlist_remove` 분기**
+    에도 있었다 — decompose 가 곧장 `wishlist_remove` 를 내도 화면 해소 블록은 그 intent 를
+    이미 포함하고 있어(`decision.intent in ("cart_add", "wishlist_add", "wishlist_remove")`)
+    같은 거부가 난다. 두 경로 모두 고쳐야 한다는 게 이 리뷰의 핵심이라, 이 분기를 직접 잰다."""
+    import app.services.spring_client as sc
+    from app.schemas.spring import WishlistItem, WishlistView
+
+    async def fake_get_wishlist(user_id):  # noqa: ANN001
+        return WishlistView(
+            items=[WishlistItem(product_id=77, name="마우스", purchase_state="AVAILABLE")]
+        )
+
+    async def fake_remove_wishlist(product_id, *, user_id=None):  # noqa: ANN001
+        raise AssertionError("화면 해소기가 거부했는데 remove_wishlist_fn 이 호출됐다")
+
+    monkeypatch.setattr(sc, "get_wishlist", fake_get_wishlist)
+    monkeypatch.setattr(sc, "remove_wishlist", fake_remove_wishlist)
+
+    products = [{"productId": 500 + i, "name": f"상품{i}"} for i in range(1, 4)]
+    request = BuyerChatRequest.model_validate(
+        _buyer_payload(
+            message="99번째 거 찜에서 빼줘",
+            threadId="t-screen-wishlist-remove-refused",
+            screen={"pageType": "chat", "columns": 3, "products": products},
+        )
+    )
+    llm = FakeLLM(decompose={"intent": "wishlist_remove", "cart": {"productId": 77}})
+    events = await _collect(_run_buyer_turn(request, _member(), llm=llm))
+    assert [e["type"] for e in events][-2:] == ["token", "done"]
+
+
+async def test_wishlist_remove_screen_deictic_single_candidate_still_asks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#440 라운드 13 리뷰 F33 "추가"] `screen_deictic_markers`(`"이거"`) 경로의 종단 동작이
+    F29 이후 실측으로만 확인됐고 고정하는 테스트가 없었다 — 여기서 못 박는다.
+
+    화면에 상품 1건(501)만 있으면 `resolve_screen_reference` 의 (4) 규칙이 그 1건으로
+    확정한다(`screen_resolved=True`) — 하지만 그 501 은 **찜 목록과 무관한 다른 상품**이다.
+    규칙 3(목록 1건 자동)은 `screen_reference_attempted` 이면 해소 성공 여부와 무관하게
+    건너뛴다(라운드 10 리뷰 F27) — 그래서 찜이 77 하나뿐이어도 그 77 을 대신 지우면 안 되고,
+    사용자가 화면에서 가리킨 501 은 애초에 찜 목록에 없으니 되물어야 한다."""
+    import app.services.spring_client as sc
+    from app.schemas.spring import WishlistItem, WishlistView
+
+    async def fake_get_wishlist(user_id):  # noqa: ANN001
+        return WishlistView(
+            items=[WishlistItem(product_id=77, name="마우스", purchase_state="AVAILABLE")]
+        )
+
+    async def fake_remove_wishlist(product_id, *, user_id=None):  # noqa: ANN001
+        raise AssertionError("찜 목록에 없는 화면 후보를 대신 지우면 안 된다")
+
+    monkeypatch.setattr(sc, "get_wishlist", fake_get_wishlist)
+    monkeypatch.setattr(sc, "remove_wishlist", fake_remove_wishlist)
+
+    request = BuyerChatRequest.model_validate(
+        _buyer_payload(
+            message="이거 찜에서 빼줘",
+            threadId="t-screen-wishlist-deictic-single",
+            screen={"pageType": "chat", "products": [{"productId": 501, "name": "상품1"}]},
+        )
+    )
+    llm = FakeLLM(decompose={"intent": "wishlist_remove", "cart": {}})
+    events = await _collect(_run_buyer_turn(request, _member(), llm=llm))
+    assert [e["type"] for e in events][-2:] == ["token", "done"]
+    assert not any(e["type"] == "action" for e in events)
+
+
+async def test_wishlist_remove_screen_deictic_ambiguous_candidates_still_asks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#440 라운드 13 리뷰 F33 "추가"] 화면 후보가 3건(모호)이면 `resolve_screen_reference`
+    의 (4) 규칙이 `ambiguous_screen_candidates` 로 거부한다(`screen_resolved=False`) — 규칙 3은
+    `screen_reference_attempted` 만으로 이미 건너뛰므로 결과는 위 단일 후보 케이스와 같아야
+    한다(0회 삭제·되물음), 화면 해소가 성공했든 실패했든 결과가 같다는 것 자체가 F27 이 지키는
+    성질이다."""
+    import app.services.spring_client as sc
+    from app.schemas.spring import WishlistItem, WishlistView
+
+    async def fake_get_wishlist(user_id):  # noqa: ANN001
+        return WishlistView(
+            items=[WishlistItem(product_id=77, name="마우스", purchase_state="AVAILABLE")]
+        )
+
+    async def fake_remove_wishlist(product_id, *, user_id=None):  # noqa: ANN001
+        raise AssertionError("화면 후보가 모호한데 찜 항목을 대신 지우면 안 된다")
+
+    monkeypatch.setattr(sc, "get_wishlist", fake_get_wishlist)
+    monkeypatch.setattr(sc, "remove_wishlist", fake_remove_wishlist)
+
+    products = [{"productId": 500 + i, "name": f"상품{i}"} for i in range(1, 4)]
+    request = BuyerChatRequest.model_validate(
+        _buyer_payload(
+            message="이거 찜에서 빼줘",
+            threadId="t-screen-wishlist-deictic-ambiguous",
+            screen={"pageType": "chat", "products": products},
+        )
+    )
+    llm = FakeLLM(decompose={"intent": "wishlist_remove", "cart": {}})
+    events = await _collect(_run_buyer_turn(request, _member(), llm=llm))
+    assert [e["type"] for e in events][-2:] == ["token", "done"]
+    assert not any(e["type"] == "action" for e in events)
+
+
+async def test_wishlist_remove_screen_deictic_without_screen_still_auto_resolves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#440 라운드 13 리뷰 F33 "추가"] 화면 자체가 없으면(`screen=None`) `mentions_screen_
+    reference` 가 `screen is not None` 가드에 걸려 `False` 를 낸다 — `screen_reference_
+    attempted=False` 라 규칙 3(목록 1건 자동)이 정상 동작해 찜 1건이 실제로 삭제돼야 한다.
+    위 두 화면 케이스와 짝을 이루는 무회귀 대조군이다."""
+    import app.services.spring_client as sc
+    from app.schemas.spring import WishlistItem, WishlistView
+
+    removed: list[int] = []
+
+    async def fake_get_wishlist(user_id):  # noqa: ANN001
+        return WishlistView(
+            items=[WishlistItem(product_id=10, name="이어폰", purchase_state="AVAILABLE")]
+        )
+
+    async def fake_remove_wishlist(product_id, *, user_id=None):  # noqa: ANN001
+        removed.append(product_id)
+        return None
+
+    monkeypatch.setattr(sc, "get_wishlist", fake_get_wishlist)
+    monkeypatch.setattr(sc, "remove_wishlist", fake_remove_wishlist)
+
+    request = BuyerChatRequest.model_validate(
+        _buyer_payload(message="이거 찜에서 빼줘", threadId="t-screen-wishlist-deictic-no-screen")
+    )
+    llm = FakeLLM(decompose={"intent": "wishlist_remove", "cart": {}})
+    events = await _collect(_run_buyer_turn(request, _member(), llm=llm))
+    assert removed == [10]
+    action = next(e for e in events if e["type"] == "action")["data"]
+    assert action["type"] == "WISHLIST_REMOVED"
+
+
+async def test_pending_turn_screen_refused_still_blocks_wishlist_auto_select(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#440 라운드 6 리뷰 F18] 재현·수정 확인 — 옵션 되물음(pending) 중에는
+    `screen_context_active=False` 라 `resolve_screen_reference` 자체가 안 돌아 `screen_reason`
+    이 `None` 으로 남는다. `screen_refused` 를 `screen_reason is not None` 으로만 계산하면 그
+    `None` 이 "거부 없음"으로 오독돼, 화면에 3건뿐인데 `"99번째 거 찜에서 빼줘"` 가 pending
+    상태에서는 되물음 없이 찜 1건을 삭제했다(pending 이라는 무관한 상태가 안전 신호를 없앤
+    재현). `screen_refused` 계산에 `not screen_context_active` 를 포함시켜 막는다 — 이 발화는
+    decompose 가 `cart_add` 로 오분류해 2선 방어(F15)를 함께 태운다.
+
+    **[라운드 8 리뷰 F21 → 라운드 9 리뷰 F25 대체]** 계산식이 이제 `mentions_screen_position
+    (message) and not screen_resolved` 다(`screen_resolved` = 화면 해소 블록이 실제로 상품을
+    확정했는지의 직접 결과, `cart_intent.product_id` 는 더 이상 안 본다 — F25 문단 참조).
+    이 발화("99번째 거")는 위치를 실제로 언급하고, pending 이라 해소 블록 자체가 안 돌아
+    `screen_resolved` 가 초기값 `False` 그대로라 여전히 막힌다 — 대신 `"찜한 거 빼줘"`(위치
+    미언급) 는 pending 이어도 더 이상 막히지 않는다(F18 의 과대 차단, 아래
+    `test_pending_turn_wishlist_remove_without_screen_position_is_not_blocked` 참조).
+    decompose 가 이 발화에 우연히 진짜 찜 항목과 같은 `productId=77` 을 냈다는 점도 중요하다 —
+    `screen_resolved` 는 그 id 를 전혀 참조하지 않으므로(해소기가 안 돌았다는 사실만 본다)
+    F21 이 겪은 "미해소 id 를 확정으로 오인" 함정 자체가 이 설계에서는 성립하지 않는다."""
+    import app.services.spring_client as sc
+    from app.agents.buyer.cart.state import PendingAdd, get_cart_store
+    from app.schemas.spring import CartOption, WishlistItem, WishlistView
+
+    removed: list[int] = []
+
+    async def fake_get_wishlist(user_id):  # noqa: ANN001
+        return WishlistView(
+            items=[WishlistItem(product_id=77, name="마우스", purchase_state="AVAILABLE")]
+        )
+
+    async def fake_remove_wishlist(product_id, *, user_id=None):  # noqa: ANN001
+        removed.append(product_id)
+        return None
+
+    monkeypatch.setattr(sc, "get_wishlist", fake_get_wishlist)
+    monkeypatch.setattr(sc, "remove_wishlist", fake_remove_wishlist)
+
+    products = [{"productId": 500 + i, "name": f"상품{i}"} for i in range(1, 4)]
+    request = BuyerChatRequest.model_validate(
+        _buyer_payload(
+            message="99번째 거 찜에서 빼줘",
+            threadId="t-screen-pending-refused",
+            screen={"pageType": "chat", "columns": 3, "products": products},
+        )
+    )
+    key = await _thread_key(request, _member())
+    store = await get_cart_store()
+    await store.set_pending(
+        key,
+        PendingAdd(
+            product_id=9001,
+            quantity=1,
+            options=[
+                CartOption(option_id=1001, name="일반형"),
+                CartOption(option_id=1002, name="드럼형"),
+            ],
+        ),
+    )
+
+    llm = FakeLLM(decompose={"intent": "cart_add", "cart": {"productId": 77}})
+    events = await _collect(_run_buyer_turn(request, _member(), llm=llm))
+    assert removed == []
+    assert [e["type"] for e in events][-2:] == ["token", "done"]
+
+
+async def test_pending_turn_wishlist_remove_without_screen_position_is_not_blocked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#440 라운드 8 리뷰 F21] 회귀 복구 확인 — F18 의 대리값 계산(`screen_reason is not None
+    or not screen_context_active`)은 pending + 화면이 있기만 하면 발화가 화면을 **전혀 가리키지
+    않아도** `screen_refused=True` 였다. 그래서 옵션 되물음(pending) 중에 이 이슈의 핵심 양성
+    `"찜한 거 빼줘"`(위치·순번을 전혀 언급하지 않음)까지 되물음으로 퇴화했다(실측 재현). F21 은
+    `mentions_screen_position(message)` 을 먼저 보므로 위치를 안 가리킨 이 발화는 pending 이든
+    아니든 `screen_refused=False` 라 규칙 3(목록 1건 자동)이 정상 동작해야 한다."""
+    import app.services.spring_client as sc
+    from app.agents.buyer.cart.state import PendingAdd, get_cart_store
+    from app.schemas.spring import CartOption, WishlistItem, WishlistView
+
+    removed: list[int] = []
+
+    async def fake_get_wishlist(user_id):  # noqa: ANN001
+        return WishlistView(
+            items=[WishlistItem(product_id=77, name="마우스", purchase_state="AVAILABLE")]
+        )
+
+    async def fake_remove_wishlist(product_id, *, user_id=None):  # noqa: ANN001
+        removed.append(product_id)
+        return None
+
+    monkeypatch.setattr(sc, "get_wishlist", fake_get_wishlist)
+    monkeypatch.setattr(sc, "remove_wishlist", fake_remove_wishlist)
+
+    products = [{"productId": 500 + i, "name": f"상품{i}"} for i in range(1, 4)]
+    request = BuyerChatRequest.model_validate(
+        _buyer_payload(
+            message="찜한 거 빼줘",
+            threadId="t-screen-pending-not-refused",
+            screen={"pageType": "chat", "columns": 3, "products": products},
+        )
+    )
+    key = await _thread_key(request, _member())
+    store = await get_cart_store()
+    await store.set_pending(
+        key,
+        PendingAdd(
+            product_id=9001,
+            quantity=1,
+            options=[
+                CartOption(option_id=1001, name="일반형"),
+                CartOption(option_id=1002, name="드럼형"),
+            ],
+        ),
+    )
+
+    llm = FakeLLM(decompose={"intent": "cart_add", "cart": {}})
+    events = await _collect(_run_buyer_turn(request, _member(), llm=llm))
+    assert removed == [77]
+    action = next(e for e in events if e["type"] == "action")["data"]
+    assert action["type"] == "WISHLIST_REMOVED"
+
+
+async def test_empty_screen_products_still_blocks_an_out_of_range_position(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#440 라운드 8 리뷰 F21] 과소 차단 재현·수정 확인 — F18 의 `bool(screen and screen.
+    products)` 는 `screen.products == []` 면 첫 항부터 `False` 라, `"99번째 거 찜에서 빼줘"`
+    처럼 명백히 확정 불가능한 위치 지시도 거부 신호 없이 통과해 찜 1건이 삭제됐다(실측 재현).
+    F21 은 화면 존재가 아니라 `mentions_screen_position(message)` 를 직접 보므로 화면이
+    비어 있어도(pending 이 아니라 resolve_screen_reference 자체가 `products` 가드로 안 도는
+    경우) 위치 지시를 시도했는데 확정할 productId 가 없으면 막아야 한다."""
+    import app.services.spring_client as sc
+    from app.schemas.spring import WishlistItem, WishlistView
+
+    removed: list[int] = []
+
+    async def fake_get_wishlist(user_id):  # noqa: ANN001
+        return WishlistView(
+            items=[WishlistItem(product_id=77, name="마우스", purchase_state="AVAILABLE")]
+        )
+
+    async def fake_remove_wishlist(product_id, *, user_id=None):  # noqa: ANN001
+        removed.append(product_id)
+        return None
+
+    monkeypatch.setattr(sc, "get_wishlist", fake_get_wishlist)
+    monkeypatch.setattr(sc, "remove_wishlist", fake_remove_wishlist)
+
+    request = BuyerChatRequest.model_validate(
+        _buyer_payload(
+            message="99번째 거 찜에서 빼줘",
+            threadId="t-screen-empty-products",
+            screen={"pageType": "chat", "columns": 3, "products": []},
+        )
+    )
+    llm = FakeLLM(decompose={"intent": "wishlist_remove", "cart": {}})
+    events = await _collect(_run_buyer_turn(request, _member(), llm=llm))
+    assert removed == []
+    assert [e["type"] for e in events][-2:] == ["token", "done"]
+
+
+async def test_resolved_screen_position_absent_from_wishlist_does_not_fall_back_to_the_only_item(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#440 라운드 10 리뷰 F27] 재현·수정 확인 — 화면 3번째가 503 으로 **정확히 해소**됐는데
+    찜 목록엔 77(마우스) 하나뿐이면, 옛 `screen_refused`(파생값)는 "위치를 가리켰고 해소도
+    성공했으니 거부 아님" 이라 `False` 가 되어 규칙 3(목록 1건 자동)이 그 무관한 77 을
+    지웠다(재현, 파괴적 — `screen_resolved=True` 를 "fallback 허용"으로 오독한 것). F27 은
+    규칙 3을 `screen_position_mentioned` 만으로 게이트한다 — 위치를 지목한 이상 해소 성공
+    여부와 무관하게 "마침 목록에 하나 있으니 그걸로" 대체하지 않는다. 사용자가 가리킨 503 이
+    찜 목록에 없으니 되물어야 한다."""
+    import app.services.spring_client as sc
+    from app.schemas.spring import WishlistItem, WishlistView
+
+    removed: list[int] = []
+
+    async def fake_get_wishlist(user_id):  # noqa: ANN001
+        return WishlistView(
+            items=[WishlistItem(product_id=77, name="마우스", purchase_state="AVAILABLE")]
+        )
+
+    async def fake_remove_wishlist(product_id, *, user_id=None):  # noqa: ANN001
+        removed.append(product_id)
+        return None
+
+    monkeypatch.setattr(sc, "get_wishlist", fake_get_wishlist)
+    monkeypatch.setattr(sc, "remove_wishlist", fake_remove_wishlist)
+
+    products = [{"productId": 501, "name": "상품1"}, {"productId": 502, "name": "상품2"}]
+    products.append({"productId": 503, "name": "상품3"})
+    request = BuyerChatRequest.model_validate(
+        _buyer_payload(
+            message="3번째 거 찜에서 빼줘",
+            threadId="t-screen-resolved-not-in-wishlist",
+            screen={"pageType": "chat", "columns": 3, "products": products},
+        )
+    )
+    llm = FakeLLM(decompose={"intent": "wishlist_remove", "cart": {}})
+    events = await _collect(_run_buyer_turn(request, _member(), llm=llm))
+    assert removed == []
+    assert [e["type"] for e in events][-2:] == ["token", "done"]
+
+
+async def test_column_first_screen_reference_with_llm_id_still_blocks_auto_select(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#440 라운드 9 리뷰 F25] 재현·수정 확인 — `screen_refused` 의 둘째 항이 `cart_intent.
+    product_id is None` 이면(라운드 8 리뷰 F21) 해소기가 확정한 id 와 decompose 가 낸 id 를
+    구분하지 못한다. `"2번째 열 3번째 거 찜에서 빼줘"` 는 `_COLUMN_FIRST` 에 걸려 해소기가
+    **양보**한다(`resolve_screen_reference` 가 `None` 을 돌려준다 — "열" 표기는 계약·프롬프트
+    밖이라 아예 해소하지 않는다) — 그러면 `cart_intent.product_id` 는 decompose 가 문맥에서
+    고른 원시 id(우연히 진짜 찜 항목과 같은 77) 그대로 남는다. F21 식은 이 경우 `product_id
+    is None` 이 `False` 라 `screen_refused` 가 사라져 규칙 2(문맥 id)가 그 id 를 "확정된
+    문맥 id"로 오인해 지웠다(재현). F25 는 `screen_resolved`(해소기가 실제로 상품을
+    확정했는가 그 자체)를 쓴다 — 해소기가 양보했으면 `resolved is None` 이라 `screen_resolved`
+    는 초기값 `False` 그대로 남고, `cart_intent.product_id` 는 이 판정에 아예 관여하지
+    않는다."""
+    import app.services.spring_client as sc
+    from app.schemas.spring import WishlistItem, WishlistView
+
+    removed: list[int] = []
+
+    async def fake_get_wishlist(user_id):  # noqa: ANN001
+        return WishlistView(
+            items=[WishlistItem(product_id=77, name="마우스", purchase_state="AVAILABLE")]
+        )
+
+    async def fake_remove_wishlist(product_id, *, user_id=None):  # noqa: ANN001
+        removed.append(product_id)
+        return None
+
+    monkeypatch.setattr(sc, "get_wishlist", fake_get_wishlist)
+    monkeypatch.setattr(sc, "remove_wishlist", fake_remove_wishlist)
+
+    products = [{"productId": 500 + i, "name": f"상품{i}"} for i in range(1, 10)]
+    request = BuyerChatRequest.model_validate(
+        _buyer_payload(
+            message="2번째 열 3번째 거 찜에서 빼줘",
+            threadId="t-screen-column-first-llm-id",
+            screen={"pageType": "chat", "columns": 3, "products": products},
+        )
+    )
+    llm = FakeLLM(decompose={"intent": "wishlist_remove", "cart": {"productId": 77}})
+    events = await _collect(_run_buyer_turn(request, _member(), llm=llm))
+    assert removed == []
+    assert [e["type"] for e in events][-2:] == ["token", "done"]
+
+
+async def test_wishlist_remove_without_screen_still_auto_resolves_single_item(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#440 라운드 4 리뷰 F12] 무회귀 — 화면이 아예 없으면 `screen_refused` 는 기본값
+    `False` 라 규칙 3(목록 1건 자동)이 그대로 동작해야 한다."""
+    import app.services.spring_client as sc
+    from app.schemas.spring import WishlistItem, WishlistView
+
+    removed: list[int] = []
+
+    async def fake_get_wishlist(user_id):  # noqa: ANN001
+        return WishlistView(
+            items=[WishlistItem(product_id=77, name="마우스", purchase_state="AVAILABLE")]
+        )
+
+    async def fake_remove_wishlist(product_id, *, user_id=None):  # noqa: ANN001
+        removed.append(product_id)
+        return None
+
+    monkeypatch.setattr(sc, "get_wishlist", fake_get_wishlist)
+    monkeypatch.setattr(sc, "remove_wishlist", fake_remove_wishlist)
+
+    request = BuyerChatRequest.model_validate(
+        _buyer_payload(message="찜한 거 빼줘", threadId="t-wishlist-remove-no-screen")
+    )
+    llm = FakeLLM(decompose={"intent": "wishlist_remove", "cart": {}})
+    events = await _collect(_run_buyer_turn(request, _member(), llm=llm))
+    assert removed == [77]
+    action = next(e for e in events if e["type"] == "action")["data"]
+    assert action["type"] == "WISHLIST_REMOVED"
+
+
+async def test_cart_add_delegated_wishlist_remove_screen_refusal_blocks_auto_select(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#440 라운드 5 리뷰 F15] 재현·수정 확인 — decompose 가 `cart_add` 로 오분류한 찜 해제
+    발화가 `cart/graph.py::stream_cart_add` 의 2선 방어로 `stream_wishlist_remove` 에 위임될
+    때도, 화면 해소기의 확정 거부(`ordinal_out_of_range`)가 `screen_refused` 로 전달돼야 한다.
+    라운드 4(F12)는 `buyer/graph.py` 의 정정 경로와 기존 `wishlist_remove` 분기만 고치고 이
+    2선 방어 경로를 빠뜨렸다 — 하필 이 이슈의 원래 거짓음성 경로(decompose → cart_add → 2선
+    방어)라 실제로 파괴적이었다."""
+    import app.services.spring_client as sc
+    from app.schemas.spring import WishlistItem, WishlistView
+
+    removed: list[int] = []
+
+    async def fake_get_wishlist(user_id):  # noqa: ANN001
+        return WishlistView(
+            items=[WishlistItem(product_id=77, name="마우스", purchase_state="AVAILABLE")]
+        )
+
+    async def fake_remove_wishlist(product_id, *, user_id=None):  # noqa: ANN001
+        removed.append(product_id)
+        return None
+
+    monkeypatch.setattr(sc, "get_wishlist", fake_get_wishlist)
+    monkeypatch.setattr(sc, "remove_wishlist", fake_remove_wishlist)
+
+    products = [{"productId": 500 + i, "name": f"상품{i}"} for i in range(1, 4)]
+    request = BuyerChatRequest.model_validate(
+        _buyer_payload(
+            message="99번째 거 찜에서 빼줘",
+            threadId="t-screen-cart-add-delegated-refused",
+            screen={"pageType": "chat", "columns": 3, "products": products},
+        )
+    )
+    llm = FakeLLM(decompose={"intent": "cart_add", "cart": {"productId": 77}})
+    events = await _collect(_run_buyer_turn(request, _member(), llm=llm))
+    assert removed == []
+    assert [e["type"] for e in events][-2:] == ["token", "done"]
+
+
+async def test_cart_add_delegated_wishlist_remove_without_screen_still_auto_resolves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#440 라운드 5 리뷰 F15] 무회귀 — 화면이 없으면 2선 방어 위임도 `screen_refused=False`
+    기본값이라 규칙 3(목록 1건 자동)이 그대로 동작한다."""
+    import app.services.spring_client as sc
+    from app.schemas.spring import WishlistItem, WishlistView
+
+    removed: list[int] = []
+
+    async def fake_get_wishlist(user_id):  # noqa: ANN001
+        return WishlistView(
+            items=[WishlistItem(product_id=77, name="마우스", purchase_state="AVAILABLE")]
+        )
+
+    async def fake_remove_wishlist(product_id, *, user_id=None):  # noqa: ANN001
+        removed.append(product_id)
+        return None
+
+    monkeypatch.setattr(sc, "get_wishlist", fake_get_wishlist)
+    monkeypatch.setattr(sc, "remove_wishlist", fake_remove_wishlist)
+
+    request = BuyerChatRequest.model_validate(
+        _buyer_payload(message="찜한 거 빼줘", threadId="t-cart-add-delegated-no-screen")
+    )
+    llm = FakeLLM(decompose={"intent": "cart_add", "cart": {}})
+    events = await _collect(_run_buyer_turn(request, _member(), llm=llm))
+    assert removed == [77]
+    action = next(e for e in events if e["type"] == "action")["data"]
+    assert action["type"] == "WISHLIST_REMOVED"
+
+
+async def test_ordinary_cart_remove_does_not_trigger_screen_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#440 라운드 3 리뷰 F9] 무회귀 — decompose 가 산출한 `cart_remove` 가 찜 해제로 정정되지
+    않는(평범한 장바구니 삭제) 발화는 화면 순번 해소를 여전히 받지 않는다. 화면 해소 블록
+    조건은 `corrected_to_wishlist_remove` 일 때만 열린다 — 이 조건이 무너지면
+    `resolve_screen_reference` 가 모든 `cart_remove` 발화에 대해 도는 것으로 새기 때문에,
+    호출 자체가 없었는지 직접 잰다."""
+    import app.agents.buyer.graph as graph_module
+    import app.services.spring_client as sc
+    from app.schemas.spring import CartView, CartViewItem
+
+    def fail_resolve_screen_reference(*args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+        raise AssertionError("평범한 cart_remove 인데 resolve_screen_reference 가 호출됐다")
+
+    monkeypatch.setattr(graph_module, "resolve_screen_reference", fail_resolve_screen_reference)
+
+    async def fake_get_cart(*, user_id=None, guest_id=None):
+        return CartView(
+            items=[CartViewItem(cart_item_id=1, product_id=501, product_name="키보드", quantity=1)]
+        )
+
+    async def fake_delete_cart_item(cart_item_id, *, user_id=None, guest_id=None):
+        assert cart_item_id == 1
+        return None
+
+    monkeypatch.setattr(sc, "get_cart", fake_get_cart)
+    monkeypatch.setattr(sc, "delete_cart_item", fake_delete_cart_item)
+
+    products = [{"productId": 500 + i, "name": f"상품{i}"} for i in range(1, 10)]
+    request = BuyerChatRequest.model_validate(
+        _buyer_payload(
+            message="키보드 빼줘",
+            threadId="t-screen-cart-remove-no-correction",
+            screen={"pageType": "chat", "columns": 3, "products": products},
+        )
+    )
+    llm = FakeLLM(decompose={"intent": "cart_remove", "cart": {}})
+    events = await _collect(_run_buyer_turn(request, _member(), llm=llm))
+    action = next(e for e in events if e["type"] == "action")["data"]
+    assert action["type"] == "CART_REMOVED"
+
+
 async def test_spoken_product_id_outside_both_lists_forces_a_reask(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
