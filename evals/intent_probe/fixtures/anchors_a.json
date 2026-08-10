@@ -1153,6 +1153,50 @@
       },
       "axes": ["wishlistViewNoSteal", "wishlistViewRouting"],
       "note": "[#386] 음성 대조 — \"찜한\"은 지시 대상을 수식할 뿐이고 이 발화의 동사는 담기다. config.wishlist_reference_markers 와 decompose 판정 사다리 1)이 이미 세운 규약이라, 찜 조회 규칙을 더한 뒤에도 그대로여야 한다(강한 신호 우선)."
+    },
+    {
+      "utteranceId": "wishlist-remove-001",
+      "group": "wishlist_remove",
+      "text": "찜한 거 빼줘",
+      "contexts": ["none"],
+      "expected": {
+        "intent": "wishlist_remove"
+      },
+      "axes": ["wishlistRemovePositive", "wishlistRemoveRouting"],
+      "note": "[#440] 이슈 본문 재현 케이스. 프롬프트 계층이 이 발화를 어디로 보내는지의 기록. 결정론 계층(intent_guard 인접 결합 + wishlist 해소 근거 게이트)이 이 판정과 무관하게 올바른 동작을 보장한다. 프롬프트 사다리 보강은 이 레인 범위 밖(#443/#465 소유)."
+    },
+    {
+      "utteranceId": "wishlist-remove-002",
+      "group": "wishlist_remove",
+      "text": "찜해둔 거 지워줘",
+      "contexts": ["none"],
+      "expected": {
+        "intent": "wishlist_remove"
+      },
+      "axes": ["wishlistRemovePositive", "wishlistRemoveRouting"],
+      "note": "[#440] 같은 부류 변형. 프롬프트 계층이 이 발화를 어디로 보내는지의 기록. 결정론 계층(intent_guard 인접 결합 + wishlist 해소 근거 게이트)이 이 판정과 무관하게 올바른 동작을 보장한다. 프롬프트 사다리 보강은 이 레인 범위 밖(#443/#465 소유)."
+    },
+    {
+      "utteranceId": "wishlist-remove-003",
+      "group": "wishlist_remove",
+      "text": "찜닭 빼줘",
+      "contexts": ["none"],
+      "expected": {
+        "intent": "cart_remove"
+      },
+      "axes": ["wishlistRemoveNoSteal", "wishlistRemoveRouting"],
+      "note": "[#440] 거짓양성 대조(음식명) — \"찜닭\"의 \"찜\"이 어절 경계를 통과하지 못해 인접 결합이 걸리지 않는다. 프롬프트 계층이 이 발화를 어디로 보내는지의 기록. 결정론 계층(intent_guard 인접 결합 + wishlist 해소 근거 게이트)이 이 판정과 무관하게 올바른 동작을 보장한다. 프롬프트 사다리 보강은 이 레인 범위 밖(#443/#465 소유)."
+    },
+    {
+      "utteranceId": "wishlist-remove-004",
+      "group": "wishlist_remove",
+      "text": "장바구니에서 빼줘",
+      "contexts": ["none"],
+      "expected": {
+        "intent": "cart_remove"
+      },
+      "axes": ["wishlistRemoveNoSteal", "wishlistRemoveRouting"],
+      "note": "[#440] 잠식 대조 — 새 인접 결합 규칙이 cart_remove(\"장바구니에서 빼줘\")를 잠식하지 않는지 잰다. 프롬프트 계층이 이 발화를 어디로 보내는지의 기록. 결정론 계층(intent_guard 인접 결합 + wishlist 해소 근거 게이트)이 이 판정과 무관하게 올바른 동작을 보장한다. 프롬프트 사다리 보강은 이 레인 범위 밖(#443/#465 소유). wishlist-remove-005(\"찜한 거 담아줘\")는 wishlist-view-006 과 발화가 겹쳐 중복 셀을 만들지 않고 이 축에서 뺐다 — 기존 셀이 이미 재고 있다."
     }
   ]
 }

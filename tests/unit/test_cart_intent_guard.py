@@ -20,8 +20,6 @@ from app.schemas.spring import (
     CartView,
     CartViewItem,
     WishlistAddResult,
-    WishlistItem,
-    WishlistView,
 )
 
 
@@ -171,8 +169,10 @@ def test_classify_negation_only_suppresses_the_negated_occurrence() -> None:
         # 0-a(cart_add_markers)는 순서 변경과 무관하게 여전히 맨 앞이다(회귀 방지).
         ("찜해둔 이어폰 담아줘", "cart_add"),
         ("찜한 거 장바구니에 담아줘", "cart_add"),
-        # 명시적 찜 동작 표지가 없으면(순수 지시 수식어만) 알려진 거짓음성이 그대로 유지된다.
-        ("찜한 거 빼줘", "cart_add"),
+        # [#440] 예전엔 "명시적 찜 동작 표지가 없으면(순수 지시 수식어만) 알려진 거짓음성"으로
+        # cart_add 에 떨어졌다 — 이제 사다리 1-b(인접 결합)가 이 발화를 직접 잡는다. 전체 표는
+        # tests/unit/test_wishlist_remove_resolution.py §4-A 참조.
+        ("찜한 거 빼줘", "wishlist_remove"),
         # 부정 검사는 순서를 옮긴 뒤에도 그대로 적용된다.
         ("찜 취소하지 마", "cart_add"),
     ],
@@ -321,20 +321,26 @@ async def test_stream_cart_add_wishlist_add_intent_delegates_to_wishlist_flow() 
 
 async def test_stream_cart_add_wishlist_remove_intent_delegates_to_wishlist_flow() -> None:
     """찜 해제 판정 → `stream_wishlist_remove` 로 위임된다(라운드 23, 위 함수와 같은 사실).
-    `add_fn`(담기)은 한 번도 안 불린다."""
+    `add_fn`(담기)은 한 번도 안 불린다.
+
+    **[#440 라운드 9 리뷰 F24]** 이 위임은 이제 `has_wishlist_remove_evidence`(발화 **전체**
+    앵커, F22)를 요구한다 — "이어폰 찜 빼줘"는 상품명("이어폰")이 `wishlist_remove_prefix_
+    words` 같은 닫힌 어휘가 아니라서 그 근거를 통과하지 못한다(규칙 1 전용 라우팅급 게이트
+    `is_wishlist_remove_command_context` 는 통과하지만, 그건 `_resolve_wishlist_remove_
+    target` **안에서** 이름이 매칭됐을 때만 쓰는 게이트지 이 위임 자체의 게이트가 아니다).
+    위임하지 않으면 결정론 규칙이 LLM 의 `cart_add` 판단을 확신 없이 덮어쓰지 않는다는 뜻이라
+    담기 흐름의 안전한 기본 동작(상품을 특정 못 했다는 재질문)으로 남는다 — 파괴적이지 않다."""
 
     store = CartStateStore()
 
     async def add_fn(req):
-        raise AssertionError("wishlist 판정인데 add_fn(담기) 이 호출됐다")
+        raise AssertionError("담기 대상이 없어 add_fn(담기) 자체가 호출되면 안 된다")
 
     async def get_wishlist_fn(user_id):
-        return WishlistView(
-            items=[WishlistItem(product_id=1, name="이어폰", purchase_state="AVAILABLE")]
-        )
+        raise AssertionError("근거가 없어 위임되지 않아야 하는데 get_wishlist_fn 이 호출됐다")
 
     async def remove_wishlist_fn(product_id, *, user_id):
-        return None
+        raise AssertionError("근거가 없어 위임되지 않아야 하는데 remove_wishlist_fn 이 호출됐다")
 
     events = await _collect(
         stream_cart_add(
@@ -350,8 +356,8 @@ async def test_stream_cart_add_wishlist_remove_intent_delegates_to_wishlist_flow
             remove_wishlist_fn=remove_wishlist_fn,
         )
     )
-    action = next(e for e in events if e["type"] == "action")["data"]
-    assert action["type"] == "WISHLIST_REMOVED"
+    assert "action" not in [e["type"] for e in events]
+    assert [e["type"] for e in events] == ["token", "done"]
 
 
 async def test_stream_cart_add_wishlist_reference_marker_still_adds() -> None:
