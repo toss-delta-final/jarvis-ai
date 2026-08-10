@@ -177,3 +177,56 @@ async def test_remember_command_is_stored_while_enabled(monkeypatch) -> None:
     await _collect(_req("소니 좋아하는 거 기억해줘", "t-remember-on"), _member(), llm=llm)
 
     assert calls == ["소니 좋아하는 거 기억해줘"]
+
+
+class _FakeProfileStore:
+    """`get_profile_store()` 대체 — `append_session_ctx` 호출 여부만 기록한다(실 pg-profile 무관).
+
+    `test_profile_buffer_intent_exclusion.py` 의 템플릿과 같다. `buyer/graph.py` 가
+    `from ... import get_profile_store` 로 이름을 들여왔으므로 **소비 모듈의 바인딩**을 패치해야
+    실제로 가로채진다.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    async def append_session_ctx(self, key, message, *, cap, repeat_cap):  # noqa: ANN001
+        self.calls.append((key, message))
+
+
+def _patch_profile_store(monkeypatch) -> _FakeProfileStore:  # noqa: ANN001
+    fake = _FakeProfileStore()
+
+    async def fake_get_profile_store():
+        return fake
+
+    monkeypatch.setattr(buyer_graph, "get_profile_store", fake_get_profile_store)
+    return fake
+
+
+async def test_session_buffer_does_not_grow_while_disabled(monkeypatch) -> None:
+    """**중지 중에는 세션 버퍼가 늘지 않는다** (REQ-PGRAPH-052).
+
+    수집 차단의 나머지 절반이다 — "기억해" 는 명시 명령이고 이쪽은 모든 발화가 지나가는
+    상시 경로라, 막지 않으면 중지해도 취향 원문이 계속 쌓인다. 다음 배치가 그것을 델타로
+    뽑으면 "수집 중지" 가 사후에 무너진다.
+    """
+    await graph_journal.set_personalization_flag(
+        user_id=int(MEMBER_ID), enabled=False, now="2026-08-10T00:00:00+00:00"
+    )
+    fake_store = _patch_profile_store(monkeypatch)
+
+    llm = FakeLLM(decompose={"intent": "recommend", "semanticQuery": "이어폰"})
+    await _collect(_req("소니 이어폰 좋아해", "t-buffer-off"), _member(), llm=llm)
+
+    assert fake_store.calls == []
+
+
+async def test_session_buffer_still_grows_while_enabled(monkeypatch) -> None:
+    """반대 방향 — 켜져 있으면 종전대로 쌓인다. 차단이 상시 발동하면 수집이 통째로 죽는다."""
+    fake_store = _patch_profile_store(monkeypatch)
+
+    llm = FakeLLM(decompose={"intent": "recommend", "semanticQuery": "이어폰"})
+    await _collect(_req("소니 이어폰 좋아해", "t-buffer-on"), _member(), llm=llm)
+
+    assert [message for _, message in fake_store.calls] == ["소니 이어폰 좋아해"]

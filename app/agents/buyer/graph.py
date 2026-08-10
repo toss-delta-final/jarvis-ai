@@ -1055,8 +1055,15 @@ async def run_buyer_turn(
     # 신호로도 쓰지 않는다는 판단이다.
     # [#84] 빈 발화 가드 — conditionActions 만 있고 message 가 빈 턴(계약상 허용, api-spec §3.1)은
     # 취향 신호가 0인데 버퍼(슬라이딩 윈도우)만 밀어낸다. 공백-only 도 같이 막는다.
+    # [#359] 개인화 중지면 여기도 막는다(REQ-PGRAPH-052). "기억해" 는 명시 명령이고 이쪽은 모든
+    # 발화가 지나가는 상시 경로라, 막지 않으면 중지해도 취향 원문이 계속 쌓이고 다음 배치가
+    # 그것을 델타로 뽑아 "수집 중지" 가 사후에 무너진다. 판정은 위 프로필 블록이 턴당 1회
+    # 조회해 둔 값을 재사용한다 — 여기서 다시 조회하면 왕복이 하나 늘어난다.
+    # **차단은 호출부에 둔다.** `store.append_session_ctx` 안에 넣으면 그 함수를 직접 부르는
+    # `evals/taste_probe/runner.py` 가 조용히 0건이 된다(프로덕션 함수 재사용이 그 하네스의 목적).
     if (
         profile_eligible
+        and personalization_on
         and request.message.strip()
         and decision.intent not in settings.profile_buffer_excluded_intents
     ):
