@@ -241,6 +241,15 @@ def test_repurchase_prompt_rejects_last_recommendations_echo() -> None:
     assert "보통 상품 1개" in rule
 
 
+def test_reply_prompt_forbids_markdown() -> None:
+    """[이슈 #570] `reply` 는 4종 밖 마크다운을 실을 수 있어 시스템 프롬프트가 금지 문장을
+    담고 있어야 한다 — 누가 조용히 지우면 이 트립와이어가 깨진다."""
+    from app.agents.buyer.recommendation.decompose import _SYSTEM
+
+    assert "마크다운을 쓰지 마세요" in _SYSTEM
+    assert "reply" in _SYSTEM.split("마크다운을 쓰지 마세요", 1)[0].rsplit("\n", 1)[-1]
+
+
 async def test_attr_conditions_extracted() -> None:
     """[PR②] decompose 가 명시 속성조건을 filters.attr_conditions(축→값)로 추출한다."""
     d = await _run(_raw(attrConditions={"소재": "린넨", "핏": "오버핏"}))

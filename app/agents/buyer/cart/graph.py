@@ -76,9 +76,28 @@ def _has_surcharge(option: CartOption) -> bool:
 
 
 def _options_text(options: list[CartOption]) -> str:
-    """옵션 목록을 되물음 문구로 나열한다 — 추가금(extraPrice)이 있으면 함께 표시."""
+    """옵션 목록을 되물음 문구로 나열한다 — 추가금(extraPrice)이 있으면 함께 표시.
+
+    구분자는 `"\\n"`(이슈 #570) — 옵션명 자체에 `/` 가 흔해(로컬 카탈로그 21,373행 실측,
+    2026-08-10, 11,480건=53.7%가 `/` 포함) `" / "` 로 이으면 `블랙 / M`, `화이트 / M` 두 개가
+    `블랙 / M / 화이트 / M` 으로 붙어 네 개처럼 읽혔다. #118·#455 이후 지켜온 "되물음 문구는
+    한 글자도 바꾸지 않는다" 규약을 이 실측 근거로 의도적으로 푼다.
+    """
     parts = [label for opt in options if (label := _option_label(opt))]
-    return " / ".join(parts) if parts else "옵션"
+    return "\n".join(parts) if parts else "옵션"
+
+
+def _options_prompt(lead: str, options: list[CartOption], tail: str = "") -> str:
+    """'안내 줄 → 옵션 줄들 → 마무리 줄' 로 되물음 문구를 조립한다(이슈 #570).
+
+    옵션 하나가 한 줄을 온전히 차지하게 해 구분자를 없앤다 — 옵션명의 53.7%(로컬 카탈로그
+    21,373행 실측, 2026-08-10)가 `/` 를 포함해 한 줄 나열은 개수가 오독됐다.
+    옵션 줄에는 구두점을 붙이지 않는다(사용자가 옵션명을 그대로 복사해 답한다).
+    """
+    lines = [lead, _options_text(options)]
+    if tail:
+        lines.append(tail)
+    return "\n".join(lines)
 
 
 async def _load_cart_color_synonyms(settings) -> Mapping[str, Sequence[str]] | None:
@@ -143,13 +162,13 @@ def _cart_option_required_text(
         if hint is not None and hint.names:
             names = [name for raw in hint.names if (name := _strip_unsafe(raw))]
             if names:
-                names_text = " / ".join(names)
+                # 이슈 #570 — 이 갈래는 CartOption 이 아니라 str 이름 목록을 다뤄 _options_prompt
+                # 를 쓸 수 없다 — 줄 구성만 같게 맞춘다.
+                lines = ["옵션을 선택해 주세요:", *names]
                 if hint.total is not None and hint.total > len(names):
-                    return (
-                        f"옵션을 선택해 주세요: {names_text} 외 {hint.total - len(names)}개. "
-                        "어떤 걸로 담을까요?"
-                    )
-                return f"옵션을 선택해 주세요: {names_text}. 어떤 걸로 담을까요?"
+                    lines.append(f"외 {hint.total - len(names)}개")
+                lines.append("어떤 걸로 담을까요?")
+                return "\n".join(lines)
         return "지금은 고를 수 있는 옵션이 없어요. 품절된 것 같아요. 다른 상품을 보여드릴까요?"
 
     narrowing = narrow_options(
@@ -161,9 +180,10 @@ def _cart_option_required_text(
         color_synonyms=color_synonyms,
     )
     if narrowing.by_condition:
-        return (
-            f"말씀하신 조건에 맞는 옵션이에요: {_options_text(list(narrowing.by_condition))}. "
-            "이 중에서 고르시거나 다른 옵션을 말씀해 주세요."
+        return _options_prompt(
+            "말씀하신 조건에 맞는 옵션이에요:",
+            list(narrowing.by_condition),
+            "이 중에서 고르시거나 다른 옵션을 말씀해 주세요.",
         )
     if (
         color_synonyms is not None
@@ -172,12 +192,12 @@ def _cart_option_required_text(
         and options_have_color_axis(options, color_synonyms)
     ):
         color_terms_text = " · ".join(_strip_unsafe(term) for term in color_terms)
-        return (
-            f"'{color_terms_text}' 조건에 맞는 옵션은 찾지 못했어요. "
-            f"고를 수 있는 옵션은 이거예요: {_options_text(options)}. "
-            "이 중에서 고르시거나 다른 상품을 말씀해 주세요."
+        return _options_prompt(
+            f"'{color_terms_text}' 조건에 맞는 옵션은 찾지 못했어요. 고를 수 있는 옵션은 이거예요:",
+            options,
+            "이 중에서 고르시거나 다른 상품을 말씀해 주세요.",
         )
-    return f"옵션을 선택해 주세요: {_options_text(options)}. 어떤 걸로 담을까요?"
+    return _options_prompt("옵션을 선택해 주세요:", options, "어떤 걸로 담을까요?")
 
 
 def _all_spans(text: str, needle: str) -> list[tuple[int, int]]:
@@ -665,7 +685,7 @@ async def stream_cart_add(
         yield sse(
             "token",
             TokenData(
-                text=f"그 옵션을 찾지 못했어요. 다시 골라 주세요: {_options_text(exc.options)}"
+                text=_options_prompt("그 옵션을 찾지 못했어요. 다시 골라 주세요:", exc.options)
             ).model_dump(by_alias=True),
         )
         yield _done()
