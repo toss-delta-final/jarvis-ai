@@ -29,11 +29,14 @@ import pytest
 
 from app.agents.profile import graph_journal
 from app.agents.profile.graph_errors import (
+    GraphEdgeNotEditable,
     GraphEdgeNotFound,
+    GraphObjectUnknown,
     GraphStoreUnavailable,
     GraphVersionConflict,
 )
 from app.agents.profile.graph_models import GraphDocument, GraphEdge, GraphNode, make_edge_id
+from app.agents.profile.resolver import ObjectSpec
 from app.agents.profile.store import get_profile_store, reset_profile_store
 
 USER = "358"
@@ -296,7 +299,7 @@ async def test_no_op_correction_leaves_no_audit_row_and_no_revision_bump() -> No
         request_id="req-1",
         now=NOW,
         predicate="likes",
-        node=GraphNode(node_id="brand:소니", type="brand", label="소니", verified=False),
+        object_spec=ObjectSpec(node_id="brand:소니"),
     )
 
     assert result.graph_version == "g42"  # 안 올랐다
@@ -313,7 +316,7 @@ async def test_a_no_op_does_not_block_a_real_change_with_the_same_precondition()
     키가 **같다** — no-op 이 claim 을 남겨 두면 뒤따르는 정당한 수정이 "진행 중"으로 거부된다.
     """
     await _seed(revision=42)
-    same = GraphNode(node_id="brand:소니", type="brand", label="소니", verified=False)
+    same = ObjectSpec(node_id="brand:소니")
 
     no_op = await graph_journal.apply_edge_mutation(
         user_id=int(USER),
@@ -323,7 +326,7 @@ async def test_a_no_op_does_not_block_a_real_change_with_the_same_precondition()
         request_id="req-1",
         now=NOW,
         predicate="likes",  # 같은 값 — 상태가 안 바뀐다
-        node=same,
+        object_spec=same,
     )
     assert no_op.graph_version == "g42"
 
@@ -335,7 +338,7 @@ async def test_a_no_op_does_not_block_a_real_change_with_the_same_precondition()
         request_id="req-2",
         now=NOW,
         predicate="avoids",
-        node=same,
+        object_spec=same,
     )
 
     assert real.graph_version == "g43"
@@ -349,7 +352,7 @@ async def test_same_key_with_a_different_body_conflicts_instead_of_replaying() -
     변경**의 결과를 성공으로 받는다. `request_fp` 가 그걸 가른다.
     """
     await _seed(revision=42)
-    same = GraphNode(node_id="brand:소니", type="brand", label="소니", verified=False)
+    same = ObjectSpec(node_id="brand:소니")
     await graph_journal.apply_edge_mutation(
         user_id=int(USER),
         action="edgeUpdate",
@@ -358,7 +361,7 @@ async def test_same_key_with_a_different_body_conflicts_instead_of_replaying() -
         request_id="req-1",
         now=NOW,
         predicate="avoids",
-        node=same,
+        object_spec=same,
     )
 
     with pytest.raises(GraphVersionConflict):
@@ -370,7 +373,7 @@ async def test_same_key_with_a_different_body_conflicts_instead_of_replaying() -
             request_id="req-2",
             now=NOW,
             predicate="interestedIn",
-            node=same,
+            object_spec=same,
         )
 
 
@@ -747,3 +750,166 @@ async def test_concurrent_writers_with_the_same_if_match_elect_one_winner() -> N
     assert document is not None and document.revision == 43  # 두 번 오르지 않았다
     assert len(document.tombstones) == 1  # 부분 적용 없음 — 한 건만 반영됐다
     assert len(await graph_journal.list_audit(user_id=int(USER))) == 1
+
+
+# ─────────── I-33 부분 변경 · 대상 해석 · editable (#360) ───────────
+
+
+async def _seed_purchased(revision: int = 42) -> str:
+    """구매 이력 파생 edge 하나만 있는 문서. 반환값은 그 `edge_id`."""
+    store = await get_profile_store()
+    edge = _edge("애플", predicate="purchased")
+    await store.set_graph(
+        USER,
+        GraphDocument(
+            revision=revision,
+            nodes=[GraphNode(node_id="brand:애플", type="brand", label="애플", verified=False)],
+            edges=[edge],
+            unprojected_count=0,
+            truncated=False,
+            purged_at=None,
+            updated_at=NOW,
+            tombstones=[],
+        ),
+    )
+    return edge.edge_id
+
+
+async def test_changing_only_the_predicate_keeps_the_target() -> None:
+    """`predicate` 만 보내면 **대상은 기존 edge 에서 가져온다** (api-spec §3.9.1).
+
+    구 구현은 `predicate`·`node` 중 하나라도 없으면 `ValueError` 를 올렸고, 그것이
+    `is_state_store_unavailable` 에 안 걸려 그대로 전파돼 **500** 이 나갔다.
+    """
+    await _seed(revision=42)
+
+    result = await graph_journal.apply_edge_mutation(
+        user_id=int(USER),
+        action="edgeUpdate",
+        edge_id=SONY,
+        if_match="g42",
+        request_id="req-1",
+        now=NOW,
+        predicate="avoids",  # object 는 생략
+    )
+
+    assert result.edge_id == make_edge_id("avoids|brand:소니")
+    document = await (await get_profile_store()).get_graph(USER)
+    assert document is not None and document.revision == 43
+
+
+async def test_changing_only_the_object_keeps_the_relation() -> None:
+    """`object` 만 보내면 **관계가 유지된다** (api-spec §3.9.1)."""
+    await _seed(revision=42)
+
+    result = await graph_journal.apply_edge_mutation(
+        user_id=int(USER),
+        action="edgeUpdate",
+        edge_id=SONY,
+        if_match="g42",
+        request_id="req-1",
+        now=NOW,
+        object_spec=ObjectSpec(node_type="brand", label="애플"),  # predicate 는 생략
+    )
+
+    assert result.edge_id == make_edge_id("likes|brand:애플")
+
+
+async def test_editing_a_purchased_edge_is_refused() -> None:
+    """구매 이력 파생은 수정 불가 — `409 PROFILE_EDGE_NOT_EDITABLE` (api-spec §3.9.1).
+
+    구매는 의견이 아니라 사실이라 사용자가 뒤집을 대상이 아니다. 거부는 **문서·감사 무손상**이다.
+    """
+    edge_id = await _seed_purchased(revision=42)
+
+    with pytest.raises(GraphEdgeNotEditable):
+        await graph_journal.apply_edge_mutation(
+            user_id=int(USER),
+            action="edgeUpdate",
+            edge_id=edge_id,
+            if_match="g42",
+            request_id="req-1",
+            now=NOW,
+            predicate="avoids",
+        )
+
+    document = await (await get_profile_store()).get_graph(USER)
+    assert document is not None and document.revision == 42
+    assert await graph_journal.list_audit(user_id=int(USER)) == []
+
+
+async def test_not_editable_wins_over_a_stale_if_match() -> None:
+    """두 `409` 가 동시에 성립하면 **재조회로 안 바뀌는 쪽**을 먼저 알린다 (api-spec §3.9.1 v0.32.7).
+
+    `PROFILE_VERSION_CONFLICT` 를 먼저 내면 FE 가 규약대로 재조회 후 재시도하고, 그 재시도가
+    결국 `PROFILE_EDGE_NOT_EDITABLE` 을 받아 왕복 한 번이 낭비된다.
+    """
+    edge_id = await _seed_purchased(revision=42)
+
+    with pytest.raises(GraphEdgeNotEditable):
+        await graph_journal.apply_edge_mutation(
+            user_id=int(USER),
+            action="edgeUpdate",
+            edge_id=edge_id,
+            if_match="g41",  # 스테일 — VERSION_CONFLICT 도 동시에 성립한다
+            request_id="req-1",
+            now=NOW,
+            predicate="avoids",
+        )
+
+
+async def test_deleting_a_purchased_edge_is_allowed() -> None:
+    """삭제는 `editable` 과 무관하다 — `editable` 은 **수정만** 막는다 (api-spec §3.9.2)."""
+    edge_id = await _seed_purchased(revision=42)
+
+    result = await graph_journal.apply_edge_mutation(
+        user_id=int(USER),
+        action="edgeDelete",
+        edge_id=edge_id,
+        if_match="g42",
+        request_id="req-1",
+        now=NOW,
+    )
+
+    assert result.suppressed is True
+    document = await (await get_profile_store()).get_graph(USER)
+    assert document is not None and document.edges == []
+
+
+async def test_an_unresolvable_label_is_refused_without_touching_the_document() -> None:
+    """어휘 밖 라벨은 `GraphObjectUnknown`(→ `400`) — **추측해서 붙이지 않는다**.
+
+    가까운 대상으로 스냅하면 배치가 만드는 식별자와 달라져 같은 취향이 두 `edgeId` 를 얻는다.
+    """
+    await _seed(revision=42)
+
+    with pytest.raises(GraphObjectUnknown):
+        await graph_journal.apply_edge_mutation(
+            user_id=int(USER),
+            action="edgeUpdate",
+            edge_id=SONY,
+            if_match="g42",
+            request_id="req-1",
+            now=NOW,
+            object_spec=ObjectSpec(node_type="priceBand", label="가성비"),
+        )
+
+    document = await (await get_profile_store()).get_graph(USER)
+    assert document is not None and document.revision == 42
+    assert await graph_journal.list_audit(user_id=int(USER)) == []
+
+
+async def test_a_node_id_outside_the_graph_is_refused() -> None:
+    """형식은 맞지만 그 사용자 그래프에 없는 `nodeId` 는 새로 만들지 않는다 (api-spec §3.9.1)."""
+    await _seed(revision=42)
+
+    with pytest.raises(GraphObjectUnknown):
+        await graph_journal.apply_edge_mutation(
+            user_id=int(USER),
+            action="edgeUpdate",
+            edge_id=SONY,
+            if_match="g42",
+            request_id="req-1",
+            now=NOW,
+            object_spec=ObjectSpec(node_id="brand:애플"),
+        )

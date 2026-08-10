@@ -31,13 +31,25 @@ from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
 from app.agents.profile.graph_errors import (
+    GraphEdgeNotEditable,
     GraphEdgeNotFound,
     GraphMutationError,
+    GraphObjectUnknown,
     GraphStoreUnavailable,
     GraphVersionConflict,
 )
-from app.agents.profile.graph_models import GraphDocument, GraphNode, is_projected
-from app.agents.profile.graph_mutations import apply_correction, apply_suppression
+from app.agents.profile.graph_models import (
+    GraphDocument,
+    GraphEdge,
+    is_projected,
+    normalize_label,
+)
+from app.agents.profile.graph_mutations import (
+    MutationOutcome,
+    apply_correction,
+    apply_suppression,
+)
+from app.agents.profile.resolver import ObjectSpec, resolve_user_object
 from app.core.config import get_settings
 from app.core.observability import identifier_fingerprint
 from app.core.pg_resilience import (
@@ -864,13 +876,19 @@ async def apply_edge_mutation(
     request_id: str,
     now: str,
     predicate: str | None = None,
-    node: GraphNode | None = None,
+    object_spec: ObjectSpec | None = None,
     lease_s: float | None = None,
 ) -> GraphMutationResult:
     """edge 수정·삭제를 저널·CAS·멱등 아래에서 적용한다.
 
-    `GraphVersionConflict`·`GraphEdgeNotFound`·`GraphStoreUnavailable` 을 던진다 — 상태 코드
-    매핑은 호출자가 생기는 #360 몫이다(`graph_errors` docstring).
+    `GraphVersionConflict`·`GraphEdgeNotFound`·`GraphEdgeNotEditable`·`GraphObjectUnknown`·
+    `GraphStoreUnavailable` 을 던진다 — 상태 코드 매핑은 `app/core/errors.py` 가 소유한다.
+
+    **[#360] `edgeUpdate` 는 `object_spec` 을 받는다** — 확정된 노드가 아니라 **요청 원문**이다.
+    `predicate`·`object` 중 생략한 쪽은 대상 edge 의 현재 값으로 채우는데(api-spec §3.9.1),
+    그 출처가 **잠금 아래에서 읽은 문서**여야 하기 때문이다. 미리 읽어 채우면 그 사이 값이
+    바뀌었을 때 사용자가 보내지 않은 변경이 적용되고, 재전송이 이미 사라진 edge 를 찾다 실패해
+    §7.2 의 *"재전송 판정이 `404` 판정보다 앞"* 이 깨진다.
     """
     if action not in ("edgeUpdate", "edgeDelete"):
         raise ValueError(f"unsupported edge mutation action: {action}")
@@ -886,7 +904,7 @@ async def apply_edge_mutation(
     # 파생 키에는 **요청 본문이 들어가지 않는다**(REQ-PGRAPH-043). 그래서 스테일한 `If-Match` 를
     # 든 다른 본문이 같은 키를 만들 수 있고, 그대로 재생하면 호출자가 보내지도 않은 변경의
     # 결과를 성공으로 받는다. 본문 지문을 함께 실어 그 경우를 충돌로 떨어뜨린다.
-    request_fp = _request_fingerprint(action, predicate, node)
+    request_fp = _request_fingerprint(action, predicate, object_spec)
     ttl = settings.session_end_claim_ttl_s if lease_s is None else lease_s
 
     async with store.graph_lock(str(user_id)):
@@ -949,7 +967,7 @@ async def apply_edge_mutation(
                 request_id=request_id,
                 now=now,
                 predicate=predicate,
-                node=node,
+                object_spec=object_spec,
                 key=key,
                 token=token,
                 settings=settings,
@@ -1298,17 +1316,34 @@ async def _delete_transcripts(user_id: int) -> int:
         return 0
 
 
-def _request_fingerprint(action: str, predicate: str | None, node: GraphNode | None) -> str | None:
+def _find_edge(document: GraphDocument | None, edge_id: str) -> GraphEdge | None:
+    """대상 edge — **잠금 아래에서 읽은 문서**에서만 찾는다 (#360)."""
+    if document is None:
+        return None
+    return next((edge for edge in document.edges if edge.edge_id == edge_id), None)
+
+
+def _request_fingerprint(
+    action: str, predicate: str | None, spec: "ObjectSpec | None"
+) -> str | None:
     """요청 본문의 지문 — 같은 파생 키·다른 본문을 가르는 재료.
 
     `edgeDelete` 는 본문이 없어(경로에 신원과 대상이 전부 있다) `None` 이다 — 같은 키면 같은
-    요청이 맞다. `edgeUpdate` 만 `(predicate, nodeId)` 로 지문을 만든다. 라벨이 아니라
-    `node_id` 를 쓰는 것은 그것이 이미 정규화된 값이라 표기 변형이 다른 지문을 만들지 않기
-    때문이다.
+    요청이 맞다.
+
+    **[#360] `edgeUpdate` 는 요청 *원문*에서 만든다.** 확정된 노드로 만들면 두 가지가 깨진다:
+    (a) 대상 해석이 락 안으로 들어가 지문 계산이 replay 판정보다 늦어지고, (b) **부분 변경**은
+    생략한 쪽을 문서에서 채우므로 같은 요청이 문서 상태에 따라 다른 지문을 얻는다. 라벨은
+    `normalize_label` 로 정규화해 표기 변형이 다른 지문을 만들지 않게 한다(`node_id` 를 쓰던
+    구 구현이 노리던 성질을 원문 단계에서 확보한다).
     """
-    if action != "edgeUpdate" or predicate is None or node is None:
+    if action != "edgeUpdate":
         return None
-    return identifier_fingerprint(f"{predicate}|{node.node_id}")
+    spec = spec or ObjectSpec()
+    label = normalize_label(spec.label) if spec.label else ""
+    return identifier_fingerprint(
+        f"{predicate or ''}|{spec.node_id or ''}|{spec.node_type or ''}|{label}"
+    )
 
 
 async def _replay_if_completed(
@@ -1348,22 +1383,50 @@ async def _apply_claimed(
     request_id: str,
     now: str,
     predicate: str | None,
-    node: GraphNode | None,
+    object_spec: ObjectSpec | None,
     key: str,
     token: str,
     settings,
     resume_payload: dict | None = None,
 ) -> GraphMutationResult:
-    """claim 을 쥔 상태의 본체 — 실패 경로마다 반드시 claim 을 푼다."""
+    """claim 을 쥔 상태의 본체 — 실패 경로마다 반드시 claim 을 푼다.
+
+    **[#360] 대상 해석과 `editable` 판정이 여기 있는 이유**는 둘 다 **잠금 아래에서 읽은 문서**를
+    봐야 하기 때문이다. 순서는 `404`(위에서 원장과 함께) → `editable`(409) → `object` 해석(400)
+    → `revision` CAS 다. CAS 앞에 두는 것은 **재조회로 결과가 바뀌지 않는 사실을 먼저 알리기**
+    위해서다(api-spec §3.9.1 v0.32.7).
+    """
     if action == "edgeDelete":
         mutate = lambda doc: apply_suppression(doc, edge_id=edge_id, now=now)  # noqa: E731
     else:
-        if predicate is None or node is None:
-            await release(key, token)
-            raise ValueError("edgeUpdate requires predicate and node")
-        mutate = lambda doc: apply_correction(  # noqa: E731
-            doc, edge_id=edge_id, predicate=predicate, node=node, now=now, settings=settings
-        )
+        current = _find_edge(document, edge_id)
+        if current is None:
+            # 문서에 대상이 없는데 여기까지 왔다 = **원장에 흔적이 있다**(404 판정이 원장과 함께
+            # 이뤄졌다). 즉 이미 적용된 재개다 — 해석할 대상이 없으니 no-op 변형을 쓰고 아래
+            # resume 분기가 남은 단계만 마저 한다.
+            mutate = lambda doc: (doc, MutationOutcome(changed=False))  # noqa: E731
+        else:
+            if current.predicate == "purchased":
+                # 구매 파생은 수정 불가 — 와이어 `editable: false` 와 같은 술어다(api-spec §3.9.1).
+                await release(key, token)
+                raise GraphEdgeNotEditable(edge_id)
+            node = await resolve_user_object(
+                object_spec, document=document, current=current, settings=settings, now=now
+            )
+            if node is None:
+                # 어휘 밖 라벨·형식 불일치·그래프 밖 `nodeId` — 추측해서 붙이지 않는다.
+                await release(key, token)
+                raise GraphObjectUnknown(edge_id)
+            # 생략한 쪽은 대상 edge 의 현재 값으로 채운다(api-spec §3.9.1).
+            effective_predicate = predicate or current.predicate
+            mutate = lambda doc: apply_correction(  # noqa: E731
+                doc,
+                edge_id=edge_id,
+                predicate=effective_predicate,
+                node=node,
+                now=now,
+                settings=settings,
+            )
 
     if resume_payload is not None:
         # **크래시 재개** (§7.2, PR #540 리뷰). 이전 시도가 의도를 적어 뒀다는 뜻이다.
