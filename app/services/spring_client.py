@@ -1134,7 +1134,8 @@ async def get_cart(user_id: int | None = None, guest_id: str | None = None) -> C
         raise SpringUnavailableError(f"get_cart 실패: {exc}") from exc
 
 
-# ── 장바구니 삭제 · 찜 (이슈 #116·#117, I-24~I-28 — 확정 2026-08-05, Spring 구현 진행 중) ──
+# ── 장바구니 삭제 · 찜 (이슈 #116·#117, I-24~I-28 — 확정 2026-08-05, Spring 구현됨) ──
+# [#285] BE `jarvis-backend` main 실측(2026-08-08, BE PR #92·#93) — api-spec §4.12~4.16 v0.31.3.
 
 
 def _envelope_success_false(resp: httpx.Response) -> bool:
@@ -1196,7 +1197,10 @@ async def delete_cart_item(
 
     if resp.status_code == 200:
         if _envelope_success_false(resp):
-            # 🔶 I-24 협의 대상: 200 + success:false 의 실제 사유(code) 위치가 미확정.
+            # [#285] BE `ApiResponse`(`global/response/ApiResponse.java`)는 success:false 를
+            # error{code,...} 와 함께만 만들고 GlobalExceptionHandler 가 전부 상태 코드로 낸다
+            # — 200 + success:false 경로 자체가 없다. 계약상 오지 않는 조합이라 방어적으로
+            # 실패 처리한다(fail-closed). 이 방어 분기는 지우지 않는다.
             raise CartError("delete_cart_item 실패: 200 success=false")
         return
     if resp.status_code == 404:
@@ -1221,7 +1225,9 @@ async def add_wishlist(request: AddWishlistRequest) -> WishlistAddResult:
     → WishlistProductNotFound. 409 이고 code 가 정확히 WISHLIST_DUPLICATE·RESOURCE_CONFLICT
     (UNIQUE 경합, 둘 다 동일 취급) 중 하나일 때만 → WishlistDuplicate. **[라운드 23]** code 가
     다르거나 본문을 못 읽는 404/409(엔드포인트 미배포 포함)는 WishlistError 다.
-    400·403(SELLER·ADMIN, 전용 예외 없음)·500·도달 불가·미상 코드 → WishlistError.
+    400·500·도달 불가·미상 코드 → WishlistError. [#285] 찜 API 에는 403 이 없다(§4.14~4.16 +
+    BE `InternalWishlistController` 실측 — 역할 검사 부재). 계약상 오지 않지만 오더라도 위
+    "미상 코드" 분기로 `WishlistError` 에 수렴한다.
     """
     try:
         with _spring_span("add_wishlist", "POST") as span:
@@ -1239,7 +1245,9 @@ async def add_wishlist(request: AddWishlistRequest) -> WishlistAddResult:
         except ValueError as exc:
             raise WishlistError(f"add_wishlist 응답 파싱 실패: {exc}") from exc
         if isinstance(data, dict) and data.get("success") is False:
-            # 🔶 I-26 협의 대상: 200 + success:false 의 실제 사유(code) 위치가 미확정.
+            # [#285] BE `ApiResponse` 는 success:false 를 error{code,...} 와 함께만 만들고
+            # GlobalExceptionHandler 가 전부 상태 코드로 낸다 — 200 + success:false 경로 자체가
+            # 없다. 계약상 오지 않는 조합이라 방어적으로 실패 처리한다(fail-closed).
             raise WishlistError("add_wishlist 실패: 200 success=false")
         payload = data.get("data") if isinstance(data, dict) else None
         product_id = payload.get("productId") if isinstance(payload, dict) else None
@@ -1275,8 +1283,9 @@ async def remove_wishlist(product_id: int, *, user_id: int) -> None:
     회원 전용(USER). path 는 productId(wishlistId 아님), query 는 userId 하나뿐(guestId 없음).
     실패: 404 이고 code 가 정확히 WISHLIST_NOT_FOUND(찜 안 한 상품 = 이미 해제 = 없는 상품도
     동일 코드, 구별 불가)일 때만 → WishlistNotFound(비멱등). **[라운드 23]** code 가 다르거나
-    본문을 못 읽는 404(엔드포인트 미배포 포함)는 WishlistError 다. 400·403(전용 예외 없음)·500·
-    도달 불가·미상 코드 → WishlistError.
+    본문을 못 읽는 404(엔드포인트 미배포 포함)는 WishlistError 다. 400·500·도달 불가·미상 코드
+    → WishlistError. [#285] 찜 API 에는 403 이 없다(§4.14~4.16 + BE 역할 검사 부재). 계약상
+    오지 않지만 오더라도 위 "미상 코드" 분기로 `WishlistError` 에 수렴한다.
     """
     try:
         with _spring_span("remove_wishlist", "DELETE") as span:
@@ -1290,7 +1299,9 @@ async def remove_wishlist(product_id: int, *, user_id: int) -> None:
 
     if resp.status_code == 200:
         if _envelope_success_false(resp):
-            # 🔶 I-27 협의 대상: 200 + success:false 의 실제 사유(code) 위치가 미확정.
+            # [#285] BE `ApiResponse` 는 success:false 를 error{code,...} 와 함께만 만들고
+            # GlobalExceptionHandler 가 전부 상태 코드로 낸다 — 200 + success:false 경로 자체가
+            # 없다. 계약상 오지 않는 조합이라 방어적으로 실패 처리한다(fail-closed).
             raise WishlistError("remove_wishlist 실패: 200 success=false")
         return
     if resp.status_code == 404:
@@ -1367,7 +1378,9 @@ async def get_wishlist(user_id: int) -> WishlistView:
     애초에 빈 배열(`items: []`, 찜 0건)인 경우는 이 판정 대상이 아니다 — 그건 I-28 의 정상
     응답이라 그대로 빈 `WishlistView` 를 돌려준다.
     """
-    # 🔶 I-28 협의 대상: 전량 반환 응답의 크기 상한이 미확정 — 클라 측 절단은 두지 않는다.
+    # [#285] `GET /internal/wishlist` 신설 자체는 수용됐다(§4.16 "페이징 없음 — MVP 전량
+    # 반환"으로 등재). 🔶 이슈 #285 코멘트 Q11 이 물었던 "전량 반환 응답의 크기 상한"은 아직
+    # 답을 받지 못했다 — 진짜로 열려 있다. 상한이 없으므로 클라 측 절단은 두지 않는다.
     try:
         with _spring_span("get_wishlist", "GET") as span:
             async with _client() as client:
