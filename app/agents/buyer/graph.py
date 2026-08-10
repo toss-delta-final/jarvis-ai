@@ -32,6 +32,7 @@ from app.agents.buyer.cart.intent_guard import (
     has_wishlist_remove_evidence,
 )
 from app.agents.buyer.cart.options import condition_terms as cart_condition_terms
+from app.agents.buyer.cart.quantity import stream_cart_quantity_change
 from app.agents.buyer.cart.remove import stream_cart_remove
 from app.agents.buyer.cart.state import get_cart_store
 from app.agents.buyer.cart.wishlist import (
@@ -1362,6 +1363,27 @@ async def run_buyer_turn(
                 message=request.message,
                 cart_store=cart_store,
                 thread_key=thread_key,
+                settings=settings,
+                observer=observer,
+            ):
+                yield frame
+        return
+
+    # [#285, I-25 §4.13] cart_remove 분기와 같은 자리·같은 방식으로 위임한다 — decompose 가
+    # 직접 `cart_quantity` 를 내면 여기서 바로 위임하고, 여전히 `cart_add` 로 오분류하면
+    # `cart/graph.py::stream_cart_add` 안의 `classify_cart_utterance` 2선 방어(사다리 4-a)가
+    # 같은 도착지로 다시 갈라낸다(cart_remove 와 완전히 대칭 — 위 "decompose 가 cart_remove/
+    # wishlist_add/wishlist_remove 를 직접 산출하면" 문단 참조). 화면 지시어 해소(`cart_intent`)
+    # 는 이 intent 를 받지 않는다 — 대상 해소는 장바구니 내용에서 이름으로 하지 화면 순번으로
+    # 하지 않는다(cart_remove 와 같은 이유, 위 화면 해소 블록 조건에 없다).
+    if decision.intent == "cart_quantity":
+        if trace := current_request_trace():
+            trace.set_lane("cart")
+        with trace_span("buyer.graph.cart", "chain"):
+            async for frame in stream_cart_quantity_change(
+                identity=identity,
+                cart=cart_intent,
+                message=request.message,
                 settings=settings,
                 observer=observer,
             ):

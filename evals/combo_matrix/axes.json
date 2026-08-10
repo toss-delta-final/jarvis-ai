@@ -4,7 +4,7 @@
   "axes": [
     {
       "id": "intent",
-      "description": "decompose(Haiku) 가 산출하는 라우팅 intent — 코드 정본 9종(이슈 본문의 5종은 구버전 드리프트).",
+      "description": "decompose(Haiku) 가 산출하는 라우팅 intent — 코드 정본 10종(이슈 본문의 5종은 구버전 드리프트).",
       "values": [
         {"value": "recommend", "source": "app/agents/buyer/recommendation/state.py:87-99"},
         {"value": "cart_add", "source": "app/agents/buyer/recommendation/state.py:87-99"},
@@ -18,6 +18,11 @@
         },
         {"value": "wishlist_add", "source": "app/agents/buyer/recommendation/state.py:87-99"},
         {"value": "wishlist_remove", "source": "app/agents/buyer/recommendation/state.py:87-99"},
+        {
+          "value": "cart_quantity",
+          "source": "app/agents/buyer/recommendation/state.py::RouteDecision.intent",
+          "note": "[#285, I-25 §4.13] decompose 직접 산출 + classify_cart_utterance 2선 방어(사다리 4-a). 이 하네스는 build_decompose_json 으로 intent 를 강제 주입해 라우팅을 재지 않고, runner.py 에 수량 변경용 Spring 대역도 없다 — cart_quantity_not_generated 제약으로 이 값은 어떤 leaf 에도 선택되지 않는다(라우팅 회귀는 evals/intent_probe 의 cart_quantity 그룹 소관, wishlist_view_context_none/#386 과 같은 교환)."
+        },
         {
           "value": "wishlist_view",
           "source": "app/agents/buyer/recommendation/state.py:87-99",
@@ -220,6 +225,13 @@
       "description": "[#386] wishlist_view 는 조회라 지칭 해소 대상이 없다 — stream_wishlist_view 는 cart/message/settings 를 받지 않으므로 직전 추천·되물음·카테고리 맥락이 응답에 영향을 주지 않는다. 이 하네스는 build_decompose_json 으로 intent 를 강제하므로 라우팅도 재지 않는다(context 축이 가르는 라우팅 회귀는 evals/intent_probe 소관, #386 이 그쪽에 wishlist_view 6셀을 신설한다). 남기면 실행되지 않는 manual 케이스(runner.py 도입부 — context != none 은 건너뛴다)만 늘어난다.",
       "if": {"intent": ["wishlist_view"]},
       "forbid": {"context": ["lastRecommendations", "pendingCart", "categoryPrior", "n/a"]}
+    },
+    {
+      "type": "excludes",
+      "id": "cart_quantity_not_generated",
+      "description": "[#285, I-25 §4.13 — 4단계 결정, 재생성 대신 선언된 제외] intent=cart_quantity 는 어떤 leaf 에도 선택되지 않는다. (a) 이 하네스는 evals/combo_matrix/runner.py::build_decompose_json 으로 intent 를 강제 주입하므로 이 축은 애초에 라우팅을 재지 않는다 — decompose/classify_cart_utterance 가 실제로 cart_quantity 를 산출하는지는 이 하네스의 관측 대상이 아니다. (b) build_decompose_json 은 cart_add/wishlist_add/wishlist_remove 에만 cart 필드를 실어 하류(stream_cart_quantity_change)를 구동한다 — 수량 변경용 Spring 대역(change_cart_quantity fake)이 runner.py 에 없어 지금 값을 넣으면 실행되지 않는 manual 케이스만 늘어난다(wishlist_view_context_none 이 남긴 것과 같은 종류의 죽은 케이스). (c) case_id 는 정렬된 leaf 의 위치 인덱스(combo-{i:04d})라 이 값 하나를 실제로 생성에 넣으면 65→73 케이스로 밀리며 실측 63/65 건의 id 는 같은데 axes 가 달라진다 — evals/combo_matrix/expected/expected_behavior.jsonl 은 case_id 로 키가 걸린 사람 판단이라 재생성하면 63건의 사람 기대치가 조용히 다른 시나리오에 붙는다(깨진 테스트보다 나쁘다). (d) 라우팅 회귀는 evals/intent_probe 의 cart_quantity 그룹이 잰다(wishlist_view_context_none/#386 이 세운 것과 같은 교환 — 그쪽도 wishlist_view 6셀을 intent_probe 에 신설했다).",
+      "if": {},
+      "forbid": {"intent": ["cart_quantity"]}
     },
     {
       "type": "forces",
