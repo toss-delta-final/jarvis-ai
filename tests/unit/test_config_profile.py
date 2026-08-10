@@ -55,6 +55,31 @@ def test_profile_idle_claim_ttl_must_cover_every_configured_batch_wave() -> None
         )
 
 
+# ─────────── #321 대화 전사록 보존 기간 ───────────
+
+
+def test_conversation_retention_defaults_match_audit_retention() -> None:
+    settings = Settings(_env_file=None)
+
+    assert settings.conversation_retention_days == 90.0
+    assert settings.conversation_retention_days == settings.graph_audit_retention_days
+
+
+def test_conversation_retention_days_must_not_exceed_audit_retention() -> None:
+    """감사 원장보다 전사록이 먼저 지워지면, 그 사이 구간의 감사 행이 가리키는 원문이 없어져
+    조사 불가능해진다(이슈 #321)."""
+    with pytest.raises(ValidationError, match="CONVERSATION_RETENTION_DAYS"):
+        Settings(_env_file=None, conversation_retention_days=91.0, graph_audit_retention_days=90.0)
+
+
+def test_conversation_retention_days_equal_to_audit_retention_is_allowed() -> None:
+    """경계는 포함 — 같은 값은 허용(초과일 때만 거부)."""
+    settings = Settings(
+        _env_file=None, conversation_retention_days=90.0, graph_audit_retention_days=90.0
+    )
+    assert settings.conversation_retention_days == 90.0
+
+
 # ─────────── #119 개인화 강도 튜너블 ───────────
 
 
@@ -246,7 +271,14 @@ def test_graph_retention_boundary_is_inclusive() -> None:
     경계를 배타로 재면 24h == 1day 인 정상 구성이 기동에서 죽는다
     (docs/lessons.md 2026-08-08 "TTL 만료를 엄격 부등호로 재면 판정이 시계 분해능에 걸린다").
     """
-    settings = Settings(_env_file=None, graph_idempotency_ttl_h=24, graph_audit_retention_days=1)
+    # conversation_retention_days 도 함께 낮춘다 — 기본 90 이 graph_audit_retention_days=1 을
+    # 넘어 이 테스트가 다른 경계(#321)에서 죽지 않게 한다.
+    settings = Settings(
+        _env_file=None,
+        graph_idempotency_ttl_h=24,
+        graph_audit_retention_days=1,
+        conversation_retention_days=1,
+    )
 
     assert settings.graph_idempotency_ttl_h == 24.0
 

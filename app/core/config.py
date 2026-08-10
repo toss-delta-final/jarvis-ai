@@ -1732,6 +1732,24 @@ class Settings(BaseSettings):
     # 파괴 동작이 추적 불가가 되면 안 되므로, 여기 남는 것은 "무엇을" 이 아니라 "언제" 다.
     graph_audit_retention_days: float = Field(default=90.0, gt=0.0)
 
+    # ── 대화 전사록 보존 기간 (이슈 #321, SPEC-PROFILE-001 OPEN-P5 해소) ──
+    # 90일인 근거: 감사 원장(graph_audit_retention_days, 기본 90일)이 지문만 남기므로(REQ-PGRAPH-081)
+    # 원문 대조 상대는 전사록뿐이다. 전사록을 더 짧게 지우면 감사 행이 가리키는 원문이 없어져
+    # 조사 불가능해진다 — 두 값은 의도적 짝이다(아래 검증기가 이 관계를 기동 시점에 고정한다).
+    conversation_retention_days: float = Field(default=90.0, gt=0.0)
+    conversation_retention_batch_size: int = Field(default=500, ge=1)
+    conversation_retention_max_batches: int = Field(default=20, ge=1)
+    conversation_retention_sweep_interval_s: float = Field(default=3600.0, gt=0.0)
+    # 결함을 고치는 스위치는 기본 on — 하방(오래된 전사록이 지워짐)이 유계다. 삭제는 되돌릴 수
+    # 없으므로 롤백 경로로만 끈다(CONVERSATION_RETENTION_SWEEP_ENABLED=false).
+    conversation_retention_sweep_enabled: bool = True
+
+    # ── PII 하드 게이트 (이슈 #321) ──
+    # 정규식·placeholder 어휘·IIN 목록은 app/core/pii.py 가 모듈 상수로 소유한다(REQ-PGRAPH-070과
+    # 같은 규율 — 규칙 상수는 설정이 아니다). 여기 두 튜너블만 배포 환경별로 조정 가능하다.
+    pii_bank_account_anchor_window: int = Field(default=12, ge=0)
+    pii_redact_trace_content: bool = True
+
     # ── 프로필 개인화 강도 (이슈 #119, SPEC-PROFILE-001 §5.1 v0.6.0 · REQ-REC-005-A) ──
     # 프로필을 **어느 소비처에** 주입할지. 기본 rerank_only 인 근거: decompose(fast tier, 한 호출에
     # intent 라우팅+필터+장바구니 의도가 얹힌다)의 _SYSTEM 에 프로필 사용 규칙이 없어 LLM 이 취향을
@@ -3050,6 +3068,14 @@ class Settings(BaseSettings):
             raise ValueError(
                 "GRAPH_IDEMPOTENCY_TTL_H must not exceed GRAPH_AUDIT_RETENTION_DAYS "
                 "(replay must always find its audit record)"
+            )
+        # 전사록이 감사 원장보다 먼저 지워지면, 30~90일 구간의 감사 행이 가리키는 원문이
+        # 없어져 조사 불가능해진다(이슈 #321) — 위 멱등 원장 검사와 같은 형식의 fail-fast.
+        # 경계는 포함(같은 값은 허용, 초과일 때만 거부).
+        if self.conversation_retention_days > self.graph_audit_retention_days:
+            raise ValueError(
+                "CONVERSATION_RETENTION_DAYS must not exceed GRAPH_AUDIT_RETENTION_DAYS "
+                "(an audit record must always be able to find its transcript)"
             )
         # [#360] 조회가 변경보다 오래 걸리는 예산은 계약(§3.8 2s / §3.9 3s)을 뒤집는다.
         # 조회는 문서 단일 읽기고 변경은 잠금 + 문서 재작성 + 저널 쓰기라 순서가 고정이다.

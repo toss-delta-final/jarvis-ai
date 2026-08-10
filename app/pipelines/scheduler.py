@@ -24,6 +24,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from app.agents.buyer.session_state import get_legacy_gc_counters, run_legacy_gc_batch
 from app.core.config import get_settings
+from app.core.conversation import get_conversation_store
 from app.core.session_lifecycle import (
     run_session_context_sweep as run_configured_session_context_sweep,
 )
@@ -32,6 +33,7 @@ from app.pipelines.artifacts_batch import run_artifacts_batch
 _log = logging.getLogger(__name__)
 _I17_JOB_ID = "i17_incremental_pull"
 _SESSION_CONTEXT_JOB_ID = "session_context_sweep"
+_CONVERSATION_RETENTION_JOB_ID = "conversation_retention_sweep"
 # 하위 호환 — 기존 내부 테스트/운영 도구가 참조하던 이름.
 _JOB_ID = _I17_JOB_ID
 
@@ -96,6 +98,60 @@ async def run_session_context_sweep() -> None:
         _log.exception("session context sweep 실패 — 다음 주기 재개")
 
 
+async def run_conversation_retention_sweep() -> None:
+    """대화 전사록 보존 스윕(이슈 #321, SPEC-PROFILE-001 OPEN-P5 해소) — 별도 job.
+
+    `run_session_context_sweep` 에 얹지 않는다 — 그 job 은 "sole lifecycle authority"이고
+    except 경로의 의미가 "activity lease 가 다음 sweep 에서 복구한다"라 실패한 DELETE 의 의미와
+    다르다. 게다가 그 job 은 60초 주기라(`profile_idle_sweep_interval_s`) 이 스윕에는 60배
+    과하다.
+
+    `ConversationStoreProtocol.purge_expired_turns` 는 **배치 한 번**만 지운다 —
+    `conversation_retention_max_batches` 까지 반복 호출해 유계 배치 삭제를 구성한다(인메모리·
+    pg-profile 두 구현이 같은 계약이라 isinstance 분기가 필요 없다).
+    """
+    settings = get_settings()
+    if not settings.conversation_retention_sweep_enabled:
+        return
+    store = await get_conversation_store()
+    deleted = 0
+    batches = 0
+    cap_reached = False
+    try:
+        for _ in range(settings.conversation_retention_max_batches):
+            batch_deleted = await store.purge_expired_turns(settings.conversation_retention_days)
+            deleted += batch_deleted
+            batches += 1
+            if batch_deleted < settings.conversation_retention_batch_size:
+                break
+        else:
+            cap_reached = True
+        if cap_reached:
+            # [#325] apscheduler 는 예외를 삼켜 부분 실패가 드러나지 않는다 — 배치 상한 도달은
+            # "지울 것이 더 남았을 수 있다"는 백로그 신호라 운영 알람 대상(error)이다.
+            _log.error(
+                "conversation retention sweep cap 도달(백로그 의심) "
+                "deleted=%d batches=%d cap_reached=%s cutoff_days=%s",
+                deleted,
+                batches,
+                cap_reached,
+                settings.conversation_retention_days,
+            )
+        else:
+            _log.info(
+                "conversation retention sweep 완료 "
+                "deleted=%d batches=%d cap_reached=%s cutoff_days=%s",
+                deleted,
+                batches,
+                cap_reached,
+                settings.conversation_retention_days,
+            )
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 - job 실패 격리, DELETE 는 멱등이라 다음 주기가 이어받는다
+        _log.exception("conversation retention sweep 실패 — 다음 주기 재개")
+
+
 def start_scheduler() -> AsyncIOScheduler:
     """스케줄러를 시작하고 인스턴스를 반환한다 (멱등 — 이미 떠 있으면 그대로 반환).
 
@@ -115,6 +171,15 @@ def start_scheduler() -> AsyncIOScheduler:
         max_instances=1,
         coalesce=True,
     )
+    if settings.conversation_retention_sweep_enabled:
+        scheduler.add_job(
+            run_conversation_retention_sweep,
+            IntervalTrigger(seconds=settings.conversation_retention_sweep_interval_s),
+            id=_CONVERSATION_RETENTION_JOB_ID,
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
     if settings.google_api_key:
         scheduler.add_job(
             _run_incremental_batch,
