@@ -50,8 +50,10 @@
   "provider별 실 LLM 검증 0회")를 근거로 1차 주장에서 제외했다. `evals/README.md`(#328) 8항
   인용 규율(datasetHash 세대 혼동 금지·로컬↔운영 비혼동)을 재확인하고, `intent_probe`의
   출고판이 `adopted-*`이지 최신 timestamp인 `merged-*`가 아니라는 함정을 baseline 지정표로
-  고정했다. release gate(G0~G4)·run manifest 필수 6항·발표 산출물 9종·P0 재검토(13건 중
-  #152·#154·#139만 P0 유지)를 함께 정했다. 계약(api-spec) 변경 없음.
+  고정했다. release gate(G0~G4)·run manifest 필수 6항·발표 산출물 9종·P0 재검토(열린 post-mvp
+  24건 전수 판정 — #152·#154·#139만 P0 유지)를 함께 정했다. §13 에는 과정 배포 자료(「LLM Agent 프로젝트
+  가이드 v2」)의 평가 항목(기획·협업·기술난이도·완성도·발표전달력)을 이 문서의 claim·산출물에
+  연결하는 대조표도 뒀다. 계약(api-spec) 변경 없음.
   (`docs/specs/RELEASE-CLAIMS-139.md` v1.0.0, `docs/specs/README.md` 색인)
 
 ### Security

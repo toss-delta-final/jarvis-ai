@@ -602,3 +602,52 @@ P1)은 "발표에서 증명할 주장에 필요한가" 기준으로는 전부 �
   값으로 갱신했다(상세는 F3·F4 처리 내역 참조). `ablation`·`intent_probe`·`benchmark`·
   `personalization/baselines/live-v1`은 이 병합으로 변경되지 않았다(`git diff cc9f6b17^ cc9f6b17
   --stat` 로 확인) — C1·C2·C4·§2 C3 의 라이브 대조 수치는 그대로 유효하다.
+
+---
+
+## §13 과정 평가 항목 대조
+
+이 절은 **[jarvis-ai#154](https://github.com/toss-delta-final/jarvis-ai/issues/154)(발표 산출물)를
+위한 대조표**다 — 과정 배포 자료 「LLM Agent 프로젝트 가이드 v2」(10p)가 명시한 평가 항목을
+이 문서의 claim·산출물에 연결할 뿐, §1~§9 의 평가 기준(claim·release gate)을 바꾸지 않는다.
+
+### 표 1 — 평가 항목(가이드 p.3) ↔ 이 문서에서 대응하는 것
+
+| 평가 항목(가이드 p.3) | 이 문서에서 대응하는 것 | 상태 |
+|---|---|---|
+| 기획 — 문제 정의와 해결책의 타당성·도구 설계와 사용자 시나리오 | §0 목적·범위·독법, §1 핵심 주장 4개(C1~C4)의 "왜 이 주장인가" 열 | 대응 |
+| 협업 능력 — 역할 분담·Git 사용·주간보고의 성실성 | — | **이 문서 범위 밖** |
+| 기술 난이도 — Agent 파이프라인 구성요소의 깊이(Tool-use / Memory / Multi-Agent) | §1 C1(에이전트 경로 vs no-op)·§5 표 A(하네스별 metric) — 파이프라인 구성 자체의 설계 난이도는 이 문서가 직접 다루지 않고 claim 근거로만 간접 반영 | 부분 대응 |
+| 완성도 — 엔드투엔드 동작·예외 처리·FastAPI 배포·**평가 지표 제시 여부** | §2 claim-evidence matrix, §6 run manifest 필수 6항, §9 release gate. "평가 지표 제시 여부"는 이 문서가 가장 직접 답하는 자리다 | 대응 |
+| 발표 전달력 — 시연 영상의 설득력·**Q&A 대응**·발표 자료 구조화 | §7 최종 발표 산출물 목록. **Q&A 대응은 §3 negative result 가 방어 자산이다** — "증명 못 한 것"을 먼저 정직하게 적어 두면 평가자의 반박 질문에 이미 답이 있는 상태로 발표한다 | 대응(§3 이 핵심) |
+
+### 표 2 — 제출 체크리스트(p.10) ↔ 저장소 자산
+
+| 제출물 | 저장소 대응 | 상태 |
+|---|---|---|
+| README.md(실행방법·API Key 설정·데이터 출처) | `README.md` — "시작하기" 절이 실행법(`.env.example` → `.env`)과 `OPENAI_API_KEY`/`ANTHROPIC_API_KEY` 설정을 다룬다. 데이터 출처는 명시적 절이 없고 아키텍처 절("Spring 백엔드가 상품 원본 데이터 소유")에서 간접적으로만 드러난다 | 있음(데이터 출처는 부분) |
+| requirements.txt / pyproject.toml | `pyproject.toml`·`uv.lock` 이 있다(`requirements.txt` 는 없음 — 이 프로젝트는 `uv` 패키지 매니저를 쓴다, CLAUDE.md "명령어": `uv sync`) | 있음(uv 관례로 대체) |
+| FastAPI 서버(실행법·엔드포인트 문서) | `app/main.py::FastAPI(...)`(직접 확인), 실행 명령 `uv run uvicorn app.main:app --reload`(README·CLAUDE.md), 엔드포인트 계약은 `docs/api-spec.md` | 있음 |
+| 평가셋 CSV + 평가 결과 노트북 | `evals/` 하네스와 baseline 산출물(§7)이 CSV·JSON·Markdown 리포트로 나온다. **"노트북"(`.ipynb`) 형태는 이 저장소에 없다** — `git ls-files '*.ipynb'` 결과 0건(직접 확인) | CSV/리포트는 있음, 노트북 없음 |
+| 시연 영상 3~5분 | — | **이 저장소 범위 밖**([jarvis-ai#154](https://github.com/toss-delta-final/jarvis-ai/issues/154) 산출물) |
+| 발표용 PPT | — | **이 저장소 범위 밖**([jarvis-ai#154](https://github.com/toss-delta-final/jarvis-ai/issues/154) 산출물) |
+
+### 대조에서 드러난 것
+
+**요구 수준 대비 초과 달성한 축**: 가이드의 평가 권장치는 "자체 평가셋 20문항" 대(p.7 프로젝트
+A "도구 호출 정확도 10문항 수기 평가", p.8 프로젝트 B "20문항") 수준인데, 이 프로젝트의 golden
+dataset 은 **dev 109건 + holdout 24건**(`evals/goldenset/audit/leakage_report.json`의
+`summary`: `devCases=109`, `holdoutCases=24`, `violationCount=0`, `warningCount=16`)이고,
+단일 수기 평가가 아니라 paired bootstrap CI·trivial baseline·Holm 보정까지 갖췄다(§2·§5).
+
+**용어 번역이 필요한 축**: 가이드가 말하는 "Tool-call 정확도 · Trajectory"(p.10)에 해당하는
+측정을 이 프로젝트는 `intent_probe`(라우팅 정확도)·`filter_axes`(필터 추출 precision/recall/F1)로
+하고 있다 — 정의가 정확히 같지는 않지만 같은 것을 다른 이름으로 재는 것에 가깝다. 발표에서는
+평가자 언어(Tool-call 정확도·Trajectory)를 병기하는 편이 전달에 낫다.
+
+**이 문서가 커버하지 않는 평가 축**: 가이드 p.5 원문 "Agent 시스템의 특성상 도구 설계·상태
+관리·안전장치(Guardrail/HITL)·동작 평가가 중요한 평가 포인트 입니다"가 안전장치를 중요 항목으로
+든다. 이 문서의 **C3 는 하드 제약 위반 0 과 개인화 유출 통제(§2 C3)를 다루지만, 판매자 전 쓰기
+HITL 은 §8 에서 1차 주장 범위 밖으로 뒀다** — 판매자 제외 결정의 대가가 안전장치(Guardrail/HITL)
+평가 축에서 나타난다. 이 절에서 그 결정을 뒤집지 않는다 — 재검토가 필요하면 §12 의 부모(사람)
+결정 대기 항목에 걸린다.
