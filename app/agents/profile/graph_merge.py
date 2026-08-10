@@ -31,6 +31,7 @@ from app.agents.profile.graph_models import (
     GraphDocument,
     GraphEdge,
     GraphNode,
+    GraphTombstone,
     Predicate,
     is_pin_challenged,
 )
@@ -135,7 +136,8 @@ def build_graph_document(
     # 절단 여부는 **개수 차이로** 판정한다 — `_truncate` 의 두 분기(일반 절단·사용자 삭제가 상한을
     # 넘겨 보존)를 한 규칙으로 덮고, "상한을 넘겼다"가 아니라 "버린 게 있다"라는 뜻이 그대로 산다.
     before_truncation = len(edges)
-    edges = _truncate(edges, settings.profile_graph_max_edges)
+    edges = _truncate(edges, settings=settings)
+    tombstones = _truncate_tombstones(list(existing.tombstones), settings=settings)
     # [HARD] 최종 보증 — 앞 단계 중 하나라도 pin 을 건드렸으면 여기서 되돌린다(REQ-PGRAPH-031).
     edges = _reassert_pins(edges, prior=prior)
 
@@ -148,10 +150,11 @@ def build_graph_document(
         truncated=len(edges) < before_truncation,
         purged_at=existing.purged_at,
         updated_at=now,
-        # 배치는 tombstone 을 **만들지도 지우지도 않는다** — 사용자 변경 경로(#358)와 전체
-        # 초기화만 건드린다. 여기서 이월하지 않으면 다음 배치가 차단 목록을 잃고 지운 취향이
-        # 부활한다.
-        tombstones=list(existing.tombstones),
+        # 배치는 tombstone 을 **만들지 않는다** — 만드는 것은 사용자 변경 경로(#358)와 전체
+        # 초기화뿐이다. 여기서 이월하지 않으면 다음 배치가 차단 목록을 잃고 지운 취향이 부활한다.
+        # **[#359] 다만 상한은 배치가 집행한다** — 목록이 무한히 커지는 것을 막을 다른 자리가
+        # 없다(사용자 변경 경로는 한 건씩만 더한다).
+        tombstones=tombstones,
     )
     return _with_revision(document, existing, settings=settings)
 
@@ -520,53 +523,93 @@ def _is_pinned(edge: GraphEdge) -> bool:
     return edge.user_intent is not None
 
 
-def _truncate(edges: list[GraphEdge], limit: int) -> list[GraphEdge]:
-    """상한 초과 시 절단 — **사용자 편집(pin)은 상한보다 우선한다**.
+def _truncate(edges: list[GraphEdge], *, settings: Settings) -> list[GraphEdge]:
+    """상한 초과 시 절단 — **바구니마다 자기 예산을 쓴다** (REQ-PGRAPH-005, 개정 #359).
 
-    **먼저 밀려나는 순서: `active` → `superseded` → (자르지 않음) pin.**
-    직관과 반대로 보이지만 — 살아 있는 취향을 죽은 취향보다 먼저 버린다 — **잃는 것이 서로 다르다**
-    (PR #410 리뷰에서 방향을 반대로 읽어 테스트로 고정한 지점):
+    ```
+    pin        → 무제한 보존              [REQ-PGRAPH-031 HARD]
+    active     → profile_graph_max_edges
+    superseded → profile_graph_max_superseded_edges
+    ```
 
+    **왜 단일 상한을 버렸나.** 종전에는 상한 하나 안에서 밀려나는 *순서*만 정했고
+    (`active` → `superseded` → pin), 그러면 보존 우선순위가 높은 쪽이 자리를 독차지한다.
+    `superseded` 는 근거가 0건이어도 `_carried_tombstones` 가 영구 이월하므로 **단조 누적**되는데
+    `active` 보다 먼저 보존되어, 개수가 `상한 − |pin|` 에 이르면 **active 가 하나도 안 남는다.**
+    밀려난 active 는 투영(§3.8)에 없어 사용자가 `edgeId` 를 모르니 지울 수도 없는데 근거 fact 는
+    살아 있어 요약·추천에는 계속 반영된다 — **지울수록 못 지우는 게 늘어나는 되먹임**이라
+    이 기능의 목적과 정반대다(이슈 #150 코멘트 2026-08-09).
+
+    **바구니 분리 기준은 `status == "active"`** — "사용자가 만든 것이냐"로 가르면 `superseded` 가
+    active 바구니에 남아 잠식이 그대로 재현된다.
+
+    **`superseded` 보호는 약해지지 않는다.** 종전 실효 예산이 `상한 − |pin|` 이었으니 자기 상한
+    전량을 받는 쪽이 **항상 종전 이상**이다. 그 보호가 필요한 이유(비대칭)는 그대로다:
     - `active` 가 잘려도 **개인화 내용은 안 줄어든다.** `builder._summary_input` 은 문서에 없는
-      `edge_key` 를 `active` 로 간주해 통과시키므로, 그 fact 는 요약 입력에 그대로 남는다.
-      빠지는 것은 그래프 표현뿐이고 다음 배치에 같은 fact 에서 다시 파생된다.
-    - `superseded` 가 잘리면 **진 취향이 요약에 되살아난다.** 위와 같은 규칙 때문에 그 fact 가
-      `active` 로 간주되어, 요약 LLM 이 "소니를 좋아한다"와 "소니를 싫어한다"를 동시에 받는다.
-      즉 `superseded` 는 죽은 데이터가 아니라 **"이 fact 를 요약에 넣지 마라"는 살아 있는 표식**이다.
-    - pin 은 아예 자르지 않는다. 잘리면 **사용자 편집이 조용히 되돌려진다** — 기계 재파생에 덮이지
-      않는다는 보장(REQ-PGRAPH-031)이 상한 때문에 깨지면 그 기능이 존재할 이유가 없다.
-      `active`·`superseded` 는 재파생으로 자기복구되지만 이쪽만 복구 경로가 없다.
+      `edge_key` 를 `active` 로 간주해 통과시키므로 그 fact 는 요약 입력에 남는다.
+    - `superseded` 가 잘리면 같은 규칙 때문에 **진 취향이 요약에 되살아난다.** 즉 죽은 데이터가
+      아니라 "이 fact 를 요약에 넣지 마라"는 살아 있는 표식이다.
+    바뀐 것은 그 비대칭의 **실현 방식**이다 — "동률에서 이긴다" 에서 "자기 예산을 보장받는다" 로.
 
-    사용자 삭제는 이제 이 판정에 없다 — tombstone 이 `edges` 밖 별도 리스트라(#499) 절단이
-    삭제를 지울 위험 자체가 사라졌다.
+    **active 절단은 사실상 발동하지 않는다**: `active ≤ 서로 다른 edge_key ≤ fact 수` 이고
+    `profile_graph_max_edges` 를 `profile_max_facts` 와 같게 두므로 상한에 닿을 수 없다.
+    그래도 분기를 남기는 것은 두 값이 어긋나게 설정될 수 있기 때문이다.
 
-    pin 만으로 상한을 넘으면 상한을 넘긴 채 보존하고 경고한다 — 저장 폭주 방어보다 사용자 편집
-    보존이 앞선다. 그 상태는 정리·초기화 신호이지(REQ-PGRAPH-005) 조용히 지울 근거가 아니다.
     동률은 `edge_id` 로 갈라 절단 결과까지 결정론적으로 만든다.
     """
-    if len(edges) <= limit:
-        return edges
+    pinned = [e for e in edges if _is_pinned(e)]
+    rest = [e for e in edges if not _is_pinned(e)]
+    active_cap = settings.profile_graph_max_edges
+    superseded_cap = settings.profile_graph_max_superseded_edges
 
-    kept = [e for e in edges if _is_pinned(e)]
-    if len(kept) >= limit:
-        if len(kept) > limit:
-            logger.warning(
-                "profile_graph_protected_over_cap",
-                extra={
-                    "protected": len(kept),
-                    "limit": limit,
-                    "dropped": len(edges) - len(kept),
-                },
-            )
-        return kept
+    def _keep(bucket: list[GraphEdge], cap: int) -> list[GraphEdge]:
+        if len(bucket) <= cap:
+            return bucket
+        # 확신도 높은 순으로 남긴다. 동률은 `edge_id` 오름차순.
+        return sorted(bucket, key=lambda e: (-e.confidence, e.edge_id))[:cap]
 
-    rest = sorted(
-        (e for e in edges if not _is_pinned(e)),
-        # 아래 slice 는 **앞쪽을 보존**한다. `status == "active"` 가 False(0) < True(1) 라
-        # superseded 가 앞서고, 그래서 active 가 먼저 밀린다 — 의도대로다(docstring 근거 참조).
-        key=lambda e: (e.status == "active", -e.confidence, e.edge_id),
+    kept = [
+        *pinned,
+        *_keep([e for e in rest if e.status == "active"], active_cap),
+        *_keep([e for e in rest if e.status != "active"], superseded_cap),
+    ]
+
+    # **경고는 문서 총량으로 낸다.** 종전 `profile_graph_protected_over_cap` 은 "pin 을 지키느라
+    # 남을 버렸다"를 알렸는데, 바구니를 나누면서 그 사건 자체가 없어져 발화 조건을 잃었다.
+    # 남는 관심사는 단일 jsonb 가 커지는 것 하나뿐이고, 다른 두 바구니가 상한에 묶여 있으므로
+    # **초과분은 정의상 pin** 이다 — 그래서 새 튜너블 없이 파생 임계로 잰다. 상한을 넘긴 문서는
+    # 정리·초기화 신호이지(REQ-PGRAPH-005) 조용히 지울 근거가 아니다.
+    if len(kept) > active_cap + superseded_cap:
+        logger.warning(
+            "profile_graph_pins_over_budget",
+            extra={"pins": len(pinned), "edges": len(kept), "budget": active_cap + superseded_cap},
+        )
+    return kept
+
+
+def _truncate_tombstones(
+    tombstones: list[GraphTombstone], *, settings: Settings
+) -> list[GraphTombstone]:
+    """tombstone 목록 상한 — 넘으면 `suppressed_at` **오래된 순**으로 버린다 (#359).
+
+    #499/#358 이 tombstone 을 `edges` 밖 별도 목록으로 빼면서 상한이 아예 없어졌다. 항목당 필드
+    3개라 증가 폭은 작지만 단조 증가라 단일 jsonb 가 무한히 커진다.
+
+    **오래된 것부터 버리는 이유**: 최근에 지운 취향일수록 그 원문이 fact 저장소에 남아 있을
+    가능성이 높아 재파생 위험이 크다. 오래된 표식은 근거가 이미 fact cap 으로 밀려났을 확률이
+    높다. 잔여 리스크는 0 이 아니다 — edge 의 근거 목록이 `graph_evidence_refs_max` 로 잘려 있어
+    개별 삭제가 원문을 **전부** 지웠다고 보장할 수 없다(REQ-PGRAPH-005 잔여 리스크 항).
+    """
+    cap = settings.profile_graph_max_tombstones
+    if len(tombstones) <= cap:
+        return tombstones
+    dropped = len(tombstones) - cap
+    logger.warning(
+        "profile_graph_tombstones_over_cap",
+        extra={"tombstones": len(tombstones), "limit": cap, "dropped": dropped},
     )
-    return kept + rest[: limit - len(kept)]
+    # 동률은 `edge_id` 로 갈라 결정론을 유지한다.
+    return sorted(tombstones, key=lambda t: (t.suppressed_at, t.edge_id))[dropped:]
 
 
 def _reassert_pins(edges: list[GraphEdge], *, prior: dict[str, GraphEdge]) -> list[GraphEdge]:

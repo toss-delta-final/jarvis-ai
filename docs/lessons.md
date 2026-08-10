@@ -922,6 +922,16 @@
 - 관련: `app/agents/profile/graph_merge.py::_truncate`,
   `tests/unit/test_profile_consolidate_graph.py::test_truncated_superseded_edge_lets_the_losing_preference_back_into_summary`,
   이슈 #356 / PR #410
+- **후속 [2026-08-10, #359]** — 이 항목이 지킨 **비대칭은 그대로 유효**하고, **실현 방식만 바뀌었다.**
+  `_truncate` 가 단일 상한에서 바구니별 상한(pin 무제한 / `active` / `superseded`)으로 개정되면서
+  두 등급이 더는 **경쟁하지 않는다** — "동률에서 이긴다"가 "자기 예산을 보장받는다"가 됐다.
+  그래서 방향을 재던 `test_truncation_drops_active_before_superseded` 는
+  `test_superseded_is_not_evicted_by_the_active_cap` 으로 대체됐다. 보호는 오히려 세졌다:
+  종전 `superseded` 의 실효 예산은 `상한 − |pin|` 이었는데 이제 자기 상한 전량이다.
+  **이 항목을 지우지 않는 이유**는 근거(요약 입력이 "문서에 없는 edge_key 는 active 로 간주"하는
+  비대칭)가 여전히 그 설계를 떠받치고 있어서다 — 바구니를 다시 합치려는 변경이 오면 여기부터 읽어야
+  한다. 뒤집은 쪽(단일 상한)은 `superseded` 가 근거 0건으로 영구 이월되며 단조 누적돼 **active 를
+  0개로 만드는** 별개 결함이 있었다(#150 코멘트 2026-08-09).
 
 ---
 

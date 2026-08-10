@@ -1114,23 +1114,108 @@ def test_edges_are_sorted_by_total_order(settings: Settings) -> None:
     assert [n.node_id for n in document.nodes] == sorted(n.node_id for n in document.nodes)
 
 
+def test_superseded_pile_cannot_starve_active_edges(settings: Settings) -> None:
+    """**`superseded` 가 아무리 쌓여도 `active` 자리를 먹지 않는다** (REQ-PGRAPH-005, #359).
+
+    단일 상한에서는 보존 우선순위가 높은 쪽이 자리를 독차지했다. `superseded` 는 근거가 0건이어도
+    `_carried_tombstones` 가 영구 이월하므로 **단조 누적**되는데 `active` 보다 먼저 보존되어,
+    개수가 `상한 − |pin|` 에 이르면 active 가 하나도 안 남았다. 밀려난 active 는 투영에 없어
+    사용자가 `edgeId` 를 모르니 지울 수도 없는데 근거 fact 는 살아 있어 요약·추천에는 계속
+    반영된다 — **지울수록 못 지우는 게 늘어나는 되먹임**이다(이슈 #150 코멘트 2026-08-09).
+    """
+    tight = Settings(
+        _env_file=None, profile_graph_max_edges=5, profile_graph_max_superseded_edges=5
+    )
+    # 상한(5)만큼의 superseded 를 쌓아 둔다.
+    piled = [
+        _stored_edge(
+            f"브랜드{i}",
+            status="superseded",
+            superseded_by=make_edge_id(f"avoids|brand:브랜드{i}"),
+            confidence=0.5,
+        )
+        for i in range(5)
+    ]
+    existing = _document_of(piled)
+    # 각 패자의 승자에게 **이번 배치 근거를 준다** — 승자가 사라지면
+    # `_revive_orphan_superseded` 가 더미를 전부 active 로 되살려 시나리오가 성립하지 않는다
+    # (그러면 테스트가 엉뚱한 이유로 초록불이 된다).
+    facts = [
+        _fact(
+            f"w{i}",
+            triples=[_triple(f"brand:브랜드{i}", "avoids", label=f"브랜드{i}", salience=0.5)],
+        )
+        for i in range(5)
+    ]
+    # 관심 대상 — 확신도를 가장 높게 줘서 active 바구니 안 정렬에서도 확실히 살아남게 한다.
+    facts.append(_fact("f1", triples=[_triple("brand:소니", label="소니", salience=0.99)]))
+
+    document = build_graph_document(facts, existing=existing, settings=tight, now=NOW)
+
+    assert {e.status for e in document.edges if e.edge_key.startswith("likes|brand:브랜드")} == {
+        "superseded"
+    }  # 더미가 실제로 superseded 로 남아 있어야 이 테스트가 무언가를 잰다
+    assert _edge_by_key(document, "likes|brand:소니") is not None
+
+
+def test_tombstones_are_capped_oldest_first(settings: Settings) -> None:
+    """tombstone 목록도 상한을 갖는다 — 넘으면 `suppressed_at` 오래된 순으로 버린다.
+
+    #499/#358 이 tombstone 을 `edges` 밖 별도 목록으로 빼면서 **상한이 아예 없어졌다**. 항목당
+    필드 3개라 증가 폭은 작지만 단조 증가라 단일 jsonb 가 무한히 커진다. 버리면 그 취향이
+    부활할 수 있다는 잔여 리스크는 낮다 — 개별 삭제가 원문을 물리 삭제하므로 재파생할 fact 가
+    대부분 없다(REQ-PGRAPH-005 잔여 리스크 항 참조).
+    """
+    tight = Settings(_env_file=None, profile_graph_max_tombstones=2)
+    existing = _document_of(
+        [],
+        tombstones=[
+            GraphTombstone(
+                edge_id=make_edge_id(f"likes|brand:{label}"),
+                suppressed_at=stamp,
+                user_intent=None,
+            )
+            for label, stamp in (
+                ("오래된", "2026-01-01T00:00:00+00:00"),
+                ("중간", "2026-05-01T00:00:00+00:00"),
+                ("최근", "2026-08-01T00:00:00+00:00"),
+            )
+        ],
+    )
+
+    document = build_graph_document([], existing=existing, settings=tight, now=NOW)
+
+    assert {t.edge_id for t in document.tombstones} == {
+        make_edge_id("likes|brand:중간"),
+        make_edge_id("likes|brand:최근"),
+    }
+
+
 def test_truncation_keeps_pins_first(settings: Settings) -> None:
-    """상한을 넘기면 자르되 pin 을 먼저 지킨다 — 절단으로 사용자 편집이 사라지면 안 된다."""
+    """pin 은 절단으로 사라지지 않는다 — 사용자 편집에는 복구 경로가 없다.
+
+    **[#359] 이제 pin 은 active 예산 밖이므로 문서에 둘 다 남는다.** 종전에는 상한 1 안에서
+    pin 이 자리를 차지해 신규 active 가 밀렸다(그리고 그 밀림이 없애야 할 되먹임이었다).
+    이 테스트가 재는 것은 처음부터 "pin 이 남는가" 였으므로 단언을 그쪽으로 좁힌다.
+    """
     tight = Settings(_env_file=None, profile_graph_max_edges=1)
     existing = _document_with(user_intent=_pin())
     facts = [_fact("f1", triples=[_triple("brand:애플", label="애플")])]
 
     document = build_graph_document(facts, existing=existing, settings=tight, now=NOW)
 
-    assert len(document.edges) == 1
-    assert document.edges[0].user_intent is not None
+    assert any(e.user_intent is not None for e in document.edges)
 
 
 def test_truncation_never_drops_pins_even_past_the_cap(settings: Settings) -> None:
-    """pin 이 상한보다 많아도 하나도 잘리지 않는다 — 상한을 넘겨서라도 지킨다.
+    """pin 은 개수가 얼마든 하나도 잘리지 않는다 — 상한을 넘겨서라도 지킨다.
 
     `active`·`superseded` 는 잘려도 재파생으로 자기복구되지만 pin 은 복구 경로가 없다. 잘리는
     순간 "기계 재파생에 덮이지 않는다"(REQ-PGRAPH-031)는 보장이 저장 상한 때문에 깨진다.
+
+    **[#359] pin 에는 이제 상한 자체가 없다** — "상한보다 많아도" 라는 전제가 사라졌다. 그래도
+    이 테스트는 남긴다: 바구니를 나눈 뒤에도 pin 이 어느 상한에도 안 걸리는지가 [HARD] 이고,
+    나중에 pin 바구니에 상한을 도입하려는 변경이 여기서 걸린다.
     """
     tight = Settings(_env_file=None, profile_graph_max_edges=2)
     existing = _document_of(
@@ -1191,7 +1276,12 @@ def test_truncation_drops_machine_superseded_before_user_pins(settings: Settings
     그래서 둘을 같은 등급으로 두지 않는다 — 밀려나는 쪽은 항상 기계 판정이다.
     문서 등장 순서가 아니라 확신도로 갈리는지도 함께 고정한다(순서 우연으로 통과하지 않게).
     """
-    tight = Settings(_env_file=None, profile_graph_max_edges=2)
+    # **[#359] 바구니가 갈려 superseded 전용 상한으로 조인다.** 종전에는 단일 상한 2 안에서
+    # pin·superseded·active 가 함께 경쟁했으나, 이제 각 바구니가 자기 예산을 쓴다 — 그래서
+    # superseded 등급 **안의** 우선순위를 재려면 그 바구니를 직접 조여야 한다.
+    tight = Settings(
+        _env_file=None, profile_graph_max_edges=10, profile_graph_max_superseded_edges=1
+    )
     # 두 패자에게 **문서·근거 양쪽에 있는 승자**를 준다 — 상대가 없으면 `_revive_orphan_superseded`
     # 가 둘 다 active 로 되살려, 이 테스트가 재려는 "superseded 등급 안의 우선순위"가 성립하지 않는다.
     existing = _document_of(
@@ -1208,7 +1298,7 @@ def test_truncation_drops_machine_superseded_before_user_pins(settings: Settings
                 superseded_by=make_edge_id("avoids|brand:삼성"),
                 confidence=0.9,
             ),
-            _stored_edge("소니", user_intent=_pin()),
+            _pinned_edge("소니"),
         ]
     )
     facts = [
@@ -1218,23 +1308,30 @@ def test_truncation_drops_machine_superseded_before_user_pins(settings: Settings
 
     document = build_graph_document(facts, existing=existing, settings=tight, now=NOW)
 
-    assert len(document.edges) == 2
     sony = _edge_by_key(document, "likes|brand:소니")
     assert sony is not None and sony.user_intent is not None  # 사용자 편집은 무조건 남고
     assert _edge_by_key(document, "likes|brand:삼성") is not None  # 확신도 높은 쪽이 남고
     assert _edge_by_key(document, "likes|brand:애플") is None  # 낮은 쪽이 밀린다
 
 
-def test_truncation_drops_active_before_superseded(settings: Settings) -> None:
-    """`active` 가 `superseded` 보다 **먼저** 밀린다 — 잃는 것이 서로 다르기 때문이다.
+def test_superseded_is_not_evicted_by_the_active_cap(settings: Settings) -> None:
+    """`active` 상한이 꽉 차도 `superseded` 는 자기 예산에서 산다 (REQ-PGRAPH-005, #359).
 
-    `active` 가 잘려도 그 fact 는 `_summary_input` 에 그대로 남지만(문서에 없는 edge_key 는
-    `active` 로 간주된다), `superseded` 가 잘리면 같은 규칙 때문에 **진 취향이 요약에 되살아난다.**
-    방향을 반대로 읽기 쉬운 지점이라(PR #410 리뷰) 순서 자체를 여기서 고정한다.
+    **이 테스트는 `test_truncation_drops_active_before_superseded`(#356)를 대체한다.** 그 테스트가
+    지킨 비대칭은 그대로 유효하다 — `active` 가 잘려도 그 fact 는 `_summary_input` 에 남지만
+    (문서에 없는 `edge_key` 는 `active` 로 간주된다), `superseded` 가 잘리면 같은 규칙 때문에
+    **진 취향이 요약에 되살아난다.** 바뀐 것은 **실현 방식**이다: 단일 상한 안에서 "동률에서
+    이긴다" 였던 것이 이제 "자기 예산을 보장받는다" 가 됐다.
+
+    보호는 오히려 세졌다 — 종전 `superseded` 의 실효 예산은 `상한 − |pin|` 이었는데 이제 pin 과
+    무관하게 자기 상한 전량이다.
     """
-    tight = Settings(_env_file=None, profile_graph_max_edges=1)
+    # active 는 한 칸뿐이고 그 자리를 새 관측이 채운다. superseded 는 그 예산과 무관하게 남는다.
+    tight = Settings(
+        _env_file=None, profile_graph_max_edges=1, profile_graph_max_superseded_edges=1
+    )
     # 승자(avoids|brand:애플)를 문서·근거 양쪽에 둔다 — 상대가 없으면 병합이 패자를 되살려
-    # (`_revive_orphan_superseded`) 절단 순서를 재는 시나리오가 성립하지 않는다.
+    # (`_revive_orphan_superseded`) 이 시나리오가 성립하지 않는다.
     winner_key = "avoids|brand:애플"
     existing = _document_of(
         [
@@ -1243,7 +1340,6 @@ def test_truncation_drops_active_before_superseded(settings: Settings) -> None:
             )
         ]
     )
-    # 새 active 는 확신도가 훨씬 높다 — 그래도 superseded 가 남아야 한다(확신도로 갈리지 않는다).
     facts = [
         _fact("f1", triples=[_triple("brand:애플", "avoids", label="애플")]),
         _fact("f2", triples=[_triple("brand:엘지", label="엘지", salience=0.99)]),
@@ -1251,7 +1347,9 @@ def test_truncation_drops_active_before_superseded(settings: Settings) -> None:
 
     document = build_graph_document(facts, existing=existing, settings=tight, now=NOW)
 
-    assert [(e.edge_key, e.status) for e in document.edges] == [("likes|brand:애플", "superseded")]
+    statuses = {e.edge_key: e.status for e in document.edges}
+    assert statuses.get("likes|brand:애플") == "superseded"  # 확신도 0.1 이어도 자기 예산에서 산다
+    assert "avoids|brand:애플" in statuses or "likes|brand:엘지" in statuses  # active 한 칸
 
 
 def test_truncated_flag_records_that_edges_were_dropped(settings: Settings) -> None:
@@ -1332,13 +1430,16 @@ def test_revision_bumps_when_only_truncated_flips(settings: Settings) -> None:
     assert second.revision == first.revision + 1
 
 
-def test_truncation_keeps_active_edges_within_the_remaining_budget(settings: Settings) -> None:
-    """tombstone 이 상한 안이면 남은 자리는 `active` 가 확신도 순으로 채운다.
+def test_pins_do_not_consume_the_active_budget(settings: Settings) -> None:
+    """**pin 은 `active` 예산을 먹지 않는다** — 이 이슈가 만들려는 성질을 정면으로 잰다.
 
-    tombstone 우선이 "이번 배치 반영 0건"을 뜻하지 않는다는 경계다.
+    **`test_truncation_keeps_active_edges_within_the_remaining_budget`(#356)을 뒤집은 것이다.**
+    종전에는 pin 이 상한 2 중 한 칸을 차지해 새 관측 둘 중 하나만 살아남았다("남은 자리"라는
+    이름이 그 구조를 그대로 담고 있다). 그 잠식이 #359 가 없애려는 되먹임의 절반이었다.
+    이제 pin 은 자기 바구니(무제한)에 있고 active 두 칸은 온전히 새 관측 몫이다.
     """
     tight = Settings(_env_file=None, profile_graph_max_edges=2)
-    existing = _document_of([_stored_edge("소니", user_intent=_pin())])
+    existing = _document_of([_pinned_edge("소니")])
     facts = [
         _fact("f1", triples=[_triple("brand:엘지", label="엘지", salience=0.9)]),
         _fact("f2", triples=[_triple("brand:애플", label="애플", salience=0.2)]),
@@ -1346,26 +1447,49 @@ def test_truncation_keeps_active_edges_within_the_remaining_budget(settings: Set
 
     document = build_graph_document(facts, existing=existing, settings=tight, now=NOW)
 
-    assert {e.edge_key for e in document.edges} == {"likes|brand:소니", "likes|brand:엘지"}
+    assert {e.edge_key for e in document.edges} == {
+        "likes|brand:소니",  # pin — 예산 밖
+        "likes|brand:엘지",
+        "likes|brand:애플",  # 종전에는 pin 에 밀려 잘렸다
+    }
 
 
-def test_truncation_logs_when_user_deletions_alone_exceed_the_cap(
+def test_truncation_logs_when_pins_alone_exceed_the_document_budget(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """상한을 넘겨 보존하는 것은 의도된 선택이므로 **조용히** 넘기지 않는다 — 정리 신호다."""
-    tight = Settings(_env_file=None, profile_graph_max_edges=1)
-    existing = _document_of(
-        [
-            _stored_edge("소니", user_intent=_pin()),
-            _stored_edge("애플", user_intent=_pin()),
-        ]
+    """pin 이 문서를 부풀리는 것은 **조용히** 넘기지 않는다 — 정리·초기화 신호다.
+
+    **[#359] 경고 조건이 바뀌었다.** 종전 `profile_graph_protected_over_cap` 은 "pin 을 지키느라
+    남을 버렸다" 를 알렸는데, 바구니를 나누면서 **버리는 일 자체가 없어져** 발화 조건이 사라졌다.
+    남는 관심사는 문서 총량 하나뿐이라 그쪽으로 옮겼다:
+    `len(edges) > active 상한 + superseded 상한`. 다른 두 바구니가 상한에 묶여 있으므로
+    **초과분은 정의상 pin** 이고, 그래서 새 튜너블 없이 파생 임계로 잰다.
+    """
+    tight = Settings(
+        _env_file=None, profile_graph_max_edges=1, profile_graph_max_superseded_edges=1
     )
+    existing = _document_of([_pinned_edge("소니"), _pinned_edge("애플"), _pinned_edge("삼성")])
 
     with caplog.at_level(logging.WARNING, logger="app.agents.profile.graph_merge"):
         document = build_graph_document([], existing=existing, settings=tight, now=NOW)
 
-    assert len(document.edges) == 2  # 상한(1)을 넘겨서라도 삭제는 지킨다
-    assert "profile_graph_protected_over_cap" in caplog.text
+    assert len(document.edges) == 3  # pin 은 상한을 넘겨서라도 보존한다
+    assert "profile_graph_pins_over_budget" in caplog.text
+
+
+def test_truncation_stays_quiet_when_pins_fit_the_document_budget(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """총량 안이면 경고하지 않는다 — 매 배치 울리면 신호 노릇을 못 한다."""
+    tight = Settings(
+        _env_file=None, profile_graph_max_edges=5, profile_graph_max_superseded_edges=5
+    )
+    existing = _document_of([_pinned_edge("소니"), _pinned_edge("애플")])
+
+    with caplog.at_level(logging.WARNING, logger="app.agents.profile.graph_merge"):
+        build_graph_document([], existing=existing, settings=tight, now=NOW)
+
+    assert "profile_graph_pins_over_budget" not in caplog.text
 
 
 # ─────────── revision ───────────
