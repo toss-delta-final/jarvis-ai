@@ -148,6 +148,20 @@ class GraphEdge(BaseModel):
     sensitive_topic: str | None  # 보존기간 판정용 — **와이어 미노출**(§6.8)
 
 
+def is_projected(edge: "GraphEdge") -> bool:
+    """이 edge 가 **와이어 투영(I-32 `edges[]`)에 실리는가** (#360).
+
+    정본 `I-32` 는 *"`edges` 는 `active` 만 싣는다"* 이고, 민감 파생은 **어떤 카운트에도 세지
+    않는다**(REQ-PGRAPH-076 [HARD]). 두 조건이 전부다 — `promoted` 는 병합 엔진 내부의 확신도
+    히스테리시스 값이지 노출을 가르는 스위치가 아니다(SPEC v0.3.3 에서 정정).
+
+    **술어를 여기 한 곳에 두는 이유**: 투영과 I-36 의 `purged.edges` 가 **같은 모집단**을 세야
+    화면 문구("취향 12건")와 초기화 응답이 어긋나지 않는다. 두 곳에 손으로 같은 조건을 적으면
+    한쪽만 고치는 순간 조용히 갈라진다.
+    """
+    return edge.status == "active" and not edge.derived_from_sensitive
+
+
 class GraphTombstone(BaseModel):
     """지운 취향의 **재파생 차단 표식** — 라벨을 담지 않는다 (§6.3, #499).
 

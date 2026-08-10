@@ -36,7 +36,7 @@ from app.agents.profile.graph_errors import (
     GraphStoreUnavailable,
     GraphVersionConflict,
 )
-from app.agents.profile.graph_models import GraphDocument, GraphNode
+from app.agents.profile.graph_models import GraphDocument, GraphNode, is_projected
 from app.agents.profile.graph_mutations import apply_correction, apply_suppression
 from app.core.config import get_settings
 from app.core.observability import identifier_fingerprint
@@ -845,6 +845,9 @@ class GraphMutationResult:
     edge_id: str | None = None
     merged: bool = False
     suppressed: bool = False
+    # I-36 전용. 라벨이 아니라 **개수만**이라 여기 실어도 노출 경계를 넘지 않는다
+    # (api-spec §3.9.4 `purged` — 정확히 `{edges, transcriptTurns}` 2키).
+    purged: dict[str, int] | None = None
 
 
 def graph_version(revision: int) -> str:
@@ -1183,16 +1186,37 @@ async def reset_graph(
                         mutation_key=key,
                     )
                     await complete(key, token, pending.response_payload)
-                    return GraphMutationResult(graph_version=intended, replayed=True)
+                    return GraphMutationResult(
+                        graph_version=intended,
+                        replayed=True,
+                        purged=pending.response_payload.get("purged"),
+                    )
 
             revision = await next_revision(user_id=user_id, existing=document)
             after = graph_version(revision)
-            purged = await store.purge_personal_data(str(user_id))
+            # **개수는 지우기 전에 센다.** 지운 뒤에 세면 전부 0 이다.
+            # 세는 대상은 **사용자가 I-32 에서 보던 것**이라야 화면 문구("취향 12건")와 맞는다 —
+            # 그래서 투영과 같은 술어(`is_projected`)를 쓴다. 저장 문서의 edge 를 통째로 세면
+            # `superseded`·민감 파생까지 들어가 사용자가 본 적 없는 수가 나간다(REQ-PGRAPH-076 [HARD]).
+            visible_edges = (
+                sum(1 for edge in document.edges if is_projected(edge)) if document else 0
+            )
+            internal = await store.purge_personal_data(str(user_id))
             turns = await _delete_transcripts(user_id)
             # 진행 중인 이 초기화의 키는 남긴다 — 지우면 아래 `complete` 가 쓴 표식이 사라져
             # 초기화 재전송이 다시 실행된다.
             await invalidate_ledger(user_id=user_id, keep=key)
-            payload = {"graphVersion": after, "purged": {**purged, "conversationTurns": turns}}
+            # `purge_personal_data` 가 돌려주는 `{facts, summary, buffers}` 는 **와이어에 나가지
+            # 않는다** — api-spec §3.9.4 의 `purged` 는 정확히 2키다. 사용자가 만든 적 없는 내부
+            # 구조를 세어 보여줄 이유가 없다(v0.32.0 이 5키 → 2키로 줄인 근거).
+            logger.info(
+                "profile_graph_reset_internal_counts",
+                extra={"actorFp": identifier_fingerprint(str(user_id)), **internal},
+            )
+            payload = {
+                "graphVersion": after,
+                "purged": {"edges": visible_edges, "transcriptTurns": turns},
+            }
             # 문서 교체 **전에** 의도를 남긴다 — 교체 뒤 끊기면 재개가 이 값으로 응답을 재구성한다.
             await record_intent(key, token, payload)
             await store.set_graph(
@@ -1209,7 +1233,9 @@ async def reset_graph(
                 mutation_key=key,
             )
             await complete(key, token, payload)
-            return GraphMutationResult(graph_version=after, replayed=False)
+            return GraphMutationResult(
+                graph_version=after, replayed=False, purged=payload["purged"]
+            )
         except GraphMutationError:
             raise
         except Exception as exc:
@@ -1305,6 +1331,9 @@ async def _replay_if_completed(
         edge_id=payload.get("edgeId"),
         merged=bool(payload.get("merged")),
         suppressed=bool(payload.get("suppressed")),
+        # 재전송은 **최초 응답 본문 그대로**다(REQ-PGRAPH-043). 이 시점에는 이미 다 지워져
+        # 있어 다시 세면 전부 0 이므로, 원장이 든 값을 그대로 돌려줘야 한다.
+        purged=payload.get("purged"),
     )
 
 
