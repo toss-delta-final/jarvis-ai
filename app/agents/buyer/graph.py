@@ -1459,6 +1459,51 @@ async def run_buyer_turn(
         and classify_cart_utterance(request.message, settings) == "cart_remove"
         and has_deceptive_wishlist_marker(request.message, settings)
     )
+    # [#571] 이 턴에 사용자가 **보고 있는 상품 표면**을 한 번만 계산한다 — 화면 표면
+    # (`screen.products`)이 있으면 그것을 쓰고, 없고 추천 카드(이번 턴 push 분, §2 결정 1)가
+    # 있으면 그것을 쓴다. 화면 표면은 순번 게이트가 항상 참(오늘과 완전히 동일 — `columns` 도
+    # `screen.columns` 그대로)이고 이름 확정(N)은 꺼져 있다(화면 표면에서 (N) 을 켜면 F-8 이
+    # 되살아난다, screen_reference.py 상단 참조). 추천 표면은 좌표(`columns`)가 없어 좌표 지시는
+    # 항상 되물음으로 떨어지고(§2 결정 6), 순번 게이트는 `ordinal_span`(표시 순서 = 저장 순서
+    # 증명, §2 결정 2)이 이번 턴 카드 수와 정확히 일치할 때만 열리며, 이름 확정(N)은 켜져 있다
+    # (배열이 곧 이름 출처인 표면이라 F-8 이 재발하지 않는다, §2 결정 3). 둘 다 없으면 `surface`
+    # 가 빈 리스트라 아래 게이트가 애초에 닫힌다 — #240 대조군(screen 도 last_reco 도 없는 요청)
+    # 은 구조적으로 이 블록에 닿지 않는다.
+    screen_products = (
+        [(p.product_id, p.name) for p in screen.products]
+        if (screen is not None and screen.products)
+        else []
+    )
+    reco_cards = last_reco[: reco_state.turn_count]
+    if screen_products:
+        surface = screen_products
+        surface_columns = screen.columns if screen is not None else None
+        surface_positional_order_verified = True
+        surface_name_confirmation_enabled = False
+    # [F-h, 라운드 3 리뷰] `screen is None and ...` — `screen_products`(위)는 "screen 자체가
+    # 없다"와 "screen 은 왔는데 정제 후 products 가 0건"을 똑같이 falsy `[]` 로 뭉갠다. 후자에서
+    # `elif reco_cards:` 로 그냥 넘어가면 사용자가 지금 보고 있는(비어 있는) 화면과 무관한
+    # **이전 턴 추천 카드**로 순번·이름 해소가 돌아 오담기가 난다(재현: 이전 턴 카드 A·B·C
+    # + 이번 턴 `screen.products == []` + `"3번째 거 담아줘"` → C 오확정). 바로 아래
+    # `screen_reference_attempted` 의 F29 주석이 이미 세운 구분("화면이 없다"는 FE 가 `screen`
+    # 자체를 안 보냈다는 뜻이지, 화면은 왔는데 정제 후 상품이 비었다는 뜻이 아니다)과 정확히
+    # 같은 원칙을 여기서도 지킨다 — 후자는 "표면은 있는데 확정할 게 없다"(F21 사례)이지 "다른
+    # 표면으로 갈아탄다"가 아니다. `screen is None` 으로 좁히면 화면이 왔지만 비어 있는 턴은
+    # `surface = []`(아래 else)로 떨어져 해소기를 아예 돌리지 않는다 — #571 이전 동작(LLM 산출
+    # 존중 + `allowed` 가드 유지)과 같다.
+    elif screen is None and reco_cards:
+        surface = reco_cards
+        surface_columns = None
+        surface_positional_order_verified = (
+            reco_state.ordinal_span > 0 and reco_state.ordinal_span == reco_state.turn_count
+        )
+        surface_name_confirmation_enabled = True
+    else:
+        surface = []
+        surface_columns = None
+        surface_positional_order_verified = False
+        surface_name_confirmation_enabled = False
+
     cart_intent = decision.cart or CartIntent()
     screen_reason: str | None = None
     screen_resolved = False
@@ -1468,27 +1513,39 @@ async def run_buyer_turn(
     ):
         # [#118] 화면 지시어는 **코드가 해소**한다 — 순번·좌표·"후보 1건" 은 결정적인 규칙이라
         # 확률적 계층에 맡길 이유가 없고, 맡겼더니 사용자가 말하지 않은 상품을 확정하는 일이
-        # 잦았다(실측표는 screen_reference 모듈 docstring). `screen.products` 가 있는 턴에만
-        # 돌아서 #240 회귀 대조군(전부 screen 없음)에는 구조적으로 닿지 않는다. 옵션 되물음
-        # 중에는 "2번"이 화면 순번이 아니라 옵션 번호라 아예 건너뛴다.
-        if screen is not None and screen.products and screen_context_active:
+        # 잦았다(실측표는 screen_reference 모듈 docstring). [#571] `screen.products` 뿐 아니라
+        # 추천 카드 표면이 있는 턴에도 돌아서, #240 회귀 대조군(screen 도 last_reco 도 없는
+        # 요청)에는 여전히 구조적으로 닿지 않는다(위 `surface` 계산 참조). 옵션 되물음 중에는
+        # "2번"이 화면 순번이 아니라 옵션 번호라 아예 건너뛴다.
+        if surface and screen_context_active:
             resolved = resolve_screen_reference(
                 request.message,
-                products=[(p.product_id, p.name) for p in screen.products],
-                columns=screen.columns,
+                products=surface,
+                columns=surface_columns,
                 allowed_product_ids=allowed,
                 deictic_markers=settings.screen_deictic_markers,
                 context_reference_markers=settings.screen_context_reference_markers,
                 # [6차 리뷰] 이름 지목 검사(양보 (B))가 화면 상품만 보면, 직전 추천에만 있는
                 # 이름을 지목했을 때 순번 규칙이 이겨 화면의 다른 상품으로 override 한다(오담기,
                 # screen_reference.py 상단 F-8). `last_reco` 는 위에서 `allowed` 를 만들 때 이미
-                # 손에 쥔 값을 그대로 넘긴다.
+                # 손에 쥔 값을 그대로 넘긴다(누적 전체 — 추천 표면에서도 승계분 이름까지 봐야
+                # F-8 이 산다).
                 last_recommendation_products=last_reco,
+                positional_order_verified=surface_positional_order_verified,
+                name_confirmation_enabled=surface_name_confirmation_enabled,
+                negation_markers=settings.utterance_negation_markers,
+                prefix_negation_markers=settings.utterance_prefix_negation_markers,
             )
             if resolved is not None:
                 logger.info(
                     "screen_reference_resolved",
-                    extra={"reason": resolved.reason, "forced_null": resolved.product_id is None},
+                    extra={
+                        "reason": resolved.reason,
+                        "forced_null": resolved.product_id is None,
+                        # [#571] #435 가 요구한 관측성의 연장 — 어느 표면이 해소했는지만 남긴다
+                        # (상품명·발화 원문은 여전히 싣지 않는다).
+                        "surface": "screen" if screen_products else "reco",
+                    },
                 )
                 cart_intent = replace(cart_intent, product_id=resolved.product_id)
                 # 되물음 문구를 가르는 신호로만 넘긴다 — 확정된 사유는 문구와 무관하다. 찜
@@ -1543,9 +1600,22 @@ async def run_buyer_turn(
     #
     # `stream_wishlist_remove`·`stream_cart_add` 세 위임 경로가 이 두 원자를 공유한다(아래 세
     # 호출부, 중복 계산 금지).
-    screen_reference_attempted = screen is not None and mentions_screen_reference(
-        request.message, settings
-    )
+    #
+    # **[#571 결정 5]** `screen is not None` 만으로는 이제 부족하다 — 해소기가 추천 표면
+    # (`surface`, 위 계산)에서도 돌기 시작하면서 "화면을 가리키려 시도했다"가 추천 카드 턴에도
+    # 성립할 수 있다. 넓히지 않으면 `"이거 찜에서 빼줘"`(추천 카드 3건, 찜 1건)에서 `surface`
+    # 가 추천 카드를 쥐고 해소기가 그중 하나로 확정하거나 되물음을 강제해도, 이 원자가 그 사실을
+    # 몰라 규칙 3(목록 1건 자동 삭제)이 **사용자가 가리키지 않은 찜 항목을 지운다** — #440 라운드
+    # 10·11 리뷰(F27·F29)가 화면 표면에서 막은 것과 같은 클래스의 파괴적 동작이다(패킷 §4 결정
+    # 5). `screen is not None` 항은 그대로 둔다(위 F29 실측 수정 — 화면은 왔는데 정제 후 상품이
+    # 0건인 케이스를 여전히 잡아야 한다) — 추천 표면을 **또는(or)** 으로 더할 뿐 빼지 않는다.
+    # [F-g] `surface` 는 `screen_context_active`(옵션 되물음 여부)와 무관하게 계산된다 — 되물음
+    # 턴에도 추천 카드는 화면에 남아 있고, 화면 표면(`screen is not None`)이 오늘 이미 그렇게
+    # 동작한다(그 항도 `screen_context_active` 로 게이트되지 않는다) — 추천 표면에 같은 규칙을
+    # 적용한 것뿐이라 새 비대칭이 생기지 않는다(우연이 아니라 판단이다).
+    screen_reference_attempted = (
+        screen is not None or bool(surface)
+    ) and mentions_screen_reference(request.message, settings)
 
     if decision.intent == "cart_add":
         if trace := current_request_trace():

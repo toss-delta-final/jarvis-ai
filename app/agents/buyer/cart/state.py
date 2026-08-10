@@ -60,10 +60,16 @@ class LastReco:
     `turn_count` 는 그중 앞에서 몇 건이 **직전 추천 턴 하나**에서 온 것인지다. 프롬프트에 승계분을
     실을지 말지를 호출부가 이걸로 가른다 — 왜 필요한지는 `app/agents/buyer/graph.py` 의
     `prompt_reco` 주석에 실측 수치와 함께 적어 뒀다.
+
+    `ordinal_span`(#571) — **이번 턴 push 가 목록 1개였을 때 그 목록의 카드 수.** 0 = 순번을
+    셀 수 없음(다목록·BUY_ALL) 또는 모름(구버전 행). 추천 카드 표면에서 순번 규칙("3번째 거")을
+    켤지 판정하는 데 쓴다 — `app/agents/buyer/screen_reference.py` 의 `positional_order_verified`
+    참조.
     """
 
     items: list[tuple[int, str]]
     turn_count: int
+    ordinal_span: int = 0
 
 
 @dataclass
@@ -99,6 +105,7 @@ class CartStateStore:
         items: list[tuple[int, str]],
         *,
         option_hints: dict[int, OptionHint] | None = None,
+        ordinal_span: int | None = None,
     ) -> None:
         """이번 턴 추천을 **스레드 누적 목록에 합류**시킨다 (#118 — 담기 가드의 시간 축 보존).
 
@@ -149,6 +156,8 @@ class CartStateStore:
                     # merged 는 이번 턴 항목으로 시작하고 상한이 그것들을 자르지 않으므로
                     # 앞 len(items) 건이 곧 이번 턴 분량이다(방어적으로 clamp).
                     "turn_count": min(len(items), len(capped)),
+                    # #571 — 표시 순서 = 저장 순서임이 증명된 경우에만 호출부가 채운다(0 = 모름).
+                    "ordinal_span": ordinal_span if ordinal_span is not None else 0,
                 },
             )
         )
@@ -215,7 +224,19 @@ class CartStateStore:
             and 0 <= raw_turn_count <= len(items)
         )
         turn_count = raw_turn_count if usable else len(items)
-        return LastReco(items=items, turn_count=turn_count)
+        # #571 — turn_count 와 같은 방어 규약(정수·bool 아님·범위 내)으로 읽되, degrade 방향은
+        # **반대**다. turn_count 를 못 믿으면 "전량을 이번 턴으로"(오늘 동작 보존)가 안전하지만,
+        # ordinal_span 을 못 믿으면 "순번을 안 쓴다"(0)가 안전하다 — 이 값은 순번 규칙을 **켜는**
+        # 신호라, 못 믿는 값을 그대로 쓰면 표시 순서와 저장 순서가 어긋난 턴에서 다른 상품이
+        # 확정되는 오담기로 이어진다(§2 결정 2). 모르면 개입하지 않는 쪽이 이 필드의 안전 방향이다.
+        raw_ordinal_span = item.value.get("ordinal_span")
+        ordinal_span_usable = (
+            isinstance(raw_ordinal_span, int)
+            and not isinstance(raw_ordinal_span, bool)
+            and 0 <= raw_ordinal_span <= len(items)
+        )
+        ordinal_span = raw_ordinal_span if ordinal_span_usable else 0
+        return LastReco(items=items, turn_count=turn_count, ordinal_span=ordinal_span)
 
     async def get_option_hint(self, key: str, product_id: int) -> OptionHint | None:
         """이슈 #455 — I-1 옵션 힌트 조회. 캐시 미스면 `None`(재시작·다중 인스턴스는 오늘 경로로

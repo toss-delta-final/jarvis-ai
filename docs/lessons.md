@@ -25,6 +25,27 @@
 
 ---
 
+## [2026-08-10] 함수 시그니처 변경은 `grep -rn`으로 전체 저장소를 훑어야 한다 — `app/`·`tests/`만으로는 부족
+- 증상: #571 에서 `resolve_screen_reference()`에 기본값 없는 키워드 인자 4개를 추가한 뒤
+  `app/`·`tests/unit/`의 호출부는 전부 고쳤고 표적 테스트(`test_screen_context.py` 등)와
+  `ruff check`도 통과했는데, `uv run pytest`(전체)에서 `evals/intent_probe/runner.py`의
+  독립 호출부가 `TypeError: missing 4 required keyword-only arguments`로 깨졌다 — 그 파일은
+  `tests/unit/test_intent_probe_runner.py`·`test_intent_probe_cli.py`를 통해서만 간접 실행돼
+  표적 파일 단위 테스트로는 드러나지 않았다.
+- 원인: `app/`이 프로덕션 코드의 전부라고 가정하고 호출부 탐색을 그 디렉터리로 좁혔다. 이
+  저장소는 `evals/`(intent_probe·combo_matrix 러너) 아래에도 프로덕션 함수를 직접 import 해
+  같은 함수를 재현·측정하는 독립 호출부가 있고, 이 디렉터리는 커밋 워크플로의 "ruff format
+  대상 파일" 감각 밖에 있어 놓치기 쉽다.
+- 규칙: 공개 함수의 시그니처(특히 기본값 없는 인자 추가)를 바꾸면 커밋 전에 반드시
+  `grep -rn "함수이름(" --include='*.py' .`로 저장소 전체(app/·tests/·evals/·scripts/ 전부)를
+  훑어 호출부를 센 뒤, 그 개수만큼 고쳤는지 확인한다. `docs/lessons.md` 2026-08-10 「전체
+  pytest」 항목과 같은 교훈이지만 이번엔 "왜 전체를 돌려야 하는가"의 구체 사례 — 표적 테스트
+  통과는 "내가 아는 호출부는 안 깨졌다"만 증명하지 "모든 호출부"를 증명하지 않는다.
+- 관련: #571, `evals/intent_probe/runner.py::_resolve_screen`,
+  `evals/combo_matrix/runner.py::_warm_up_last_reco`(같은 PR에서 발견한 두 번째 회귀 —
+  `resolve_screen_reference`의 새 게이트가 웜업이 실은 다건 카드를 근칭 지시대명사의 "후보
+  다건 → 되물음" 규칙에 걸리게 해 `test_combo_matrix_eval.py` combo-0004·0059 가 깨졌다).
+
 ## [2026-08-10] `uv run ruff format`(경로 없이)은 저장소 전체를 재포맷한다 — 바꾼 파일만 지정할 것
 - 증상: #434 라운드1 마무리에 `uv run ruff check --fix && uv run ruff format`(경로 없음)을
   돌렸더니 32개 파일이 재포맷됐다 — 내가 손댄 건 8개뿐이었는데 `.github/scripts/`·

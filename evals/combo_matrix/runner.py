@@ -56,6 +56,7 @@ from app.services.spring_client import (  # noqa: E402
     WishlistError,
 )
 from evals.combo_matrix.fakes import (  # noqa: E402
+    CATALOG_PRODUCTS,
     RecordingFilteringSearch,
     RecordingPush,
     failing_order_status,
@@ -170,7 +171,7 @@ def _identity_for(axes: dict[str, str], case_id: str) -> Identity:
 
 
 async def _warm_up_last_reco(request, identity) -> None:
-    """cart_add/wishlist_add 의 담기 허용목록(§3.1 [보안])에 productId 101 을 올려 둔다.
+    """cart_add/wishlist_add 의 담기 허용목록(§3.1 [보안])에 productId 101 **하나만** 올려 둔다.
 
     두 인텐트는 `allowed_product_ids`(직전 추천 ∪ screen.products) 밖 상품을 조용히 차단하고
     되물음으로 돌린다(`app/agents/buyer/graph.py:994-1019`) — 이 하네스가 last_reco 를 채우지
@@ -178,6 +179,13 @@ async def _warm_up_last_reco(request, identity) -> None:
     "추천을 먼저 받아보세요" 되물음에서 끝난다(§ 리뷰 R3 관측 중 발견). 같은 thread_id 로 정상
     recommend 턴을 1회 먼저 태워 last_reco 를 채운 뒤 실제 관측 턴을 돌린다 — `get_cart_store()`
     가 공유 백엔드를 감싸므로(cart/state.py:234-236) 두 턴 사이에 상태가 이어진다.
+
+    [#571] 검색 결과를 `CATALOG_PRODUCTS[:1]`(상품 1건)로 좁힌다 — 전체 카탈로그를 그대로
+    넘기면 push 가 여러 건을 노출해 이번 턴의 추천 카드 표면(`last_reco[:turn_count]`)이
+    다건이 되고, "이거 담아줘"(combo-0004)·"이거 찜해줘"(combo-0059) 같은 근칭 지시대명사가
+    해소기의 (4) 규칙("후보 다건이면 되물음")에 걸려 이 하네스가 재려는 CartError/timeout
+    처리 경로 자체에 도달하지 못한다(실제 재현). 이 함수의 계약(§ 위 docstring)이 원래도
+    "productId 101 **하나**"였으므로 이건 그 계약을 실제로 지키는 수정이지 새 동작이 아니다.
     """
     warm_up_decompose = {
         "intent": "recommend",
@@ -190,7 +198,7 @@ async def _warm_up_last_reco(request, identity) -> None:
             request,
             identity,
             llm=ScriptedLLM(decompose=warm_up_decompose),
-            search=make_search(),
+            search=make_search(CATALOG_PRODUCTS[:1]),
             push_fn=RecordingPush(),
             popular_fn=make_popular(),
             order_status_fn=make_order_status_ok,

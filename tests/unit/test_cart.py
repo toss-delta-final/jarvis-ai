@@ -12,7 +12,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.agents.buyer.cart.graph import _options_text, stream_cart_add, stream_cart_view
+from app.agents.buyer.cart.graph import (
+    _options_prompt,
+    _options_text,
+    stream_cart_add,
+    stream_cart_view,
+)
 from app.agents.buyer.cart.options import OptionHint
 from app.agents.buyer.cart.state import CartStateStore, PendingAdd
 from app.agents.buyer.graph import run_buyer_turn as _production_run_buyer_turn
@@ -213,8 +218,10 @@ async def test_cart_option_reask_strips_seller_text() -> None:
     )
 
     token = next(e for e in events if e["type"] == "token")["data"]["text"]
-    assert "블[31m루" in token and "레 드" in token
-    assert all(ch not in token for ch in ("\x1b", "\u200b", "\u202e", "\n"))
+    # 이슈 #570 — 옵션 줄은 이제 "\n" 으로 정당하게 나뉘므로, 옵션명에 실려온 원시 "\n"(레\n드)이
+    # 별도 줄을 만들지 않고 한 줄로 접혔는지(= "레 드")까지 리터럴로 확인한다.
+    assert token == "옵션을 선택해 주세요:\n블[31m루\n레 드\n어떤 걸로 담을까요?"
+    assert all(ch not in token for ch in ("\x1b", "\u200b", "\u202e"))
 
 
 async def test_cart_add_reask_then_success_clears_pending() -> None:
@@ -3020,7 +3027,7 @@ async def test_cart_add_narrowing_no_match_degrades_to_today_text() -> None:
     )
 
     token = next(e for e in events if e["type"] == "token")["data"]["text"]
-    assert token == f"옵션을 선택해 주세요: {_options_text(options)}. 어떤 걸로 담을까요?"
+    assert token == _options_prompt("옵션을 선택해 주세요:", options, "어떤 걸로 담을까요?")
 
 
 async def test_cart_add_narrowing_all_match_degrades_to_today_text() -> None:
@@ -3037,7 +3044,7 @@ async def test_cart_add_narrowing_all_match_degrades_to_today_text() -> None:
 
     assert "action" not in _types(events)
     token = next(e for e in events if e["type"] == "token")["data"]["text"]
-    assert token == f"옵션을 선택해 주세요: {_options_text(options)}. 어떤 걸로 담을까요?"
+    assert token == _options_prompt("옵션을 선택해 주세요:", options, "어떤 걸로 담을까요?")
 
 
 async def test_cart_add_accumulated_condition_does_not_autoselect() -> None:
@@ -3342,7 +3349,7 @@ async def test_cart_add_no_synonym_dictionary_degrades_to_today_text(
     )
 
     token = next(e for e in events if e["type"] == "token")["data"]["text"]
-    assert token == f"옵션을 선택해 주세요: {_options_text(options)}. 어떤 걸로 담을까요?"
+    assert token == _options_prompt("옵션을 선택해 주세요:", options, "어떤 걸로 담을까요?")
 
 
 async def test_cart_add_unresolved_color_condition_reports_not_found(
@@ -3374,10 +3381,10 @@ async def test_cart_add_unresolved_color_condition_reports_not_found(
 
     assert "action" not in _types(events)
     token = next(e for e in events if e["type"] == "token")["data"]["text"]
-    assert token == (
-        "'빨강' 조건에 맞는 옵션은 찾지 못했어요. "
-        f"고를 수 있는 옵션은 이거예요: {_options_text(options)}. "
-        "이 중에서 고르시거나 다른 상품을 말씀해 주세요."
+    assert token == _options_prompt(
+        "'빨강' 조건에 맞는 옵션은 찾지 못했어요. 고를 수 있는 옵션은 이거예요:",
+        options,
+        "이 중에서 고르시거나 다른 상품을 말씀해 주세요.",
     )
     assert "없어요" not in token and "품절" not in token  # 단정 금지(패킷 §3)
 
@@ -3407,7 +3414,7 @@ async def test_cart_add_no_color_axis_keeps_todays_text(monkeypatch: pytest.Monk
     )
 
     token = next(e for e in events if e["type"] == "token")["data"]["text"]
-    assert token == f"옵션을 선택해 주세요: {_options_text(options)}. 어떤 걸로 담을까요?"
+    assert token == _options_prompt("옵션을 선택해 주세요:", options, "어떤 걸로 담을까요?")
 
 
 async def test_cart_add_no_condition_terms_keeps_todays_text(
@@ -3428,7 +3435,7 @@ async def test_cart_add_no_condition_terms_keeps_todays_text(
     )
 
     token = next(e for e in events if e["type"] == "token")["data"]["text"]
-    assert token == f"옵션을 선택해 주세요: {_options_text(options)}. 어떤 걸로 담을까요?"
+    assert token == _options_prompt("옵션을 선택해 주세요:", options, "어떤 걸로 담을까요?")
 
 
 async def test_cart_add_color_condition_fully_matched_keeps_todays_text(
@@ -3455,7 +3462,7 @@ async def test_cart_add_color_condition_fully_matched_keeps_todays_text(
     )
 
     token = next(e for e in events if e["type"] == "token")["data"]["text"]
-    assert token == f"옵션을 선택해 주세요: {_options_text(options)}. 어떤 걸로 담을까요?"
+    assert token == _options_prompt("옵션을 선택해 주세요:", options, "어떤 걸로 담을까요?")
     assert "찾지 못했어요" not in token
 
 
@@ -3484,7 +3491,7 @@ async def test_cart_add_color_synonym_config_off_keeps_todays_behavior(
     )
 
     token = next(e for e in events if e["type"] == "token")["data"]["text"]
-    assert token == f"옵션을 선택해 주세요: {_options_text(options)}. 어떤 걸로 담을까요?"
+    assert token == _options_prompt("옵션을 선택해 주세요:", options, "어떤 걸로 담을까요?")
 
 
 async def test_cart_add_synonym_load_failure_degrades_without_crashing(
@@ -3512,7 +3519,216 @@ async def test_cart_add_synonym_load_failure_degrades_without_crashing(
 
     assert "action" not in _types(events)
     token = next(e for e in events if e["type"] == "token")["data"]["text"]
-    assert token == f"옵션을 선택해 주세요: {_options_text(options)}. 어떤 걸로 담을까요?"
+    assert token == _options_prompt("옵션을 선택해 주세요:", options, "어떤 걸로 담을까요?")
+
+
+# ─────────── 이슈 #570 — 되물음 줄바꿈 나열 리터럴 회귀 ───────────
+#
+# 아래는 패킷 §1 A-3/A-4 의 정본 출력 문자열을 그대로 리터럴로 박아 둔다 — 피검사 함수
+# (_options_text/_options_prompt)를 기대값 계산에 다시 쓰지 않는다(공허성 방지, 패킷 §4-D-1).
+# `_options_text` 의 "\n".join 을 " | ".join 으로 바꾸면 이 리터럴 테스트들이 모두 빨개져야 한다.
+
+
+async def test_cart_option_narrow_reask_literal_matches_issue_570() -> None:
+    """(1) #455 조건 좁힘 — 옵션 두 개가 줄바꿈으로 나열되고 마침표가 옵션 줄에 붙지 않는다."""
+    store = CartStateStore()
+    options = [
+        CartOption(option_id=1, name="블랙 / M"),
+        CartOption(option_id=2, name="화이트 / M"),
+        CartOption(option_id=3, name="레드 / L"),
+    ]
+
+    async def add_fn(req):
+        raise CartOptionRequired(options)
+
+    events = await _run_add(
+        store,
+        CartIntent(product_id=1, quantity=1),
+        add_fn,
+        message="아무거나 담아줘",
+        condition_terms=("블랙", "화이트"),
+    )
+
+    token = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert token == (
+        "말씀하신 조건에 맞는 옵션이에요:\n"
+        "블랙 / M\n"
+        "화이트 / M\n"
+        "이 중에서 고르시거나 다른 옵션을 말씀해 주세요."
+    )
+
+
+async def test_cart_option_color_unmet_reask_literal_matches_issue_570(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(2) #454 색상 미충족 고지 — 첫 줄은 종전처럼 두 문장이 한 줄이고, 옵션은 줄바꿈 나열된다."""
+    mapping = {"빨강": ["빨강", "레드"], "블랙": ["블랙", "검정"], "화이트": ["화이트", "흰색"]}
+    monkeypatch.setattr(
+        "app.services.spring_client._load_color_synonym_map", _mock_synonym_map(mapping)
+    )
+    store = CartStateStore()
+    options = [CartOption(option_id=1, name="블랙 / M"), CartOption(option_id=2, name="화이트 / M")]
+
+    async def add_fn(req):
+        raise CartOptionRequired(options)
+
+    events = await _run_add(
+        store,
+        CartIntent(product_id=1, quantity=1),
+        add_fn,
+        message="빨강 담아줘",
+        condition_terms=("빨강",),
+    )
+
+    token = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert token == (
+        "'빨강' 조건에 맞는 옵션은 찾지 못했어요. 고를 수 있는 옵션은 이거예요:\n"
+        "블랙 / M\n"
+        "화이트 / M\n"
+        "이 중에서 고르시거나 다른 상품을 말씀해 주세요."
+    )
+
+
+async def test_cart_option_default_reask_literal_matches_issue_570() -> None:
+    """(3) 기본 되물음 — 옵션 두 개가 줄바꿈으로 나열된다."""
+    store = CartStateStore()
+    options = [CartOption(option_id=1, name="블랙 / M"), CartOption(option_id=2, name="화이트 / M")]
+
+    async def add_fn(req):
+        raise CartOptionRequired(options)
+
+    events = await _run_add(store, CartIntent(product_id=1, quantity=1), add_fn)
+
+    token = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert token == "옵션을 선택해 주세요:\n블랙 / M\n화이트 / M\n어떤 걸로 담을까요?"
+
+
+async def test_cart_option_invalid_reask_literal_matches_issue_570() -> None:
+    """(4) CART_OPTION_INVALID 재질문 — 마무리 줄 없이 옵션만 줄바꿈으로 나열된다(종전에도 없었다)."""
+    store = CartStateStore()
+    await store.set_pending(
+        "m:t",
+        PendingAdd(
+            product_id=1, quantity=1, options=[CartOption(option_id=3, name="블루")], attempts=0
+        ),
+    )
+    options = [CartOption(option_id=1, name="블랙 / M"), CartOption(option_id=2, name="화이트 / M")]
+
+    async def add_fn(req):
+        raise CartOptionInvalid(options)
+
+    events = await _collect(
+        stream_cart_add(
+            identity=_member(),
+            cart=CartIntent(product_id=1, option_id=9, quantity=1),
+            cart_store=store,
+            thread_key="m:t",
+            settings=get_settings(),
+            add_fn=add_fn,
+            get_cart_fn=_empty_cart(),
+        )
+    )
+    token = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert token == "그 옵션을 찾지 못했어요. 다시 골라 주세요:\n블랙 / M\n화이트 / M"
+
+
+async def test_cart_option_hint_fallback_literal_matches_issue_570() -> None:
+    """(hint) I-1 힌트 이름 폴백 — '외 N개' 는 독립된 줄이고 마지막 이름에 붙지 않는다(패킷 §1 A-4)."""
+    store = CartStateStore()
+
+    async def add_fn(req):
+        raise CartOptionRequired([])
+
+    await store.set_last_reco(
+        "m:t",
+        [(1, "상품")],
+        option_hints={1: OptionHint(names=("블랙", "화이트", "레드"), total=5)},
+    )
+
+    events = await _run_add(store, CartIntent(product_id=1, quantity=1), add_fn)
+
+    token = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert token == "옵션을 선택해 주세요:\n블랙\n화이트\n레드\n외 2개\n어떤 걸로 담을까요?"
+
+
+async def test_cart_option_hint_fallback_without_total_has_no_extra_line() -> None:
+    """(hint) `hint.total` 이 이름 수 이하면(또는 없으면) '외 N개' 줄 자체가 없다(패킷 §1 A-4)."""
+    store = CartStateStore()
+
+    async def add_fn(req):
+        raise CartOptionRequired([])
+
+    await store.set_last_reco(
+        "m:t",
+        [(1, "상품")],
+        option_hints={1: OptionHint(names=("블랙", "화이트"), total=None)},
+    )
+
+    events = await _run_add(store, CartIntent(product_id=1, quantity=1), add_fn)
+
+    token = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert token == "옵션을 선택해 주세요:\n블랙\n화이트\n어떤 걸로 담을까요?"
+
+
+async def test_cart_option_reask_reproduces_issue_570_symptom() -> None:
+    """[이슈 #570 재현] 옵션명 자체에 '/' 가 있어도(로컬 카탈로그 53.7% 실측) 옵션 줄이 정확히
+    2줄이고, 어떤 옵션 줄도 마침표로 끝나지 않으며, 옵션명이 원문 그대로 한 줄에 온전히 들어있다."""
+    store = CartStateStore()
+    options = [CartOption(option_id=1, name="블랙 / M"), CartOption(option_id=2, name="화이트 / M")]
+
+    async def add_fn(req):
+        raise CartOptionRequired(options)
+
+    events = await _run_add(store, CartIntent(product_id=1, quantity=1), add_fn)
+
+    token = next(e for e in events if e["type"] == "token")["data"]["text"]
+    lines = token.split("\n")
+    option_lines = lines[1:-1]  # 안내 줄·마무리 줄 제외
+    assert option_lines == ["블랙 / M", "화이트 / M"]
+    assert all(not line.endswith(".") for line in option_lines)
+
+
+async def test_cart_add_reask_surcharge_option_on_own_line() -> None:
+    """[이슈 #570] extraPrice>0 인 옵션이 '레드(+1,000원)' 형태로 자기 줄에 온전히 나온다."""
+    store = CartStateStore()
+    options = [
+        CartOption(option_id=3, name="블루", extra_price=0),
+        CartOption(option_id=4, name="레드", extra_price=1000),
+    ]
+
+    async def add_fn(req):
+        raise CartOptionRequired(options)
+
+    events = await _run_add(store, CartIntent(product_id=1, quantity=1), add_fn)
+
+    token = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert token == "옵션을 선택해 주세요:\n블루\n레드(+1,000원)\n어떤 걸로 담을까요?"
+
+
+def test_options_text_empty_list_falls_back_to_default_label() -> None:
+    """빈 옵션 목록이면 `_options_text` 가 여전히 '옵션'을 돌려준다(경로 (4)에서만 실제 도달)."""
+    assert _options_text([]) == "옵션"
+
+
+async def test_cart_option_numeric_prefix_name_not_escaped() -> None:
+    """[이슈 #570] 옵션명이 "4. 얼큰한맛 92g x 30개"(실제 카탈로그 값)처럼 번호 목록 접두로
+    시작해도 이스케이프하지 않고 원문 그대로 한 줄에 싣는다 — FE 마크다운 파서가 아직 배포
+    전이라 어떤 이스케이프든 오늘 사용자에게 백슬래시로 그대로 보인다. 파서 도착 후(하이픈
+    단계) 재검토 대상이다(api-spec §3.1 (2) 실측 근거 참조)."""
+    store = CartStateStore()
+    options = [
+        CartOption(option_id=1, name="4. 얼큰한맛 92g x 30개"),
+        CartOption(option_id=2, name="순한맛 92g x 30개"),
+    ]
+
+    async def add_fn(req):
+        raise CartOptionRequired(options)
+
+    events = await _run_add(store, CartIntent(product_id=1, quantity=1), add_fn)
+
+    token = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert "\\" not in token  # 이스케이프하지 않는다
+    assert "4. 얼큰한맛 92g x 30개" in token.split("\n")
 
 
 async def test_cart_state_store_option_hint_round_trip_and_pruning(
@@ -3816,6 +4032,50 @@ async def test_missing_turn_count_degrades_to_todays_behaviour() -> None:
     state = await store.get_last_reco_state("k")
     assert [pid for pid, _ in state.items] == [1, 2, 3]
     assert state.turn_count == 3  # 경계 불명 → 전량을 이번 턴으로
+
+
+async def test_ordinal_span_round_trips_and_degrades_defensively() -> None:
+    """[#571] `ordinal_span` 저장·조회 왕복 / 키 없음·`bool`·범위 밖 값이면 `0` 으로 degrade /
+    기존 호출부(인자 미전달)는 `0`.
+
+    degrade 방향이 `turn_count` 와 **반대**다 — 여기서는 "모르면 순번을 쓰지 않는다"(0)가
+    안전한 쪽이다(순번을 켜는 신호를 못 믿는 값으로 그대로 쓰면 오담기로 이어진다, §2 결정 2).
+    """
+    from app.agents.buyer.cart import state as cart_state
+    from app.agents.buyer.cart.state import CartStateStore
+
+    cart_state.reset_cart_store()
+    store = CartStateStore()
+
+    # 왕복 — 넘긴 값이 그대로 읽힌다.
+    await store.set_last_reco("k1", [(1, "a"), (2, "b")], ordinal_span=2)
+    assert (await store.get_last_reco_state("k1")).ordinal_span == 2
+
+    # 기존 호출부(인자 미전달)는 0 — `option_hints` 와 같은 어조(키워드 인자 추가만).
+    await store.set_last_reco("k2", [(1, "a")])
+    assert (await store.get_last_reco_state("k2")).ordinal_span == 0
+
+    # 키 자체가 없으면(구버전 인스턴스가 쓴 행) 0 으로 degrade.
+    await store._store.aput(
+        ("buyer_cart_v2", "k3"), "last_reco", {"product_ids": [1], "turn_count": 1}
+    )
+    assert (await store.get_last_reco_state("k3")).ordinal_span == 0
+
+    # bool 은 int 의 서브클래스라 명시적으로 배제 — 0 으로 degrade.
+    await store._store.aput(
+        ("buyer_cart_v2", "k4"),
+        "last_reco",
+        {"product_ids": [1], "turn_count": 1, "ordinal_span": True},
+    )
+    assert (await store.get_last_reco_state("k4")).ordinal_span == 0
+
+    # 범위 밖 값(len(items) 초과)도 못 믿을 값이므로 0 으로 degrade.
+    await store._store.aput(
+        ("buyer_cart_v2", "k5"),
+        "last_reco",
+        {"product_ids": [1], "turn_count": 1, "ordinal_span": 99},
+    )
+    assert (await store.get_last_reco_state("k5")).ordinal_span == 0
 
 
 def _screen_request(message: str, thread_id: str):
