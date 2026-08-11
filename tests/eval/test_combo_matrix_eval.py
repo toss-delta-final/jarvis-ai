@@ -1,4 +1,4 @@
-"""기능 조합 커버리지 매트릭스 하네스 게이트 (이슈 #335 §7) — @pytest.mark.eval, 기본 PR pytest 에서 돈다."""
+"""기능 조합 커버리지 매트릭스 하네스 게이트 (이슈 #335 §7) — @pytest.mark.eval / slow, 기본 PR pytest 에서는 제외되고 별도 워크플로우에서 돈다."""
 
 from __future__ import annotations
 
@@ -45,7 +45,9 @@ from evals.combo_matrix.schema import (
     ExpectedBehaviorRow,
 )
 
-pytestmark = pytest.mark.eval
+# 전체 콤보 매트릭스를 여러 테스트 함수가 각자 observe()/refresh_observed()로 재관측 —
+# 기본 PR pytest에서 제외하고 별도 워크플로우(nightly/수동)에서만 돈다 (CI 30분 병목, PR#? 참고).
+pytestmark = [pytest.mark.eval, pytest.mark.slow]
 
 
 # ─────────── 1. 재현성 ───────────
