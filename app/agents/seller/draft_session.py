@@ -26,7 +26,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import TypedDict
+from typing import Literal, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
@@ -144,35 +144,54 @@ async def save_pending(context: SellerContext, thread_id: str, pending: PendingC
         return False
 
 
-async def load_pending(context: SellerContext, thread_id: str) -> PendingCreate | None:
-    """유효한 대기를 반환한다 — 없음·만료·손상은 전부 None(만료·손상은 폐기까지).
+async def load_pending_state(
+    context: SellerContext, thread_id: str
+) -> tuple[Literal["none", "found", "unknown"], PendingCreate | None]:
+    """load_pending 의 3상태 버전(#622) — 조회 실패(unknown)와 정상 없음(none)을 구분한다.
 
-    TTL 경계는 포함(>=) — 시계 분해능 때문이다(#346, docs/lessons.md).
+    형식 불일치·TTL 만료는 그대로 "none"이다 — 그건 진짜 "없음"이지 조회 실패가 아니다
+    (draft_lifecycle 모듈독스트링 결정과 동일). "unknown"은 쿼리 타임아웃 등 조회 자체가
+    실패한 경우뿐이다. TTL 경계는 포함(>=) — 시계 분해능 때문이다(#346, docs/lessons.md).
+
+    `draft_lifecycle.lookup_pending`이 이 함수로 3상태 게이트 판정을 만든다. 이 구분이
+    필요 없는 소비처는 `load_pending`(아래, 하위호환 wrapper)을 그대로 쓴다.
     """
     try:
         graph = await _get_graph()
         snapshot = await run_with_query_timeout(graph.aget_state(_config(context, thread_id)))
     except Exception:
         logger.warning(
-            "등록 초안 세션 조회 실패 — 대기 없음으로 진행 (thread=%s)", thread_id, exc_info=True
+            "등록 초안 세션 조회 실패 — 상태 불명(unknown) (thread=%s)", thread_id, exc_info=True
         )
-        return None
+        return "unknown", None
 
     data = (snapshot.values or {}).get("pending") or None
     if not isinstance(data, dict) or not data:
-        return None
+        return "none", None
 
     try:
         pending = _load(data)
     except Exception:
         logger.warning("등록 초안 세션 형식 불일치 — 폐기 (thread=%s)", thread_id, exc_info=True)
         await clear_pending(context, thread_id)
-        return None
+        return "none", None
 
     ttl = timedelta(minutes=get_settings().seller_draft_ttl_minutes)
     if datetime.now(UTC) - pending.created_at >= ttl:
         await clear_pending(context, thread_id)
-        return None
+        return "none", None
+    return "found", pending
+
+
+async def load_pending(context: SellerContext, thread_id: str) -> PendingCreate | None:
+    """유효한 대기를 반환한다 — 없음·만료·손상·조회 실패는 전부 None(만료·손상은 폐기까지).
+
+    [#622] 조회 실패와 정상 없음을 구분해야 하는 소비처(등록 초안 대기 게이트)는
+    `load_pending_state`를 직접 쓴다. 이 함수는 그 구분이 필요 없던 기존 호출부
+    (confirm 완료 후 대기 세션 정리 등, `pending is not None` 만 보는 자리) 호환용이다 —
+    unknown 도 기존 계약대로 None 으로 뭉갠다.
+    """
+    _, pending = await load_pending_state(context, thread_id)
     return pending
 
 

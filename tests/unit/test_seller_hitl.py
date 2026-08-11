@@ -529,7 +529,11 @@ def test_confirm_stock_drift_executes_with_note() -> None:
 
 
 def test_confirm_missing_product_is_stale() -> None:
-    """I-9 재조회에서 상품 미발견(삭제 등) — 실행 중단 + 되묻기."""
+    """I-9 재조회에서 상품 미발견(삭제 등, 짧은 페이지까지 다 돌았음) — 실행 중단 + 되묻기.
+
+    [#622] `_find_product`가 (None, False) — 목록의 진짜 끝까지 다 돌았다 — 를 반환하는
+    경로다. 안내 문구는 "대상 상품(...)을 상품 목록에서 찾을 수 없어"(exhausted=False 전용).
+    """
     spring = _StubSpring(rows=[])
     set_spring_client(spring)
     record = _record()
@@ -541,6 +545,32 @@ def test_confirm_missing_product_is_stale() -> None:
     outcome = asyncio.run(run())
 
     assert outcome.status == "stale"
+    assert "상품 목록에서 찾을 수 없" in outcome.text
+    assert hitl.PRODUCT_LOOKUP_EXHAUSTED_TEXT not in outcome.text
+    assert spring.write_calls() == []
+
+
+def test_confirm_product_lookup_exhausted_is_stale_with_distinct_text(monkeypatch) -> None:
+    """[#622] 조회 상한 소진(exhausted=True) — "없다"가 아니라 "확인 못 했다" 문구를 쓴다.
+
+    상품이 실제로 존재할 수도 있는데 짧은 페이지를 못 만나 순회를 못 끝낸 경우다 —
+    삭제/이관 단정(`test_confirm_missing_product_is_stale`)과는 원인이 달라 문구를
+    분리했다(hitl.PRODUCT_LOOKUP_EXHAUSTED_TEXT, _find_product 독스트링).
+    """
+    _lookup_page_size(monkeypatch, page_size=20, max_pages=2)
+    filler = [_ROW.model_copy(update={"product_id": i, "name": f"상품{i}"}) for i in range(1, 41)]
+    spring = _StubSpring(rows=filler)  # target(101) 은 filler 에 없다 + 매 페이지가 꽉 참
+    set_spring_client(spring)
+    record = _record()  # product_id=101 — filler 는 1..40, 101 은 없음
+
+    async def run():
+        await hitl.start_draft(record)
+        return await hitl.confirm_draft(record.draft_id, seller_id=7, brand_id=3)
+
+    outcome = asyncio.run(run())
+
+    assert outcome.status == "stale"
+    assert hitl.PRODUCT_LOOKUP_EXHAUSTED_TEXT in outcome.text
     assert spring.write_calls() == []
 
 
@@ -751,16 +781,62 @@ def test_confirm_spring_down_keeps_draft_retryable() -> None:
     assert len(spring.write_calls()) == 1
 
 
-def test_find_product_paginates_until_found() -> None:
-    """I-9 productId 필터 부재 — 페이지 순회로 대상 행을 찾는다."""
+def _lookup_page_size(monkeypatch, page_size: int, max_pages: int | None = None) -> None:
+    """[#622] `_find_product` 전용 page_size/max_pages 만 바꾼다 — 나머지 설정은 실값 그대로.
+
+    운영 기본값(200×10)은 테스트 데이터가 비대해지므로, 페이지 순회 자체를 검증하는
+    테스트는 작은 값으로 재설정한다(`_stock_mode`와 동일 패턴).
+    """
+    real = hitl.get_settings()
+    update = {"seller_draft_lookup_page_size": page_size}
+    if max_pages is not None:
+        update["seller_draft_lookup_max_pages"] = max_pages
+    monkeypatch.setattr(hitl, "get_settings", lambda: real.model_copy(update=update))
+
+
+def test_find_product_paginates_until_found(monkeypatch) -> None:
+    """I-9 productId 필터 부재 — 페이지 순회로 대상 행을 찾는다. (row, False) 반환."""
+    _lookup_page_size(monkeypatch, page_size=20)
     filler = [_ROW.model_copy(update={"product_id": i, "name": f"상품{i}"}) for i in range(1, 41)]
     spring = _StubSpring(rows=[*filler, _ROW.model_copy(update={"product_id": 500})])
     set_spring_client(spring)
 
-    row = asyncio.run(hitl._find_product(3, 500))
+    row, exhausted = asyncio.run(hitl._find_product(3, 500))
 
     assert row is not None and row.product_id == 500
+    assert exhausted is False
     assert len([c for c in spring.calls if c[0] == "list"]) == 3  # 20건 × 3페이지
+
+
+def test_find_product_short_page_end_is_not_exhausted(monkeypatch) -> None:
+    """목록의 진짜 끝(짧은 페이지)까지 다 돌았는데 없음 — (None, False), 상한 소진이 아니다."""
+    _lookup_page_size(monkeypatch, page_size=20)
+    filler = [_ROW.model_copy(update={"product_id": i, "name": f"상품{i}"}) for i in range(1, 11)]
+    spring = _StubSpring(rows=filler)  # 10건 < page_size(20) → 첫 페이지가 곧 짧은 페이지
+    set_spring_client(spring)
+
+    row, exhausted = asyncio.run(hitl._find_product(3, 999))
+
+    assert row is None
+    assert exhausted is False
+    assert len([c for c in spring.calls if c[0] == "list"]) == 1
+
+
+def test_find_product_exhausts_page_cap_without_short_page(monkeypatch) -> None:
+    """상한(max_pages)을 다 쓰도록 매 페이지가 꽉 차서 진짜 끝을 못 만남 — (None, True).
+
+    #622 — 조회 실패(더 있을 수 있음)와 정상 없음(진짜 끝)을 구분하는 핵심 분기.
+    """
+    _lookup_page_size(monkeypatch, page_size=20, max_pages=2)
+    filler = [_ROW.model_copy(update={"product_id": i, "name": f"상품{i}"}) for i in range(1, 41)]
+    spring = _StubSpring(rows=filler)  # 정확히 20×2건 — 매 페이지가 꽉 차 짧은 페이지가 없다
+    set_spring_client(spring)
+
+    row, exhausted = asyncio.run(hitl._find_product(3, 999))
+
+    assert row is None
+    assert exhausted is True
+    assert len([c for c in spring.calls if c[0] == "list"]) == 2
 
 
 # ── [#297] op="ship" — I-30 발송 처리 HITL (§4.19) ───────────────────────────────

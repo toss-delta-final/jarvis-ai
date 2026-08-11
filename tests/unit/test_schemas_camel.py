@@ -15,6 +15,7 @@ from app.schemas.spring import (
     RecoReason,
     RecommendationListEntry,
     RecommendationPush,
+    SellerProductList,
     SellerProductRow,
 )
 
@@ -233,6 +234,36 @@ def test_seller_product_row_serializes_camel() -> None:
     assert d["originalPrice"] == 12000
     assert d["stockQuantity"] == 5
     assert d["displayedSalesCount"] == 42
+
+
+def test_seller_product_list_parses_total_field() -> None:
+    """[#622] I-9 응답의 `total`(필터 적용 전체 건수) — 모델에 필드가 없어 pydantic 이
+    조용히 버렸던 값이다(`SellerProductInternalListResponse{rows, total}`, BE 는 이미
+    내려주고 있었다). `hitl._find_product`가 페이지 순회 종료를 정확히 판단하는 데 쓴다.
+    """
+    parsed = SellerProductList.model_validate(
+        {
+            "rows": [
+                {
+                    "productId": 101,
+                    "name": "감귤청",
+                    "price": 15000,
+                    "originalPrice": None,
+                    "stockQuantity": 100,
+                    "status": "ON_SALE",
+                }
+            ],
+            "total": 137,
+        }
+    )
+    assert parsed.total == 137
+    assert len(parsed.rows) == 1
+
+
+def test_seller_product_list_total_defaults_to_zero_when_absent() -> None:
+    """`total` 이 없는 응답(구 스텁 등)도 캐스팅 실패 없이 기본값 0 으로 채워진다."""
+    parsed = SellerProductList.model_validate({"rows": []})
+    assert parsed.total == 0
 
 
 def test_product_create_by_alias() -> None:

@@ -402,31 +402,45 @@ def find_stale_changes(
     return mismatches
 
 
-async def _find_product(brand_id: int, product_id: int) -> SellerProductRow | None:
+async def _find_product(brand_id: int, product_id: int) -> tuple[SellerProductRow | None, bool]:
     """I-9 목록에서 대상 상품 행을 찾는다 — productId 필터가 없어 페이지 순회.
 
-    페이지 크기·상한은 Settings 주입(seller_list_default_limit·
-    seller_draft_lookup_max_pages). 상한 내 미발견은 None(삭제/미귀속 가능성) —
-    호출부가 stale 로 처리한다. Spring 장애는 SpringUnavailableError 전파(재시도 가능).
+    페이지 크기·상한은 Settings 주입(seller_draft_lookup_page_size·
+    seller_draft_lookup_max_pages, #622 — 200×10=2,000건 커버). 반환은
+    ``(row, exhausted)`` 3상태다: ``(row, False)`` 발견, ``(None, False)`` 짧은
+    페이지(목록의 진짜 끝)까지 다 돌았는데 없음 — 삭제/미귀속으로 본다,
+    ``(None, True)`` 상한을 다 쓰도록 짧은 페이지를 못 만남 — 더 있을 수 있다.
+    호출부(hitl._execute_draft·history.apply_recommendation)가 이 둘을 다른 문구로
+    안내한다. Spring 장애는 SpringUnavailableError 전파(재시도 가능).
     """
     settings = get_settings()
-    page_size = settings.seller_list_default_limit
+    page_size = settings.seller_draft_lookup_page_size
     offset = 0
     for _ in range(settings.seller_draft_lookup_max_pages):
         result = await get_spring_client().list_products(brand_id, None, None, page_size, offset)
         for row in result.rows:
             if row.product_id == product_id:
-                return row
+                return row, False
         if len(result.rows) < page_size:
-            return None
+            return None, False
         offset += page_size
-    return None
+    return None, True
 
 
 # ── 실행 (confirm resume 후 — LLM 0회, draft 그대로 I-10/11/12 매핑) ────────────
 
 _STALE_RETRY_GUIDE = (
     "변경을 원하시면 다시 요청해 주세요. 최신 값으로 새 초안을 만들어 드리겠습니다."
+)
+
+# [#622] _find_product 가 exhausted=True(페이지 상한 소진, 더 있을 수 있음)를 돌려줄 때의
+# 안내 — hitl._execute_draft·history.apply_recommendation 두 호출부가 함께 쓴다. 상품이
+# 정말 없을 때(exhausted=False)의 문구는 각 호출부 문맥(대상 상품 vs 추천 대상 상품)에
+# 맞춰 따로 적되, "이미 삭제되었거나 다른 브랜드로 옮겨진 것 같습니다"라는 같은 판단으로
+# 통일한다 — #590 전에는 두 곳이 서로 다른(한쪽은 더 부정확한) 오보 문구를 달고 있었다.
+PRODUCT_LOOKUP_EXHAUSTED_TEXT = (
+    "등록 상품이 많아 대상 상품을 확인하지 못했습니다. "
+    "상품명을 함께 말씀해 주시면 다시 찾아보겠습니다."
 )
 
 
@@ -561,8 +575,12 @@ async def _execute_draft(record: DraftRecord) -> tuple[str, str]:
         )
 
     assert record.product_id is not None  # validate_draft 가 보장
-    row = await _find_product(record.brand_id, record.product_id)
+    row, exhausted = await _find_product(record.brand_id, record.product_id)
     if row is None:
+        if exhausted:
+            # [#622] 페이지 상한(2,000건) 안에서 목록의 진짜 끝(짧은 페이지)을 못 만났다 —
+            # 삭제로 단정하면 상품 수가 많은 판매자에게 거짓 안내가 된다.
+            return ("stale", f"{PRODUCT_LOOKUP_EXHAUSTED_TEXT} {_STALE_RETRY_GUIDE}")
         return (
             "stale",
             f"대상 상품(productId={record.product_id})을 상품 목록에서 찾을 수 없어 "
