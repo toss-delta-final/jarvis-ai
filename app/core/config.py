@@ -922,6 +922,49 @@ class Settings(BaseSettings):
     category_leg_condition_terms: list[str] = Field(
         default_factory=lambda: ["무료배송", "가성비", "평점", "인기", "최저가"]
     )
+    # #464 attrConditions 오배치 제약 축 후처리 — 기본 on. 같은 프롬프트(a3f8f26cbb6e)·fast·N=8·
+    # 30셀(240표본)/런, 2런씩 실측에서 `filters.attrConditions` 원인 미탐은 before 3·1 → after
+    # 0·0이었고, 억제는 3·2건 발동(Price 1·price 2·가격 2)했다. 보호 대상 오발동은 0건
+    # (after color 9·brand 1 유지), `screenExactPick`도 29·28 → 30·28로 깎이지 않았다.
+    # before 팔 자체가 3·1로 흔들려 miss 델타만으로는 근거가 없으며, 채택 근거는 억제 발동 건수·
+    # after 0·0·오발동 0이다. 알려진 한계로 `평가`는 어휘에 없어 after 1건 살아남지만 미탐을
+    # 유발하지 않았고, `사용감`·`차단지수` 같은 정당한 축을 지울 위험 때문에 평점처럼 들리는
+    # 말까지는 의도적으로 넣지 않았다.
+    attr_condition_axis_suppression_enabled: bool = True
+    attr_condition_constraint_axes: list[str] = Field(
+        default_factory=lambda: [
+            "가격",  # ProductSearchFilters.price_min/price_max 전용 수치 제약이라 상품 속성이 아니다.
+            "가격대",  # 가격 범위를 뜻하는 표현이며 ProductSearchFilters 가격 필드로 보내야 한다.
+            "예산",  # 총액·상품별 예산 제약은 전용 예산 필드가 맡으므로 상품 속성이 아니다.
+            "금액",  # 금액은 상품의 성질이 아니라 구매 가격 제약을 나타낸다.
+            "평점",  # ProductSearchFilters.rating_min 전용 평점 제약이라 상품 속성이 아니다.
+            "별점",  # 별점은 상품 속성값이 아니라 rating_min 으로 표현하는 평가 제약이다.
+            "수량",  # 수량은 상품 속성이 아니라 CartIntent 의 구매 수량이다.
+            "개수",  # 개수는 상품 속성이 아니라 사용자가 요구한 구매 개수이다.
+            "price",  # 가격은 ProductSearchFilters.price_min/price_max 전용 제약 축이다.
+            "price_range",  # 가격 범위는 ProductSearchFilters 가격 필드로 보내야 한다.
+            "pricerange",  # 붙여 쓴 가격 범위도 상품 속성이 아니라 가격 제약이다.
+            "budget",  # 총액·상품별 예산 제약은 전용 예산 필드가 맡는다.
+            "amount",  # 금액은 상품의 성질이 아니라 구매 가격 제약을 나타낸다.
+            "cost",  # 비용은 상품 속성이 아니라 가격 제약으로 해석해야 한다.
+            "rating",  # 평점은 ProductSearchFilters.rating_min 전용 평가 제약이다.
+            "stars",  # 별점은 상품 속성값이 아니라 rating_min 으로 표현하는 평가 제약이다.
+            "quantity",  # 수량은 상품 속성이 아니라 CartIntent 의 구매 수량이다.
+            "count",  # 개수는 상품 속성이 아니라 사용자가 요구한 구매 개수이다.
+            "priceMax",  # ProductSearchFilters.price_max 전용 상한 필드명이라 상품 속성이 아니다.
+            "priceMin",  # ProductSearchFilters.price_min 전용 하한 필드명이라 상품 속성이 아니다.
+            "price_max",  # ProductSearchFilters.price_max 전용 상한 필드명이라 상품 속성이 아니다.
+            "price_min",  # ProductSearchFilters.price_min 전용 하한 필드명이라 상품 속성이 아니다.
+            "maxPrice",  # ProductSearchFilters.price_max 전용 상한의 역순 필드명이라 상품 속성이 아니다.
+            "minPrice",  # ProductSearchFilters.price_min 전용 하한의 역순 필드명이라 상품 속성이 아니다.
+            "max_price",  # ProductSearchFilters.price_max 전용 상한의 역순 필드명이라 상품 속성이 아니다.
+            "min_price",  # ProductSearchFilters.price_min 전용 하한의 역순 필드명이라 상품 속성이 아니다.
+            "ratingMin",  # ProductSearchFilters.rating_min 전용 하한 필드명이라 상품 속성이 아니다.
+            "rating_min",  # ProductSearchFilters.rating_min 전용 하한 필드명이라 상품 속성이 아니다.
+            "minRating",  # ProductSearchFilters.rating_min 전용 하한의 역순 필드명이라 상품 속성이 아니다.
+            "min_rating",  # ProductSearchFilters.rating_min 전용 하한의 역순 필드명이라 상품 속성이 아니다.
+        ]
+    )
     # 제약(가격)만 있는 턴의 인기 상품 고지 — no_condition_notice_popular 와 같은 톤이되, 실제로
     # 가격 필터를 통과한 후보라는 사실만 말한다(거짓 주장 금지, #132). no_condition 턴에는 내지
     # 않는다(그 턴은 no_condition_notice_* 가 이미 담당 — 중복 고지 방지).

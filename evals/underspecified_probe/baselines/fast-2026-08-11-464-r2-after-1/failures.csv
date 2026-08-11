@@ -1,0 +1,3 @@
+cellId,attempt,errorType,message
+under-mg-0002,1,LLMError,decompose 필터/케이스/장바구니 파싱 실패
+under-nc-0004,4,LLMError,"Error code: 429 - {'error': {'message': 'Rate limit reached for gpt-5-nano in organization org-*** on tokens per min (TPM): Limit 200000, Used 200000, Requested 4106. Please try again in 1.231s. Visit"

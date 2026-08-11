@@ -1,0 +1,3 @@
+cellId,attempt,errorType,message
+wishlist-view-002|none,5,LLMError,"Error code: 429 - {'error': {'message': 'Rate limit reached for gpt-5-nano in organization org-*** on tokens per min (TPM): Limit 200000, Used 196513, Requested 4100. Please try again in 183ms. Visit "
+wishlist-view-003|none,4,LLMError,"Error code: 429 - {'error': {'message': 'Rate limit reached for gpt-5-nano in organization org-*** on tokens per min (TPM): Limit 200000, Used 196748, Requested 4102. Please try again in 255ms. Visit "

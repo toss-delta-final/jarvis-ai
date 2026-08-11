@@ -318,6 +318,46 @@ async def test_attr_conditions_absent_is_none() -> None:
     assert d.filters.attr_conditions is None
 
 
+async def test_attr_constraint_axis_is_suppressed_after_parse() -> None:
+    """가격 제약이 attrConditions 에 잘못 실려도 파싱 직후 제거하고 진단한다."""
+    d = await _run(
+        _raw(attrConditions={"가격": "5만원 이하"}),
+        attr_axis_suppression=True,
+        attr_constraint_axes=frozenset({"가격"}),
+    )
+    assert d.filters.attr_conditions is None
+    assert d.attr_conditions_suppressed_axes == ["가격"]
+
+
+async def test_attr_constraint_axis_does_not_return_from_prior_merge() -> None:
+    """이전 저장 필터와 이번 턴 산출을 합쳐도 제거한 가격 축이 되살아나지 않는다."""
+    from app.schemas.spring import ProductSearchFilters
+
+    prior = ProductSearchFilters(attr_conditions={"소재": "린넨", "가격": "5만원 이하"})
+    d = await decompose(
+        _FakeLLM(_raw(attrConditions={"가격": "3만원"})),
+        query="3만원으로",
+        prior_filters=prior,
+        profile_summary=None,
+        tier="fast",
+        attr_axis_suppression=True,
+        attr_constraint_axes=frozenset({"가격"}),
+    )
+    assert d.filters.attr_conditions == {"소재": "린넨"}
+    assert d.attr_conditions_suppressed_axes == ["가격"]
+
+
+async def test_attr_constraint_suppression_off_preserves_previous_behavior() -> None:
+    """후처리 스위치가 꺼지면 기존처럼 가격 축을 보존한다."""
+    d = await _run(
+        _raw(attrConditions={"가격": "5만원 이하"}),
+        attr_axis_suppression=False,
+        attr_constraint_axes=frozenset({"가격"}),
+    )
+    assert d.filters.attr_conditions == {"가격": "5만원 이하"}
+    assert d.attr_conditions_suppressed_axes == []
+
+
 async def test_attr_conditions_carries_prior_when_llm_omits() -> None:
     """[PR② PR#169 리뷰] LLM 이 정제발화에서 attrConditions 를 누락하면 코드가 직전 값으로 폴백한다.
 

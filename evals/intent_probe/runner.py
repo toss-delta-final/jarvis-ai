@@ -308,6 +308,8 @@ async def run_cell(
                 category_leg_injection=settings.category_leg_injection_enabled,
                 category_leg_injection_path=settings.category_leg_injection_path,
                 category_leg_injection_min_length=settings.category_leg_injection_min_length,
+                attr_axis_suppression=settings.attr_condition_axis_suppression_enabled,
+                attr_constraint_axes=frozenset(settings.attr_condition_constraint_axes),
                 **context_kwargs,
             )
         except BudgetExceeded:

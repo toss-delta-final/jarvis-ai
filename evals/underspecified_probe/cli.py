@@ -79,6 +79,20 @@ def _parser() -> argparse.ArgumentParser:
     prompt_source.add_argument("--prompt-rev", help="과거 판 _SYSTEM 을 읽을 git 리비전")
     parser.add_argument("--n", type=int, default=8, help="셀당 성공 표본 수")
     parser.add_argument("--arm", choices=("before", "postprocess", "dedicated", "tri"), default="before")
+    attr_axis = parser.add_mutually_exclusive_group()
+    attr_axis.add_argument(
+        "--attr-axis-suppression",
+        dest="attr_axis_suppression",
+        action="store_true",
+        help="#464 attrConditions 제약 축 후처리 켜기(설정 기본값 덮어쓰기)",
+    )
+    attr_axis.add_argument(
+        "--no-attr-axis-suppression",
+        dest="attr_axis_suppression",
+        action="store_false",
+        help="#464 attrConditions 제약 축 후처리 끄기",
+    )
+    parser.set_defaults(attr_axis_suppression=None)
     parser.add_argument("--rpm", type=int, default=PacerLimits.max_rpm)
     parser.add_argument("--tpm", type=int, default=PacerLimits.max_tpm)
     parser.add_argument("--concurrency", type=int, default=4)
@@ -114,6 +128,15 @@ async def _no_sleep(seconds: float) -> None:
 def _command(argv: list[str]) -> str:
     return "uv run python -m evals.underspecified_probe " + " ".join(
         shlex.quote(arg) for arg in argv
+    )
+
+
+def _resolve_attr_axis_suppression(requested: bool | None, settings: Settings) -> bool:
+    """명시 플래그가 없으면 프로브가 사용할 Settings 값을 그대로 따른다."""
+    return (
+        settings.attr_condition_axis_suppression_enabled
+        if requested is None
+        else requested
     )
 
 
@@ -201,6 +224,10 @@ def main(argv: list[str] | None = None) -> int:
     union_preflight: dict[str, Any] | None = None
     if not args.dry_run:
         live_settings = get_settings()
+    probe_settings = live_settings or Settings(_env_file=None)
+    attr_axis_suppression = _resolve_attr_axis_suppression(
+        args.attr_axis_suppression, probe_settings
+    )
     if args.union and not args.dry_run:
         assert live_settings is not None
         try:
@@ -266,6 +293,8 @@ def main(argv: list[str] | None = None) -> int:
             leg_head_suppression=args.arm in ("postprocess", "dedicated"),
             leg_generic_heads=frozenset(live_settings.category_leg_generic_heads) if live_settings else frozenset(),
             leg_condition_terms=frozenset(live_settings.category_leg_condition_terms) if live_settings else frozenset(),
+            attr_axis_suppression=attr_axis_suppression,
+            attr_constraint_axes=frozenset(probe_settings.attr_condition_constraint_axes),
             dedicated_llm=dedicated_llm,
             tri_generic_heads=frozenset(live_settings.category_leg_generic_heads) if live_settings else frozenset(),
             tri_condition_terms=frozenset(live_settings.category_leg_condition_terms) if live_settings else frozenset(),
@@ -364,6 +393,8 @@ def main(argv: list[str] | None = None) -> int:
         category_fanout_max=category_fanout_max,
         repurchase_max=repurchase_max,
         underspecified_reask_enabled=JUDGMENT_SETTINGS.underspecified_reask_enabled,
+        attr_axis_suppression=attr_axis_suppression,
+        attr_constraint_axes=probe_settings.attr_condition_constraint_axes,
         pacer=pacer.snapshot(),
         budget=budget.snapshot(),
         cell_ids=[cell.cell_id for cell in results_cells],

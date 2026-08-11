@@ -60,6 +60,7 @@
   결과 기준으로 추가하고 `no_op` 판정에도 반영했다.
 
 ### Fixed
+- **#464 — decompose가 가격·평점 제약을 `attrConditions`에 잘못 실어 과소지정 되물음을 끄던 결함을 프롬프트 변경 없이 결정론 후처리로 제거했다.** 제약 축 어휘는 `config.py`에서 주입해 영문·camelCase·snake_case 변형도 함께 걸러낸다.
 - **#571 — 추천 카드(CH-5)만 뜬 턴에는 화면 지시어 해소기가 아예 호출되지 않던 결함을 고쳤다**
   (api-spec §3.1, v0.32.16). `app/agents/buyer/graph.py` 의 게이트가
   `screen is not None and screen.products and screen_context_active` 였는데, 추천 카드는

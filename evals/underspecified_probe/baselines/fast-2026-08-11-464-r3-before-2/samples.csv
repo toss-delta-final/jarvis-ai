@@ -1,0 +1,241 @@
+caseId,n,slice,intent,case,semanticQueryIsFallback,semanticQuery,verdict,expectedReask,outcome,causeAxes,blockingAxes,attrConditionAxes,attrConditionsSuppressedAxes,expansionReason,latencyMs
+buy-under-0001,0,constraint_budget_set,recommend,2,True,5만원 이내로 아무거나 세트로 추천해줘,True,True,hit,,,,,,2785
+buy-under-0001,1,constraint_budget_set,recommend,2,True,5만원 이내로 아무거나 세트로 추천해줘,True,True,hit,,,,,,2010
+buy-under-0001,2,constraint_budget_set,recommend,2,True,5만원 이내로 아무거나 세트로 추천해줘,True,True,hit,,,,,,2340
+buy-under-0001,3,constraint_budget_set,recommend,2,True,5만원 이내로 아무거나 세트로 추천해줘,True,True,hit,,,,,,1907
+buy-under-0001,4,constraint_budget_set,recommend,2,True,5만원 이내로 아무거나 세트로 추천해줘,True,True,hit,,,,,,1801
+buy-under-0001,5,constraint_budget_set,recommend,2,True,5만원 이내로 아무거나 세트로 추천해줘,True,True,hit,,,,,,2629
+buy-under-0001,6,constraint_budget_set,recommend,2,False,5만원 이내로 아무거나 세트,False,True,miss,multiple,categoryQueries;semanticQueryIsFallback,,,,2477
+buy-under-0001,7,constraint_budget_set,recommend,2,True,5만원 이내로 아무거나 세트로 추천해줘,True,True,hit,,,,,,2214
+buy-under-0002,0,no_condition,recommend,2,True,아무거나 추천해줘,True,True,hit,,,,,,2113
+buy-under-0002,1,no_condition,recommend,3,True,아무거나 추천해줘,True,True,hit,,,,,no_legs,1583
+buy-under-0002,2,no_condition,recommend,3,True,아무거나 추천해줘,True,True,hit,,,,,no_legs,2570
+buy-under-0002,3,no_condition,recommend,3,True,아무거나 추천해줘,True,True,hit,,,,,no_legs,1822
+buy-under-0002,4,no_condition,recommend,3,True,아무거나 추천해줘,True,True,hit,,,,,no_legs,2192
+buy-under-0002,5,no_condition,recommend,3,True,아무거나 추천해줘,True,True,hit,,,,,no_legs,2255
+buy-under-0002,6,no_condition,recommend,3,True,아무거나 추천해줘,True,True,hit,,,,,no_legs,1901
+buy-under-0002,7,no_condition,recommend,3,True,아무거나 추천해줘,True,True,hit,,,,,no_legs,1971
+buy-under-0003,0,constraint_price,recommend,2,True,5만원 이하로 아무거나 추천해줘,True,True,hit,,,,,,2177
+buy-under-0003,1,constraint_price,recommend,2,True,5만원 이하로 아무거나 추천해줘,True,True,hit,,,,,,1824
+buy-under-0003,2,constraint_price,recommend,2,True,5만원 이하로 아무거나 추천해줘,True,True,hit,,,,,,2015
+buy-under-0003,3,constraint_price,recommend,2,True,5만원 이하로 아무거나 추천해줘,True,True,hit,,,,,,1856
+buy-under-0003,4,constraint_price,recommend,2,True,5만원 이하로 아무거나 추천해줘,True,True,hit,,,,,,1778
+buy-under-0003,5,constraint_price,recommend,2,True,5만원 이하로 아무거나 추천해줘,True,True,hit,,,,,,1921
+buy-under-0003,6,constraint_price,recommend,2,True,5만원 이하로 아무거나 추천해줘,True,True,hit,,,,,,1920
+buy-under-0003,7,constraint_price,recommend,2,True,5만원 이하로 아무거나 추천해줘,True,True,hit,,,,,,1948
+buy-under-0004,0,what_axis,recommend,3,False,무선 이어폰,False,False,correctReject,,,,,no_legs,2296
+buy-under-0004,1,what_axis,recommend,3,False,무선 이어폰,False,False,correctReject,,,,,,2151
+buy-under-0004,2,what_axis,recommend,3,False,무선 이어폰,False,False,correctReject,,,,,,2691
+buy-under-0004,3,what_axis,recommend,3,False,무선 이어폰,False,False,correctReject,,,,,,2219
+buy-under-0004,4,what_axis,recommend,3,False,무선 이어폰,False,False,correctReject,,,,,,2462
+buy-under-0004,5,what_axis,recommend,3,False,무선 이어폰,False,False,correctReject,,,,,no_legs,2140
+buy-under-0004,6,what_axis,recommend,3,False,무선 이어폰,False,False,correctReject,,,,,no_legs,1900
+buy-under-0004,7,what_axis,recommend,3,False,무선 이어폰,False,False,correctReject,,,,,,2156
+buy-under-0005,0,what_axis,recommend,2,False,삼성 제품,False,False,correctReject,,,,,,2789
+buy-under-0005,1,what_axis,recommend,2,False,삼성 제품,False,False,correctReject,,,,,,2273
+buy-under-0005,2,what_axis,recommend,2,False,삼성,False,False,correctReject,,,,,,2211
+buy-under-0005,3,what_axis,recommend,2,False,삼성 제품,False,False,correctReject,,,,,,39343
+buy-under-0005,4,what_axis,recommend,2,True,삼성 제품 아무거나,False,False,correctReject,,,,,,2201
+buy-under-0005,5,what_axis,recommend,2,False,삼성 제품,False,False,correctReject,,,,,,1858
+buy-under-0005,6,what_axis,recommend,2,True,삼성 제품 아무거나,False,False,correctReject,,,,,,1745
+buy-under-0005,7,what_axis,recommend,2,False,삼성 제품,False,False,correctReject,,,,,,2217
+buy-under-0006,0,multiturn_gate,recommend,2,True,그중에 5만원 이하,False,False,correctReject,,,,,,1772
+buy-under-0006,1,multiturn_gate,recommend,2,True,그중에 5만원 이하,False,False,correctReject,,,,,,2101
+buy-under-0006,2,multiturn_gate,recommend,2,True,그중에 5만원 이하,False,False,correctReject,,,,,,1907
+buy-under-0006,3,multiturn_gate,recommend,2,True,그중에 5만원 이하,False,False,correctReject,,,,,,1838
+buy-under-0006,4,multiturn_gate,recommend,2,True,그중에 5만원 이하,False,False,correctReject,,,,,,38047
+buy-under-0006,5,multiturn_gate,recommend,2,False,5만원 이하,False,False,correctReject,,,,,,2187
+buy-under-0006,6,multiturn_gate,recommend,2,True,그중에 5만원 이하,False,False,correctReject,,,,,,8291
+buy-under-0006,7,multiturn_gate,recommend,2,True,그중에 5만원 이하,False,False,correctReject,,,,,,1678
+buy-under-0007,0,blocking_rating,recommend,2,True,평점 4 이상 아무거나,False,False,correctReject,,,,,,2132
+buy-under-0007,1,blocking_rating,recommend,2,True,평점 4 이상 아무거나,False,False,correctReject,,,,,,2228
+buy-under-0007,2,blocking_rating,recommend,2,True,평점 4 이상 아무거나,False,False,correctReject,,,,,,2191
+buy-under-0007,3,blocking_rating,recommend,2,True,평점 4 이상 아무거나,False,False,correctReject,,,,,,37803
+buy-under-0007,4,blocking_rating,recommend,2,False,평점이 높은 상품,False,False,correctReject,,,,,,3051
+buy-under-0007,5,blocking_rating,recommend,2,True,평점 4 이상 아무거나,False,False,correctReject,,,,,,1769
+buy-under-0007,6,blocking_rating,recommend,2,True,평점 4 이상 아무거나,False,False,correctReject,,,,,,1908
+buy-under-0007,7,blocking_rating,recommend,2,True,평점 4 이상 아무거나,False,False,correctReject,,,,,,2940
+under-br-0001,0,blocking_rating,recommend,2,True,별점 4.5 이상인 거 아무거나 보여줘,False,False,correctReject,,,,,,1927
+under-br-0001,1,blocking_rating,recommend,2,True,별점 4.5 이상인 거 아무거나 보여줘,False,False,correctReject,,,,,,1767
+under-br-0001,2,blocking_rating,recommend,2,True,별점 4.5 이상인 거 아무거나 보여줘,False,False,correctReject,,,,,,2117
+under-br-0001,3,blocking_rating,recommend,2,False,"무조건적으로 특정 상품명을 지시하지 않고, 별점 4.5 이상인 상품 중 아무거나 보여줘",False,False,correctReject,,,,,,38533
+under-br-0001,4,blocking_rating,recommend,2,True,별점 4.5 이상인 거 아무거나 보여줘,False,False,correctReject,,,,,,2427
+under-br-0001,5,blocking_rating,recommend,2,False,별점이 높은 상품,False,False,correctReject,,,평가,,,2461
+under-br-0001,6,blocking_rating,recommend,2,True,별점 4.5 이상인 거 아무거나 보여줘,False,False,correctReject,,,,,,2146
+under-br-0001,7,blocking_rating,recommend,2,True,별점 4.5 이상인 거 아무거나 보여줘,False,False,correctReject,,,,,,1741
+under-br-0002,0,blocking_rating,recommend,2,True,평점 4점대 이상으로만 보여줘,False,False,correctReject,,,,,,2924
+under-br-0002,1,blocking_rating,recommend,2,True,평점 4점대 이상으로만 보여줘,False,False,correctReject,,,,,,2057
+under-br-0002,2,blocking_rating,recommend,2,True,평점 4점대 이상으로만 보여줘,False,False,correctReject,,,,,,2677
+under-br-0002,3,blocking_rating,recommend,2,False,평점이 4점대 이상인 상품,False,False,correctReject,,,,,,2786
+under-br-0002,4,blocking_rating,recommend,2,True,평점 4점대 이상으로만 보여줘,False,False,correctReject,,,,,,5535
+under-br-0002,5,blocking_rating,recommend,2,True,평점 4점대 이상으로만 보여줘,False,False,correctReject,,,,,,36489
+under-br-0002,6,blocking_rating,recommend,2,False,평점이 높은 무언가,False,False,correctReject,,,,,,2224
+under-br-0002,7,blocking_rating,recommend,2,False,평점이 높은 상품,False,False,correctReject,,,,,,2261
+under-br-0003,0,blocking_rating,recommend,2,False,리뷰 평점 4 넘는 상품,False,False,correctReject,,,,,,2167
+under-br-0003,1,blocking_rating,recommend,2,True,리뷰 평점 4 넘는 것만 아무거나,False,False,correctReject,,,,,,1776
+under-br-0003,2,blocking_rating,recommend,2,True,리뷰 평점 4 넘는 것만 아무거나,False,False,correctReject,,,,,,2202
+under-br-0003,3,blocking_rating,recommend,2,False,리뷰 평점 4 넘는 것,False,False,correctReject,,,,,,4028
+under-br-0003,4,blocking_rating,recommend,2,False,리뷰 평점 4 넘는 상품,False,False,correctReject,,,,,,1994
+under-br-0003,5,blocking_rating,recommend,2,True,리뷰 평점 4 넘는 것만 아무거나,False,False,correctReject,,,,,,1775
+under-br-0003,6,blocking_rating,recommend,2,True,리뷰 평점 4 넘는 것만 아무거나,False,False,correctReject,,,,,,2169
+under-br-0003,7,blocking_rating,recommend,2,True,리뷰 평점 4 넘는 것만 아무거나,False,False,correctReject,,,,,,34952
+under-br-0004,0,blocking_rating,recommend,2,True,평점 3.5 이상이면 뭐든 좋아,False,False,correctReject,,,,,,1861
+under-br-0004,1,blocking_rating,recommend,2,True,평점 3.5 이상이면 뭐든 좋아,False,False,correctReject,,,,,,1837
+under-br-0004,2,blocking_rating,recommend,2,True,평점 3.5 이상이면 뭐든 좋아,False,False,correctReject,,,,,,1777
+under-br-0004,3,blocking_rating,recommend,2,True,평점 3.5 이상이면 뭐든 좋아,False,False,correctReject,,,,,,1962
+under-br-0004,4,blocking_rating,recommend,2,True,평점 3.5 이상이면 뭐든 좋아,False,False,correctReject,,,,,,2001
+under-br-0004,5,blocking_rating,recommend,2,True,평점 3.5 이상이면 뭐든 좋아,False,False,correctReject,,,,,,1957
+under-br-0004,6,blocking_rating,recommend,2,True,평점 3.5 이상이면 뭐든 좋아,False,False,correctReject,,,,,,1642
+under-br-0004,7,blocking_rating,recommend,2,False,평점이 높은 상품,False,False,correctReject,,,,,,2127
+under-cbs-0001,0,constraint_budget_set,recommend,3,True,10만원 안에서 전부 챙겨줄 수 있어?,True,True,hit,,,,,no_legs,2154
+under-cbs-0001,1,constraint_budget_set,recommend,2,True,10만원 안에서 전부 챙겨줄 수 있어?,True,True,hit,,,,,,2155
+under-cbs-0001,2,constraint_budget_set,recommend,3,True,10만원 안에서 전부 챙겨줄 수 있어?,True,True,hit,,,,,no_legs,1902
+under-cbs-0001,3,constraint_budget_set,recommend,3,True,10만원 안에서 전부 챙겨줄 수 있어?,True,True,hit,,,,,no_legs,2859
+under-cbs-0001,4,constraint_budget_set,recommend,2,True,10만원 안에서 전부 챙겨줄 수 있어?,True,True,hit,,,,,,2076
+under-cbs-0001,5,constraint_budget_set,recommend,3,True,10만원 안에서 전부 챙겨줄 수 있어?,True,True,hit,,,,,no_legs,2110
+under-cbs-0001,6,constraint_budget_set,recommend,3,True,10만원 안에서 전부 챙겨줄 수 있어?,True,True,hit,,,,,no_legs,34284
+under-cbs-0001,7,constraint_budget_set,recommend,3,True,10만원 안에서 전부 챙겨줄 수 있어?,True,True,hit,,,,,no_legs,2406
+under-cbs-0002,0,constraint_budget_set,recommend,2,True,총 8만원으로 세트 구성해줘,True,True,hit,,,,,,35423
+under-cbs-0002,1,constraint_budget_set,recommend,2,True,총 8만원으로 세트 구성해줘,True,True,hit,,,,,,2042
+under-cbs-0002,2,constraint_budget_set,recommend,2,True,총 8만원으로 세트 구성해줘,True,True,hit,,,,,,4859
+under-cbs-0002,3,constraint_budget_set,recommend,2,True,총 8만원으로 세트 구성해줘,True,True,hit,,,,,,2096
+under-cbs-0002,4,constraint_budget_set,recommend,2,True,총 8만원으로 세트 구성해줘,True,True,hit,,,,,,3911
+under-cbs-0002,5,constraint_budget_set,recommend,2,False,세트 구성,False,True,miss,semanticQueryIsFallback,semanticQueryIsFallback,,,,1912
+under-cbs-0002,6,constraint_budget_set,recommend,2,True,총 8만원으로 세트 구성해줘,True,True,hit,,,,,,1657
+under-cbs-0002,7,constraint_budget_set,recommend,2,True,총 8만원으로 세트 구성해줘,True,True,hit,,,,,,1936
+under-cbs-0003,0,constraint_budget_set,recommend,3,True,예산 6만원 다 써서 이것저것 담아줘,True,True,hit,,,,,no_legs,2237
+under-cbs-0003,1,constraint_budget_set,recommend,3,True,예산 6만원 다 써서 이것저것 담아줘,True,True,hit,,,,,no_legs,5211
+under-cbs-0003,2,constraint_budget_set,recommend,3,True,예산 6만원 다 써서 이것저것 담아줘,True,True,hit,,,,,no_legs,1792
+under-cbs-0003,3,constraint_budget_set,recommend,3,True,예산 6만원 다 써서 이것저것 담아줘,True,True,hit,,,,,no_legs,3040
+under-cbs-0003,4,constraint_budget_set,recommend,3,True,예산 6만원 다 써서 이것저것 담아줘,True,True,hit,,,,,no_legs,1695
+under-cbs-0003,5,constraint_budget_set,recommend,3,True,예산 6만원 다 써서 이것저것 담아줘,True,True,hit,,,,,no_legs,1712
+under-cbs-0003,6,constraint_budget_set,recommend,2,True,예산 6만원 다 써서 이것저것 담아줘,True,True,hit,,,,,,2721
+under-cbs-0003,7,constraint_budget_set,recommend,2,True,예산 6만원 다 써서 이것저것 담아줘,True,True,hit,,,,,,1993
+under-cp-0001,0,constraint_price,recommend,2,True,3만원 이상으로 아무거나 보여줄래?,True,True,hit,,,,,,2367
+under-cp-0001,1,constraint_price,recommend,2,True,3만원 이상으로 아무거나 보여줄래?,True,True,hit,,,,,,1928
+under-cp-0001,2,constraint_price,recommend,2,True,3만원 이상으로 아무거나 보여줄래?,True,True,hit,,,,,,2387
+under-cp-0001,3,constraint_price,recommend,2,True,3만원 이상으로 아무거나 보여줄래?,True,True,hit,,,,,,2176
+under-cp-0001,4,constraint_price,recommend,2,True,3만원 이상으로 아무거나 보여줄래?,True,True,hit,,,,,,1934
+under-cp-0001,5,constraint_price,recommend,2,True,3만원 이상으로 아무거나 보여줄래?,True,True,hit,,,,,,1872
+under-cp-0001,6,constraint_price,recommend,2,True,3만원 이상으로 아무거나 보여줄래?,True,True,hit,,,,,,2038
+under-cp-0001,7,constraint_price,recommend,2,True,3만원 이상으로 아무거나 보여줄래?,True,True,hit,,,,,,2573
+under-cp-0002,0,constraint_price,recommend,2,True,10만원 이내에서 뭐든 괜찮아,True,True,hit,,,,,,2141
+under-cp-0002,1,constraint_price,recommend,2,True,10만원 이내에서 뭐든 괜찮아,True,True,hit,,,,,,2082
+under-cp-0002,2,constraint_price,recommend,2,True,10만원 이내에서 뭐든 괜찮아,True,True,hit,,,,,,2101
+under-cp-0002,3,constraint_price,recommend,2,True,10만원 이내에서 뭐든 괜찮아,True,True,hit,,,,,,23688
+under-cp-0002,4,constraint_price,recommend,2,True,10만원 이내에서 뭐든 괜찮아,True,True,hit,,,,,,25132
+under-cp-0002,5,constraint_price,recommend,2,True,10만원 이내에서 뭐든 괜찮아,True,True,hit,,,,,,3547
+under-cp-0002,6,constraint_price,recommend,2,True,10만원 이내에서 뭐든 괜찮아,True,True,hit,,,,,,2345
+under-cp-0002,7,constraint_price,recommend,2,True,10만원 이내에서 뭐든 괜찮아,True,True,hit,,,,,,5210
+under-cp-0003,0,constraint_price,recommend,2,True,2만원에서 5만원 사이로 아무거나,True,True,hit,,,,,,2367
+under-cp-0003,1,constraint_price,recommend,2,True,2만원에서 5만원 사이로 아무거나,True,True,hit,,,,,,1814
+under-cp-0003,2,constraint_price,recommend,2,True,2만원에서 5만원 사이로 아무거나,True,True,hit,,,,,,1963
+under-cp-0003,3,constraint_price,recommend,2,True,2만원에서 5만원 사이로 아무거나,True,True,hit,,,,,,2028
+under-cp-0003,4,constraint_price,recommend,2,True,2만원에서 5만원 사이로 아무거나,True,True,hit,,,,,,1891
+under-cp-0003,5,constraint_price,recommend,2,True,2만원에서 5만원 사이로 아무거나,True,True,hit,,,,,,30987
+under-cp-0003,6,constraint_price,recommend,2,True,2만원에서 5만원 사이로 아무거나,False,True,miss,filters.attrConditions,filters.attrConditions,가격,,,2930
+under-cp-0003,7,constraint_price,recommend,2,False,5만원 이하,False,True,miss,multiple,categoryQueries;semanticQueryIsFallback,,,,2223
+under-cp-0004,0,constraint_price,recommend,2,True,가격대 6만원 밑으로 아무거나 있어?,True,True,hit,,,,,,1911
+under-cp-0004,1,constraint_price,recommend,2,True,가격대 6만원 밑으로 아무거나 있어?,True,True,hit,,,,,,2133
+under-cp-0004,2,constraint_price,recommend,2,True,가격대 6만원 밑으로 아무거나 있어?,True,True,hit,,,,,,2846
+under-cp-0004,3,constraint_price,recommend,2,True,가격대 6만원 밑으로 아무거나 있어?,True,True,hit,,,,,,2239
+under-cp-0004,4,constraint_price,recommend,2,True,가격대 6만원 밑으로 아무거나 있어?,True,True,hit,,,,,,31995
+under-cp-0004,5,constraint_price,recommend,2,True,가격대 6만원 밑으로 아무거나 있어?,True,True,hit,,,,,,2221
+under-cp-0004,6,constraint_price,recommend,2,True,가격대 6만원 밑으로 아무거나 있어?,True,True,hit,,,,,,2661
+under-cp-0004,7,constraint_price,recommend,2,True,가격대 6만원 밑으로 아무거나 있어?,True,True,hit,,,,,,3073
+under-mg-0001,0,multiturn_gate,recommend,2,True,거기서 더 싼 걸로 하나 줘,False,False,correctReject,,,,,,3321
+under-mg-0001,1,multiturn_gate,recommend,2,False,거기서 더 싼 걸로,False,False,correctReject,,,,,,5595
+under-mg-0001,2,multiturn_gate,recommend,2,False,더 싼 아이템,False,False,correctReject,,,,,,31398
+under-mg-0001,3,multiturn_gate,recommend,2,True,거기서 더 싼 걸로 하나 줘,False,False,correctReject,,,,,,2253
+under-mg-0001,4,multiturn_gate,recommend,2,True,거기서 더 싼 걸로 하나 줘,False,False,correctReject,,,,,,1937
+under-mg-0001,5,multiturn_gate,recommend,2,True,거기서 더 싼 걸로 하나 줘,False,False,correctReject,,,,,,2388
+under-mg-0001,6,multiturn_gate,recommend,2,True,거기서 더 싼 걸로 하나 줘,False,False,correctReject,,,,,,2220
+under-mg-0001,7,multiturn_gate,recommend,2,True,거기서 더 싼 걸로 하나 줘,False,False,correctReject,,,,,,1965
+under-mg-0002,0,multiturn_gate,recommend,2,True,이전 목록 중에 저렴한 쪽으로,False,False,correctReject,,,,,,2137
+under-mg-0002,1,multiturn_gate,recommend,3,True,이전 목록 중에 저렴한 쪽으로,False,False,correctReject,,,,,no_legs,2328
+under-mg-0002,2,multiturn_gate,recommend,3,True,이전 목록 중에 저렴한 쪽으로,False,False,correctReject,,,,,no_legs,7071
+under-mg-0002,3,multiturn_gate,recommend,3,True,이전 목록 중에 저렴한 쪽으로,False,False,correctReject,,,,,no_legs,2146
+under-mg-0002,4,multiturn_gate,recommend,2,True,이전 목록 중에 저렴한 쪽으로,False,False,correctReject,,,,,,2487
+under-mg-0002,5,multiturn_gate,recommend,2,True,이전 목록 중에 저렴한 쪽으로,False,False,correctReject,,,,,,2113
+under-mg-0002,6,multiturn_gate,recommend,2,True,이전 목록 중에 저렴한 쪽으로,False,False,correctReject,,,,,,3713
+under-mg-0002,7,multiturn_gate,recommend,3,True,이전 목록 중에 저렴한 쪽으로,False,False,correctReject,,,,,no_legs,33375
+under-nc-0001,0,no_condition,recommend,3,True,뭐 좋은 거 없어?,True,True,hit,,,,,no_legs,2274
+under-nc-0001,1,no_condition,recommend,3,True,뭐 좋은 거 없어?,True,True,hit,,,,,no_legs,2502
+under-nc-0001,2,no_condition,recommend,3,True,뭐 좋은 거 없어?,True,True,hit,,,,,no_legs,1778
+under-nc-0001,3,no_condition,recommend,3,True,뭐 좋은 거 없어?,True,True,hit,,,,,no_legs,1982
+under-nc-0001,4,no_condition,recommend,3,True,뭐 좋은 거 없어?,True,True,hit,,,,,no_legs,1712
+under-nc-0001,5,no_condition,recommend,3,True,뭐 좋은 거 없어?,True,True,hit,,,,,no_legs,2682
+under-nc-0001,6,no_condition,recommend,3,True,뭐 좋은 거 없어?,True,True,hit,,,,,no_legs,3423
+under-nc-0001,7,no_condition,recommend,3,True,뭐 좋은 거 없어?,True,True,hit,,,,,no_legs,3120
+under-nc-0002,0,no_condition,recommend,2,False,무슨 상품이 필요하신지 하나 골라드릴까요?,False,True,miss,multiple,categoryQueries;semanticQueryIsFallback,,,,2418
+under-nc-0002,1,no_condition,recommend,3,True,아무거나 하나 골라줘,True,True,hit,,,,,no_legs,1797
+under-nc-0002,2,no_condition,recommend,3,False,인기 상품,False,True,miss,multiple,categoryQueries;semanticQueryIsFallback,,,,2693
+under-nc-0002,3,no_condition,recommend,2,True,아무거나 하나 골라줘,True,True,hit,,,,,,2232
+under-nc-0002,4,no_condition,recommend,3,True,아무거나 하나 골라줘,True,True,hit,,,,,no_legs,2316
+under-nc-0002,5,no_condition,recommend,3,True,아무거나 하나 골라줘,True,True,hit,,,,,no_legs,2989
+under-nc-0002,6,no_condition,recommend,3,True,아무거나 하나 골라줘,True,True,hit,,,,,no_legs,34083
+under-nc-0002,7,no_condition,recommend,2,False,아무거나 one-off 추천,False,True,miss,multiple,categoryQueries;semanticQueryIsFallback,,,,2701
+under-nc-0003,0,no_condition,recommend,3,True,그냥 추천해줘,True,True,hit,,,,,no_legs,2309
+under-nc-0003,1,no_condition,recommend,3,True,그냥 추천해줘,True,True,hit,,,,,no_legs,1991
+under-nc-0003,2,no_condition,recommend,3,True,그냥 추천해줘,True,True,hit,,,,,no_legs,1788
+under-nc-0003,3,no_condition,recommend,3,True,그냥 추천해줘,True,True,hit,,,,,no_legs,2021
+under-nc-0003,4,no_condition,recommend,3,True,그냥 추천해줘,True,True,hit,,,,,no_legs,2839
+under-nc-0003,5,no_condition,recommend,3,True,그냥 추천해줘,True,True,hit,,,,,no_legs,2424
+under-nc-0003,6,no_condition,recommend,3,True,그냥 추천해줘,True,True,hit,,,,,no_legs,3198
+under-nc-0003,7,no_condition,recommend,3,True,그냥 추천해줘,True,True,hit,,,,,no_legs,31493
+under-nc-0004,0,no_condition,recommend,3,True,뭐라도 사고 싶은데 추천 좀 해줘,True,True,hit,,,,,no_legs,31936
+under-nc-0004,1,no_condition,recommend,3,True,뭐라도 사고 싶은데 추천 좀 해줘,True,True,hit,,,,,no_legs,2406
+under-nc-0004,2,no_condition,recommend,3,True,뭐라도 사고 싶은데 추천 좀 해줘,True,True,hit,,,,,no_legs,2348
+under-nc-0004,3,no_condition,recommend,3,True,뭐라도 사고 싶은데 추천 좀 해줘,True,True,hit,,,,,no_legs,2213
+under-nc-0004,4,no_condition,recommend,3,True,뭐라도 사고 싶은데 추천 좀 해줘,True,True,hit,,,,,no_legs,3025
+under-nc-0004,5,no_condition,recommend,3,True,뭐라도 사고 싶은데 추천 좀 해줘,True,True,hit,,,,,no_legs,2918
+under-nc-0004,6,no_condition,recommend,3,True,뭐라도 사고 싶은데 추천 좀 해줘,True,True,hit,,,,,no_legs,5749
+under-nc-0004,7,no_condition,recommend,3,True,뭐라도 사고 싶은데 추천 좀 해줘,True,True,hit,,,,,no_legs,2247
+under-wa-0001,0,what_axis,recommend,3,False,노트북,False,False,correctReject,,,,,,2179
+under-wa-0001,1,what_axis,recommend,3,False,노트북,False,False,correctReject,,,,,,2588
+under-wa-0001,2,what_axis,recommend,3,False,노트북,False,False,correctReject,,,,,,2059
+under-wa-0001,3,what_axis,recommend,3,False,무엇을 살지 결정되지 않은 상황에서 일반적인 노트북 추천을 원함,False,False,correctReject,,,,,,2628
+under-wa-0001,4,what_axis,recommend,3,False,노트북,False,False,correctReject,,,,,,2372
+under-wa-0001,5,what_axis,recommend,3,False,노트북,False,False,correctReject,,,,,,2796
+under-wa-0001,6,what_axis,recommend,3,False,노트북,False,False,correctReject,,,,,,2624
+under-wa-0001,7,what_axis,recommend,3,False,노트북,False,False,correctReject,,,,,,2166
+under-wa-0002,0,what_axis,recommend,2,True,LG 가전 아무거나 있어?,False,False,correctReject,,,,,,3273
+under-wa-0002,1,what_axis,recommend,2,False,LG 가전,False,False,correctReject,,,브랜드,,,3596
+under-wa-0002,2,what_axis,recommend,2,True,LG 가전 아무거나 있어?,False,False,correctReject,,,,,,2638
+under-wa-0002,3,what_axis,recommend,2,False,LG 가전,False,False,correctReject,,,,,,2687
+under-wa-0002,4,what_axis,recommend,2,False,LG 가전,False,False,correctReject,,,brand,,,3598
+under-wa-0002,5,what_axis,recommend,2,False,LG 가전,False,False,correctReject,,,,,,5352
+under-wa-0002,6,what_axis,recommend,2,True,LG 가전 아무거나 있어?,False,False,correctReject,,,,,,1987
+under-wa-0002,7,what_axis,recommend,2,False,LG 가전,False,False,correctReject,,,브랜드,,,2273
+under-wa-0003,0,what_axis,recommend,2,False,노란색,False,False,correctReject,,,,,,2983
+under-wa-0003,1,what_axis,recommend,2,True,노란색으로 아무거나 골라줘,False,False,correctReject,,,,,,3155
+under-wa-0003,2,what_axis,recommend,2,False,노란색,False,False,correctReject,,,,,,2391
+under-wa-0003,3,what_axis,recommend,3,False,무색/무관한 색상 요청에 따른 일반 추천,False,False,correctReject,,,color,,no_legs,2782
+under-wa-0003,4,what_axis,recommend,2,True,노란색으로 아무거나 골라줘,False,False,correctReject,,,color,,,2514
+under-wa-0003,5,what_axis,recommend,3,True,노란색으로 아무거나 골라줘,False,False,correctReject,,,color,,no_legs,2429
+under-wa-0003,6,what_axis,recommend,2,False,노란색,False,False,correctReject,,,color,,,2713
+under-wa-0003,7,what_axis,recommend,2,True,노란색으로 아무거나 골라줘,False,False,correctReject,,,,,,1758
+under-wa-0004,0,what_axis,recommend,2,False,초록색,False,False,correctReject,,,color,,,2343
+under-wa-0004,1,what_axis,recommend,3,True,초록색 제품 뭐 있어?,False,False,correctReject,,,,,no_legs,2256
+under-wa-0004,2,what_axis,recommend,2,False,초록색 상품,False,False,correctReject,,,color,,,2736
+under-wa-0004,3,what_axis,recommend,2,False,초록색,False,False,correctReject,,,color,,,2064
+under-wa-0004,4,what_axis,recommend,2,False,초록색,False,False,correctReject,,,color,,,33272
+under-wa-0004,5,what_axis,recommend,2,False,초록색,False,False,correctReject,,,color,,,2248
+under-wa-0004,6,what_axis,recommend,2,False,초록색 제품,False,False,correctReject,,,,,,2345
+under-wa-0004,7,what_axis,recommend,3,True,초록색 제품 뭐 있어?,False,False,correctReject,,,,,no_legs,5041
+under-wa-0005,0,what_axis,recommend,3,False,레트로 무드등,False,False,correctReject,,,,,,2198
+under-wa-0005,1,what_axis,recommend,3,False,레트로 무드등,False,False,correctReject,,,,,,1873
+under-wa-0005,2,what_axis,recommend,2,False,레트로 무드등,False,False,correctReject,,,,,,2102
+under-wa-0005,3,what_axis,recommend,3,False,레트로 무드등,False,False,correctReject,,,,,,33139
+under-wa-0005,4,what_axis,recommend,3,False,레트로 무드등,False,False,correctReject,,,,,,2018
+under-wa-0005,5,what_axis,recommend,3,False,레트로 무드등,False,False,correctReject,,,,,,2912
+under-wa-0005,6,what_axis,recommend,2,False,레트로 무드등,False,False,correctReject,,,,,,2079
+under-wa-0005,7,what_axis,recommend,2,False,레트로 무드등,False,False,correctReject,,,,,,2468
+under-wa-0006,0,what_axis,recommend,2,False,미니멀 텀블러,False,False,correctReject,,,,,,2724
+under-wa-0006,1,what_axis,recommend,2,False,무독 텀블러/미니멀 스타일 보틀,False,False,correctReject,,,,,,2556
+under-wa-0006,2,what_axis,recommend,2,False,미니멀 텀블러,False,False,correctReject,,,,,,31744
+under-wa-0006,3,what_axis,recommend,3,False,미니멀 텀블러,False,False,correctReject,,,,,,2910
+under-wa-0006,4,what_axis,recommend,3,False,미니멀 텀블러,False,False,correctReject,,,,,,2300
+under-wa-0006,5,what_axis,recommend,2,False,미니멀 텀블러,False,False,correctReject,,,,,,3139
+under-wa-0006,6,what_axis,recommend,2,False,미니멀 텀블러,False,False,correctReject,,,,,,2931
+under-wa-0006,7,what_axis,recommend,2,False,미니멀 텀블러,False,False,correctReject,,,,,,2149
