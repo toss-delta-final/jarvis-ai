@@ -5,9 +5,12 @@
 
 from __future__ import annotations
 
+import math
+
 import pytest
 from pydantic import ValidationError
 
+from app.agents.seller.features import spec
 from app.core.config import Settings
 
 
@@ -220,3 +223,112 @@ def test_general_lane_budget_tracks_every_serial_term() -> None:
     assert 10.0 + 31.0 + 20.0 < 90.0, "이 값이 1배 계산에서는 통과한다는 전제"
     with pytest.raises(ValidationError):
         Settings(_env_file=None, seller_checkpoint_connect_timeout_s=31.0)
+
+
+# ── 고객 축 피처·군집 (이슈 #593, 03-FEATURES 2부 / 04-CLUSTERING §7) ──────────
+
+
+def test_customer_feature_settings_defaults() -> None:
+    """기본값의 출처는 features/spec.py 다 — 여기서 숫자를 다시 적지 않는다."""
+    settings = Settings(_env_file=None)
+
+    assert settings.seller_feature_spec_version == "fe_v1"
+    assert tuple(settings.seller_cluster_input_keys) == spec.CLUSTER_INPUT_KEYS
+    assert settings.seller_feature_shrinkage_alpha == 5.0
+    assert settings.seller_feature_min_denom == 5
+    assert settings.seller_amount_bucket_map == spec.AMOUNT_BUCKET_MAP
+    assert settings.seller_customer_kmeans_k_min == 2
+    assert settings.seller_customer_kmeans_k_max == 6
+    assert settings.seller_customer_kmeans_n_init == 10
+    assert settings.seller_customer_pca_variance == 0.95
+    assert settings.seller_customer_pca_auto_compare is True
+    assert settings.seller_customer_segment_min_size == 30
+    assert settings.seller_snapshot_row_limit == 1000
+    assert settings.seller_customer_label_thresholds == spec.DEFAULT_LABEL_THRESHOLDS
+
+
+def test_customer_kmeans_settings_are_separate_from_product_axis() -> None:
+    """⚠️ 상품 축 키를 재사용하면 값 하나로 두 파이프라인이 동시에 흔들린다(결정 28b)."""
+    settings = Settings(_env_file=None, seller_customer_kmeans_random_state=7)
+
+    assert settings.seller_customer_kmeans_random_state == 7
+    assert settings.seller_kmeans_random_state == 42  # 상품 축 — 무접촉
+    assert settings.seller_behavior_kmeans_k_max == 5  # 상품 축 k 범위도 별개
+
+
+def test_cluster_group_weights_default_to_one_over_sqrt_n() -> None:
+    """축군의 총 영향력이 1 이 되도록 열별 가중치는 1/√n 이다(04 §1.2)."""
+    weights = Settings(_env_file=None).seller_customer_cluster_group_weights
+
+    assert weights["activity"] == pytest.approx(1 / math.sqrt(5))
+    assert weights["funnel"] == pytest.approx(1 / math.sqrt(3))
+    assert weights["explore"] == pytest.approx(1.0)
+    # 각 축군의 기여 합 = n × w² = 1.
+    for group, keys in spec.CLUSTER_GROUP_KEYS.items():
+        assert len(keys) * weights[group] ** 2 == pytest.approx(1.0)
+
+
+def test_cluster_input_keys_must_match_spec_order() -> None:
+    """스냅샷 각인과 코드가 어긋난 채 기동하면 다른 정의로 만든 숫자를 비교하게 된다."""
+    shuffled = list(spec.CLUSTER_INPUT_KEYS)
+    shuffled[0], shuffled[1] = shuffled[1], shuffled[0]
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_cluster_input_keys=shuffled)
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_cluster_input_keys=list(spec.CLUSTER_INPUT_KEYS)[:11])
+
+
+def test_amount_bucket_map_must_match_spec_order() -> None:
+    """응답 amountBuckets 와의 대조는 런타임이고, 부팅은 상수끼리만 본다."""
+    reordered = {key: spec.AMOUNT_BUCKET_MAP[key] for key in reversed(spec.AMOUNT_BUCKET_ORDER)}
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_amount_bucket_map=reordered)
+
+
+def test_cluster_group_weights_reject_unknown_or_negative() -> None:
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_customer_cluster_group_weights={"activity": 1.0})
+    with pytest.raises(ValidationError):
+        Settings(
+            _env_file=None,
+            seller_customer_cluster_group_weights={
+                **spec.DEFAULT_CLUSTER_GROUP_WEIGHTS,
+                "explore": 0.0,
+            },
+        )
+
+
+def test_label_thresholds_require_every_key_and_percentile_range() -> None:
+    partial = dict(spec.DEFAULT_LABEL_THRESHOLDS)
+    partial.pop("loyal_recency_min")
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_customer_label_thresholds=partial)
+
+    with pytest.raises(ValidationError):
+        Settings(
+            _env_file=None,
+            seller_customer_label_thresholds={
+                **spec.DEFAULT_LABEL_THRESHOLDS,
+                "loyal_orders_min": 120.0,
+            },
+        )
+
+
+def test_customer_kmeans_k_range_is_validated() -> None:
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_customer_kmeans_k_min=1)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_customer_kmeans_k_min=6, seller_customer_kmeans_k_max=4)
+
+
+def test_feature_dict_settings_survive_empty_env_string() -> None:
+    """deploy.yml 은 미설정 vars 를 빈 문자열로 쓴다 — model_price_* 와 같은 방어다."""
+    settings = Settings(
+        _env_file=None,
+        seller_amount_bucket_map="",
+        seller_customer_cluster_group_weights="",
+        seller_customer_label_thresholds="",
+    )
+    assert settings.seller_amount_bucket_map == spec.AMOUNT_BUCKET_MAP
+    assert settings.seller_customer_label_thresholds == spec.DEFAULT_LABEL_THRESHOLDS
