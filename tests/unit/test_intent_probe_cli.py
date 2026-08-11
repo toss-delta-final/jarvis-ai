@@ -156,12 +156,12 @@ def test_pacer_snapshot_is_recorded(tmp_path: Path) -> None:
     assert _run(out, "--rpm", "5") == 0
     pacer = _results(out)["pacer"]
     assert pacer["maxRpm"] == 5
-    # 셀 101 × N=2 (decompose) + 카테고리 15셀 × 2 (범위 해제 분류기) + 첫 무맥락
-    # 추천 후보 41셀 × 2 (#463 과소지정 전용 분류기) = 314.
+    # 셀 101 × N=2 (decompose) + 카테고리 15셀 × 2 (범위 해제 분류기) + 저정보량
+    # 첫 무맥락 후보 2셀 × 2 (#463 과소지정 전용 분류기) = 236.
     # [#84] 분류기도 **페이서를 지난다** — 레이트 예산에 빠지면 실 런에서 429 가 난다.
     # [#300] screen 6셀은 분류기를 태우지 않는다(직전 카테고리가 없다) — 셀 수만 늘어난다.
-    # 첫 무맥락 셀만 #463 분류기를 함께 탄다. screen·prior·추천 목록·옵션 대기는 제외된다.
-    assert pacer["acquireCount"] == 101 * 2 + 15 * 2 + 41 * 2
+    # 실제 판정은 LLM이 하지만, 비용은 저정보량 사전 게이트로 제한한다.
+    assert pacer["acquireCount"] == 101 * 2 + 15 * 2 + 2 * 2
     assert pacer["waitCount"] > 0
 
 
@@ -324,12 +324,12 @@ def test_report_exposes_condition_only_axis(tmp_path: Path) -> None:
 
 
 def test_condition_only_cells_do_not_call_the_category_scope_classifier(tmp_path: Path) -> None:
-    """조건 전용 첫 턴은 #463 과소지정 분류기만 함께 호출한다."""
+    """조건 전용 첫 턴 중 저정보량 표본만 #463 분류기를 함께 호출한다."""
     out = tmp_path / "run"
     assert _run(out, "--case-ids", "condition-only-001,condition-only-002") == 0
     pacer = _results(out)["pacer"]
-    # decompose + 첫 무맥락 과소지정 분류기: 2셀 × N=2 × 2 호출.
-    assert pacer["acquireCount"] == 2 * 2 * 2
+    # decompose 2셀 × N=2 + 저정보량 1셀 × N=2 전용 분류기.
+    assert pacer["acquireCount"] == 2 * 2 + 2
 
 
 def test_screen_cells_do_not_call_the_category_scope_classifier(tmp_path: Path) -> None:
@@ -356,11 +356,8 @@ def test_report_exposes_named_category_axis_and_diagnostics(tmp_path: Path) -> N
 
 
 def test_named_category_cells_do_not_call_the_category_scope_classifier(tmp_path: Path) -> None:
-    """[#443] 명시 카테고리 첫 턴도 #463 분류기 게이트를 거친다.
-
-    품질은 false 응답으로 원 결정을 보존하는지 실측하며, 이 단위 테스트는 배관 비용만 고정한다.
-    """
+    """[#443] 명시 카테고리 첫 턴은 #463 저정보량 호출을 열지 않는다."""
     out = tmp_path / "run"
     assert _run(out, "--case-ids", "named-category-001,named-category-002") == 0
     pacer = _results(out)["pacer"]
-    assert pacer["acquireCount"] == 2 * 2 * 2
+    assert pacer["acquireCount"] == 2 * 2

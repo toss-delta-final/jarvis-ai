@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from app.agents.buyer.recommendation.state import extract_json
@@ -11,6 +12,17 @@ from app.core.llm import resolve_model_id
 from app.core.tracing import trace_span
 
 logger = logging.getLogger(__name__)
+
+
+# 이 식은 판정기가 아니다. 상품·용도 신호가 분명한 첫 턴에 보조 smart 호출을 열지 않기 위한
+# 비용 상한이며, 실제 과소지정 여부는 반드시 아래 LLM 분류기가 확정한다. 가격/예산-only와
+# "아무거나" 계열은 넓게 포함하되, 평점-only는 #336의 보수 경계를 따라 제외한다.
+_LOW_INFORMATION_MARKERS = re.compile(
+    r"아무거나|뭐든|뭐라도|그냥\s*추천|좋은\s*거\s*(?:없|추천)|하나\s*골라"
+    r"|(?:가격대|예산|총\s*\d|\d+(?:\.\d+)?\s*만\s*원|\d+\s*원)",
+    re.IGNORECASE,
+)
+_RATING_MARKERS = re.compile(r"평점|별점|리뷰")
 
 _SYSTEM = """쇼핑 대화에서 사용자가 지금 무엇을 살지 지목했는지만 판정하세요.
 아래 JSON 만 출력하세요(설명·코드펜스 금지): {"underspecified": true | false}
@@ -21,6 +33,17 @@ _SYSTEM = """쇼핑 대화에서 사용자가 지금 무엇을 살지 지목했�
 - false: 평점 조건만 있는 발화도 false 입니다. 현재 재질문 계약은 평점 필터를 보수적으로
   유지하므로, 이 호출이 그 계약을 넓혀서는 안 됩니다.
 - 확신이 없으면 false 입니다."""
+
+
+def could_be_underspecified_message(message: str) -> bool:
+    """보조 분류기를 열 만한 저정보량 첫 턴인지 보수적으로 거른다.
+
+    이 빠른 게이트가 ``False``여도 추천 결과를 바꾸지 않는다. 호출을 생략할 뿐이며, ``True``인
+    경우에만 LLM의 true 판정이 #430 fallback을 복원한다.
+    """
+    return bool(_LOW_INFORMATION_MARKERS.search(message)) and not bool(
+        _RATING_MARKERS.search(message)
+    )
 
 
 async def classify_underspecified(

@@ -75,6 +75,19 @@ async def test_classifier_degrades_to_none_on_provider_failure() -> None:
     )
 
 
+def test_low_information_gate_is_not_the_classifier() -> None:
+    """명백한 상품/목적 요청에는 #463 smart 보조 호출 비용을 붙이지 않는다."""
+    from app.agents.buyer.recommendation.underspecified_classifier import (
+        could_be_underspecified_message,
+    )
+
+    assert could_be_underspecified_message("5만원 이하로 아무거나 추천해줘")
+    assert could_be_underspecified_message("그냥 추천해줘")
+    assert not could_be_underspecified_message("평점 4 이상 아무거나")
+    assert not could_be_underspecified_message("무선 이어폰 추천해줘")
+    assert not could_be_underspecified_message("유럽여행 준비물 추천해줘")
+
+
 def test_classifier_settings_default_to_a_narrow_smart_call() -> None:
     settings = Settings(_env_file=None)
 
@@ -111,7 +124,8 @@ def test_true_verdict_restores_the_430_fallback_shape() -> None:
     assert decision.case == 2 and decision.semantic_query_is_fallback is True
 
 
-def test_false_or_non_recommend_verdict_does_not_mutate_decision() -> None:
+@pytest.mark.parametrize("verdict", [False, None])
+def test_false_or_unavailable_verdict_does_not_mutate_decision(verdict: bool | None) -> None:
     from app.agents.buyer.recommendation.state import RouteDecision
     from app.agents.buyer.recommendation.underspecified_classifier import (
         apply_underspecified_classification,
@@ -120,5 +134,5 @@ def test_false_or_non_recommend_verdict_does_not_mutate_decision() -> None:
     decision = RouteDecision(
         intent="recommend", filters=ProductSearchFilters(semantic_query="무선 이어폰")
     )
-    assert not apply_underspecified_classification(decision, message="무선 이어폰", verdict=False)
+    assert not apply_underspecified_classification(decision, message="무선 이어폰", verdict=verdict)
     assert decision.filters.semantic_query == "무선 이어폰"

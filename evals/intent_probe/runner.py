@@ -26,6 +26,7 @@ from app.agents.buyer.recommendation.state import RouteDecision
 from app.agents.buyer.recommendation.underspecified_classifier import (
     apply_underspecified_classification,
     classify_underspecified,
+    could_be_underspecified_message,
 )
 from app.agents.buyer.screen_reference import resolve_screen_reference
 from app.core.config import get_settings
@@ -299,6 +300,25 @@ async def run_cell(
     # 이 플래그로 다시 만들어진다.
     prior_category = (getattr(prior_filters, "category", None) or "") if classifier_enabled else ""
     echo_tokens = _prior_echo_tokens(anchors) if prior_category else frozenset()
+    underspecified_call_gate = (
+        underspecified_classifier_enabled
+        and prior_filters is None
+        and context_kwargs.get("pending_cart") is None
+        and not context_kwargs.get("last_recommendations")
+        and context_kwargs.get("screen") is None
+        and bool(cell.utterance.text.strip())
+        and could_be_underspecified_message(cell.utterance.text)
+    )
+    dedicated_prompt = (
+        underspecified_classifier_enabled
+        and context_kwargs.get("pending_cart") is None
+        and (
+            prior_filters is not None
+            or bool(context_kwargs.get("last_recommendations"))
+            or context_kwargs.get("screen") is not None
+            or underspecified_call_gate
+        )
+    )
     max_attempts = n * attempt_multiplier
     while len(result.samples) < n and result.attempts < max_attempts:
         result.attempts += 1
@@ -316,7 +336,7 @@ async def run_cell(
                 category_leg_injection_min_length=settings.category_leg_injection_min_length,
                 attr_axis_suppression=settings.attr_condition_axis_suppression_enabled,
                 attr_constraint_axes=frozenset(settings.attr_condition_constraint_axes),
-                dedicated_underspecified_classifier=underspecified_classifier_enabled,
+                dedicated_underspecified_classifier=dedicated_prompt,
                 **context_kwargs,
             )
         except BudgetExceeded:
@@ -346,14 +366,7 @@ async def run_cell(
         # #463 배포 게이트와 같은 첫 무맥락 조건이다. 러너는 결과만 재므로 호출을 decompose와
         # 병렬화할 필요는 없지만, 분류 결과를 적용하는 순서와 상태 변형은 graph.py와 공유한다.
         underspecified = None
-        if (
-            underspecified_classifier_enabled
-            and prior_filters is None
-            and context_kwargs.get("pending_cart") is None
-            and not context_kwargs.get("last_recommendations")
-            and context_kwargs.get("screen") is None
-            and bool(cell.utterance.text.strip())
-        ):
+        if underspecified_call_gate:
             underspecified = await classify_underspecified(
                 llm, message=cell.utterance.text, settings=settings
             )

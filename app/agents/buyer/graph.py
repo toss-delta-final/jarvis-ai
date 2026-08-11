@@ -61,6 +61,7 @@ from app.agents.buyer.recommendation.underspecified import is_underspecified_tur
 from app.agents.buyer.recommendation.underspecified_classifier import (
     apply_underspecified_classification,
     classify_underspecified,
+    could_be_underspecified_message,
 )
 from app.agents.buyer.recommendation.relaxation import FIELD_TO_ATTR as RELAXATION_FIELD_TO_ATTR
 from app.agents.buyer.recommendation.state import get_relaxation_offer_store, get_revert_store
@@ -1132,6 +1133,7 @@ async def run_buyer_turn(
             and not prompt_reco
             and prompt_screen is None
             and bool(request.message.strip())
+            and could_be_underspecified_message(request.message)
         )
         if underspecified_gate:
             underspecified_task = asyncio.create_task(
@@ -1188,7 +1190,18 @@ async def run_buyer_turn(
                             category_leg_injection_min_length=settings.category_leg_injection_min_length,
                             attr_axis_suppression=settings.attr_condition_axis_suppression_enabled,
                             attr_constraint_axes=frozenset(settings.attr_condition_constraint_axes),
-                            dedicated_underspecified_classifier=settings.underspecified_classifier_enabled,
+                            # #463 후보 프롬프트는 #430 규칙과 실제로 경쟁하는 세 경우에만 쓴다.
+                            # 일반 첫 추천은 legacy 프롬프트/호출 예산을 그대로 지킨다.
+                            dedicated_underspecified_classifier=(
+                                settings.underspecified_classifier_enabled
+                                and pending_dict is None
+                                and (
+                                    prior is not None
+                                    or bool(prompt_reco)
+                                    or prompt_screen is not None
+                                    or underspecified_gate
+                                )
+                            ),
                         )
         except LLMError as exc:
             # [#84] 이 경로에서 나가기 전에 병렬 태스크를 반드시 정리한다 — 안 하면 취소되지 않은

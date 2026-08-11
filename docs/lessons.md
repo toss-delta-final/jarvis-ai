@@ -23,10 +23,10 @@
 - 규칙: LLM 산출 키 이름에 어휘 매칭을 걸 때는 한국어/영어·대소문자·camelCase/snake_case를 처음부터 함께 덮고, 스키마 필드명 변형은 드리프트 가드 테스트로 못박는다. 어휘 목록만 늘리면 두더지잡기가 된다.
 - 관련: #464 `app/core/config.py`·`app/agents/buyer/recommendation/attr_axis.py`·`tests/unit/test_attr_axis.py`
 
-## [2026-08-11] LLM 평가 분모는 호출 성공 수가 아니라 production 도달 조건을 함께 기록해야 한다
-- 증상: #463 after-2의 missRate 분모가 112가 아니라 111이었다. 표본·N은 모두 채워졌지만 `under-cbs-0003` 한 회차가 `cart_add`로 라우팅되어 production의 `intent==recommend` 판정에 도달하지 않았다.
-- 원인: confirmatory 지표가 의도적으로 production 게이트 뒤 표본만 세므로, LLM 라우팅 분포가 분모를 바꿀 수 있다. 또 results의 `baseline`은 arm 결과가 아니라 항상-false comparator라 이름만 보고 전후 정책으로 오독하기 쉽다.
-- 규칙: 전후 측정은 prompt·fixture·N뿐 아니라 confirmatory 분모와 `nonRecommendIntentCount`를 같이 비교하고, 분모가 달라지면 원인 case·intent를 표에 적는다. 보조 LLM 실패는 fail-open인지 retry 실패인지 별도 컬럼/로그로 구분해 수치를 과장하지 않는다.
+## [2026-08-11] LLM 평가 arm은 production gate와 동형이어야 한다
+- 증상: #463의 첫 after는 후보 decompose 프롬프트와 보조 호출을 무맥락 첫 턴 전체에 적용했지만, production은 저정보량 후보에만 비용을 내도록 수정됐다. 따라서 옛 after는 같은 hash여도 배포 arm이 아니었다.
+- 원인: prompt hash만 같다고 호출 게이트·부수 호출 예산까지 같아지는 것은 아니다. confirmatory 분모도 `intent==recommend` 뒤에 생기므로 `nonRecommendIntentCount`를 동반해야 한다.
+- 규칙: 코드가 gate를 바꾸면 after는 독립 반복으로 재측정하고, legacy before는 prompt·fixture·N·arm semantics가 불변임을 manifest로 증명한 경우에만 재사용한다. #463 gate-after는 N=8 두 번 모두 miss `0/112`, false alarm `0/104`, unfilled·non-recommend 0이었다. 보조 LLM 실패는 fail-open인지 retry failure인지 별도 기록한다.
 - 관련: #463 `evals/underspecified_probe/*463-*`·`app/agents/buyer/recommendation/underspecified_classifier.py`
 
 ## [2026-08-11] 억제/보강 스위치는 발동 건수를 산출물에 남겨야 한다

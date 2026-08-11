@@ -27,6 +27,7 @@ from app.agents.buyer.recommendation.underspecified import is_underspecified_tur
 from app.agents.buyer.recommendation.underspecified_classifier import (
     apply_underspecified_classification,
     classify_underspecified,
+    could_be_underspecified_message,
 )
 from app.core.config import Settings
 from app.core.llm import LLMClient
@@ -363,6 +364,13 @@ async def run_cell(
     anchor = cell.anchor
     # [§D5] priorExists 앵커는 decompose·판정에 같은 prior(빈 멀티턴 상태)를 넘긴다.
     prior = ProductSearchFilters() if anchor.prior_exists else None
+    dedicated_call_gate = (
+        dedicated_llm is not None
+        and dedicated_settings is not None
+        and prior is None
+        and could_be_underspecified_message(anchor.utterance)
+    )
+    dedicated_prompt = dedicated_settings is not None and (prior is not None or dedicated_call_gate)
     result = CellResult(cell_id=cell.cell_id, case_id=anchor.case_id, slice=anchor.slice)
     max_attempts = n * attempt_multiplier
     while len(result.samples) < n and result.attempts < max_attempts:
@@ -385,6 +393,7 @@ async def run_cell(
                 leg_condition_terms=leg_condition_terms,
                 attr_axis_suppression=attr_axis_suppression,
                 attr_constraint_axes=attr_constraint_axes,
+                dedicated_underspecified_classifier=dedicated_prompt,
             )
         except BudgetExceeded as exc:
             result.failures.append(
@@ -413,7 +422,7 @@ async def run_cell(
         )
         postprocess_verdict = is_underspecified_turn(post_decision, prior, judgment_settings)
         dedicated_called = dedicated_disagreed = dedicated_failed = dedicated_ambiguous = False
-        if dedicated_llm is not None and dedicated_settings is not None and prior is None:
+        if dedicated_call_gate:
             dedicated_called = True
             try:
                 verdict = await classify_underspecified(
