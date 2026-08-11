@@ -43,6 +43,14 @@ COPY --chown=jarvis:jarvis db /app/db
 
 ENV PATH="/app/.venv/bin:$PATH"
 
+# [이슈 #583] 컨테이너 TZ 를 KST 로 고정한다 — 로그 타임스탬프(`%(asctime)s` 는 로컬 TZ 를
+# 따른다)를 팀이 읽는 KST 로 맞추고, TZ 를 가정하는 코드가 새로 들어와도 안전하도록.
+# 여기(이미지 ENV)에 두는 이유: EC2 배포는 `docker run --env-file` 이라 env 파일에 TZ 가
+# 없으면 이 값을 그대로 물려받는다 — 배포·compose·로컬이 한 곳에서 덮인다.
+# 계산의 기준 시각은 이 값에 기대지 않는다(app/core/clock.py 가 명시 오프셋으로 계산).
+# python:3.12-slim 은 /usr/share/zoneinfo 를 포함해 tzdata 추가 설치가 필요 없다.
+ENV TZ=Asia/Seoul
+
 USER jarvis
 
 EXPOSE 8000

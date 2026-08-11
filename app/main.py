@@ -29,6 +29,7 @@ import os
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import datetime
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -49,6 +50,7 @@ from app.agents.seller.checkpoint import close_checkpointer as close_seller_chec
 from app.agents.seller.history import close_store as close_seller_history_store
 from app.api import chat, events, internal, profile, profile_graph, seller
 from app.core.body_limit import BodySizeLimitMiddleware
+from app.core.clock import KST
 from app.core.conversation import close_store as close_conversation_store
 from app.core.config import Settings, get_settings
 from app.core.errors import install_error_handling
@@ -292,11 +294,35 @@ def _warn_if_scripted_llm(settings: Settings) -> None:
     )
 
 
+def _warn_if_timezone_mismatch() -> None:
+    """[이슈 #583] 프로세스 TZ 가 KST 가 아니면 기동 로그에 경고를 남긴다.
+
+    **기동을 막지 않는다.** 기준 시각은 app/core/clock.py 가 명시 오프셋으로 계산하므로
+    프로세스 TZ 가 무엇이든 판매자 기간 해석·generatedAt 은 동일하게 KST 다 — 즉 불일치는
+    동작 버그가 아니다. 다만 `%(asctime)s` 로 찍히는 로그 타임스탬프는 로컬 TZ 를 따르므로,
+    운영 로그를 KST 로 읽는다는 팀 전제와 어긋나면 장애 분석 때 시각 비교가 틀어진다.
+    Dockerfile·docker-compose 의 `TZ=Asia/Seoul` 이 빠졌을 때 그 사실을 여기서 드러낸다.
+
+    fail 로 올리지 않는 이유: 로컬(UTC WSL)·CI 컨테이너가 전부 UTC 라 기동이 막힌다.
+    """
+    local_offset = datetime.now().astimezone().utcoffset()
+    if local_offset == KST.utcoffset(None):
+        return
+    logger.warning(
+        "timezone mismatch — 프로세스 TZ 오프셋=%s, 기대=%s(KST). "
+        "코드 기준 시각(app/core/clock.py)은 명시 오프셋이라 영향받지 않지만 "
+        "로그 타임스탬프가 KST 가 아니다 — 배포 환경에 TZ=Asia/Seoul 을 설정할 것(#583).",
+        local_offset,
+        KST.utcoffset(None),
+    )
+
+
 def create_app() -> FastAPI:
     """FastAPI 앱을 생성·구성해 반환한다 (앱 팩토리)."""
     configure_logging()
     settings = get_settings()
     _warn_if_scripted_llm(settings)
+    _warn_if_timezone_mismatch()
 
     app = FastAPI(
         title="Jarvis AI Server",
