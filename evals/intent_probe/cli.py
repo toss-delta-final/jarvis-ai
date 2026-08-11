@@ -29,7 +29,11 @@ from evals.intent_probe.loader import (
     load_anchor_set,
     resolve_fixture_path,
 )
-from evals.intent_probe.manifest import build_intent_probe_manifest, category_scope_prompt_sha256
+from evals.intent_probe.manifest import (
+    build_intent_probe_manifest,
+    category_scope_prompt_sha256,
+    underspecified_prompt_sha256,
+)
 from evals.intent_probe.metrics import diagnostics, score_all
 from evals.intent_probe.pacer import GlobalPacer, PacerLimits
 from evals.intent_probe.report import build_results, write_artifacts
@@ -76,6 +80,11 @@ def _parser() -> argparse.ArgumentParser:
         "--no-classifier",
         action="store_true",
         help="카테고리 범위 해제 분류기를 호출하지 않는다(#84 결함 재현용 — scopeFree 는 전부 None)",
+    )
+    parser.add_argument(
+        "--no-underspecified-classifier",
+        action="store_true",
+        help="#463 과소지정 전용 분류기를 끄고 기존 #430 프롬프트 규칙만 사용한다",
     )
     parser.add_argument("--seed", type=int, default=20260803)
     return parser
@@ -199,6 +208,7 @@ def main(argv: list[str] | None = None) -> int:
                 # 축의 스윕이고, 보조 분류기까지 함께 흔들면 두 변수를 한 표에서 재게 된다.
                 settings=settings,
                 classifier_enabled=not args.no_classifier,
+                underspecified_classifier_enabled=not args.no_underspecified_classifier,
                 sleep=sleep,
                 on_cell_done=collected.append,
             )
@@ -242,6 +252,14 @@ def main(argv: list[str] | None = None) -> int:
                 "sha12": category_scope_prompt_sha256()[:12],
             }
         ),
+        underspecified_prompt=(
+            None
+            if args.no_underspecified_classifier
+            else {
+                "sha256": underspecified_prompt_sha256(),
+                "sha12": underspecified_prompt_sha256()[:12],
+            }
+        ),
     )
     manifest = build_intent_probe_manifest(
         command=_command(argv),
@@ -260,6 +278,7 @@ def main(argv: list[str] | None = None) -> int:
         axis_definitions={axis_id: axis.as_dict()["definition"] for axis_id, axis in axes.items()},
         dry_run=args.dry_run,
         classifier_enabled=not args.no_classifier,
+        underspecified_classifier_enabled=not args.no_underspecified_classifier,
     )
     write_artifacts(args.out, results=results, manifest=manifest, cells=results_cells)
 

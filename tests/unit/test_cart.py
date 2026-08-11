@@ -4199,7 +4199,9 @@ async def test_pending_turn_prompt_excludes_the_screen_block_and_rule() -> None:
 
 async def test_non_pending_turn_prompt_carries_the_screen_block_and_rule() -> None:
     """되물음이 아닌 턴에서는 종전대로 실린다 — 이번 수정이 화면 해소 자체를 끄지 않았다."""
-    from app.agents.buyer.recommendation.decompose import _SYSTEM_WITH_SCREEN
+    from app.agents.buyer.recommendation.decompose import (
+        _SYSTEM_WITH_SCREEN_DEDICATED_UNDERSPECIFIED,
+    )
 
     request = _screen_request("이거 담아줘", "t-nonpending-screen")
 
@@ -4208,5 +4210,5 @@ async def test_non_pending_turn_prompt_carries_the_screen_block_and_rule() -> No
 
     assert "SCREEN: {" in llm.user
     assert '"순번": 1' in llm.user and '"순번": 2' in llm.user
-    # system — 화면 규칙이 덧붙은 변형과 **바이트 동일**.
-    assert llm.system == _SYSTEM_WITH_SCREEN
+    # #463 후보 프롬프트는 #430의 빈 semanticQuery 문장만 빼고 화면 규칙은 보존한다.
+    assert llm.system == _SYSTEM_WITH_SCREEN_DEDICATED_UNDERSPECIFIED

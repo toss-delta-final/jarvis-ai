@@ -13,6 +13,9 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from app.agents.buyer.recommendation.category_scope import _SYSTEM as _SCOPE_SYSTEM
+from app.agents.buyer.recommendation.underspecified_classifier import (
+    _SYSTEM as _UNDERSPECIFIED_SYSTEM,
+)
 from app.core.llm import LLMError
 from evals.intent_probe.schema import (
     AnchorSet,
@@ -108,6 +111,10 @@ class ScriptedDecomposeLLM:
         # 이렇게 해야 `--dry-run` 이 분류기 배관까지 실제로 태운다.
         if system == _SCOPE_SYSTEM:
             return json.dumps(self._scope_answer(user), ensure_ascii=False)
+        if system == _UNDERSPECIFIED_SYSTEM:
+            # dry-run은 품질 판단이 아니라 배관 확인용이다. 보수적 false로 원 decompose 응답을
+            # 유지해 기존 결정론 패턴을 보존한다.
+            return '{"underspecified": false}'
         return json.dumps(self._answer(user), ensure_ascii=False)
 
     def _scope_answer(self, user: str) -> dict[str, Any]:
