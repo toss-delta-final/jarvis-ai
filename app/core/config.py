@@ -722,6 +722,25 @@ class Settings(BaseSettings):
     seller_sop_feedback_timeout_s: float = Field(default=3.0, gt=0)
     seller_sop_interpret_timeout_s: float = Field(default=30.0, gt=0)
 
+    # ── 원인 후보 · 추천 후보 · rule cards (이슈 #597, `06-REPORT.md` §2~3 · `12-EVAL` §2.2) ──
+    # 원인 후보는 "지표 변화보다 앞선 이벤트"만 센다. 창을 넓히면 무관한 사건이 원인처럼
+    # 붙고, 좁히면 진짜 선행 사건을 놓친다 — 14일은 주간 리듬 2주기다.
+    seller_cause_window_days: int = Field(default=14, ge=1)
+    # LLM 에 넘길 원인 후보 상한. 많이 주면 전부 서술하려 들어 2부가 목록이 된다.
+    seller_cause_max_candidates: int = Field(default=5, ge=1)
+    # 재고 보충 권장 수량 = 일평균 판매 × 이 일수(올림).
+    seller_restock_cover_days: int = Field(default=14, ge=1)
+    # LLM 에 넘길 추천 후보 상한 — 이 중 ≤5건을 LLM 이 고른다(MAX_RECOMMENDATIONS).
+    seller_recommend_candidate_max: int = Field(default=10, ge=1)
+    # 재고 부족 판정 임계(이하이면 보충 후보). 0 은 품절 슬롯이 따로 받는다.
+    seller_stock_alert_threshold: int = Field(default=5, ge=0)
+    # 미출고 임계 — `order_fulfillment` 후보 생성이 열릴 때 쓴다(v1 미소비, 선등록).
+    seller_unshipped_alert_threshold: int = Field(default=10, ge=0)
+    # rule cards 주입 킬스위치 — 카드 문구가 판매자에게 그대로 나가므로 즉시 끌 수 있어야 한다.
+    seller_rule_cards_enabled: bool = True
+    # 워커당 주입 상한 — 많이 넣으면 LLM 이 전부 쓰려 든다(`12-EVAL` §2.2).
+    seller_rule_cards_max: int = Field(default=3, ge=0)
+
     # general 레인(3-7) 전체 벽시계 상한 (#266 P1). 이 레인만 상한이 없어 스트림 전체
     # 90s 에만 의존했고, 그래서 LLM 지연이 계약상 LLM_TIMEOUT 이 아니라 INTERNAL 로 나갔다.
     # **다른 레인처럼 wait_for 로 감쌀 수 없다** — astream 은 중간에 yield 하는 async
