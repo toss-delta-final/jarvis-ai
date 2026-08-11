@@ -221,12 +221,7 @@ async def test_cart_option_reask_strips_seller_text() -> None:
     token = next(e for e in events if e["type"] == "token")["data"]["text"]
     # 이슈 #570 — 옵션 줄은 이제 "\n" 으로 정당하게 나뉘므로, 옵션명에 실려온 원시 "\n"(레\n드)이
     # 별도 줄을 만들지 않고 한 줄로 접혔는지(= "레 드")까지 리터럴로 확인한다.
-    assert token == (
-        "옵션을 선택해 주세요:\n"
-        "1. **블[31m루**\n"
-        "2. **레 드**\n"
-        "어떤 걸로 담을까요?"
-    )
+    assert token == ("옵션을 선택해 주세요:\n1. **블[31m루**\n2. **레 드**\n어떤 걸로 담을까요?")
     assert all(ch not in token for ch in ("\x1b", "\u200b", "\u202e"))
 
 
@@ -3539,8 +3534,7 @@ def test_numbered_option_rows_bolds_complete_labels_in_order() -> None:
     labels = ["블랙 / M", "화이트 / L(+1,000원)"]
 
     assert cart_graph._numbered_option_rows(labels) == (
-        "1. **블랙 / M**\n"
-        "2. **화이트 / L(+1,000원)**"
+        "1. **블랙 / M**\n2. **화이트 / L(+1,000원)**"
     )
 
 
@@ -3626,10 +3620,7 @@ async def test_cart_option_default_reask_literal_matches_issue_570() -> None:
 
     token = next(e for e in events if e["type"] == "token")["data"]["text"]
     assert token == (
-        "옵션을 선택해 주세요:\n"
-        "1. **블랙 / M**\n"
-        "2. **화이트 / M**\n"
-        "어떤 걸로 담을까요?"
+        "옵션을 선택해 주세요:\n1. **블랙 / M**\n2. **화이트 / M**\n어떤 걸로 담을까요?"
     )
 
 
@@ -3660,9 +3651,7 @@ async def test_cart_option_invalid_reask_literal_matches_issue_570() -> None:
     )
     token = next(e for e in events if e["type"] == "token")["data"]["text"]
     assert token == (
-        "그 옵션을 찾지 못했어요. 다시 골라 주세요:\n"
-        "1. **블랙 / M**\n"
-        "2. **화이트 / M**"
+        "그 옵션을 찾지 못했어요. 다시 골라 주세요:\n1. **블랙 / M**\n2. **화이트 / M**"
     )
 
 
@@ -3708,12 +3697,7 @@ async def test_cart_option_hint_fallback_without_total_has_no_extra_line() -> No
     events = await _run_add(store, CartIntent(product_id=1, quantity=1), add_fn)
 
     token = next(e for e in events if e["type"] == "token")["data"]["text"]
-    assert token == (
-        "옵션을 선택해 주세요:\n"
-        "1. **블랙**\n"
-        "2. **화이트**\n"
-        "어떤 걸로 담을까요?"
-    )
+    assert token == ("옵션을 선택해 주세요:\n1. **블랙**\n2. **화이트**\n어떤 걸로 담을까요?")
 
 
 async def test_cart_option_reask_reproduces_issue_570_symptom() -> None:
@@ -3749,10 +3733,7 @@ async def test_cart_add_reask_surcharge_option_on_own_line() -> None:
 
     token = next(e for e in events if e["type"] == "token")["data"]["text"]
     assert token == (
-        "옵션을 선택해 주세요:\n"
-        "1. **블루**\n"
-        "2. **레드(+1,000원)**\n"
-        "어떤 걸로 담을까요?"
+        "옵션을 선택해 주세요:\n1. **블루**\n2. **레드(+1,000원)**\n어떤 걸로 담을까요?"
     )
 
 
