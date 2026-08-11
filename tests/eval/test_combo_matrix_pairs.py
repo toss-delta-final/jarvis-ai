@@ -1,4 +1,4 @@
-"""INV/DIR 쌍 실검증 러너 게이트 (이슈 #371 §7) — @pytest.mark.eval / slow, 기본 PR pytest 에서는 제외되고 별도 워크플로우에서 돈다."""
+"""INV/DIR 쌍 실검증 러너 게이트 (이슈 #371 §7) — @pytest.mark.eval, 기본 PR pytest 에서 돈다."""
 
 from __future__ import annotations
 
@@ -15,9 +15,7 @@ from evals.combo_matrix.pair_runner import (
 )
 from evals.combo_matrix.schema import ComboCase, PairCheckSpec
 
-# run_pair_checks()가 INV/DIR 쌍마다 base+perturbed 전체 그래프를 재관측하고,
-# md 재생성 테스트가 그 전체를 한 번 더 돌린다 — combo_matrix_eval과 같은 이유로 CI에서 제외.
-pytestmark = [pytest.mark.eval, pytest.mark.slow]
+pytestmark = pytest.mark.eval
 
 
 def _stub_case(case_id: str, *, kind: str, perturbation_of: str | None) -> ComboCase:
