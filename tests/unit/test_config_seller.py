@@ -350,3 +350,65 @@ def test_retention_shorter_than_baseline_offset_fails_fast() -> None:
     """보관이 비교 거리보다 짧으면 churn 이 구조적으로 영원히 no_baseline 이 된다."""
     with pytest.raises(ValidationError, match="SELLER_SNAPSHOT_RETENTION_DAYS"):
         Settings(_env_file=None, seller_snapshot_retention_days=3, seller_baseline_offset_days=7)
+
+
+def test_seller_trigger_defaults() -> None:
+    """무인 스캔 트리거 고정 임계(#595, `10-TRIGGER` §3.2 표).
+
+    ⚠️ 단위가 둘이다 — `*_pct` 는 상대 변화율, `*_pp` 는 퍼센트포인트. 섞으면 임계의
+    뜻이 바뀐다(이탈률 2%→3% 를 상대로 재면 +50%).
+    """
+    settings = Settings(_env_file=None)
+    assert settings.seller_trigger_sales_pct == 0.05
+    assert settings.seller_trigger_conversion_pct == 0.10
+    assert settings.seller_trigger_product_drop_pct == 0.30
+    assert settings.seller_trigger_cart_abandon_pp == 0.10
+    assert settings.seller_trigger_new_customer_drop_pct == 0.30
+    assert settings.seller_trigger_repurchase_drop_pp == 0.10
+    assert settings.seller_scan_baseline_days == 7
+
+
+def test_seller_eval_gate_defaults() -> None:
+    """판정 검증 게이트(#595, `12-EVAL` 결정 119·121)."""
+    settings = Settings(_env_file=None)
+    assert settings.seller_eval_null_days == 1000
+    assert settings.seller_eval_trigger_rate_max == 0.01
+    assert settings.seller_cluster_stability_min == 0.7
+
+
+def test_seller_trigger_thresholds_fail_fast() -> None:
+    """0 이면 AND 의 한쪽이 사라지고 1 이상이면 도달 불가 — 둘 다 조용한 무력화라 막는다."""
+    for field in (
+        "seller_trigger_sales_pct",
+        "seller_trigger_conversion_pct",
+        "seller_trigger_product_drop_pct",
+        "seller_trigger_cart_abandon_pp",
+        "seller_trigger_new_customer_drop_pct",
+        "seller_trigger_repurchase_drop_pp",
+    ):
+        with pytest.raises(ValidationError):
+            Settings(_env_file=None, **{field: 0.0})
+        with pytest.raises(ValidationError):
+            Settings(_env_file=None, **{field: 1.0})
+    # 경계 안쪽은 유효하다.
+    assert Settings(_env_file=None, seller_trigger_sales_pct=0.99).seller_trigger_sales_pct == 0.99
+
+
+def test_seller_scan_window_relations_fail_fast() -> None:
+    """lookback 이 비교 구간 이하면 대상일 자리가 없어 트리거 1 이 상시 보류가 된다."""
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_scan_baseline_days=0)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_scan_baseline_days=28)  # lookback 과 같다
+    assert Settings(_env_file=None, seller_scan_baseline_days=27).seller_scan_baseline_days == 27
+
+
+def test_seller_eval_gate_fail_fast() -> None:
+    """시뮬레이션이 lookback 보다 짧으면 잴 날이 0 일이라 게이트가 조용히 통과한다."""
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_eval_null_days=10)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_eval_trigger_rate_max=0.0)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_cluster_stability_min=1.5)
+    assert Settings(_env_file=None, seller_eval_null_days=28).seller_eval_null_days == 28
