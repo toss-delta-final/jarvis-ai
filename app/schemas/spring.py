@@ -968,6 +968,56 @@ class AccountEventsResult(SellerAggregateModel):
     rows: list[dict] = Field(default_factory=list)
 
 
+# ── I-38 고객 행동 피처 집계 (노션 2026-08-10 확정 / BE #582 실장, 이슈 #592) ──
+
+
+class SellerCustomerFeatureRow(SellerAggregateModel):
+    """I-38 rows[] 1건 — `SellerCustomerFeaturesResponse.Row`(jarvis-back) 1:1 대응.
+
+    실측(`SellerAnalyticsService.toCustomerRow`): 전 필드가 `long`/`String` primitive라
+    BE가 null을 보내지 않는다 — `str=""`/`int=0` 기본값 위장 문제(02-DATA-SOURCES §0.1 ③)의
+    대상이 아니다. 그래도 파싱 실패 시 도구 전체가 degrade하는 사고를 피하려면 필드는
+    required로 선언하고(결측이면 즉시 ValidationError로 드러나야 한다), 기본값을 주지 않는다.
+
+    `customerLabel`은 I-14·I-16과 동일한 브랜드 스코프 HMAC — memberId·IP는 어떤 필드로도
+    내려가지 않는다(CustomerLabeler.label, jarvis-back 실측).
+    """
+
+    customer_label: str
+    sessions: int
+    product_views: int
+    cart_adds: int
+    checkout_starts: int
+    order_count: int
+    cancel_count: int
+    amount_bucket: str
+    last_activity_days_ago: int
+    first_seen_days_ago: int
+
+
+class SellerCustomerFeaturesResult(SellerAggregateModel):
+    """I-38 GET /internal/seller/{brandId}/customer-features 응답
+    (`SellerAnalyticsService.customerFeatures` 실측 — 이슈 #592).
+
+    `from`/`to` 에코는 다른 I-* 응답과 동일하게 `extra="allow"`로 흡수하고 별도 필드를
+    선언하지 않는다(`from`이 파이썬 예약어라 별도 alias 처리가 필요해지는데, 다른 조회
+    모델들도 echo 필드를 흡수만 하지 소비하지 않는 관행 — ChurnResult 등과 동일).
+
+    `insufficientCohort=true`일 때 BE는 `rows=[]`를 내려보낸다(코호트 30명 미만 —
+    `MIN_COHORT_SIZE`, jarvis-back 실측). "고객 없음"으로 오독 금지(노션 규약,
+    02-DATA-SOURCES §2 최소 모집단 가드).
+    `truncated=true`는 `totalCustomers > rowLimit`(1000, `CUSTOMER_ROW_LIMIT`)일 때 —
+    활동량(이벤트 3종 합) 내림차순으로 절단(02 §2 "정렬" 절 실측).
+    """
+
+    total_customers: int
+    row_limit: int
+    truncated: bool
+    insufficient_cohort: bool
+    amount_buckets: list[str] = Field(default_factory=list)
+    rows: list[SellerCustomerFeatureRow] = Field(default_factory=list)
+
+
 # ── I-9 자사 상품 목록 (§4.5) ──
 
 
