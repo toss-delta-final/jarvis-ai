@@ -26,6 +26,19 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 # 않으므로 여기서 최상단 import 해도 순환이 생기지 않는다.
 from app.core.model_pricing import DEFAULT_MODEL_PRICE_IN_PER_1K, DEFAULT_MODEL_PRICE_OUT_PER_1K
 
+# 고객 피처 스펙의 단일 출처(#593) — 기본값을 여기서 다시 적으면 스냅샷 각인과 코드가
+# 조용히 어긋난다. features/spec.py 는 math 만 import 하는 상수 모듈이고 그 패키지
+# __init__ 들도 docstring 뿐이라, model_pricing 과 같은 이유로 순환이 생기지 않는다.
+from app.agents.seller.features.spec import (
+    AMOUNT_BUCKET_MAP,
+    AMOUNT_BUCKET_ORDER,
+    CLUSTER_GROUP_KEYS,
+    CLUSTER_INPUT_KEYS,
+    DEFAULT_CLUSTER_GROUP_WEIGHTS,
+    DEFAULT_LABEL_THRESHOLDS,
+    FEATURE_SPEC_VERSION,
+)
+
 # I-21 계약 하드 상한(api-spec §4.2) — 노출 개수 설정이 계약을 넘지 못하게 묶는 기준.
 # 계약 값의 단일 출처는 스키마다(app/schemas/spring.py) — 여기서 숫자를 다시 적지 않는다.
 from app.schemas.recommendations import LIMIT_MAX as HOME_RECO_LIMIT_MAX
@@ -719,6 +732,67 @@ class Settings(BaseSettings):
     # 무인 순회(list_active_targets) 대상 비활성 임계 — last_seen_at 이 이보다 오래되면
     # 순회에서 빠진다(결정 112).
     seller_analysis_target_ttl_days: int = 14
+
+    # ── 고객 축 피처 · 군집 (이슈 #593, 03-FEATURES 2부 / 04-CLUSTERING) ──────────
+    # 기본값의 출처는 app/agents/seller/features/spec.py 다 — 여기 값과 그쪽 상수가
+    # 어긋나면 부팅이 실패한다. 스냅샷에 각인되는 값이라 조용한 드리프트가 곧
+    # "다른 정의로 만든 숫자끼리의 비교"가 되기 때문이다(04 §6.2).
+    seller_feature_spec_version: str = FEATURE_SPEC_VERSION
+    # 재계산 없이 입력 세트를 바꿔 실험하기 위한 목록. **순서가 곧 벡터 차원 순서**다.
+    seller_cluster_input_keys: list[str] = Field(default_factory=lambda: list(CLUSTER_INPUT_KEYS))
+    # 비율 평활 강도 — (numer + α×prior)/(denom + α). 조회 1번에 담기 1번 한 사람이
+    # "전환율 100% 고객"이 되어 충성형에 섞이는 것을 막는다(03 §2.2).
+    seller_feature_shrinkage_alpha: float = Field(default=5.0, gt=0)
+    # 보고서가 비율을 인용할 최소 표본 — 미만이면 수치 대신 Hold 를 단다.
+    seller_feature_min_denom: int = Field(default=5, ge=1)
+    # 금액 구간 → 대표값의 ln(1+x). 서수를 그대로 쓰면 등간격 가정이 깨진다(03 §2.3).
+    seller_amount_bucket_map: Annotated[dict[str, float], NoDecode] = Field(
+        default_factory=lambda: dict(AMOUNT_BUCKET_MAP)
+    )
+    # k 탐색 범위 — ⚠️ 상품 축 seller_behavior_kmeans_* 와 **분리**한다(결정 28b).
+    seller_customer_kmeans_k_min: int = 2
+    seller_customer_kmeans_k_max: int = 6
+    # ⚠️ 기존 seller_kmeans_random_state(42)는 이미 cluster_products(상품 축)가 쓴다.
+    # 값 하나를 바꾸면 두 파이프라인이 동시에 흔들리므로 재사용하지 않는다(결정 28b).
+    seller_customer_kmeans_random_state: int = 42
+    seller_customer_kmeans_n_init: int = Field(default=10, ge=1)
+    # 축군별 열 가중치 — 기본은 1/√n 이라 각 축군의 총 영향력이 정확히 1 이 된다.
+    # 표준화만 하면 활동량 5축이 5배로 작용해 군집이 활동량 하나로 갈린다(04 §1.2).
+    seller_customer_cluster_group_weights: Annotated[dict[str, float], NoDecode] = Field(
+        default_factory=lambda: dict(DEFAULT_CLUSTER_GROUP_WEIGHTS)
+    )
+    # PCA 분산 유지율 + on/off 실루엣 자동 비교. 이 규모(1,000행×12열)에서 축소 효과는
+    # 거의 없고 진짜 효과는 중복 제거다 — 기대치를 낮게 두고 자동 판정에 맡긴다(04 §2).
+    seller_customer_pca_variance: float = Field(default=0.95, gt=0.0, lt=1.0)
+    seller_customer_pca_auto_compare: bool = True
+    # 소규모 군집 제외 임계 — I-38 최소 모집단 가드와 같은 숫자다. 재식별 위험과
+    # 소표본 평균의 불안정을 동시에 막는다(04 §3.3).
+    seller_customer_segment_min_size: int = Field(default=30, ge=1)
+    # rule_label 판정 임계(백분위) — 판정 순서는 코드가 고정하고 값만 튜너블이다.
+    seller_customer_label_thresholds: Annotated[dict[str, float], NoDecode] = Field(
+        default_factory=lambda: dict(DEFAULT_LABEL_THRESHOLDS)
+    )
+    # I-38 rowLimit 정합 기대치 — 정본은 BE 상수(CUSTOMER_ROW_LIMIT)이고, 응답 에코와
+    # 어긋나면 저장값이 아니라 Hold 로 드러낸다.
+    seller_snapshot_row_limit: int = Field(default=1000, ge=1)
+
+    @field_validator(
+        "seller_amount_bucket_map",
+        "seller_customer_cluster_group_weights",
+        "seller_customer_label_thresholds",
+        mode="before",
+    )
+    @classmethod
+    def _empty_feature_table_uses_default(cls, value: object, info) -> object:
+        # deploy.yml 이 미설정 vars 를 빈 문자열로 쓰는 함정 — model_price_* 와 같은
+        # 처리다. NoDecode 로 자동 JSON 디코드를 끄고 여기서 직접 파싱해야 빈 문자열을
+        # 가로챌 수 있다(끄지 않으면 디코드 단계에서 SettingsError 로 먼저 죽는다).
+        if isinstance(value, str):
+            if value.strip() == "":
+                default_factory = cls.model_fields[info.field_name].default_factory
+                return default_factory()
+            return json.loads(value)
+        return value
 
     # ── 판매자 대화 스레드 (thread.py — checkpointer 기반 멀티턴 누적) ──
     # supervisor/planner 입력 주입 상한: 최근 턴(user+assistant 쌍) 수와 메시지당 절단.
@@ -3358,6 +3432,50 @@ class Settings(BaseSettings):
             raise ValueError("SELLER_DB_WRITE_RETRIES must be non-negative")
         if self.seller_analysis_target_ttl_days <= 0:
             raise ValueError("SELLER_ANALYSIS_TARGET_TTL_DAYS must be positive")
+        # 고객 축 피처·군집(#593) — 스냅샷에 각인되는 정의라, 어긋난 채 기동해 다른
+        # 정의로 만든 숫자를 나중에 비교하는 사고를 부팅 시점에 막는다(04 §6.2).
+        if tuple(self.seller_cluster_input_keys) != CLUSTER_INPUT_KEYS:
+            raise ValueError(
+                "SELLER_CLUSTER_INPUT_KEYS 는 features/spec.CLUSTER_INPUT_KEYS 와 순서까지"
+                f" 같아야 합니다 (got {list(self.seller_cluster_input_keys)})"
+            )
+        # 축군의 합집합이 입력 12개와 정확히 같아야 가중치가 빠짐없이 곱해진다.
+        grouped = [key for keys in CLUSTER_GROUP_KEYS.values() for key in keys]
+        if sorted(grouped) != sorted(CLUSTER_INPUT_KEYS):
+            raise ValueError(
+                "features/spec.CLUSTER_GROUP_KEYS 축군 합집합이 CLUSTER_INPUT_KEYS 와 다릅니다"
+            )
+        if set(self.seller_customer_cluster_group_weights) != set(CLUSTER_GROUP_KEYS):
+            raise ValueError(
+                "SELLER_CUSTOMER_CLUSTER_GROUP_WEIGHTS 의 축군 키가 spec 과 다릅니다"
+                f" (got {sorted(self.seller_customer_cluster_group_weights)})"
+            )
+        if any(weight <= 0 for weight in self.seller_customer_cluster_group_weights.values()):
+            raise ValueError("SELLER_CUSTOMER_CLUSTER_GROUP_WEIGHTS 값은 전부 양수여야 합니다")
+        # 응답 amountBuckets 와의 대조는 런타임(features/customer)이 한다 — 부팅 시점에는
+        # 응답이 없으므로 상수끼리만 본다.
+        if tuple(self.seller_amount_bucket_map) != AMOUNT_BUCKET_ORDER:
+            raise ValueError(
+                "SELLER_AMOUNT_BUCKET_MAP 은 features/spec.AMOUNT_BUCKET_ORDER 와 순서까지"
+                f" 같아야 합니다 (got {list(self.seller_amount_bucket_map)})"
+            )
+        if not 2 <= self.seller_customer_kmeans_k_min <= self.seller_customer_kmeans_k_max:
+            raise ValueError(
+                "SELLER_CUSTOMER_KMEANS_K_MIN 은 2 이상이고 K_MAX 이하여야 합니다"
+                f" (k_min={self.seller_customer_kmeans_k_min},"
+                f" k_max={self.seller_customer_kmeans_k_max})"
+            )
+        missing_thresholds = sorted(
+            set(DEFAULT_LABEL_THRESHOLDS) - set(self.seller_customer_label_thresholds)
+        )
+        if missing_thresholds:
+            raise ValueError(
+                f"SELLER_CUSTOMER_LABEL_THRESHOLDS 에 누락된 키가 있습니다 ({missing_thresholds})"
+            )
+        if any(
+            not 0.0 <= value <= 100.0 for value in self.seller_customer_label_thresholds.values()
+        ):
+            raise ValueError("SELLER_CUSTOMER_LABEL_THRESHOLDS 는 백분위(0~100)여야 합니다")
         return self
 
 
