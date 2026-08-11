@@ -361,4 +361,8 @@ async def apply_recommendation(
         summary=f"{report.title} · {n}번 — {rec.title}",
         rec_id=str(rec.id),
     )
-    return hitl.validate_draft(proposal, seller_id=context.seller_id, brand_id=context.brand_id)
+    # [#620] row 는 어차피 이 함수가 위에서 이미 조회했다 — validate_draft 의 price
+    # 선차단(row-aware)에 그대로 넘긴다(추가 Spring 왕복 없음).
+    return hitl.validate_draft(
+        proposal, seller_id=context.seller_id, brand_id=context.brand_id, row=row
+    )

@@ -2,8 +2,10 @@
 
 구성:
 - ``engine``: `Step` / `Sop` / `run_sop` — 순차 실행 + 예외 → `Hold` 흡수(≈40줄)
-- ``context``: `AnalysisContext` 와 서브모델 8종 — LLM 이 보는 유일한 입력
-- ``compute``: 워커별 통계 판정 4종 + LLM 입력 표 포맷터 (이슈 #594)
+- ``context``: `AnalysisContext` 와 서브모델 11종 — LLM 이 보는 유일한 입력
+- ``compute``: 워커별 통계 판정 4종 + 원인·추천 후보 생성 + LLM 입력 표 포맷터
+  (이슈 #594·#597)
+- ``rule_cards``: 논문 지식 카드 — 조건은 코드가 평가하고 LLM 은 문장만 옮긴다(결정 115)
 - ``validate``: `validate_context` — ctx 의 숫자·기간·evidence 정합성 (이슈 #596, LLM 0회)
 - ``gate``: `should_interpret` — 서술할 것이 없으면 LLM 호출 자체를 건너뛴다
 
@@ -14,9 +16,13 @@
 """
 
 from app.agents.seller.sop.context import (
+    CAUSE_EVENT_KINDS,
+    ActionCandidate,
     AnalysisContext,
+    CandidateChange,
     CauseCandidate,
     Comparison,
+    FiredRuleCard,
     Hold,
     Metric,
     PastAction,
@@ -27,16 +33,23 @@ from app.agents.seller.sop.context import (
 )
 from app.agents.seller.sop.engine import Sop, Step, StepFn, run_sop
 from app.agents.seller.sop.gate import should_interpret
+from app.agents.seller.sop.rule_cards import RULE_CARDS, RuleCard, evaluate_rule_cards
 from app.agents.seller.sop.validate import ValidationResult, validate_context
 
 __all__ = [
+    "CAUSE_EVENT_KINDS",
+    "RULE_CARDS",
+    "ActionCandidate",
     "AnalysisContext",
+    "CandidateChange",
     "CauseCandidate",
     "Comparison",
+    "FiredRuleCard",
     "Hold",
     "Metric",
     "PastAction",
     "ProductFlag",
+    "RuleCard",
     "Segment",
     "Sop",
     "Step",
@@ -44,6 +57,7 @@ __all__ = [
     "ValidationResult",
     "Verdict",
     "VerdictValue",
+    "evaluate_rule_cards",
     "run_sop",
     "should_interpret",
     "validate_context",

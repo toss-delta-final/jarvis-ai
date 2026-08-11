@@ -51,7 +51,9 @@ _AMOUNT_LABELS: dict[str, str] = {
     UNKNOWN_BUCKET: "구간 미상",
 }
 
-_VERDICT_TEXT: dict[str, str] = {
+# 판정 어휘 → 사람이 읽는 문구. `causes.py` 가 원인 후보의 대상 문장에 같은 표현을 쓰므로
+# 공개한다 — 두 곳이 각자 문구를 들면 같은 판정이 보고서 안에서 다르게 읽힌다.
+VERDICT_TEXT: dict[str, str] = {
     "significant_drop": "통계적으로 유의한 감소",
     "significant_rise": "통계적으로 유의한 증가",
     "no_significant_change": "유의하지 않음",
@@ -162,7 +164,7 @@ def _shift_rows(ctx: AnalysisContext) -> list[str]:
         if comparison.delta_pct is not None:
             delta_text += f" ({comparison.delta_pct:+.1f}%)"
         verdict = verdicts.get(comparison.key)
-        note = _VERDICT_TEXT.get(verdict.verdict, verdict.verdict) if verdict else ""
+        note = VERDICT_TEXT.get(verdict.verdict, verdict.verdict) if verdict else ""
         if verdict is not None and verdict.p_value is not None:
             note += f" (p={verdict.p_value:.3f})"
         rows.append(f"  {label.ljust(10)}{baseline:>5,} → {current:>5,}명   {delta_text:<16}{note}")
@@ -224,4 +226,101 @@ def render_shift_block(ctx: AnalysisContext) -> str:
         if dropped is not None:
             parts.append(f"명단 밖 {dropped:,}명(판정 보류)")
         lines.append("  " + " · ".join(parts))
+    return "\n".join(lines).rstrip()
+
+
+# ── 원인 후보 · 추천 후보 · 해석 카드 블록 (이슈 #597) ──────────────────────────
+# 세 블록 모두 머리글에 **"이 목록 밖을 쓰지 말 것"** 을 적는다. 목록을 주기만 하면
+# LLM 은 그것을 예시로 읽고 밖으로 나간다 — 경계를 문장으로 못 박는 자리가 여기다.
+
+_ORDINALS: tuple[str, ...] = ("①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩")
+
+_STRENGTH_NOTE: dict[str, str] = {
+    "correlated": "→ 가설 표현 허용(불확실성 병기)",
+    "temporal_only": "→ 관측 순서까지만 서술",
+}
+
+_SLOT_LABELS: dict[str, str] = {
+    "price_rollback": "가격 롤백",
+    "stockout": "품절 해소",
+    "restock": "재고 보충",
+    "unhide": "숨김 해제",
+}
+
+_FIELD_LABELS: dict[str, str] = {
+    "name": "상품명",
+    "price": "판매가",
+    "original_price": "정가",
+    "description": "상세 설명",
+    "category": "카테고리",
+    "image_url": "이미지",
+    "status": "노출 상태",
+    "stock_quantity": "재고",
+}
+
+
+def _ordinal(index: int) -> str:
+    return _ORDINALS[index] if index < len(_ORDINALS) else f"({index + 1})"
+
+
+def render_cause_block(ctx: AnalysisContext) -> str:
+    """원인 후보 표 (`06` §2.5 형태).
+
+    **후보 0건도 결과다** — "원인 후보를 찾지 못했습니다"를 코드가 넣는다. 이 문장을 LLM
+    성의에 맡기면 빈 목록을 받은 LLM 이 그럴듯한 원인을 지어 채운다. 데이터에 원인이
+    없는 것이지 원인이 없는 게 아니라는 구분도 함께 적는다.
+    """
+    lines = ["[원인 후보 — 코드 판정, 이 목록 밖의 원인을 쓰지 말 것]", ""]
+    if not ctx.causes:
+        lines.append(
+            "원인 후보를 찾지 못했습니다 — 지표 변화보다 앞선 이벤트를 데이터에서"
+            " 찾지 못했다는 뜻입니다."
+        )
+        return "\n".join(lines)
+
+    for index, cause in enumerate(ctx.causes):
+        lines.append(f"{_ordinal(index)} 대상: {cause.target_desc}")
+        lines.append(f"   선행 이벤트: {cause.event_desc}   [lag {cause.lag_days}일]")
+        if cause.corroboration:
+            lines.append(f"   대조 근거: {cause.corroboration}")
+        note = _STRENGTH_NOTE.get(cause.strength, "")
+        lines.append(f"   강도: {cause.strength}   {note}".rstrip())
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
+def render_candidate_block(ctx: AnalysisContext) -> str:
+    """추천 후보 표 (`06` §3 형태). 유형·대상·변경값은 코드 소유라 그대로 옮겨 적힌다."""
+    lines = ["[추천 후보 — 코드 산출, 유형·대상·변경값을 바꾸지 말 것]", ""]
+    if not ctx.candidate_actions:
+        lines.append("이번 기간에는 즉시 실행할 만한 변경 후보가 없었습니다.")
+        return "\n".join(lines)
+
+    for index, candidate in enumerate(ctx.candidate_actions):
+        slot = _SLOT_LABELS.get(candidate.slot, candidate.slot)
+        name = candidate.product_name or f"상품 {candidate.product_id}"
+        lines.append(f"{_ordinal(index)} {slot} · {name}(상품 {candidate.product_id})")
+        for change in candidate.changes:
+            field = _FIELD_LABELS.get(change.field, change.field)
+            lines.append(f"   변경: {field} {change.before} → {change.after}")
+        if candidate.basis:
+            lines.append(f"   근거: {candidate.basis}")
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
+def render_rule_card_block(ctx: AnalysisContext) -> str:
+    """해석 카드 표 (`12-EVAL` §2.2). **걸린 카드가 없으면 빈 문자열** — 블록 자체가 없다.
+
+    도구가 아니라 주입이라 "검색 결과 없음" 같은 안내가 필요 없다(결정 116). 호출부는
+    빈 문자열을 프롬프트에서 빼면 된다.
+    """
+    if not ctx.rule_cards:
+        return ""
+    lines = ["[해석 카드 — 코드 판정, 이 목록 밖의 해석을 쓰지 말 것]", ""]
+    for index, card in enumerate(ctx.rule_cards):
+        head = f"{_ordinal(index)} {card.subject} — " if card.subject else f"{_ordinal(index)} "
+        lines.append(f"{head}{card.statement}")
+        lines.append(f"   근거: {card.citation}")
+        lines.append("")
     return "\n".join(lines).rstrip()
