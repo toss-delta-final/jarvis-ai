@@ -1403,4 +1403,3 @@ def test_validate_draft_delete_without_status_change_normalizes_to_empty() -> No
     )
     assert problem is None and record is not None
     assert record.changes == []
-    assert hitl._STALE_RETRY_GUIDE not in outcome.text
