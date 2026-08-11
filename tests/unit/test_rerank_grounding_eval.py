@@ -8,6 +8,7 @@ import pytest
 
 from app.agents.buyer.recommendation.rerank_grounding import CandidateGroundingFacts
 from app.core.llm import LLMError
+from evals.rerank_grounding.cli import main
 from evals.rerank_grounding.fakes import ScriptedGroundingLLM
 from evals.rerank_grounding.metrics import (
     MetricItem,
@@ -349,3 +350,80 @@ async def test_manifest_records_all_prompt_and_dataset_hashes(tmp_path: Path) ->
     assert set(manifest["promptHashes"]) == {"current", "structured"}
     assert len(manifest["datasetHash"]) == 64
     assert manifest["validatorVersion"] == "rerank-grounding-v1"
+
+
+def test_cli_dry_run_writes_all_arms(tmp_path: Path) -> None:
+    out = tmp_path / "run"
+
+    code = main(
+        [
+            "--arms",
+            "all",
+            "--repeats",
+            "1",
+            "--dry-run",
+            "--out",
+            str(out),
+        ]
+    )
+
+    assert code == 0
+    results = json.loads((out / "results.json").read_text(encoding="utf-8"))
+    assert set(results["metrics"]) == {"current", "prompt_only", "validated"}
+    assert results["status"] == "not tested"
+
+
+def test_cli_rejects_existing_output_directory(tmp_path: Path) -> None:
+    out = tmp_path / "existing"
+    out.mkdir()
+
+    assert (
+        main(
+            [
+                "--arms",
+                "all",
+                "--repeats",
+                "1",
+                "--dry-run",
+                "--out",
+                str(out),
+            ]
+        )
+        == 2
+    )
+
+
+def test_cli_rejects_nonpositive_repeats(tmp_path: Path) -> None:
+    assert (
+        main(
+            [
+                "--arms",
+                "all",
+                "--repeats",
+                "0",
+                "--dry-run",
+                "--out",
+                str(tmp_path / "x"),
+            ]
+        )
+        == 2
+    )
+
+
+def test_cli_rejects_unknown_case_id_before_any_call(tmp_path: Path) -> None:
+    assert (
+        main(
+            [
+                "--arms",
+                "all",
+                "--case-ids",
+                "missing",
+                "--repeats",
+                "1",
+                "--dry-run",
+                "--out",
+                str(tmp_path / "x"),
+            ]
+        )
+        == 2
+    )

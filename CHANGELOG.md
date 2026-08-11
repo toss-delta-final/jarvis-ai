@@ -12,6 +12,10 @@
 ## [Unreleased]
 
 ### Added
+- **buyer rerank grounding 수동 A/B/C 평가 도구**(`evals/rerank_grounding`)를 추가했다.
+  현행 자유문장, 구조화 prompt-only, 구조화+결정적 validator를 같은 hashed MFT/INV/DIR fixture에서
+  비교하고 raw response·분자/분모·hard gate·prompt/model/dataset hash·비용/지연을 보존한다.
+  사람 평가는 제외하며 live evidence가 gate를 통과하기 전까지 production 기본 arm은 `current`다.
 - **#585 — 판매자 분석 저장 계층: DDL 5테이블 + 리포지토리 + targets 자동 등록 훅**을 추가했다
   (OPS-RUNTIME.md §1.3~§1.7, 결정 71·72·80·110~112). `db/profile/init/05_seller_analysis.sql`에
   `seller_analysis_targets`·`snapshots`·`reports`·`recommendations`·`outcomes` 5테이블을 신설하고,
