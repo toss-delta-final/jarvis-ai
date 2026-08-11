@@ -101,6 +101,12 @@ class Segment(BaseModel):
     `rule_label` 은 조인 키(원형: 충성/탐색/구매망설임/이탈위험/휴면)이고,
     `display_label` 은 라벨 중복 시 번호가 붙은 표시용이다(`04` 결정 28a).
     **`llm_label`·`llm_desc` 만 LLM 이 채운다** — 크기·통계는 전부 코드 소유다.
+
+    `amount_distribution` 은 금액 구간명 → 군집 내 비율(0~1)이다(이슈 #594). 평균을
+    쓰지 않는 이유: `centroid_stats["amountOrdinal"]` 은 구간 서수의 평균이라
+    "평균 3.2번째 구간" 같은 해석 불가 문장을 낳는다 — `05` §2.2 가 "금액은 구간
+    이름이 아니라 분포로 넘긴다"고 정한 값의 저장 자리다. 키는
+    `features.spec.AMOUNT_BUCKET_ORDER` 순서이고 매핑 밖 구간은 `"UNKNOWN"` 이다.
     """
 
     rule_label: str
@@ -109,6 +115,7 @@ class Segment(BaseModel):
     centroid_stats: dict[str, float] = Field(default_factory=dict)
     ratio_to_mean: dict[str, float] = Field(default_factory=dict)
     flag_ratios: dict[str, float] = Field(default_factory=dict)
+    amount_distribution: dict[str, float] = Field(default_factory=dict)
     delta_size: int | None = None
     llm_label: str = ""
     llm_desc: str = ""

@@ -620,6 +620,38 @@ async def load_latest_snapshot(
     return await run_with_query_timeout(_run())
 
 
+async def load_snapshot_at(brand_id: int, period_to: date) -> SnapshotRecord | None:
+    """지정 `period_to` 의 스냅샷 1행 — churn 워커의 비교 기준(7일 전) 조회 축 (이슈 #594).
+
+    `load_latest_snapshot` 은 "가장 최근"만 주므로 시점 지정 비교에 쓸 수 없다.
+
+    ⚠️ **`feature_spec_version` 으로 거르지 않는다.** 걸러 버리면 "스펙이 달라 비교
+    보류"(`spec_mismatch`)와 "그날 배치가 아예 없었다"(`no_baseline`)가 둘 다 None 으로
+    같아져 판매자에게 사유를 밝힐 수 없다 — 버전 대조는 compute 스텝이 한다.
+    같은 (brand_id, period_to) 에 스펙 버전이 여럿이면 최신 계산본을 준다.
+
+    근사 탐색을 하지 않는 것도 의도다 — "7일 전"이 실제로 6일 전이면 순증감의 분모가
+    조용히 달라진다. 그날 행이 없으면 None 이고, 호출부가 `Hold("no_baseline")` 을 단다.
+    """
+    pool = await _get_pool()
+    if pool is None:
+        return None
+
+    async def _run() -> SnapshotRecord | None:
+        async with pool.connection() as conn:
+            cur = await conn.execute(
+                "SELECT * FROM seller_analysis_snapshots WHERE brand_id = %s "
+                "AND period_to = %s ORDER BY computed_at DESC LIMIT 1",
+                (brand_id, period_to),
+            )
+            row = await cur.fetchone()
+            if row is None:
+                return None
+            return _row_to(SnapshotRecord, cur.description, row)
+
+    return await run_with_query_timeout(_run())
+
+
 async def delete_expired_snapshots(retention_days: int) -> int:
     """14일 보존(OPS §1.8) 실행부 — 호출(스케줄링)은 무인 배치 이슈 소관(설계서 §9)."""
 
