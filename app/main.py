@@ -46,6 +46,9 @@ from app.agents.profile.graph_journal import warm_pool as warm_graph_journal_poo
 from app.agents.profile.processed_events import close_pool as close_processed_events_pool
 from app.agents.profile.session_activity import close_pool as close_session_activity_pool
 from app.agents.profile.store import close_store as close_profile_store
+from app.agents.seller.analysis_store import close_pool as close_seller_analysis_pool
+from app.agents.seller.analysis_store import ensure_schema as ensure_seller_analysis_schema
+from app.agents.seller.analysis_store import warm_pool as warm_seller_analysis_pool
 from app.agents.seller.checkpoint import close_checkpointer as close_seller_checkpointer
 from app.agents.seller.history import close_store as close_seller_history_store
 from app.api import chat, events, internal, profile, profile_graph, seller
@@ -102,6 +105,8 @@ async def _close_owned_resources() -> None:
         ("session_lifecycle", close_session_lifecycle),
         ("seller_history_store", close_seller_history_store),
         ("seller_checkpointer", close_seller_checkpointer),
+        # 전용 풀(D-3, 이슈 #585) — checkpointer 단일 커넥션과 별개, BaseStore 와도 별개다.
+        ("seller_analysis_pool", close_seller_analysis_pool),
         # 그래프 저널(#358)은 profile_store 보다 **먼저** 닫는다 — 변경 조립이 store 를 부르므로
         # 의존하는 쪽이 앞이다(이 목록은 의존성 역순).
         ("graph_journal_pool", close_graph_journal_pool),
@@ -251,6 +256,18 @@ async def _warm_graph_journal_pool() -> None:
         logger.warning("graph_journal_pool_warm_failed", exc_info=True)
 
 
+async def _warm_seller_analysis_pool() -> None:
+    """analysis_store 전용 풀을 미리 열되 실패해도 기동을 막지 않는다 (이슈 #585, graph_journal 선례).
+
+    `ensure_seller_analysis_schema()`가 이미 이 풀을 초기화하므로 보통은 즉시 반환하는
+    no-op 이다 — 그 호출이 실패해 아직 풀이 없는 경우(dev/test no-op 확정 등)의 안전망이다.
+    """
+    try:
+        await warm_seller_analysis_pool()
+    except Exception:  # noqa: BLE001 - 워밍 실패는 기동을 막지 않는다
+        logger.warning("seller_analysis_pool_warm_failed", exc_info=True)
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Lifecycle migration 뒤 scheduler를 시작하고 owned resources를 역순 종료한다."""
@@ -262,7 +279,11 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         await initialize_session_lifecycle()
         # 공유 레지스트리 백엔드일 때만 스키마·풀을 준비한다(기본 memory 는 no-op).
         await initialize_stream_registry()
+        # 판매자 분석 저장 계층(#585) — 5테이블 idempotent 생성 + 존재 검증(D-2). 운영(jwks)은
+        # 누락 시 기동을 거부한다 — ensure_seller_analysis_schema()를 감싸지 않고 그대로 전파한다.
+        await ensure_seller_analysis_schema()
         await _warm_graph_journal_pool()
+        await _warm_seller_analysis_pool()
         start_scheduler()
         scheduler_started = True
         yield
