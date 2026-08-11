@@ -579,7 +579,7 @@ def test_confirm_output_is_masked(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_confirm_spring_down_maps_to_apology_and_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """confirm 중 Spring 장애 — 사과 token(초안 유지 안내) + error(INTERNAL)."""
+    """confirm 중 Spring 장애 — 사과 token(초안 유지 안내) + error(INTERNAL, retryable=True)."""
     from app.services.spring_client import SpringUnavailableError
 
     monkeypatch.setattr(seller_api, "route_question", _no_route)
@@ -594,6 +594,32 @@ def test_confirm_spring_down_maps_to_apology_and_error(
     assert [e["type"] for e in events] == ["meta", "token", "error"]
     assert "초안은 유지" in events[1]["data"]["text"]
     assert events[2]["data"]["code"] == "INTERNAL"
+    assert events[2]["data"]["retryable"] is True
+
+
+def test_confirm_spring_rejected_maps_to_non_retryable_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#620] confirm 중 매핑 안 된 4xx(SpringRejected) — 5xx 와 달리 retryable=False.
+
+    SpringRejected 는 SpringUnavailableError 의 하위라 이 except 를 먼저 두지 않으면
+    위 5xx 테스트와 같은 "일시적 오류(재시도 가능)" 로 뭉개진다 — 그게 이 이슈의 핵심
+    증상이었다.
+    """
+    from app.services.spring_client import SpringRejected
+
+    monkeypatch.setattr(seller_api, "route_question", _no_route)
+
+    async def fake_confirm(draft_id, *, seller_id, brand_id):
+        raise SpringRejected("SOME_NEW_CODE: PATCH /internal/seller/1/products/101")
+
+    monkeypatch.setattr(seller_api, "confirm_draft", fake_confirm)
+
+    events = _collect_seller(_confirm_request("d-9"))
+
+    assert [e["type"] for e in events] == ["meta", "token", "error"]
+    assert events[2]["data"]["code"] == "INTERNAL"
+    assert events[2]["data"]["retryable"] is False
 
 
 def test_scope_refusal_short_circuits_before_routing(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1493,7 +1519,9 @@ def test_product_route_draft_is_confirmable(monkeypatch: pytest.MonkeyPatch) -> 
 
         async def update_product(self, brand_id, product_id, patch):
             self.patches.append((brand_id, product_id, patch))
-            return ProductUpdateResult(productId=product_id)
+            # [#620] changes 가 비면 "이미 그 값" 으로 갈음돼 already_done 이 된다 —
+            # 이 테스트는 실제 반영(executed)을 검증하므로 비어있지 않은 값을 준다.
+            return ProductUpdateResult(productId=product_id, changes=["PRICE"])
 
     spring = _Spring()
     set_spring_client(spring)

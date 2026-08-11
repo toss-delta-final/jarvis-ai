@@ -233,15 +233,16 @@ def build_general_agent(
 # ── product_agent (2-7) — draft 생성까지, 쓰기는 4단계 confirm-resume 코드 경로 ──
 
 # A안(2026-07-18 확정): 조회만 바인딩 — LLM 이 쓰기 도구를 볼 수 없어 HITL
-# (발화 ≠ 동의 [HARD])이 프롬프트가 아니라 구조로 보장된다. 배정표(§3)의
-# PRODUCT_TOOLS(쓰기 3종 포함)는 4단계 실행 레인용으로 유지된다.
+# (발화 ≠ 동의 [HARD])이 프롬프트가 아니라 구조로 보장된다. 실행(4단계)은 LLM
+# 도구 호출이 아니라 코드가 담당한다 — hitl._execute_draft 가 승인된 draft 를
+# SpringClient 로 직접 매핑한다(#620, 배정표 §3 개정 — 쓰기 도구는 존재하지 않는다).
 # calculate 는 2-9 리뷰 반영(2026-07-18 사용자 확정) — 재고 증감 환산 암산 방지.
-# 배정표 §3 개정 필요(REVIEW-SELLER-STAGE2 기록).
 PRODUCT_DRAFT_TOOLS = [
     seller_tools.list_my_products,
     seller_tools.calculate,
     # [#297] 발송 draft(op=ship)의 대상 orderItemId·현재 상태 확인용(I-29, 조회 전용).
-    # 쓰기(update_order_status)는 여기 바인딩하지 않는다 — HITL 구조 보장 유지.
+    # 발송 실행도 hitl._execute_draft 가 코드로 담당한다 — 쓰기 도구는 여기 바인딩하지
+    # 않는다(HITL 구조 보장 유지).
     seller_tools.get_orders,
 ]
 

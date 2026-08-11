@@ -40,7 +40,7 @@ from app.agents.seller.pipeline import (
 )
 from app.agents.seller.schemas import AnalysisFinding, AnalysisType, RecommendationSet, ReportScore
 from app.agents.seller.sop.assembly import build_sop
-from app.agents.seller.sop.context import AnalysisContext
+from app.agents.seller.sop.context import ActionCandidate, AnalysisContext
 from app.agents.seller.sop.engine import run_sop
 from app.agents.seller.sop.validate import ValidationResult
 from app.agents.seller.verifier import run_deterministic_checks_v2, synthesize_grounding_finding
@@ -193,7 +193,7 @@ async def _run_resident_report(
 
 
 async def _run_resident_recommend(
-    candidates: list[dict], report: str, context: SellerContext, settings: Settings
+    candidates: list[ActionCandidate], report: str, context: SellerContext, settings: Settings
 ) -> RecommendationSet:
     """상주 recommend 실행 — 후보가 없거나 실패하면 빈 추천으로 degrade(보고서는 산다).
 
