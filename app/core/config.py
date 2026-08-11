@@ -1380,6 +1380,16 @@ class Settings(BaseSettings):
     # 산출이 `{"scopeFree": true|false}` 한 줄이라 32 토큰이면 충분하다.
     category_scope_max_tokens: int = Field(default=32, ge=8)
 
+    # ── 과소지정 첫 턴 분류기 (이슈 #463) ──
+    # #430의 빈 semanticQuery 계약은 보존하되, SCREEN·카테고리 맥락까지 같은 decompose 호출에
+    # 얹어 판정하면 `screenExactPick`·`categoryClear`를 잃는다. 맥락 없는 첫 추천 턴만 별도
+    # 호출로 판정한다. 이전 fast 전용 실험은 what-axis 오탐이 컸으므로 기본은 smart이며, 이 값은
+    # intent/underspecified 양쪽 실측 표로 계속 감시한다.
+    underspecified_classifier_enabled: bool = True
+    underspecified_classifier_tier: Literal["fast", "smart"] = "smart"
+    # true/false JSON 한 필드만 반환하므로 48 토큰이면 충분하다.
+    underspecified_classifier_max_tokens: int = Field(default=48, ge=8)
+
     # ── 장바구니 (이슈 #3, api-spec §4.1) ──
     # CART_OPTION_INVALID 재질문 상한 — 초과 시 action CART_ERROR(§4.1). 하드코딩 금지.
     cart_option_reask_max: int = 1

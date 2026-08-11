@@ -200,6 +200,20 @@ _SYSTEM = """당신은 커머스 어시스턴트의 질의 분해기입니다.
 - general: intent=general, reply 에 짧게 답하세요.
 - reply 는 마크다운을 쓰지 마세요 — 제목(#)·표·코드블럭·링크·목록 기호 금지, 평문 산문으로."""
 
+# #430의 빈 semanticQuery 규칙은 그 자체로는 첫 무맥락 과소지정 보호에 필요하다. 그러나 SCREEN·
+# 직전 카테고리를 함께 읽는 거대한 라우팅 호출에서 그 판정까지 맡기면 화면 exact pick과 category
+# clear가 흔들렸다(#463). 전용 분류기가 켜진 배포 경로에서는 이 문면만 빼고, 결과를 그 분류기로
+# 후처리한다. 플래그를 끄거나 기존 직접 호출은 `_SYSTEM` 그대로라 즉시 오늘 동작으로 롤백된다.
+_LEGACY_UNDERSPECIFIED_RULE = """  찾는 상품의 단서(종류·용도·상황·목적·브랜드·색상)가 발화에도 PRIOR_FILTERS·
+  LAST_RECOMMENDATIONS·SCREEN 맥락에도 없으면 semanticQuery 는 **빈 문자열(\"\")** 로 두세요 —
+  지어내거나 발화를 옮겨 적지 마세요.
+"""
+_SYSTEM_WITH_DEDICATED_UNDERSPECIFIED = _SYSTEM.replace(_LEGACY_UNDERSPECIFIED_RULE, "")
+if _SYSTEM_WITH_DEDICATED_UNDERSPECIFIED == _SYSTEM:
+    raise RuntimeError(
+        "#430 과소지정 규칙을 찾지 못해 #463 전용 분류기 프롬프트를 만들지 못했습니다."
+    )
+
 
 # ── `- recommend:` 불릿의 브랜드 절 (#466) ──────────────────────────────────────────────────
 # 왜 있는가: 색상에는 전용 규칙("색상 조건이 있으면 filters.color")이 있었는데 **브랜드에는
@@ -374,6 +388,9 @@ _CART_ADD_ANCHOR = "  productId 를 고르세요. 못 고르면 productId=null. 
 # ⚠️ 이 문장은 **screen 이 실린 턴에만** 붙는다(아래 decompose 참조). screen 이 없으면 system 도
 # user 도 오늘과 바이트 동일해야 한다 — 프로브의 회귀 대조군도 그 전제로 측정했다.
 _SYSTEM_WITH_SCREEN = _SYSTEM.replace(_CART_ADD_ANCHOR, _CART_ADD_ANCHOR + _SCREEN_CART_RULE)
+_SYSTEM_WITH_SCREEN_DEDICATED_UNDERSPECIFIED = _SYSTEM_WITH_DEDICATED_UNDERSPECIFIED.replace(
+    _CART_ADD_ANCHOR, _CART_ADD_ANCHOR + _SCREEN_CART_RULE
+)
 # [10차 리뷰] `assert` 가 아니라 `if`+`raise` 다 — `assert` 는 `python -O`/`PYTHONOPTIMIZE=1`
 # 로 최적화 모드 배포 시 바이트코드에서 통째로 제거된다(`assert` 문서화된 동작). 이 검사가
 # 지키는 것은 "`_CART_ADD_ANCHOR` 가 `_SYSTEM` 안에 그대로 남아 있어 `.replace()` 가 no-op 이
@@ -620,6 +637,7 @@ async def decompose(
     category_leg_injection_min_length: int = 2,
     attr_axis_suppression: bool = False,
     attr_constraint_axes: frozenset[str] = frozenset(),
+    dedicated_underspecified_classifier: bool = False,
 ) -> RouteDecision:
     """Haiku 1회 호출로 intent(추천/담기/장바구니조회/주문상태/일반)와 필터를 산출한다.
 
@@ -641,9 +659,15 @@ async def decompose(
     ]
     # screen 이 None 이면 아래 두 값이 그대로라 프롬프트는 오늘과 바이트 단위로 동일하다.
     screen_line = ""
-    system = _SYSTEM
+    system = (
+        _SYSTEM_WITH_DEDICATED_UNDERSPECIFIED if dedicated_underspecified_classifier else _SYSTEM
+    )
     if screen is not None and (payload := _screen_payload(screen)):
-        system = _SYSTEM_WITH_SCREEN
+        system = (
+            _SYSTEM_WITH_SCREEN_DEDICATED_UNDERSPECIFIED
+            if dedicated_underspecified_classifier
+            else _SYSTEM_WITH_SCREEN
+        )
         screen_line = f"SCREEN: {json.dumps(payload, ensure_ascii=False)}\n{_SCREEN_DATA_NOTICE}\n"
     reco_json = json.dumps(reco_entries, ensure_ascii=False)
     pending_json = "null" if not pending_cart else json.dumps(pending_cart, ensure_ascii=False)

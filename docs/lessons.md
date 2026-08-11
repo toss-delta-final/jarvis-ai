@@ -23,6 +23,12 @@
 - 규칙: LLM 산출 키 이름에 어휘 매칭을 걸 때는 한국어/영어·대소문자·camelCase/snake_case를 처음부터 함께 덮고, 스키마 필드명 변형은 드리프트 가드 테스트로 못박는다. 어휘 목록만 늘리면 두더지잡기가 된다.
 - 관련: #464 `app/core/config.py`·`app/agents/buyer/recommendation/attr_axis.py`·`tests/unit/test_attr_axis.py`
 
+## [2026-08-11] LLM 평가 arm은 production gate와 동형이어야 한다
+- 증상: #463의 첫 after는 후보 decompose 프롬프트와 보조 호출을 무맥락 첫 턴 전체에 적용했지만, production은 저정보량 후보에만 비용을 내도록 수정됐다. 따라서 옛 after는 같은 hash여도 배포 arm이 아니었다.
+- 원인: prompt hash만 같다고 호출 게이트·부수 호출 예산까지 같아지는 것은 아니다. confirmatory 분모도 `intent==recommend` 뒤에 생기므로 `nonRecommendIntentCount`를 동반해야 한다.
+- 규칙: 코드가 gate를 바꾸면 after는 독립 반복으로 재측정하고, legacy before는 prompt·fixture·N·arm semantics가 불변임을 manifest로 증명한 경우에만 재사용한다. #463 gate-after는 N=8 두 번 모두 miss `0/112`, false alarm `0/104`, unfilled·non-recommend 0이었다. 보조 LLM 실패는 fail-open인지 retry failure인지 별도 기록한다.
+- 관련: #463 `evals/underspecified_probe/*463-*`·`app/agents/buyer/recommendation/underspecified_classifier.py`
+
 ## [2026-08-11] 억제/보강 스위치는 발동 건수를 산출물에 남겨야 한다
 - 증상: 전후 비교표만 보면 3·5 → 1·1로 좋아 보였지만, 실제로는 억제가 거의 발동하지 않았고 개선분 대부분이 런간 노이즈였다.
 - 원인: 산출물에 효과(미탐 수)만 있고 발동 여부가 없어 둘을 가를 수 없었다.

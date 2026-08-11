@@ -1,0 +1,2 @@
+cellId,attempt,errorType,message
+under-wa-0005,1,LLMError,"Error code: 429 - {'error': {'message': 'Rate limit reached for gpt-5-nano in organization org-*** on tokens per min (TPM): Limit 200000, Used 196458, Requested 4138. Please try again in 178ms. Visit "

@@ -78,7 +78,9 @@ def _parser() -> argparse.ArgumentParser:
     prompt_source.add_argument("--prompt", type=Path, help="후보 decompose 프롬프트 파일")
     prompt_source.add_argument("--prompt-rev", help="과거 판 _SYSTEM 을 읽을 git 리비전")
     parser.add_argument("--n", type=int, default=8, help="셀당 성공 표본 수")
-    parser.add_argument("--arm", choices=("before", "postprocess", "dedicated", "tri"), default="before")
+    parser.add_argument(
+        "--arm", choices=("before", "postprocess", "dedicated", "tri"), default="before"
+    )
     attr_axis = parser.add_mutually_exclusive_group()
     attr_axis.add_argument(
         "--attr-axis-suppression",
@@ -133,11 +135,7 @@ def _command(argv: list[str]) -> str:
 
 def _resolve_attr_axis_suppression(requested: bool | None, settings: Settings) -> bool:
     """명시 플래그가 없으면 프로브가 사용할 Settings 값을 그대로 따른다."""
-    return (
-        settings.attr_condition_axis_suppression_enabled
-        if requested is None
-        else requested
-    )
+    return settings.attr_condition_axis_suppression_enabled if requested is None else requested
 
 
 def union_extra_calls_per_sample(category_select_max_calls: int) -> int:
@@ -290,14 +288,23 @@ def main(argv: list[str] | None = None) -> int:
             concurrency=args.concurrency,
             category_fanout_max=category_fanout_max,
             repurchase_max=repurchase_max,
-            leg_head_suppression=args.arm in ("postprocess", "dedicated"),
-            leg_generic_heads=frozenset(live_settings.category_leg_generic_heads) if live_settings else frozenset(),
-            leg_condition_terms=frozenset(live_settings.category_leg_condition_terms) if live_settings else frozenset(),
+            leg_head_suppression=args.arm == "postprocess",
+            leg_generic_heads=frozenset(live_settings.category_leg_generic_heads)
+            if live_settings
+            else frozenset(),
+            leg_condition_terms=frozenset(live_settings.category_leg_condition_terms)
+            if live_settings
+            else frozenset(),
             attr_axis_suppression=attr_axis_suppression,
             attr_constraint_axes=frozenset(probe_settings.attr_condition_constraint_axes),
             dedicated_llm=dedicated_llm,
-            tri_generic_heads=frozenset(live_settings.category_leg_generic_heads) if live_settings else frozenset(),
-            tri_condition_terms=frozenset(live_settings.category_leg_condition_terms) if live_settings else frozenset(),
+            dedicated_settings=probe_settings if dedicated_llm is not None else None,
+            tri_generic_heads=frozenset(live_settings.category_leg_generic_heads)
+            if live_settings
+            else frozenset(),
+            tri_condition_terms=frozenset(live_settings.category_leg_condition_terms)
+            if live_settings
+            else frozenset(),
             sleep=sleep,
             union_enabled=args.union,
             union_llm=union_llm,

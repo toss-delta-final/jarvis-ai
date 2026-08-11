@@ -1201,6 +1201,27 @@ async def test_screen_absent_keeps_the_prompt_byte_identical() -> None:
     assert llm.system == _SYSTEM
 
 
+async def test_dedicated_underspecified_mode_removes_only_the_legacy_rule() -> None:
+    from app.agents.buyer.recommendation.decompose import (
+        _SYSTEM,
+        _SYSTEM_WITH_DEDICATED_UNDERSPECIFIED,
+        decompose,
+    )
+
+    llm = _CapturingLLM()
+    await decompose(
+        llm,
+        query="5만원 이하 아무거나",
+        prior_filters=None,
+        profile_summary=None,
+        tier="fast",
+        dedicated_underspecified_classifier=True,
+    )
+    assert llm.system == _SYSTEM_WITH_DEDICATED_UNDERSPECIFIED
+    assert "지어내거나 발화를 옮겨 적지 마세요" in _SYSTEM
+    assert "지어내거나 발화를 옮겨 적지 마세요" not in llm.system
+
+
 async def test_screen_none_prompt_matches_screen_ignored_prompt() -> None:
     """관대 무시로 screen 이 사라진 요청도 미전송 요청과 프롬프트가 같아야 한다(가드 우회 방지와 짝)."""
     from app.agents.buyer.recommendation.decompose import build_screen_prompt, decompose

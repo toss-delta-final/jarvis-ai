@@ -58,6 +58,11 @@ from app.agents.buyer.recommendation.needs_expansion import detect_expansion_nee
 from app.agents.buyer.recommendation.needs_expansion import expand_needs as _expand_needs
 from app.agents.buyer.recommendation.no_condition import is_no_condition_turn
 from app.agents.buyer.recommendation.underspecified import is_underspecified_turn
+from app.agents.buyer.recommendation.underspecified_classifier import (
+    apply_underspecified_classification,
+    classify_underspecified,
+    could_be_underspecified_message,
+)
 from app.agents.buyer.recommendation.relaxation import FIELD_TO_ATTR as RELAXATION_FIELD_TO_ATTR
 from app.agents.buyer.recommendation.state import get_relaxation_offer_store, get_revert_store
 from app.agents.buyer.recommendation.graph import stream_recommendation
@@ -1056,6 +1061,7 @@ async def run_buyer_turn(
     # 분류기 태스크와 그것이 붙든 HTTP 연결이 스스로 끝날 때까지 남는다.
     scope_free: bool | None = None
     scope_settled = False
+    underspecified_task = None
     # [병합 #84 × #289] 두 변경이 같은 지점에 붙는다. #289 의 첫 프레임은 `try` **안**에 둔다 —
     # 그 자리에서 소비자가 스트림을 닫아도(`GeneratorExit`) 아래 `finally` 가 분류기 태스크를
     # 정리한다. `try` 밖에 두면 태스크는 이미 떠 있는데 정리 범위 밖이라 고아가 될 수 있다.
@@ -1117,6 +1123,27 @@ async def run_buyer_turn(
             if screen_context_active
             else None
         )
+        # #463은 #430의 과소지정 보호를 첫 무맥락 추천 후보에서만 전용 호출로 옮긴다. 화면,
+        # 직전 추천, prior 필터, 옵션 되물음은 이미 "무엇"의 근거라 이 호출을 열지 않는다.
+        # decompose와 병렬로 띄워 추천 경로에 직렬 왕복을 더하지 않는다.
+        underspecified_gate = (
+            settings.underspecified_classifier_enabled
+            and prior is None
+            and pending_dict is None
+            and not prompt_reco
+            and prompt_screen is None
+            and bool(request.message.strip())
+            and could_be_underspecified_message(request.message)
+        )
+        if underspecified_gate:
+            underspecified_task = asyncio.create_task(
+                classify_underspecified(
+                    llm,
+                    message=request.message,
+                    settings=settings,
+                    observer=observer,
+                )
+            )
         try:
             if action_only:
                 # FE conditionActions has already mutated `prior` above. A blank-message turn has
@@ -1163,6 +1190,18 @@ async def run_buyer_turn(
                             category_leg_injection_min_length=settings.category_leg_injection_min_length,
                             attr_axis_suppression=settings.attr_condition_axis_suppression_enabled,
                             attr_constraint_axes=frozenset(settings.attr_condition_constraint_axes),
+                            # #463 후보 프롬프트는 #430 규칙과 실제로 경쟁하는 세 경우에만 쓴다.
+                            # 일반 첫 추천은 legacy 프롬프트/호출 예산을 그대로 지킨다.
+                            dedicated_underspecified_classifier=(
+                                settings.underspecified_classifier_enabled
+                                and pending_dict is None
+                                and (
+                                    prior is not None
+                                    or bool(prompt_reco)
+                                    or prompt_screen is not None
+                                    or underspecified_gate
+                                )
+                            ),
                         )
         except LLMError as exc:
             # [#84] 이 경로에서 나가기 전에 병렬 태스크를 반드시 정리한다 — 안 하면 취소되지 않은
@@ -1170,6 +1209,7 @@ async def run_buyer_turn(
             # 여기서 `await` 하면 바깥에서 온 취소가 그 지점에 배달돼 삼켜질 수 있다
             # (`_cancel_scope_task` docstring 참조).
             _cancel_scope_task(scope_task)
+            _cancel_scope_task(underspecified_task)
             scope_settled = True
             code = "LLM_TIMEOUT" if _is_timeout(exc) else "LLM_UNAVAILABLE"
             yield sse(
@@ -1283,8 +1323,13 @@ async def run_buyer_turn(
         # 밟은 자리). 취소로 **대기**만 없애고 호출은 남긴다.
         if decision.intent == "recommend":
             scope_free = await _collect_scope_task(scope_task)
+            underspecified = await _collect_scope_task(underspecified_task)
+            apply_underspecified_classification(
+                decision, message=request.message, verdict=underspecified
+            )
         else:
             _cancel_scope_task(scope_task)
+            _cancel_scope_task(underspecified_task)
         scope_settled = True
     finally:
         # 어느 경로로 나가든 **정확히 한 번** 정리된다 — 추천 턴은 위에서 값을 회수하고
@@ -1293,6 +1338,7 @@ async def run_buyer_turn(
         # `except LLMError` 에 걸리지 않아 본문 정리 지점을 전부 건너뛴다.
         if not scope_settled:
             _cancel_scope_task(scope_task)
+            _cancel_scope_task(underspecified_task)
 
     # transient 세션 버퍼에 발화 누적(승격 전 격리, SPEC-PROFILE-001) — 세션 종료 델타 소스.
     # [#119 REQ-PROF-026] intent 판정 **뒤에** 둔다: 주문조회·장바구니 조회 발화는 취향 신호가
