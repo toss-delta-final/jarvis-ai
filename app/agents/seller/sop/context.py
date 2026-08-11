@@ -39,7 +39,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from app.agents.seller.schemas import AnalysisType, ProductField
+from app.agents.seller.schemas import AnalysisFinding, AnalysisType, ProductField
 
 # 판정 어휘 4종 — 🔴 `undecided` 는 **신규 값**이다(감사 C-12).
 # 기존 `analysis/types.RateComparison.verdict` 는 3종(drop/rise/no_change)뿐이라
@@ -280,3 +280,8 @@ class AnalysisContext(BaseModel):
     product_flags: list[ProductFlag] = Field(default_factory=list)
     past_actions: list[PastAction] = Field(default_factory=list)
     holds: list[Hold] = Field(default_factory=list)
+    # [이슈 #598] `interpret` 스텝 산출 — 채팅 레인 팬인(`run_branches`)의 `finding`과
+    # 같은 타입이다. behavior 는 `BehaviorFinding`(서브클래스)을 담는다. `verify` 스텝이
+    # 미달분을 이 자리에서 직접 강등(교체)한다 — 별도 "검증된 findings" 리스트를 두지
+    # 않는 이유는 자리가 하나여야 상주 report 스텝이 이 필드 하나만 읽으면 되기 때문이다.
+    findings: list[AnalysisFinding] = Field(default_factory=list)
