@@ -245,6 +245,117 @@ async def test_remove_action_strips_only_target_from_search_and_conditions() -> 
     assert "priceMax" in {chip["field"] for chip in chips}
 
 
+async def test_action_only_removal_skips_decompose_and_preserves_mutated_prior(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """빈 발화의 칩 제거는 mutated prior 를 그대로 추천 경계로 사용한다."""
+    identity = _member()
+    first_llm = FakeLLM(
+        decompose={
+            "intent": "recommend",
+            "reply": "",
+            "case": 2,
+            "semanticQuery": "고정 의미 검색어",
+            "categoryQueries": [],
+            "filters": {
+                "priceMax": 50000,
+                "priceMin": 10000,
+                "brand": ["A", "B"],
+                "ratingMin": 4.2,
+                "keyword": "무선",
+            },
+        }
+    )
+    await _collect(
+        _run_buyer_turn(
+            BuyerChatRequest.model_validate(_buyer_payload()),
+            identity,
+            llm=first_llm,
+            search=_RecordingSearch(),
+            push_fn=_push_ok,
+        )
+    )
+
+    remove_request = BuyerChatRequest.model_validate(
+        {
+            "sessionId": "s1",
+            "threadId": "t1",
+            "conditionActions": [
+                {"op": "remove", "field": "priceMax"},
+                {"op": "remove", "field": "brand", "value": "B"},
+            ],
+        }
+    )
+    action_llm = FakeLLM(decompose_error=True)
+    search = _RecordingSearch()
+    with caplog.at_level(logging.INFO, logger="app.agents.buyer.graph"):
+        await _collect(
+            _run_buyer_turn(
+                remove_request,
+                identity,
+                llm=action_llm,
+                search=search,
+                push_fn=_push_ok,
+            )
+        )
+
+    final_filters = search.filters[-1]
+    assert final_filters.price_max is None
+    assert final_filters.price_min == 10000
+    assert final_filters.brand == ["A"]
+    assert final_filters.rating_min == 4.2
+    assert final_filters.keyword == "무선"
+    assert final_filters.semantic_query == "고정 의미 검색어"
+    assert [tier for tier, _ in action_llm.calls] == ["smart"]
+
+    records = _graph_records(caplog, "condition_actions_applied")
+    assert len(records) == 1
+    extra = records[0].__dict__
+    assert extra["action_only"] is True
+    assert extra["cleared_fields"] == ["priceMax"]
+    assert extra["changed_fields"] == ["priceMax", "brand"]
+    assert extra["category_legs_restored"] is False
+    assert extra["no_op"] is False
+    assert extra["unmatched_values"] == 0
+    serialized = json.dumps(extra, ensure_ascii=False, default=str)
+    assert "고정 의미 검색어" not in serialized
+    assert '"B"' not in serialized
+
+
+async def test_priorless_action_only_does_not_invent_search_or_call_llm(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """prior 없는 액션-only 턴은 임의 검색 상태를 만들지 않고 종료한다."""
+    identity = _member()
+    request = BuyerChatRequest.model_validate(
+        {
+            "sessionId": "s1",
+            "threadId": "t-fresh",
+            "message": "   ",
+            "conditionActions": [{"op": "remove", "field": "priceMax"}],
+        }
+    )
+    action_llm = FakeLLM(decompose_error=True)
+    search = _RecordingSearch()
+    with caplog.at_level(logging.INFO, logger="app.agents.buyer.graph"):
+        events = await _collect(
+            _run_buyer_turn(
+                request,
+                identity,
+                llm=action_llm,
+                search=search,
+                push_fn=_push_ok,
+            )
+        )
+
+    assert action_llm.calls == []
+    assert search.filters == []
+    assert events[-1]["type"] == "done"
+    skipped = _graph_records(caplog, "condition_actions_skipped_no_prior")
+    assert len(skipped) == 1
+    assert skipped[0].__dict__["action_only"] is True
+
+
 async def test_remove_action_is_idempotent_across_retries() -> None:
     identity = _member()
     first_request = BuyerChatRequest.model_validate(_buyer_payload())
@@ -791,6 +902,61 @@ async def test_value_scoped_category_removal_searches_remaining_legs_and_conditi
     chips = next(event for event in events if event["type"] == "conditions")["data"]["chips"]
     cat_chips = [chip for chip in chips if chip["field"] == "category"]
     assert [chip["value"] for chip in cat_chips] == [_LEG_A, _LEG_C]
+
+
+async def test_action_only_value_scoped_category_removal_restores_remaining_legs(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """액션-only 카테고리 value 제거도 남은 멀티 leg 을 LLM 없이 복원한다."""
+    identity = _member()
+    await _collect(
+        _run_buyer_turn(
+            BuyerChatRequest.model_validate(_buyer_payload(message="유럽여행 준비물 추천")),
+            identity,
+            llm=FakeLLM(),
+            search=_RecordingSearch(),
+            push_fn=_push_ok,
+            map_categories=_three_leg_mapper(),
+        )
+    )
+    remove_request = BuyerChatRequest.model_validate(
+        {
+            "sessionId": "s1",
+            "threadId": "t1",
+            "conditionActions": [{"op": "remove", "field": "category", "value": _LEG_B}],
+        }
+    )
+    action_llm = FakeLLM(decompose_error=True)
+    search = _RecordingSearch()
+    with caplog.at_level(logging.INFO, logger="app.agents.buyer.graph"):
+        events = await _collect(
+            _run_buyer_turn(
+                remove_request,
+                identity,
+                llm=action_llm,
+                search=search,
+                push_fn=_push_ok,
+                map_categories=_three_leg_mapper(),
+            )
+        )
+
+    assert [filters.category for filters in search.filters] == [_LEG_A, _LEG_C]
+    assert [tier for tier, _ in action_llm.calls] == ["smart"]
+    chips = next(event for event in events if event["type"] == "conditions")["data"]["chips"]
+    assert [chip["value"] for chip in chips if chip["field"] == "category"] == [_LEG_A, _LEG_C]
+    records = _graph_records(caplog, "condition_actions_applied")
+    assert len(records) == 1
+    extra = records[0].__dict__
+    assert extra["action_only"] is True
+    assert extra["cleared_fields"] == []
+    assert extra["changed_fields"] == []
+    assert extra["category_legs_restored"] is True
+    assert extra["no_op"] is False
+    assert extra["unmatched_values"] == 0
+    serialized = json.dumps(extra, ensure_ascii=False, default=str)
+    assert _LEG_A not in serialized
+    assert _LEG_B not in serialized
+    assert _LEG_C not in serialized
 
 
 async def test_restored_category_removal_logs_no_op_false_and_restoration_flag(

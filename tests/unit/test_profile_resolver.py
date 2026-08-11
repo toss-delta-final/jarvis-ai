@@ -47,9 +47,19 @@ async def _resolve(settings: Settings, **kwargs: object):
     ("kind", "label", "expected_node_id"),
     [
         ("priceBand", "30000-50000", "priceBand:30000-50000"),
-        ("priceBand", "0-100000", "priceBand:0-100000"),
-        ("ratingBand", "4-5", "ratingBand:4-5"),
+        # **도메인 경계는 접힌다**(#581) — 가격은 늘 0 이상이라 하한 0 은 아무것도 안 거른다.
+        # 접지 않으면 `"0-100000"` 과 `"-100000"` 이 같은 취향인데 별개 노드가 된다.
+        ("priceBand", "0-100000", "priceBand:-100000"),
+        ("ratingBand", "4-5", "ratingBand:4-"),  # 평점 상한 5 도 같은 이유로 접힌다
+        # 베이스라인에 실재하던 센티널 상한도 같은 규칙으로 접힌다
+        ("priceBand", f"100000-{9_223_372_036_854_775_807}", "priceBand:100000-"),
         ("product", "12345", "product:12345"),
+        # 열린 밴드(#581) — 한쪽 경계만 있는 취향("5만원 이하"·"평점 4점 이상")을 담는 자리.
+        # 이게 없으면 추출 LLM 이 없는 경계를 지어낸다(실측: 하한 0, 상한 999999999).
+        ("priceBand", "-50000", "priceBand:-50000"),
+        ("priceBand", "100000-", "priceBand:100000-"),
+        ("ratingBand", "4-", "ratingBand:4-"),
+        ("ratingBand", "5-", "ratingBand:5-"),
     ],
 )
 async def test_rule_kinds_resolve_without_embedding(
@@ -71,6 +81,9 @@ async def test_rule_kinds_resolve_without_embedding(
     [
         ("priceBand", "30000-50000", True),  # 자기완결 — 밴드는 자기 라벨이 곧 정의다
         ("ratingBand", "4-5", True),
+        # 열린 밴드도 자기완결이다(#581) — "50000원 이하"는 경계가 하나여도 그 자체로 정의다
+        ("priceBand", "-50000", True),
+        ("ratingBand", "4-", True),
         ("product", "12345", False),  # 외부 엔티티 **참조** — 통제 어휘에 스냅되는 게 아니다
     ],
 )
@@ -101,9 +114,22 @@ async def test_rule_kinds_claim_verified_only_when_self_contained(
     [
         ("priceBand", "3~5만원"),  # 자연어는 파싱하지 않는다
         ("priceBand", "50000-30000"),  # min >= max
+        # 하이픈 2개 — 열린 밴드(#581) 이후에도 매치 자체가 안 된다. `(\d*)` 는 "-" 를 못 먹어서
+        # 앞 그룹이 빈 문자열로 첫 하이픈을 넘겨도 뒤에 "1000-5000" 이 남아 `$` 에 도달 못 한다.
         ("priceBand", "-1000-5000"),
         ("priceBand", "가성비"),
+        ("priceBand", "-"),  # 경계가 둘 다 없으면 밴드가 아니다(#581)
+        ("priceBand", "50,000원 이하"),  # §3.8 이 내보내는 렌더 문장은 되돌려 받지 않는다(#581)
+        # **아무것도 안 거르는 밴드는 취향이 아니다**(#581) — 도메인 경계를 접고 나면 양쪽이
+        # 비어 `"-"` 와 같아진다. "0원 이상"·"5점 이하"·"0~5점"은 전부 전체 집합이다.
+        ("priceBand", "0-"),
+        ("ratingBand", "-5"),
+        ("ratingBand", "0-5"),
         ("ratingBand", "4-6"),  # 평점 스케일(0~5) 밖
+        # 열린 밴드도 스케일을 넘으면 드롭한다 — "6점 이상"은 존재할 수 없다(#581).
+        # 종전 코드는 상한만 검사해서, 하한만 있는 밴드가 이 관문을 통째로 비켜갔다.
+        ("ratingBand", "6-"),
+        ("ratingBand", "-6"),
         ("ratingBand", "높음"),
         ("product", "소니 WH-1000XM5"),  # 상품은 숫자 id 정확 일치만
         ("product", ""),
@@ -124,7 +150,15 @@ async def test_rule_kinds_drop_on_unparseable_label(
     [
         ("product", ["7", "007", "0000007"], "product:7"),
         ("priceBand", ["30-50", "030-050"], "priceBand:30-50"),  # 밴드는 이미 수렴한다
-        ("ratingBand", ["4-5", "04-05"], "ratingBand:4-5"),
+        ("ratingBand", ["4-5", "04-05"], "ratingBand:4-"),
+        # 열린 밴드도 같은 수렴을 받는다(#581) — 빈 쪽이 재조립에서 그대로 비어야 한다
+        ("priceBand", ["-50000", "-050000"], "priceBand:-50000"),
+        ("priceBand", ["30-", "030-"], "priceBand:30-"),
+        # **의미가 같은 두 인코딩도 한 노드로 수렴해야 한다**(#581). 가격은 늘 0 이상이고
+        # 평점은 늘 5 이하라 이 쌍들은 같은 취향이다 — 갈리면 마이페이지에 같은 문구가 두 줄
+        # 뜨고, 한쪽을 지워도 다른 쪽이 남으며 지운 인코딩의 재추출이 tombstone 을 비켜간다.
+        ("priceBand", ["0-100000", "-100000", "0-0100000"], "priceBand:-100000"),
+        ("ratingBand", ["4-5", "4-"], "ratingBand:4-"),
     ],
 )
 async def test_numeric_labels_converge_to_one_node_id(
@@ -240,10 +274,25 @@ _BIGINT_MAX = 9_223_372_036_854_775_807  # Spring productId 상한(CLAUDE.md —
         ("priceBand", f"1-{_BIGINT_MAX}", True),
         ("priceBand", f"1-{_BIGINT_MAX + 1}", False),
         ("priceBand", "1-" + "9" * 30, False),
+        # 열린 밴드(#581)는 **경계가 하나뿐이라 서로를 못 가려 준다.** 종전에는 `low <= high` 라
+        # 상한 검사 하나가 둘 다 덮었는데, 하한만 있는 밴드에는 그 상한이 아예 없다 —
+        # 각 경계를 따로 재지 않으면 존재할 수 없는 크기가 그대로 통과한다.
+        ("priceBand", f"{_BIGINT_MAX}-", True),
+        ("priceBand", f"{_BIGINT_MAX + 1}-", False),
+        ("priceBand", f"-{_BIGINT_MAX + 1}", False),
+        ("priceBand", "9" * 30 + "-", False),
+        ("ratingBand", "5-", True),  # "5점 이상" — 하한은 도메인 경계가 아니라 그대로 남는다
+        ("ratingBand", "6-", False),
+        ("ratingBand", "-6", False),
+        # **도메인 경계 상한만 있는 밴드는 전체 집합이라 드롭된다**(#581) — 크기 위반이 아니라
+        # "아무것도 안 거른다"는 이유다. 상한 검사(`> _BIGINT_MAX`)가 아니라 접기가 잡는다.
+        ("priceBand", f"-{_BIGINT_MAX}", False),
+        ("ratingBand", "-5", False),
         # 숫자 **형식** — 이미 막고 있던 것들(회귀 가드로 표에 함께 둔다).
         ("product", "12345", True),
         ("product", "abc", False),
         ("priceBand", "50000-30000", False),  # min >= max
+        ("priceBand", "-", False),  # 경계가 둘 다 없다
         ("ratingBand", "4-6", False),  # 평점 스케일 밖
     ],
 )

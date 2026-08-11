@@ -172,8 +172,19 @@ async def test_both_forms_together_are_refused(settings: Settings) -> None:
 # ─────────── type+label 형태 — 배치와 같은 식별자가 나와야 한다 ───────────
 
 
-@pytest.mark.parametrize("label", ["30000-50000", "0-10000"])
-async def test_price_band_accepts_the_canonical_form(settings: Settings, label: str) -> None:
+@pytest.mark.parametrize(
+    ("label", "expected_node_id"),
+    [
+        ("30000-50000", "priceBand:30000-50000"),
+        ("-50000", "priceBand:-50000"),  # 열린 밴드도 canonical 이다(#581, api-spec §3.9.1)
+        ("100000-", "priceBand:100000-"),
+        # 도메인 경계(가격 하한 0)는 접힌다 — 사용자가 명시해도 배치 경로와 같은 노드로 간다.
+        ("0-10000", "priceBand:-10000"),
+    ],
+)
+async def test_price_band_accepts_the_canonical_form(
+    settings: Settings, label: str, expected_node_id: str
+) -> None:
     resolved = await resolve_user_object(
         ObjectSpec(node_type="priceBand", label=label),
         document=_document(),
@@ -182,10 +193,26 @@ async def test_price_band_accepts_the_canonical_form(settings: Settings, label: 
         now=NOW,
     )
 
-    assert resolved is not None and resolved.node_id == f"priceBand:{label}"
+    assert resolved is not None and resolved.node_id == expected_node_id
 
 
-@pytest.mark.parametrize("label", ["가성비", "3~5만원대", "5만원 이하", "50000-30000", ""])
+@pytest.mark.parametrize(
+    "label",
+    [
+        "가성비",
+        "3~5만원대",
+        "5만원 이하",
+        "50000-30000",
+        "",
+        # 경계가 둘 다 없으면 밴드가 아니다 — 열린 밴드를 열어도 이건 아니다(#581)
+        "-",
+        # §3.8 이 내보내는 렌더 문장을 그대로 되보내는 경우. **파싱하지 않는다** —
+        # 문장을 숫자로 되돌리는 파서를 두면 그 순간 "반쯤 맞는 해석"이 다시 생긴다.
+        # FE 는 `nodeId` 에서 접두어를 뗀 canonical 을 실어야 한다(api-spec §3.9.1).
+        "50,000원 이하",
+        "30,000원 이상, 50,000원 이하",
+    ],
+)
 async def test_price_band_rejects_natural_language(settings: Settings, label: str) -> None:
     """자연어 가격 표현은 **추측하지 않는다** — 반쯤 맞는 해석은 조용히 틀린 밴드를 만든다."""
     resolved = await resolve_user_object(
@@ -199,15 +226,27 @@ async def test_price_band_rejects_natural_language(settings: Settings, label: st
     assert resolved is None
 
 
-async def test_the_identifier_matches_the_batch_path(settings: Settings) -> None:
+@pytest.mark.parametrize(
+    ("label", "anchor"),
+    [
+        ("30000-50000", "3만원에서 5만원 사이"),
+        # 열린 밴드도 두 경로가 갈리면 안 된다(#581) — 재조립이 한쪽에서만 빈 쪽을
+        # 다르게 처리하면 같은 취향이 두 edgeId 를 얻는다.
+        ("-50000", "5만원 이하로"),
+        ("100000-", "10만원 이상은 돼야"),
+    ],
+)
+async def test_the_identifier_matches_the_batch_path(
+    settings: Settings, label: str, anchor: str
+) -> None:
     """**같은 취향은 어느 경로로 들어와도 같은 식별자여야 한다** (REQ-PGRAPH-010).
 
     갈리면 사용자가 지운 취향이 다른 식별자로 부활해 tombstone 을 비켜간다.
     """
     batch = await resolve_triple(
         kind="priceBand",
-        label="30000-50000",
-        anchor_phrase="3만원에서 5만원 사이",
+        label=label,
+        anchor_phrase=anchor,
         polarity="positive",
         predicate_hint="",
         settings=settings,
@@ -215,7 +254,7 @@ async def test_the_identifier_matches_the_batch_path(settings: Settings) -> None
         embed=_never_called("embed"),
     )
     user = await resolve_user_object(
-        ObjectSpec(node_type="priceBand", label="30000-50000"),
+        ObjectSpec(node_type="priceBand", label=label),
         document=_document(),
         current=_edge(),
         settings=settings,
