@@ -38,16 +38,19 @@ import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from time import perf_counter
 from typing import Literal
+from uuid import UUID
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessageChunk, HumanMessage, SystemMessage
 from pydantic.alias_generators import to_camel
 
 from app.agents.seller import category_catalog, category_resolver, draft_session
 from app.agents.seller import thread as seller_thread
+from app.agents.seller import analysis_store, report_view
 from app.agents.seller.analysis_store import note_seller_seen
 from app.agents.seller.checkpoint import get_checkpointer
 from app.agents.seller.context import SellerContext
@@ -99,6 +102,10 @@ from app.core.tracing import current_request_trace, start_request_trace_safely, 
 from app.core.text import _strip_unsafe, _strip_unsafe_multiline
 from app.schemas.chat import ErrorData, TokenData
 from app.schemas.seller import SellerChatRequest
+from app.schemas.seller_report import (
+    SellerReportListItem,
+    SellerReportListResponse,
+)
 from app.services.spring_client import SpringUnavailableError
 
 logger = logging.getLogger(__name__)
@@ -1062,7 +1069,25 @@ def _draft_event(record: DraftRecord, *, preview: dict | None = None) -> str:
 
 
 def _report_event(result: PipelineResult) -> str:
-    """PipelineResult → SSE report 이벤트 (이슈 #296, api-spec §3.2 v0.24.0 — 구 chart 대체).
+    """PipelineResult → SSE `report` 이벤트. 페이로드 조립은 `_report_payload` 가 한다.
+
+    [#599] 조립부를 분리한 이유: R-2(보고서 상세 API)가 **같은 조립기**를 써야 채팅 패널과
+    보고서 페이지가 어긋나지 않는다. R-2 는 SSE 프레임이 아니라 dict 가 필요하고, 저장된
+    보고서는 자기 제목·생성 시각을 가지므로 그 두 값만 덮어쓴다.
+    """
+    return _sse("report", _report_payload(result))
+
+
+def _report_payload(
+    result: PipelineResult,
+    *,
+    title: str | None = None,
+    generated_at: datetime | None = None,
+) -> dict:
+    """PipelineResult → `report` 페이로드 dict (이슈 #296, api-spec §3.2 v0.24.0 — 구 chart 대체).
+
+    [#599] `title`·`generated_at` 은 저장 보고서를 되살릴 때만 넘긴다(R-2). 생략하면 채팅
+    레인의 기존 동작 그대로다 — 제목은 고정 문구, 시각은 호출 시각.
 
     `_draft_event` 와 같은 패턴(camelCase 변환 + 필드별 마스킹). 호출부(_analysis_stream)
     가 kind=="report" 일 때만 정확히 1회 호출한다 — 되묻기·사과·거절·error 종료에는
@@ -1089,80 +1114,83 @@ def _report_event(result: PipelineResult) -> str:
         if result.chart_period and result.chart_period != result.period
         else None
     )
-    return _sse(
-        "report",
-        {
-            # [#504] chart_only 턴은 보고서가 아니라 그래프가 주인공 — 제목으로 구분한다
-            # (FE 는 report.title 을 그대로 쓰므로 FE 작업 0).
-            "title": "판매 분석 그래프" if result.chart_only else "판매 분석 보고서",
-            "period": (
-                {"from": result.period[0].isoformat(), "to": result.period[1].isoformat()}
-                if result.period
-                else None
-            ),
-            "chartPeriod": chart_period,
-            # KST 고정(이슈 #296, api-spec §3.2 v0.24.0 계약) — 기준 시각은 app/core/clock.py.
-            "generatedAt": now_kst().isoformat(timespec="seconds"),
-            "summary": mask_output(_strip_unsafe_multiline(split_report_summary(report_text))),
-            "body": mask_output(_strip_unsafe_multiline(report_text)),
-            "findings": [
-                {
-                    "analysisType": f.analysis_type,
-                    "severity": f.severity,
-                    "summary": mask_output(_strip_unsafe_multiline(f.summary)),
-                    "evidence": [mask_output(_strip_unsafe_multiline(e)) for e in f.evidence],
-                    "recommendation": mask_output(_strip_unsafe_multiline(f.recommendation)),
-                }
-                for f in findings
-            ],
-            "limitations": [
-                mask_output(_strip_unsafe_multiline(f.summary)) for f in findings if not f.evidence
-            ],
-            "chartRequested": result.chart_requested,
-            "charts": [
-                {
-                    "title": mask_output(_strip_unsafe(c.title)),
-                    "chartType": c.chart_type,
-                    "unit": c.unit,
-                    # [#504] 집계 방식 — 소스 레지스트리가 채운 값 그대로(FE 헤더 분기
-                    # 근거: sum=합계 / avg=평균 / none=스냅샷이라 헤더 숫자 숨김).
-                    "aggregate": c.aggregate,
-                    "series": [
-                        {
-                            "label": mask_output(_strip_unsafe(s.label)),
-                            "points": [
-                                {"x": mask_output(_strip_unsafe(p.x)), "y": p.y} for p in s.points
-                            ],
-                        }
-                        for s in c.series
-                    ],
-                    "summary": mask_output(_strip_unsafe_multiline(c.summary)),
-                }
-                for c in charts
-            ],
-            # [#504] 차트를 못 만든 사유 — 부분 성공이면 charts 와 **동시에** 나간다.
-            # message 는 서버 완성 문장(charts.py 소유) — FE 는 그대로 렌더, reason 은
-            # 로깅·QA 용 개방형 어휘라 닫힌 유니온으로 계약하지 않는다.
-            "chartUnavailable": [
-                {
-                    "reason": item.reason,
-                    "message": mask_output(_strip_unsafe(item.message)),
-                }
-                for item in result.chart_unavailable
-            ],
-            "recommendations": [
-                {
-                    "index": i,
-                    "title": mask_output(_strip_unsafe(rec.title)),
-                    "expectedEffect": mask_output(_strip_unsafe(rec.expected_effect)),
-                    "actionType": rec.action_type,
-                    "productId": rec.product_id,
-                }
-                for i, rec in enumerate(recommendations, start=1)
-            ],
-            "applyGuide": APPLY_GUIDE if recommendations else "",
-        },
-    )
+    return {
+        # [#504] chart_only 턴은 보고서가 아니라 그래프가 주인공 — 제목으로 구분한다
+        # (FE 는 report.title 을 그대로 쓰므로 FE 작업 0).
+        # [#599] 저장 보고서는 자기 제목("8월 9일 일간 분석")을 가진다 — 오면 그것을 쓴다.
+        "title": (
+            title
+            if title is not None
+            else ("판매 분석 그래프" if result.chart_only else "판매 분석 보고서")
+        ),
+        "period": (
+            {"from": result.period[0].isoformat(), "to": result.period[1].isoformat()}
+            if result.period
+            else None
+        ),
+        "chartPeriod": chart_period,
+        # KST 고정(이슈 #296, api-spec §3.2 v0.24.0 계약) — 기준 시각은 app/core/clock.py.
+        # [#599] 저장 보고서는 created_at 이 생성 시각 — 조회 시각을 쓰면 매번 바뀐다.
+        "generatedAt": (generated_at or now_kst()).isoformat(timespec="seconds"),
+        "summary": mask_output(_strip_unsafe_multiline(split_report_summary(report_text))),
+        "body": mask_output(_strip_unsafe_multiline(report_text)),
+        "findings": [
+            {
+                "analysisType": f.analysis_type,
+                "severity": f.severity,
+                "summary": mask_output(_strip_unsafe_multiline(f.summary)),
+                "evidence": [mask_output(_strip_unsafe_multiline(e)) for e in f.evidence],
+                "recommendation": mask_output(_strip_unsafe_multiline(f.recommendation)),
+            }
+            for f in findings
+        ],
+        "limitations": [
+            mask_output(_strip_unsafe_multiline(f.summary)) for f in findings if not f.evidence
+        ],
+        "chartRequested": result.chart_requested,
+        "charts": [
+            {
+                "title": mask_output(_strip_unsafe(c.title)),
+                "chartType": c.chart_type,
+                "unit": c.unit,
+                # [#504] 집계 방식 — 소스 레지스트리가 채운 값 그대로(FE 헤더 분기
+                # 근거: sum=합계 / avg=평균 / none=스냅샷이라 헤더 숫자 숨김).
+                "aggregate": c.aggregate,
+                "series": [
+                    {
+                        "label": mask_output(_strip_unsafe(s.label)),
+                        "points": [
+                            {"x": mask_output(_strip_unsafe(p.x)), "y": p.y} for p in s.points
+                        ],
+                    }
+                    for s in c.series
+                ],
+                "summary": mask_output(_strip_unsafe_multiline(c.summary)),
+            }
+            for c in charts
+        ],
+        # [#504] 차트를 못 만든 사유 — 부분 성공이면 charts 와 **동시에** 나간다.
+        # message 는 서버 완성 문장(charts.py 소유) — FE 는 그대로 렌더, reason 은
+        # 로깅·QA 용 개방형 어휘라 닫힌 유니온으로 계약하지 않는다.
+        "chartUnavailable": [
+            {
+                "reason": item.reason,
+                "message": mask_output(_strip_unsafe(item.message)),
+            }
+            for item in result.chart_unavailable
+        ],
+        "recommendations": [
+            {
+                "index": i,
+                "title": mask_output(_strip_unsafe(rec.title)),
+                "expectedEffect": mask_output(_strip_unsafe(rec.expected_effect)),
+                "actionType": rec.action_type,
+                "productId": rec.product_id,
+            }
+            for i, rec in enumerate(recommendations, start=1)
+        ],
+        "applyGuide": APPLY_GUIDE if recommendations else "",
+    }
 
 
 async def _apply_stream(
@@ -1676,3 +1704,262 @@ async def seller_chat(
         observer=observation,
         role="seller",
     )
+
+
+# ── R-1 / R-2 보고서 조회 (이슈 #599, 결정 6·10·113) ─────────────────────────────
+#
+# 분석 보고서는 `report` SSE 이벤트로 방출하지 않는다(결정 6) — 전용 페이지가 유일한 소비
+# 경로이고 이 둘이 그 경로다. 인증은 S-4 와 같은 CH-6 SELLER 티켓이라 BE 신규 발급 경로가
+# 없다(FE 는 기존 openSellerSession() 을 그대로 쓴다).
+
+
+def _iso_z(value: datetime | None) -> str | None:
+    """RFC3339 UTC(`Z`) 표기 — R-1·R-2 공통(확정 3).
+
+    S-4 `report` 이벤트의 `generatedAt` 은 KST(+09:00) 고정 계약이라 조립기 기본값을 바꿀 수
+    없다. 조회 API 는 표기를 하나로 통일하고 페이지가 KST 로 변환한다 — 서버가 타임존을
+    결정하지 않는 쪽이 정석이다.
+
+    ⚠️ FE `formatGeneratedAt()` 은 문자열 앞부분을 잘라 쓰므로 `Z` 를 그대로 넘기면 9시간
+    어긋난 시각이 표시된다(밤 시간대는 날짜도 하루 달라진다). 페이지가 변환해서 넘긴다.
+    """
+    if value is None:
+        return None
+    return value.astimezone(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _report_context(identity: Identity) -> SellerContext:
+    """조회 API 용 신원 캐스팅 — 실패는 401 `INVALID_SELLER_IDENTITY`.
+
+    스트림 경로(`_seller_stream`)는 같은 실패를 error 이벤트로 봉투 종료한다. 조회 API 는
+    스트림이 아니므로 같은 어휘를 HTTP 상태로 낸다 — 500 으로 새어 나가면 "서버 장애"로
+    보여 토큰 발급 문제가 진단되지 않는다.
+    """
+    try:
+        return _seller_context(identity)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "code": "INVALID_SELLER_IDENTITY",
+                "message": "판매자 신원을 확인할 수 없습니다.",
+            },
+        ) from exc
+
+
+def _mask_deep(value: object, _depth: int = 0) -> object:
+    """중첩 구조의 모든 문자열에 조립기와 **같은 정제**를 건다.
+
+    `_report_payload` 는 자기가 만드는 필드(summary·body·findings·추천)에 이미
+    `mask_output` + `_strip_unsafe_multiline` 을 건다. R-2 가 그 위에 얹는 `segments`·
+    `holds` 는 조립기를 거치지 않는데, `llmLabel`·`llmDesc` 는 **LLM 이 쓴 문장**이라
+    같은 경계를 적용해야 한다 — 한 응답 안에서 어떤 필드는 정제되고 어떤 필드는 날것이면
+    그 틈이 곧 유출 경로다(customerLabel 재식별 금지 규약과 같은 맥락).
+    """
+    if _depth > 4:
+        return value
+    if isinstance(value, str):
+        return mask_output(_strip_unsafe_multiline(value))
+    if isinstance(value, dict):
+        return {k: _mask_deep(v, _depth + 1) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_mask_deep(v, _depth + 1) for v in value]
+    return value
+
+
+async def _no_report_reason(brand_id: int) -> str | None:
+    """목록이 비었을 때의 사유(결정 113). 판정 불가면 **추정하지 않고** None.
+
+    `not_registered`(대상 미등록 = 사고)와 `no_trigger`(이상 없음 = 정상)가 와이어에서 똑같이
+    `items: []` 로 보이면 운영 사고가 몇 주간 드러나지 않는다. 그래서 사유를 갈라 싣되,
+    근거가 없으면 "이상 없음"으로 단정하지 않는다 — 단정하면 "판정 보류 != 이상 없음"
+    불변 규약을 와이어에서 깨는 것이다.
+
+    `06_seller_analysis_ext.sql` 미적용 환경에서는 `last_run_at` 컬럼이 없어 조회가 예외로
+    끝난다. 그때 R-1 이 죽으면 안 되므로(이슈 명시 방어 조항) 삼키고 None 을 돌려준다.
+    """
+    try:
+        target = await analysis_store.get_target_status(brand_id)
+    except Exception:
+        logger.warning("seller_no_report_reason_unavailable brand=%s", brand_id, exc_info=True)
+        return None
+    if target is None:
+        return "not_registered"
+
+    ttl_days = get_settings().seller_analysis_target_ttl_days
+    age_days = (datetime.now(UTC) - target.last_seen_at).days
+    if age_days > ttl_days:
+        # R-1 경로에서는 사실상 도달하지 않는다 — 호출 자체가 touch_target 으로
+        # last_seen_at 을 갱신하기 때문이다(그래서 이 판정을 훅보다 **먼저** 한다).
+        # 어휘를 남겨 두는 이유는 무인 배치 쪽 진단이 같은 값을 쓰기 때문이다.
+        return "inactive"
+    if target.last_run_at is None:
+        # 등록됐으나 배치 미실행 — 사고가 아니라 정상 대기다(확정 2).
+        return "pending_first_run"
+    if target.last_skip_reason in ("no_trigger", "no_baseline"):
+        return target.last_skip_reason
+    return None
+
+
+@router.get("/seller/reports", response_model=SellerReportListResponse)
+async def seller_reports(
+    identity: Identity = Depends(require_seller),
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    unread_only: bool = Query(default=False, alias="unreadOnly"),
+) -> SellerReportListResponse:
+    """R-1 — 판매자 분석 보고서 목록.
+
+    범위를 벗어난 `limit`/`offset` 은 FastAPI 검증이 잡고 `core.errors` 핸들러가
+    400 `BAD_REQUEST` 봉투로 바꾼다(422 가 나가지 않는다).
+    """
+    context = _report_context(identity)
+    brand_id = context.brand_id
+
+    reports = await analysis_store.list_reports(
+        brand_id, limit=limit, offset=offset, unread_only=unread_only
+    )
+    total = await analysis_store.count_reports(brand_id, unread_only=unread_only)
+    unread = await analysis_store.count_unread_reports(brand_id)
+    counts = await analysis_store.count_recommendations_by_reports(
+        [r.id for r in reports], brand_id=brand_id
+    )
+    # 사유 판정을 훅보다 먼저 한다 — note_seller_seen 이 last_seen_at 을 갱신하므로
+    # 순서가 뒤바뀌면 inactive 가 영원히 안 나온다.
+    reason = await _no_report_reason(brand_id) if not reports else None
+
+    # 이슈 3 잔여분 — #585 는 _seller_stream() 진입부에만 훅을 걸었다. 채팅은 안 쓰고
+    # 보고서만 보는 판매자가 TTL 로 무인 순회 대상에서 탈락하는 것을 막는다.
+    # fire-and-forget + 하루 1회 캐시라 목록 응답을 지연시키지 않는다.
+    note_seller_seen(context)
+
+    return SellerReportListResponse(
+        total=total,
+        unread_count=unread,
+        no_report_reason=reason,
+        items=[
+            SellerReportListItem(
+                report_id=str(r.id),
+                trigger_type=r.trigger_type,
+                period_from=r.period_from,
+                period_to=r.period_to,
+                title=r.title,
+                summary=r.summary,
+                recommendation_count=counts.get(r.id, 0),
+                has_holds=bool(r.holds),
+                created_at=_iso_z(r.created_at) or "",
+                read_at=_iso_z(r.read_at),
+            )
+            for r in reports
+        ],
+    )
+
+
+@router.get("/seller/reports/{report_id}")
+async def seller_report_detail(
+    report_id: str,
+    identity: Identity = Depends(require_seller),
+) -> dict:
+    """R-2 — 판매자 분석 보고서 상세.
+
+    본문은 `_report_payload()` 가 조립한다 — S-4 `report` 이벤트와 **같은 조립기**라
+    FE `AnalysisReport.tsx` 를 무수정으로 재사용하고, 채팅 패널과 보고서 페이지가 구조적으로
+    어긋날 수 없다. 여기서는 그 위에 보고서 전용 필드만 얹는다.
+
+    응답 모델을 두지 않은 이유는 `schemas/seller_report.py` docstring 참조 — 같은 계약을
+    두 곳에 선언하면 한쪽만 고쳐지는 순간 두 화면이 갈린다.
+    """
+    brand_id = _report_context(identity).brand_id
+    try:
+        report_uuid = UUID(report_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": "BAD_REQUEST", "message": "reportId 형식이 올바르지 않습니다."},
+        ) from exc
+
+    report = await analysis_store.get_report(report_uuid, brand_id=brand_id)
+    if report is None:
+        # 남의 브랜드 보고서도 같은 404 다 — 존재 여부를 구분해 알려주면 id 열거가 된다.
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "REPORT_NOT_FOUND", "message": "보고서를 찾을 수 없습니다."},
+        )
+    # 저장 계층이 ORDER BY rank 로 주지만 명시해 둔다 — 이 순서가 화면의 "N번"이고,
+    # 어긋나면 "N번 적용해줘"가 다른 추천을 조용히 적용한다.
+    recs = sorted(
+        await analysis_store.list_recommendations_by_report(report_uuid, brand_id=brand_id),
+        key=lambda r: r.rank,
+    )
+
+    payload = _report_payload(
+        report_view.record_to_pipeline_result(report, recs),
+        title=report.title,
+    )
+    # 확정 3 — 조회 API 는 Z 표기로 통일한다(S-4 는 KST 고정이라 조립기를 못 바꾼다).
+    payload["generatedAt"] = _iso_z(report.created_at)
+
+    # limitations 는 조립기가 findings(evidence 빈 것)에서 뽑는다 — 무인 파이프라인의 판정
+    # 보류는 finding 이 아니라 holds 에 쌓이므로 여기서 덧붙인다. 보류를 화면에서 지우면
+    # "판정 보류 != 이상 없음" 불변 규약이 와이어에서 깨진다.
+    payload["limitations"] = [
+        *payload.get("limitations", []),
+        *(mask_output(_strip_unsafe(h)) for h in report_view.holds_to_limitations(report.holds)),
+    ]
+
+    # 추천 — 조립기가 만든 항목(index·title·expectedEffect·actionType·productId)에 저장 측
+    # 필드를 덧댄다. index 는 조립기의 목록 순서(1-base)이고 rank 는 저장값인데, 두 값이
+    # 어긋나면 "N번 적용해줘"가 다른 추천을 적용한다 — record_to_pipeline_result 가 rank 로
+    # 정렬해 넘기므로 zip 이 성립한다.
+    for item, rec in zip(payload.get("recommendations", []), recs, strict=False):
+        item.update(
+            {
+                "rank": rec.rank,
+                "targetKind": rec.target_kind,
+                "segmentLabel": rec.segment_label,
+                "productIds": list(rec.product_ids),
+                "rationale": rec.rationale,
+                "effectivenessScore": rec.effectiveness_score,
+                "status": rec.status,
+                "appliedAt": _iso_z(rec.applied_at),
+            }
+        )
+
+    payload.update(
+        {
+            "reportId": str(report.id),
+            "triggerType": report.trigger_type,
+            "comparedPeriod": (
+                {
+                    "from": report.compared_from.isoformat(),
+                    "to": report.compared_to.isoformat(),
+                }
+                if report.compared_from and report.compared_to
+                else None
+            ),
+            # ── 명세 별칭(확정 4) ────────────────────────────────────────
+            # 이슈 #599·`01-ARCHITECTURE.md` §3 은 `reportMd`·`periodFrom/To`·
+            # `comparedFrom/To`(평면)로 적혀 있고, FE `SellerReport` 는 `body`·
+            # `period{from,to}`·`comparedPeriod{from,to}`(중첩)로 읽는다. 한쪽만 실으면
+            # 명세를 어기거나 FE 를 고쳐야 하므로 **둘 다 싣는다** — 추천의
+            # `index`/`rank` 와 같은 방침이다.
+            #
+            # `reportMd` 는 원본 컬럼이 아니라 `payload["body"]` 를 쓴다. 조립기가
+            # mask_output + _strip_unsafe_multiline 을 적용한 값이라, 원본을 그대로
+            # 실으면 같은 본문의 두 필드가 **마스킹 여부만 다르게** 나간다.
+            "reportMd": payload.get("body", ""),
+            "periodFrom": report.period_from.isoformat(),
+            "periodTo": report.period_to.isoformat(),
+            "comparedFrom": (report.compared_from.isoformat() if report.compared_from else None),
+            "comparedTo": report.compared_to.isoformat() if report.compared_to else None,
+            # LLM 이 쓴 llmLabel·llmDesc 가 들어 있어 조립기와 같은 정제를 건다(_mask_deep).
+            "segments": _mask_deep(report_view.segments_to_wire(report.segments)),
+            "holds": _mask_deep(report.holds) if isinstance(report.holds, list) else [],
+            # 이번 조회로 각인되기 **직전** 값이다 — 방금 바뀐 값을 실으면 화면이
+            # "안 읽음 -> 읽음" 전환을 감지할 수 없다.
+            "readAt": _iso_z(report.read_at),
+        }
+    )
+
+    await analysis_store.mark_report_read(report_uuid, brand_id=brand_id)
+    return payload
