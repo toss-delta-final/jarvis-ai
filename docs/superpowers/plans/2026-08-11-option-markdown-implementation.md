@@ -32,14 +32,17 @@
 
 ---
 
-### Task 1: Lock the five Markdown outputs and preserved behavior in failing tests
+### Task 1: Implement the shared formatter through one complete RED→GREEN cycle
 
 **Files:**
 - Modify: `tests/unit/test_cart.py:13-19,196-224,3523-3734`
+- Modify: `app/agents/buyer/cart/graph.py:62-100,128-200`
 
 **Interfaces:**
-- Consumes: existing `CartOption`, `OptionHint`, `_options_text(options: list[CartOption]) -> str`, `stream_cart_add(...)`, `_run_add(...)`, `_collect(...)`, and the `app.agents.buyer.cart.graph` module object used to probe the missing helper at test runtime without breaking collection.
-- Produces: a required production interface `_numbered_option_rows(labels: Sequence[str]) -> str` and exact literal expectations for all five affected outputs.
+- Consumes: existing `CartOption`, `OptionHint`, `_option_label(option: CartOption) -> str`, `_strip_unsafe(text: str) -> str`, `_options_text(options: list[CartOption]) -> str`, `stream_cart_add(...)`, `_run_add(...)`, `_collect(...)`, already-filtered `Sequence[str]` labels, and the `app.agents.buyer.cart.graph` module object used to probe the missing helper at test runtime without breaking collection.
+- Produces: `_numbered_option_rows(labels: Sequence[str]) -> str`; exact literal expectations for all five affected outputs; `_options_text(options: list[CartOption]) -> str` retains its signature and empty fallback; `_options_prompt(lead: str, options: list[CartOption], tail: str = "") -> str` retains its signature.
+
+This combined task owns one complete RED→GREEN cycle and ends with one independently reviewable implementation commit containing both the failing-first tests and their minimal production implementation.
 
 - [ ] **Step 1: Import the graph module without importing the missing helper directly**
 
@@ -203,19 +206,7 @@ uv run pytest \
 
 Expected: collection succeeds and all 13 selected tests execute. The result is `12 failed, 1 passed`: `test_numbered_option_rows_bolds_complete_labels_in_order` fails at runtime with `AttributeError: module 'app.agents.buyer.cart.graph' has no attribute '_numbered_option_rows'`; the sanitizer test, all five literal output tests, and the adjacent formatting-preservation tests fail with old unnumbered/plain output versus the new `N. **label**` literal expectations; only `test_options_text_empty_list_falls_back_to_default_label` passes because `옵션` degradation is intentionally unchanged. This is the required RED observation. Stop and investigate if collection fails, the failure shape differs, or the command passes; do not add a production stub or edit `graph.py` until these expected failures have been observed.
 
----
-
-### Task 2: Implement the smallest shared completed-label formatter
-
-**Files:**
-- Modify: `app/agents/buyer/cart/graph.py:62-100,128-200`
-- Test: `tests/unit/test_cart.py:196-224,3523-3734`
-
-**Interfaces:**
-- Consumes: `_option_label(option: CartOption) -> str`, `_strip_unsafe(text: str) -> str`, and already-filtered `Sequence[str]` labels.
-- Produces: `_numbered_option_rows(labels: Sequence[str]) -> str`; `_options_text(options: list[CartOption]) -> str` retains its signature and empty fallback; `_options_prompt(lead: str, options: list[CartOption], tail: str = "") -> str` retains its signature.
-
-- [ ] **Step 1: Add the presentation-only helper beside `_option_label`**
+- [ ] **Step 6: Add the presentation-only helper beside `_option_label`**
 
 Insert after `_has_surcharge` and before `_options_text`:
 
@@ -227,7 +218,7 @@ def _numbered_option_rows(labels: Sequence[str]) -> str:
 
 This helper must remain presentation-only: do not call `_strip_unsafe`, inspect `CartOption`, reconstruct surcharge text, escape Markdown, filter labels, parse shopper input, or derive `optionId` inside it.
 
-- [ ] **Step 2: Route non-empty `_option_label` results through the helper without changing fallback behavior**
+- [ ] **Step 7: Route non-empty `_option_label` results through the helper without changing fallback behavior**
 
 Replace the final two lines of `_options_text` with:
 
@@ -238,7 +229,7 @@ Replace the final two lines of `_options_text` with:
 
 Keep `_options_text([]) == "옵션"`; `옵션` is degradation copy, not an actual selectable row.
 
-- [ ] **Step 3: Route sanitized hint names through the same helper and leave the summary outside it**
+- [ ] **Step 8: Route sanitized hint names through the same helper and leave the summary outside it**
 
 In `_cart_option_required_text`, replace only the `if names:` body at the empty-I-2 hint fallback with:
 
@@ -253,17 +244,17 @@ In `_cart_option_required_text`, replace only the `if names:` body at the empty-
 
 Do not move `_strip_unsafe`; `names` must still be sanitized and empty-filtered before numbering. Do not pass `외 N개` to `_numbered_option_rows`.
 
-- [ ] **Step 4: Update only directly stale formatter comments/docstrings**
+- [ ] **Step 9: Update only directly stale formatter comments/docstrings**
 
 Adjust `_options_text`, `_options_prompt`, and the hint-fallback comment to say that #570 established one-option-per-line and #582 adds one-based ordered rows with a complete bold label. Do not rewrite branch semantics or unrelated historical comments.
 
-- [ ] **Step 5: Run the same focused tests and verify GREEN**
+- [ ] **Step 10: Run the same focused tests and verify GREEN**
 
 Run the exact command from Task 1 Step 5.
 
 Expected: `13 passed`; every affected literal has unchanged lead/tail boundaries, the surcharge closes before `**`, sanitization precedes contiguous numbering, `외 2개` is plain, the raw `4. ` name remains unescaped inside the bold span, and `_options_text([])` remains exactly `옵션`.
 
-- [ ] **Step 6: Run the complete cart unit suite**
+- [ ] **Step 11: Run the complete cart unit suite**
 
 Run:
 
@@ -273,7 +264,7 @@ uv run pytest tests/unit/test_cart.py -q
 
 Expected: PASS with no failures. Any failure in pending-option parsing, autoselection, color narrowing, sold-out degradation, or state handling indicates scope leakage; fix the shared presentation wiring rather than changing those behaviors.
 
-- [ ] **Step 7: Commit the tested implementation with Lore trailers**
+- [ ] **Step 12: Commit the tested implementation with Lore trailers**
 
 Run:
 
@@ -294,7 +285,7 @@ Expected: one commit containing only `app/agents/buyer/cart/graph.py` and `tests
 
 ---
 
-### Task 3: Synchronize the API rendering contract and changelog
+### Task 2: Synchronize the API rendering contract and changelog
 
 **Files:**
 - Modify: `docs/api-spec.md:618-650,769,1931,2936`
@@ -370,7 +361,7 @@ Expected: one documentation commit containing only `docs/api-spec.md` and `CHANG
 
 ---
 
-### Task 4: Prove repository-wide completion and scope
+### Task 3: Prove repository-wide completion and scope
 
 **Files:**
 - Verify: `app/agents/buyer/cart/graph.py`
@@ -379,7 +370,7 @@ Expected: one documentation commit containing only `docs/api-spec.md` and `CHANG
 - Verify: `CHANGELOG.md`
 
 **Interfaces:**
-- Consumes: the implementation and documentation commits from Tasks 2 and 3.
+- Consumes: the implementation and documentation commits from Tasks 1 and 2.
 - Produces: fresh completion evidence for the exact five-path change and its excluded surfaces.
 
 - [ ] **Step 1: Run formatting and static lint checks on the touched Python files**
@@ -401,7 +392,7 @@ Run:
 uv run pytest -q
 ```
 
-Expected: PASS with zero failures. If environment-only integration prerequisites prevent completion, record the exact failing command/output and still require the focused cart suite from Task 2 to pass; do not claim the full suite passed.
+Expected: PASS with zero failures. If environment-only integration prerequisites prevent completion, record the exact failing command/output and still require the focused cart suite from Task 1 to pass; do not claim the full suite passed.
 
 - [ ] **Step 3: Inspect the final diff for the five-path and exclusion boundaries**
 
