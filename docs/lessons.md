@@ -13,6 +13,59 @@
 
 ---
 
+## [2026-08-10] 함수 시그니처 변경은 `grep -rn`으로 전체 저장소를 훑어야 한다 — `app/`·`tests/`만으로는 부족
+- 증상: #571 에서 `resolve_screen_reference()`에 기본값 없는 키워드 인자 4개를 추가한 뒤
+  `app/`·`tests/unit/`의 호출부는 전부 고쳤고 표적 테스트(`test_screen_context.py` 등)와
+  `ruff check`도 통과했는데, `uv run pytest`(전체)에서 `evals/intent_probe/runner.py`의
+  독립 호출부가 `TypeError: missing 4 required keyword-only arguments`로 깨졌다 — 그 파일은
+  `tests/unit/test_intent_probe_runner.py`·`test_intent_probe_cli.py`를 통해서만 간접 실행돼
+  표적 파일 단위 테스트로는 드러나지 않았다.
+- 원인: `app/`이 프로덕션 코드의 전부라고 가정하고 호출부 탐색을 그 디렉터리로 좁혔다. 이
+  저장소는 `evals/`(intent_probe·combo_matrix 러너) 아래에도 프로덕션 함수를 직접 import 해
+  같은 함수를 재현·측정하는 독립 호출부가 있고, 이 디렉터리는 커밋 워크플로의 "ruff format
+  대상 파일" 감각 밖에 있어 놓치기 쉽다.
+- 규칙: 공개 함수의 시그니처(특히 기본값 없는 인자 추가)를 바꾸면 커밋 전에 반드시
+  `grep -rn "함수이름(" --include='*.py' .`로 저장소 전체(app/·tests/·evals/·scripts/ 전부)를
+  훑어 호출부를 센 뒤, 그 개수만큼 고쳤는지 확인한다. `docs/lessons.md` 2026-08-10 「전체
+  pytest」 항목과 같은 교훈이지만 이번엔 "왜 전체를 돌려야 하는가"의 구체 사례 — 표적 테스트
+  통과는 "내가 아는 호출부는 안 깨졌다"만 증명하지 "모든 호출부"를 증명하지 않는다.
+- 관련: #571, `evals/intent_probe/runner.py::_resolve_screen`,
+  `evals/combo_matrix/runner.py::_warm_up_last_reco`(같은 PR에서 발견한 두 번째 회귀 —
+  `resolve_screen_reference`의 새 게이트가 웜업이 실은 다건 카드를 근칭 지시대명사의 "후보
+  다건 → 되물음" 규칙에 걸리게 해 `test_combo_matrix_eval.py` combo-0004·0059 가 깨졌다).
+
+## [2026-08-10] `uv run ruff format`(경로 없이)은 저장소 전체를 재포맷한다 — 바꾼 파일만 지정할 것
+- 증상: #434 라운드1 마무리에 `uv run ruff check --fix && uv run ruff format`(경로 없음)을
+  돌렸더니 32개 파일이 재포맷됐다 — 내가 손댄 건 8개뿐이었는데 `.github/scripts/`·
+  `data-analysis/`·`evals/`·`docs/research/` 등 전혀 무관한 파일까지 낡은 포맷 드리프트가
+  전부 정리돼 `git status`가 40개 파일 변경으로 부풀었다.
+- 원인: `ruff format`을 인자 없이 부르면 **프로젝트 전체**를 대상으로 잡는다. CLAUDE.md 의
+  커밋 워크플로 문구(`uv run ruff check --fix && uv run ruff format`)는 "커밋 전 린트
+  정리"라는 일반 규칙이라 경로를 명시하지 않는데, 이번처럼 다른 레인들이 아직 커밋하지 않은
+  포맷 드리프트가 저장소 여기저기 쌓여 있으면 그 명령이 전부 건드려 diff 를 오염시킨다.
+- 규칙: 작업 중간 점검이든 최종 검증이든 `ruff format`/`ruff check`는 **내가 이번 작업에서
+  실제로 바꾼 파일 경로를 지정해서** 돌린다(`uv run ruff format <path> <path> ...`). 돌린
+  뒤에는 `git status --porcelain`으로 의도한 파일 목록과 실제 변경 목록이 일치하는지 반드시
+  대조하고, 무관한 파일이 섞였으면 `git checkout -- <path>`로 되돌린 뒤 다시 확인한다.
+- 관련: #434 라운드1 최종 diff 정리(11개 파일로 스코프), `CLAUDE.md` 커밋 워크플로 2번 항목
+
+## [2026-08-10] 계약 값 표현을 바꾸면 그 값을 검증하는 **다른 파일의 테스트**부터 grep 한다
+- 증상: #434(칩 값당 분리, brand `value` 리스트→스칼라 정정)를 구현하며 `state.py`·
+  `test_condition_actions.py`·`test_fanout.py` 3파일을 계획대로 갱신했는데, 전체 스위트를
+  돌리자 `test_recommendation.py::test_general_reply_and_condition_chips_strip_unsafe_text`
+  가 `chips[1]["value"] == ["정상 브랜드"]`(구 리스트 계약)로 실패했다 — 이 파일은 "정제
+  (strip_unsafe)"를 검증하는 별도 관심사라 브랜드 칩 관련 파일 목록에서 빠져 있었다.
+- 원인: 표적 파일 3개(패킷이 명시한 `build_condition_chips`·요청 스키마·회귀 테스트 파일)만
+  갱신하고, "이 계약을 참조하는 모든 테스트"를 저장소 전체에서 grep 하지 않았다. 패킷이 짚어준
+  파일 목록은 **주 관심사** 기준이지, 그 계약 값을 부차적으로 검증하는 다른 파일까지 보장하지
+  않는다.
+- 규칙: 응답 필드의 **표현(shape)**을 바꾸는 작업(리스트→스칼라, 조인→분리 등)은 편집 전에
+  `grep -rn '"value"\] ==' tests/`처럼 그 필드의 assert 패턴으로 저장소 전체를 훑고, 편집 후
+  전체 스위트(`uv run pytest`, 표적 파일만 아님)로 마무리 확인한다. "패킷이 지목한 파일"과
+  "실제로 그 계약에 의존하는 파일"은 다를 수 있다.
+- 관련: `tests/unit/test_recommendation.py::test_general_reply_and_condition_chips_strip_unsafe_text`
+  · `app/agents/buyer/recommendation/state.py::build_condition_chips` · 이슈 #434
+
 ## [2026-08-11] 판정 라벨만 비교하는 회귀 테스트는 수치 드리프트를 통과시킨다
 - 증상: #361 착수 중 개인화 평가 baseline 이 **다른 케이스 집합을 설명하고 있는 것**을 발견했다.
   `run_manifest.datasetHash` 가 `d16eb0e9…`(dev 96건)인데 현행 골든셋은 `675520d9…`(109건)였고,
@@ -114,6 +167,66 @@
   있었다 — 계약이 정말 그 필드로 무언가를 가른다면 **읽는 코드가 있어야 한다.**
 - 관련: `SPEC-PROFILE-GRAPH-149` REQ-PGRAPH-021 · `docs/api-spec.md` §3.8 ·
   `app/agents/profile/graph_merge.py` · #360 코멘트(2026-08-10)
+
+---
+
+## [2026-08-10] baseline 계보를 timestamp 로 고르면 대조팔을 출고 수치로 인용한다
+- 증상: #139 문서 초안이 `intent_probe` 최신 baseline 을 `run.timestamp` 로 골라
+  `fast-2026-08-07-430-v6-merged-2`(2026-08-07T14:26:32Z)를 발표 인용 대상으로 삼았다. 그런데
+  출고판은 `…-v6-adopted-1`(13:28:00Z)·`…-v6-adopted-2`(13:46:06Z)로 **더 이른 시각**이었다.
+  수치도 다르다(`mainIntent` merged-2 238/240=0.9917 vs adopted-2 235/240=0.9792).
+- 원인: 같은 fixture(`intent-probe-anchors-b-v6`)·모델·앵커·N 으로 **두 팔을 나란히 돌린 대조
+  실험**이라 최신 timestamp 가 출고판을 뜻하지 않는다. `evals/intent_probe/README.md`의 "기준선"
+  절은 `merged-*`가 `#386`(PR #441) 병합 직후 판, `adopted-*`가 **출고판**이며 `_SYSTEM`이
+  10자만 다르다고 적어 두었지만, 초안은 디렉터리 목록의 시각만 보고 골랐다.
+- 규칙: **baseline 을 "최신 timestamp"로 고르지 마라. 하네스 README 에서 어느 계보가 출고판인지
+  먼저 확인하라.** 발표·리포트가 인용하는 수치는 출고판 계보여야 하고, 대조팔을 출고 수치로
+  쓰지 않는다. baseline 지정표를 만든다면 `계보(출고판/대조팔)` 열을 둔다.
+- 관련: `evals/intent_probe/README.md`(기준선 절) · `docs/specs/RELEASE-CLAIMS-139.md` §4
+  "최신 timestamp ≠ 출고판" 규칙·§2 C2 · 이슈 #139·#430·#386
+
+## [2026-08-10] before/after 를 한 파일에 담은 baseline 은 arm 이 어느 시점 동작인지부터 확인한다
+- 증상: #139 문서 초안이 `evals/personalization/baselines/live-v1` 의 `pairedVsGuest.clean_both`
+  nDCG@10 meanDelta **−0.2879316720443962**(CI95 [−0.4813819808647765, −0.11845955082203671],
+  0 을 배제)을 보고 "라이브에서 개인화가 품질을 **떨어뜨린다**"고 판단해, 개인화 관련 주장을
+  "반증됨"으로 분류할 뻔했다.
+- 원인: 그 baseline 은 **#119 수정 전후를 한 실행 안에 담은 회귀 자료**다. `clean_both`는
+  프로필이 decompose 하드 필터로 새던 **수정 전** 동작이고, 출고 설정은 `clean_rerank_only`
+  (`profile_injection_scope` 기본값)다. 출고 arm 수치는 meanDelta **−0.05644463392740816**로
+  CI95 **[−0.2021440745401869, 0.04957802400457049]** — **0 을 포함**(inconclusive)하고,
+  필터 유출(`axisLeakage`)은 29/31 → 1/31 로 줄어 있다. arm 이름을 동작 시점과 연결하지 않고
+  "가장 나쁜 숫자"를 대표값으로 읽은 것이 원인이다.
+- 규칙: **arm 이 여러 개인 baseline 은 각 arm 이 어느 시점·어느 설정의 동작인지부터 확정하고
+  인용하라.** `CHANGELOG`나 하네스 README 에 그 대응이 적혀 있는 경우가 많다. 특히 arm 이름에
+  `both`/`only`처럼 설정 스코프가 들어 있으면 현행 기본값이 무엇인지 `config`에서 확인한다.
+- 규칙(추가): **부호가 강한 수치를 근거로 주장을 뒤집기 전에 교차검증을 붙여라.** 이 건은
+  읽기 전용 검증자를 별도로 붙여 "반박해 보라"고 시켜서 잡았다. 혼자 읽고 결론냈으면 발표
+  자료에 정반대 주장이 들어갔을 것이다.
+- 관련: `evals/personalization/baselines/live-v1/comparison.json` · `CHANGELOG.md` #147 항목 ·
+  `docs/specs/RELEASE-CLAIMS-139.md` §2 C3·§3-2 · 이슈 #139·#119·#147
+
+---
+
+## [2026-08-10] 검증되지 않은 값을 "실측"이라고 적으면 다음 사람이 그것을 근거로 삼는다
+- 증상: #134 조사 중, `deploy.yml` 이 `TRUST_FORWARDED_FOR=true`·`FORWARDED_FOR_TRUSTED_HOPS=2`
+  를 무조건 주입하는 근거가 커밋 `44d74cef`(2026-08-06)의 "2026-08-06 실측: AI 는 nginx 를
+  거치지 않아 XFF 가 2개"라는 메시지뿐임을 발견했다. 그런데 AI 서버는 그 시점까지 XFF 를
+  로그로 남긴 적이 **한 번도 없었다** — "실측"이라 적힌 값은 실제로는 관측 경로가 없는
+  상태에서의 추정이었다. 운영은 2026-08-06 이후 4일간 근거 없는 홉 수를 신뢰해 왔고, 틀렸다면
+  IP 백스톱이 위조로 조용히 우회되는 상태였는데 아무도 몰랐다.
+- 원인: 커밋 메시지·주석의 "실측"이라는 단어는 다음 사람(운영자·리뷰어·다음 이슈 담당자)에게
+  "이미 검증됐으니 재검증 불필요"라는 신호를 준다. 그 단어를 적은 시점에 실제 관측 로그가
+  없었다면, 그 신호는 거짓이고 다음 사람은 거짓 근거 위에 결정을 쌓는다. 검증되지 않은 값에
+  확정적 어휘("실측", "확인됨")를 쓰는 것 자체가 관측 없이 신뢰를 만들어내는 행위다.
+- 규칙: 값을 관측 없이 추정했다면 "추정"·"가정"이라고 적고, 그 값을 검증할 관측 경로가
+  없다면 **그 관측 경로부터 만든다**(값을 하나 더 얹지 않는다). 확정적 어휘("실측"·"검증됨"·
+  "확인함")는 실제로 관측 로그·테스트·계측값을 가리킬 때만 쓴다. 리뷰에서 이런 단어를 보면
+  "무엇으로 관측했나"를 먼저 묻는다.
+- 관련: `app/core/client_ip.py`(`client_ip_probe` 진단 로그 — `cfMatchIndexFromRight` 로
+  실제 홉 위치를 관측), `.github/workflows/deploy.yml`(주석 정정), 이슈 #134, 커밋 `44d74cef`.
+
+---
+
 ## [2026-08-10] `make_interval(days => %s)` 는 실수(float) 보존기간 설정과 못 섞는다
 - 증상: 전사록 보존 스윕(#321) SQL 이 통합 테스트에서 `psycopg.errors.UndefinedFunction:
   function make_interval(days => double precision) does not exist` 로 죽었다.
@@ -132,6 +245,32 @@
 - 관련: `app/core/conversation.py::PgConversationStore.purge_expired_turns`,
   `tests/integration/test_pg_conversation_store.py`
 
+## [2026-08-10] 새 후처리가 **다른 하네스의 설계 전제**와 충돌해 43건이 깨졌다 — 전제를 읽고 그 하네스에서만 꺼라
+- 증상: #443 사전 기반 leg 보강(발화에서 카탈로그 카테고리명을 찾아 빈 `categoryQueries` 를
+  채운다)을 넣자 `.env` 없는 전체 스위트가 **43건** 깨졌다. 표적 테스트와 `ruff` 는 통과했고
+  워커 보고도 "지정 범위 통과"였다 — 전체 스위트를 직접 돌려서야 드러났다.
+- 원인은 셋이었고 성격이 전부 달랐다.
+  1. `Sample` dataclass 에 **기본값 없는** 필드를 더해 기존 생성자 호출 34곳이 깨졌다(그리고
+     기본값을 주자 이번엔 "non-default argument follows default argument" 로 순서가 걸렸다 —
+     진단 필드는 dataclass **끝**에 기본값과 함께 둔다).
+  2. `RouteDecision` 의 **드리프트 가드**(`test_route_decision_axes_are_all_classified`, 두 파일)가
+     "새 필드를 판정 축으로 분류하라"고 강제했다. 가드가 제 일을 한 것이라 **약화시키지 말고
+     분류**해야 한다 — 진단 플래그는 `no_effect` 이고, 보강의 실제 효과는 `category_queries`
+     (이미 blocking)가 계상한다는 사실을 주석으로 남겼다.
+  3. **다른 하네스의 설계 전제와 충돌**했다. `evals/combo_matrix` 는 "decompose 산출을 **고정
+     주입**해 축을 통제한다"가 설계 전제인데, 이 보강은 산출이 아니라 **발화**를 읽는다.
+     발화 생성기가 `case=1` 을 항상 `"무선 이어폰"` 으로 realize 하고 `이어폰` 이 카탈로그 사전에
+     있어서, 켜 두면 `category=absent` 로 통제한 축이 발화 쪽에서 되살아나 **축이 뜻을 잃는다**
+     (실측: combo-0062 가 `zero_result` → `stop`·상품 3건).
+- 규칙: **발화를 읽는 후처리를 넣을 때는 "산출을 고정 주입하는" 하네스를 먼저 찾아 전제 충돌을
+  확인하라.** 충돌하면 그 하네스에서만 끄고(전역 기본값은 유지) 왜 끄는지를 그 자리에 적는다 —
+  골든을 재생성해 통과시키면 축이 죽은 사실이 숨는다. 실제로 이번에도 `refresh-observed` 로
+  골든을 갱신하려다 멈췄고, 하네스에서 끄자 골든은 **원본 그대로가 정답**이 됐다.
+- 곁가지 하나: 그 `refresh-observed` 는 무관한 2행(`combo-0005`·`0010`)의 장바구니 응답까지
+  바꾸려 했다 — 워크트리 `.env` 가 로컬 BE 를 치면서 생긴 **환경 의존 값**이다. 골든 재생성 diff 는
+  "내 변경으로 설명되는 행만" 남기고 나머지는 되돌려야 한다.
+- 관련: #443 · #465 · `evals/combo_matrix/runner.py`(비활성 근거 주석) ·
+  `tests/unit/test_fanout.py`(#428 구제 경로의 남은 정의역)
 
 ## [2026-08-10] 초록불이 "잰다"는 뜻은 아니다 — 한 이슈에서 공허한 테스트를 세 번 만들었다
 - 증상: #359 작업 중 **새로 쓴 테스트가 통과했는데 아무것도 안 재는** 경우가 세 번 나왔다.
@@ -1184,7 +1323,39 @@
   직접 신호로 재계산, 라운드 9 리뷰 F25 로 `cart_intent.product_id` 대신 해소 결과 자체
   (`screen_resolved`)로 다시 교체) · `tests/unit/test_wishlist_remove_resolution.py` ·
   `tests/unit/test_screen_context.py`
+## [2026-08-08] 채택 근거로 인용할 산출물을 리포 밖(tmp)에 두면 잃는다
+- 증상: #443/#465 categoryQueries 후보(C5) 스크리닝(부분 셀 11개, `namedCategoryHasLeg` 46/48
+  로 관측)의 산출물을 리포 밖(스크래치패드/tmp)에 썼다. 그 뒤 런타임이 재시작되면서 스크리닝
+  산출물이 **전부 소실**됐고, 채택 판정을 다시 검증하려던 다음 라운드는 "46/48" 이라는 숫자를
+  런 보고에서 옮겨 적은 값으로만 인용할 수 있었다 — 산출물로 재검증할 방법이 없어졌다.
+- 원인: PR·README·주석이 인용하는 수치의 근거 파일이 커밋 대상이 아닌 곳(tmp)에만 있으면, 그
+  근거는 세션·런타임 생명주기에 종속된다. 최종 채택/기각 판정은 나중 세션이 이어받는 경우가
+  많은데, 그 세션은 tmp 를 볼 수 없다.
+- 규칙: **PR·README·주석이 인용할 산출물의 원본은 리포 안(또는 최소한 커밋되는 경로)에 둔다.**
+  스크리닝처럼 가벼운 중간 산출물이라도 그 수치가 최종 판정(채택/기각)의 근거로 쓰일 가능성이
+  있으면 tmp 에 두지 마라. tmp 에 둘 수밖에 없었다면, 그 수치를 인용하는 문서에 "산출물 미보존
+  — 재검증 불가" 를 명시해 없는 근거를 있는 것처럼 쓰지 않는다.
+- 관련: #443 · #465 · `evals/intent_probe/baselines/fast-2026-08-08-443-before-1/README.md` §5
 
+## [2026-08-08] 부분 셀 스크리닝의 이득이 전체 런에서 재현되지 않았다 — 채택은 전체 런 2회 + 사전 등록 문턱으로만
+- 증상: #443 categoryQueries 문면 후보(C5, "사용자가 말한 상품군은 넓어도 그대로 담으세요"
+  예시 한 줄)를 부분 셀(11개) 스크리닝으로 재니 `namedCategoryHasLeg` 46/48 로 강한 개선처럼
+  보였다. 같은 프롬프트(sha12 `6f64dcbd43d4`, `--dump-prompt` 로 대조 확인해 스크리닝과 채택
+  후보가 바이트 단위로 동일함을 확인했다)로 전체 런(N=8×6셀=48표본) 2회를 다시 재니 35·38/48
+  로 나와 사전 등록 문턱(after 두 런 모두 before 최댓값(36) 이상 + 평균 상승 ≥ +4/48)을
+  통과하지 못했다. 미변경 프롬프트(before, sha12 `865ed6fd771e`)조차 38·33·36·33 으로 흔들려
+  이 축의 런간 폭은 하네스 문서가 말하는 "축당 ±2"보다 훨씬 크다(≈5 이상).
+- 원인: **"출고물 == 측정물"을 확인했는데도 수치가 갈리는 것은 배선 사고가 아니라 분산이다.**
+  N=8×6셀(48표본)은 이 축의 런간 표준 편차(≈5/48 ≈ 10%p)에 비해 +2 크기의 효과를 노이즈와
+  가를 만큼 크지 않다. 부분 셀 스크리닝(11개)은 표본이 더 작아 분산이 더 크므로, 우연히 좋은
+  쪽으로 튄 값을 "채택 근거"로 오인하기 쉽다.
+- 규칙: 부분 런은 후보 **선별**(여러 문면 초안 중 유망한 것을 추리는 용도)에만 쓰고, **채택
+  판정은 반드시 전체 런 2회 + 사전 등록 문턱으로** 한다. 축의 런간 폭이 효과 크기와 비슷하거나
+  크면(이번처럼 ≈5 대 +2) `--n` 을 키운 전체 런을 추가로 돌려 신뢰구간을 좁히기 전에는 채택하지
+  않는다.
+- 관련: #443 · #465 · #463(반대 방향 비용 축) ·
+  `evals/intent_probe/baselines/fast-2026-08-08-443-before-1/README.md` §0 ·
+  `app/agents/buyer/recommendation/decompose.py` `_SYSTEM` 아래 기각 주석
 ## [2026-08-08] 낡은 코드 주석이 **회귀의 심각도 판단을 뒤집었다** — 심각도 근거는 주석이 아니라 정본에서 가져와라
 - 증상: #430 이 `screenExactPick` 회귀를 만났을 때, `decompose.py` 의 screen 절 주석
   ("FE 는 아직 screen 을 보내지 않으므로 그쪽이 절대다수 경로다")을 근거로 **"휴면 경로라 심각도가
@@ -4397,3 +4568,16 @@
 - 해소: 2026-07-22부터 외부 사본 의존을 폐기하고 **repo-local `docs/api-spec.md`를 정본으로 승격**했다.
 - 규칙: 계약 변경은 `docs/api-spec.md`를 먼저 개정하고 코드를 같은/후속 커밋에서 맞춘다. SPEC의 낡은 외부 계약 명명도 repo-local api-spec이 우선한다.
 - 관련: `docs/api-spec.md`, `docs/specs/`
+# #465: 사후 ablation의 한계와 파생식 결합
+
+- categoryQueries만 사후로 비우는 ablation은 `semantic_query_is_fallback` 파생식 결합을 보지 못해 "단독 차단 0건"이라는 오결론을 냈다. 하네스가 보는 형상과 코드가 실제로 재파생하는 상태를 구분하고, 억제형 변경은 발동률·보호 대상·해로운 발동을 산출물에 함께 남긴다.
+## [2026-08-10] 문면으로 못 고친 LLM 산출 결함은 정본 데이터 기반 결정론 후처리로 고친다
+- 증상: #443에서 모델은 상품군을 말한 첫 추천 발화에도 `categoryQueries`를 확률적으로 비웠다.
+  프롬프트 문면 7종은 최대 +7.3%p 개선을 위해 반대 축 −10.8%p를 지불해 채택할 수 없었다.
+- 원인: "상품군을 추출하라"는 지시의 준수 여부를 다시 모델에게 맡기면, 같은 모델 분산과
+  반대 방향의 조건 전용 발화 오염을 함께 감수한다.
+- 규칙: 판별자를 모델이 아니라 정본 데이터에서 가져올 수 있으면, 사전 기반 결정론 후처리를
+  우선 검토한다. `seller_categories.json`처럼 조건어를 구조적으로 포함하지 않는 닫힌 사전이면
+  condition_only 반대 방향 부작용은 측정상 우연히 0이 아니라 매칭 정의상 0이다.
+- 관련: #443 · `app/agents/buyer/recommendation/category_leg_injection.py` ·
+  `evals/intent_probe/baselines/fast-2026-08-10-443-{base-2,inject-1,inject-2}/`

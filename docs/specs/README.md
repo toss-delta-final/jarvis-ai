@@ -26,3 +26,16 @@ SPEC-SELLER-001 이 "무엇을 만들기로 했나"라면, 아래 4종은 **MVP(
 | [SMOKE-SELLER-41](SMOKE-SELLER-41.md) | v1.0.0 | 실 LLM 라우팅·SSE 수동 스모크 절차(`scripts/smoke_seller_chat.py`) |
 
 > 단계별 진행 기록(HANDOFF·REVIEW-STAGE·DESIGN·IMPL-PLAN·REALIGN)은 위 문서로 내용이 흡수되어 2026-07-22 에 삭제했다 — 필요하면 git 히스토리에서 복구한다.
+
+## 1차 완료(발표) 기준 — #139
+
+발표(2026-08-14)에서 증명할 핵심 주장 4개, claim-evidence matrix, release gate, 최종 산출물
+목록, 1차 완료 제외 범위를 고정한 결정 문서다. **[jarvis-ai#152](https://github.com/toss-delta-final/jarvis-ai/issues/152)·
+[jarvis-ai#153](https://github.com/toss-delta-final/jarvis-ai/issues/153)·
+[jarvis-ai#154](https://github.com/toss-delta-final/jarvis-ai/issues/154)에 착수하기 전 먼저
+읽을 것** — 어떤 주장을 무엇으로 증명하고, 어떤 baseline 이 출고판인지, 무엇을 증명하지
+못했는지가 여기에 있다.
+
+| 문서 | 버전 | 다루는 것 |
+|---|---|---|
+| [RELEASE-CLAIMS-139](RELEASE-CLAIMS-139.md) | v1.0.0 | 핵심 주장 4개(C1~C4)·claim-evidence matrix·negative result·baseline 식별 규칙·release gate·발표 산출물 목록·1차 완료 제외 범위 |

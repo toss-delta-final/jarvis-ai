@@ -1,0 +1,178 @@
+{
+  "commitSha": "55d93bdb5771d528a73882efe311cfec5d258163",
+  "dirty": true,
+  "hashes": {
+    "anchorFixture": "cdadb1cac1d88c7d6fa2904ca2f5c29065ad4c6663e47d46cd7b8be2ea384b8c",
+    "config": "d866c2dcf55b246d4ccc4308b4c1cdd12fcfe6b769d1b404b05fdf063362e939",
+    "datasetManifest": "6bc8e13f22aca475dde02f2062eb9270d6ac8abc3c47e90875e22c511567dfd9",
+    "fixtures": {
+      "catalog_snapshot.json": "f98539b2d8d2fea60c586cf31499ecf9187ae815d389dd3f1312f05f3fec840d",
+      "purchase_history.json": "d4203b8d31ef2bbc4c46d5bff6e1eb672c189ffc449299a898eaeb9adf687e3b",
+      "search_responses.json": "9b95d071e0075a8a976bdeabfe1dfc11bf2aa63ca31bc277afa3cc52baf13c1e"
+    },
+    "prompts": {
+      "decompose": "529fd4367e219fed338381ac909d67706bc27b0b642e1eb65fc7256465d70d78",
+      "rerank": "ae3b549237b354f718fc08966a383613e5fec8d200c8d07daed038cda552ea7c"
+    },
+    "systemPrompt": "865ed6fd771e18bbaa69c681a40ae8c39e71680cc111acc2754f3f1797be5928",
+    "underspecifiedProbeModules": {
+      "__init__.py": "52c881ade0772de0b1d0e81e3e419eb9e88a9d72c464696885b00d7ebb99c917",
+      "__main__.py": "f3540f645f9e59fd5826e9d1061c7c7ef72e6feecb8e13f8ea45e904c7ccfa40",
+      "cli.py": "b74940b780fd590e2738c82e7ba46ad31edae5c1c2cb0d151df8776e1417c0c3",
+      "fakes.py": "04f7fd899b3fa07ea45c401115ee18cfd8a5b0e2f442566587fc3d1044670c66",
+      "loader.py": "1fe5fe5d0eb15db49d976a607edcaa33ee1aa0070b140582a6620590116e3b72",
+      "manifest.py": "a656343ce56abf6fc6e44c2a11880e260fef7c5c040614b9af16cb15bb238cad",
+      "metrics.py": "f4ef7a8f82500075db216260c202379fe4f047d38fd58358629397e6d84877a2",
+      "report.py": "d51dc3f0749d2e9494d401f8f4ed5f3ebf2b459badcf86bb14f4f25ba543c7c5",
+      "runner.py": "d1062ecf64114b2dc4f4d53dd477956d31524802a4aeb7ca73552270422be69f",
+      "schema.py": "8bea82b73fb7b9839371788d14cc9ce816cca3318323d47ce4ff22e012dbdbb1"
+    },
+    "uvLock": "bc79d52c10d7cefba24d91d30408e0777ed75ae64d738e047d74bb325437ec9c"
+  },
+  "image": null,
+  "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+  "pythonVersion": "3.12.3",
+  "run": {
+    "command": "uv run python -m evals.underspecified_probe --out evals/underspecified_probe/baselines/fast-2026-08-08-465-before-1 --tier fast",
+    "runId": "4ac6b5bd-eb69-4b7f-8748-3952f76aae8d",
+    "timestamp": "2026-08-07T19:12:22.089092+00:00"
+  },
+  "seed": 20260806,
+  "underspecifiedProbe": {
+    "attemptMultiplier": 3,
+    "axisDefinitions": {
+      "expansionGateWouldFireRate": {
+        "denominator": "판정 True 인 recommend 표본(F-1)",
+        "numerator": "detect_expansion_need(...) 가 사유를 돌려준 표본"
+      },
+      "falseAlarmRate": {
+        "denominator": "expectedReask=false 앵커의 recommend 표본(multiturn_gate 슬라이스 제외)(F-1)",
+        "numerator": "판정 True"
+      },
+      "falseAlarmRateWithGateSlice": {
+        "denominator": "expectedReask=false 앵커의 recommend 표본(게이트 포함)(F-1)",
+        "numerator": "판정 True"
+      },
+      "falseAlarmRateWithNonRecommendIntent": {
+        "denominator": "expectedReask=false 표본(intent 무관, multiturn_gate 제외, 포함판)",
+        "numerator": "판정 True"
+      },
+      "flagOffInvariant": {
+        "denominator": "전 표본(intent 무관 — 판정 함수 게이트 자체를 보는 불변식, F-1)",
+        "numerator": "underspecified_reask_enabled=False 로 재판정했을 때 True 인 표본 수"
+      },
+      "judgmentAccuracy": {
+        "denominator": "recommend 표본(게이트 제외)(F-1)",
+        "numerator": "판정 == expectedReask"
+      },
+      "judgmentAccuracyWithGateSlice": {
+        "denominator": "recommend 표본(게이트 포함)(F-1)",
+        "numerator": "판정 == expectedReask"
+      },
+      "missRate": {
+        "denominator": "expectedReask=true 앵커의 recommend 표본 — 프로덕션은 intent==recommend 인 턴에서만 is_underspecified_turn 을 호출한다(F-1)",
+        "numerator": "판정 False"
+      },
+      "missRateUnderExpansionAssumption": {
+        "denominator": "expectedReask=true 앵커의 recommend 표본(F-1)",
+        "numerator": "(판정 False) 또는 (판정 True ∧ detect_expansion_need 가 사유를 돌려줌)"
+      },
+      "missRateWithNonRecommendIntent": {
+        "denominator": "expectedReask=true 앵커의 표본 전부(intent 무관, 포함판)",
+        "numerator": "판정 False"
+      },
+      "priorGateInvariant": {
+        "denominator": "전 표본(intent 무관 — 판정 함수 게이트 자체를 보는 불변식, F-1)",
+        "numerator": "prior=ProductSearchFilters() 로 재판정했을 때 True 인 표본 수"
+      }
+    },
+    "budget": {
+      "budgetExceeded": false,
+      "budgetExceededReason": null,
+      "callCount": 240,
+      "costGateStatus": "unknown",
+      "limits": {
+        "maxCalls": 720,
+        "maxCostUsd": 5.0,
+        "maxTotalTokens": 30000000
+      },
+      "tokenGateStatus": "unknown",
+      "totalCostUsd": 0.05703695000000003,
+      "totalTokens": 877609,
+      "unknownCostCallCount": 26,
+      "unknownTokenCallCount": 26
+    },
+    "categoryFanoutMax": 5,
+    "cellIds": [
+      "buy-under-0001",
+      "buy-under-0002",
+      "buy-under-0003",
+      "buy-under-0004",
+      "buy-under-0005",
+      "buy-under-0006",
+      "buy-under-0007",
+      "under-br-0001",
+      "under-br-0002",
+      "under-br-0003",
+      "under-br-0004",
+      "under-cbs-0001",
+      "under-cbs-0002",
+      "under-cbs-0003",
+      "under-cp-0001",
+      "under-cp-0002",
+      "under-cp-0003",
+      "under-cp-0004",
+      "under-mg-0001",
+      "under-mg-0002",
+      "under-nc-0001",
+      "under-nc-0002",
+      "under-nc-0003",
+      "under-nc-0004",
+      "under-wa-0001",
+      "under-wa-0002",
+      "under-wa-0003",
+      "under-wa-0004",
+      "under-wa-0005",
+      "under-wa-0006"
+    ],
+    "concurrency": 4,
+    "dryRun": false,
+    "fixtureName": "anchors.json",
+    "fixtureVersion": "underspec-anchors-v1",
+    "judgment": {
+      "underspecifiedReaskEnabled": true
+    },
+    "measurementScope": "decompose 직후·판정(is_underspecified_turn) 직전의 RouteDecision 만 잰다 — 카테고리 매핑(#331)과 needs_expansion(#217) 의 전개 LLM 생성은 부르지 않는다. 다만 게이트 판정 함수 detect_expansion_need 자체는 진단 목적으로 매 표본 부른다(expansionGateWouldFireRate·missRateUnderExpansionAssumption 의 근거). category_legs 는 항상 비고, filters.category 는 decompose JSON 스키마에 키가 없어 구조적으로 항상 빈다. 프로덕션은 intent==recommend 인 턴에서만 판정을 호출하므로 confirmatory 축은 recommend 표본으로 좁힌다(F-1, nonRecommendIntentCount 참조). 단일 턴만 잰다(컨텍스트 행렬 없음).",
+    "modelConfig": {
+      "fastModel": "gpt-5-nano",
+      "fastReasoningEffort": "minimal",
+      "maxRetries": 0,
+      "provider": "openai",
+      "smartModel": "gpt-5.6-luna",
+      "smartReasoningEffort": "medium",
+      "timeoutS": 30.0
+    },
+    "n": 8,
+    "notGoldenset": "이건 골든셋이 아니다 — 추천 품질이 아니라 첫 턴 과소지정 판정의 실 LLM 반복 분포다. #372 의 되물음 답변 턴 결정론 fixture 실측과 숫자를 섞지 말 것.",
+    "pacer": {
+      "acquireCount": 240,
+      "estimatedTokensPerCall": 3900,
+      "maxRpm": 45,
+      "maxTpm": 200000,
+      "maxWaitS": 36.835,
+      "totalWaitS": 200.946,
+      "waitCount": 81,
+      "windowS": 60.0
+    },
+    "prompt": {
+      "charCount": 7838,
+      "sha12": "865ed6fd771e",
+      "sha256": "865ed6fd771e18bbaa69c681a40ae8c39e71680cc111acc2754f3f1797be5928",
+      "source": "repo:_SYSTEM"
+    },
+    "repurchaseMax": 5,
+    "seedScope": "셀 순서에만 쓴다. provider 샘플링 seed 는 강제할 수 없다.",
+    "singleRunNotAVerdict": "단일 실행은 채택 판정이 아니다 — 독립 2~3회 분포로 판정한다. 이 실측은 underspecified_reask_enabled 기본값을 전환하지 않는다.",
+    "tier": "fast"
+  }
+}

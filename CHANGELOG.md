@@ -1,5 +1,7 @@
 # Changelog
 
+- **#465 category leg head 억제 기본 활성화** — 조건 전용 총칭 leg만 후처리로 제거한다(LLM 호출 0). 보호 대상 오발동 0건·조건 누출 런당 2건 제거를 근거로 기본 on 했으며, primary missRate는 병합 후 표적이 작아 개선되지 않았다.
+
 이 프로젝트의 주요 변경을 기록한다. 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/),
 버전은 [Semantic Versioning](https://semver.org/lang/ko/)을 따른다.
 
@@ -8,6 +10,120 @@
 계약(api-spec) 변경을 수반하면 `(api-spec §, vX.Y)`를 함께 적는다.
 
 ## [Unreleased]
+
+### Added
+- **#153 — buyer-only blind pairwise 사람 평가 패키지** (`evals/blind_pairwise/`)를 추가했다.
+  수집 전 고정된 seed A/B 배정, 비식별 raw response schema, tie/abstain 보존, rubric별 ordinal
+  분포, 분모가 명시된 Wilson 95% interval, Krippendorff alpha, 선택적 LLM judge 비교와
+  재현 가능한 artifact 분석을 제공한다. evaluator별 blind presentation 분리, pair-input/
+  preregistration hash provenance, constrained A/B balance와 엄격한 3-of-3 coverage gate를
+  포함한다. 실제 human response는 포함하지 않으며 결과는 exploratory로만 해석한다.
+
+### Changed
+- **#570 — 장바구니 옵션 되물음 나열을 `" / "` 이어붙이기에서 옵션 하나가 한 줄을 온전히
+  차지하는 줄바꿈 나열로 바꿨다** (api-spec §3.1, v0.32.17). 되물음 문구는 #118·#455 이후
+  "한 글자도 바꾸지 않는다"를 지켜 왔는데, 이번은 그 규약을 실측 근거로 의도적으로 푸는
+  결정이다 — 로컬 카탈로그 21,373개 옵션명 중 11,480개(53.7%, 2026-08-10 실측)가 `/` 를
+  포함해, 옵션 두 개(`블랙 / M`, `화이트 / M`)가 `블랙 / M / 화이트 / M` 으로 붙어 사용자에게
+  네 개처럼 읽혔다. `_options_text`(`app/agents/buyer/cart/graph.py`)의 구분자를 `"\n"` 으로
+  바꾸고, 옵션 줄에는 구두점을 붙이지 않는 조립 헬퍼 `_options_prompt` 를 신설해 #455 조건
+  좁힘·#454 색상 미충족 고지·기본 되물음·`CART_OPTION_INVALID` 재질문 네 경로와 I-1 힌트 이름
+  폴백까지 다섯 갈래를 전부 옮겼다. **하이픈(`- `) 불릿은 이번 PR 에서 붙이지 않는다** — FE
+  마크다운 파서가 아직 배포 전이라 하이픈이 평문으로 그대로 노출되며, 파서 도착 후 별도
+  한 줄 변경으로 미룬다. api-spec §3.1 `token` 에 FE 가 렌더링하는 4종 마크다운 문법(`\n`·
+  `- `·`1. `·`**강조**`)과 안전성 근거(원시 HTML 미해석, 제3자 입력 미보장)를 계약으로 명시했고,
+  구매자 LLM 이 쓰는 두 필드(`rerank.overallComment`·`decompose.reply`)의 시스템 프롬프트에
+  마크다운 금지 규칙을 한 줄씩 추가했다(기존 `_strip_unsafe` 공백 접기가 개행·표·코드펜스를
+  구조적으로 못 서게 하는 성질은 그대로 유지, 새 sanitizer 없음).
+- **#434 — `conditions` 칩·`conditionActions` 를 멀티 값 축(`category`·`brand`) 값당 1개로
+  분리하고, 값 지정 category 제거가 실제로 남은 카테고리 집합으로 재검색되게 했다**
+  (api-spec §3.1, v0.32.14). 종전에는 멀티 카테고리/브랜드를 칩 1개에 조인 문자열로 뭉쳐 "그
+  값만" 제거할 수 없었다. `build_condition_chips` 가 값마다 칩을 내고(`(field, value)` 기준
+  순서 보존 dedup), `conditionActions[].value`(선택, 스칼라)를 신설해 그 값만 지목한 제거를
+  지원한다 — **와이어 계약 추가 전용**이라 `value` 를 안 보내는 기존 FE 는 종전 동작과 100%
+  동일하다. `value` 없음은 여전히 그 field 전체 제거(하위호환)이다.
+  `brand` 는 실제 리스트라 값 지정 제거가 즉시 동작했지만, `category` 는 멀티턴 승계 상태
+  (`ProductSearchFilters.category`)에 대표 1개만 남아 값 지정 제거가 대표값 일치 판정만 하는
+  **관대 무시(no-op)** 였다 — 이슈 헤드라인인 카테고리 칩에서 기능의 절반이 비어 있었다.
+  `ThreadFilterStore` 에 이 스레드가 실제로 검색한 카테고리 집합을 담는 키(`chip_categories`)
+  를 신설해 매 추천 턴마다 무조건 덮어쓰고, 값 지정 category 제거 턴에는 그 집합에서 지목
+  값만 뺀 나머지로 재검색·재승계한다(다음 일반 리파인 턴부터는 종전처럼 대표 1개 승계로
+  되돌아간다 — 일반 승계 동작은 바뀌지 않았다). 저장 집합을 못 읽는 스레드(만료·구 스레드)는
+  대표값 일치 판정으로 강등한다. 복원 턴이 `case==3` 우연 일치로 `split_by_need`(니즈별 목록
+  분할)를 열지 않도록 `RouteDecision.category_legs_restored` 가드를 추가했다. 부수로 **`brand`
+  칩 `value` 가 리스트→스칼라로 정정**됐다(단일 값이어도) — §3.1 예시가 원래 스칼라를 명시했던
+  드리프트 해소로 FE 가시 변경이다. 호출부 로그(`condition_actions_applied`, #442)에
+  `changed_fields`(None 이 안 되는 브랜드 부분 제거 포함)·`unmatched_values`(관대 무시 건수,
+  값 자체는 미기록)를 추가하고 `no_op` 판정을 `changed_fields` 기준으로 바꿨다. 대표 카테고리가
+  안 바뀌는 복원(A·B·C 중 비대표 값 지목 제거)은 `changed_fields` 만으로는 `no_op: true`로
+  찍혀 무동작과 구분이 안 됐는데(#442 재발 형태), `category_legs_restored`(bool) 를 실제 복원
+  결과 기준으로 추가하고 `no_op` 판정에도 반영했다.
+
+### Fixed
+- **#571 — 추천 카드(CH-5)만 뜬 턴에는 화면 지시어 해소기가 아예 호출되지 않던 결함을 고쳤다**
+  (api-spec §3.1, v0.32.16). `app/agents/buyer/graph.py` 의 게이트가
+  `screen is not None and screen.products and screen_context_active` 였는데, 추천 카드는
+  계약상 `screen.products` 에 실리지 않아(위조 경로 방지) "이거 담아줘"(후보 다건)·순번·
+  목록 밖 id 같은 결정적으로 풀리는 입력이 전부 LLM 산출에 맡겨지고 있었다(실측 8/8·6/8
+  오담기 — screen_reference.py 모듈 docstring 실패 로그 표 F-17). 서버는 이미 `last_reco` 로
+  그 턴 카드 목록을 노출 순서대로 쥐고 있어, `screen.products` 가 없고 추천 카드
+  (`last_reco[:turn_count]`)가 있는 턴에도 해소기를 돌리도록 게이트를 넓혔다. 순번 규칙은
+  "표시 순서 = 저장 순서"가 증명될 때만(그 턴 push 가 목록 1개였을 때) 여는데,
+  `RecommendationListEntry` 의 `ranked_ids` 는 BUY_ALL(세트 간 dedup)·다목록 PICK_ONE(전역
+  순번 미정의)에서 배열과 어긋날 수 있어(F-18), `LastReco` 에 새 필드 `ordinal_span`(스레드
+  상태값, config 아님)을 추가해 그 증명 여부를 실어 나른다 — 증명 실패 시 LLM 양보가 아니라
+  강제 되물음이다(오담기가 되물음보다 비싸다는 이 모듈의 비대칭). 이름 지목도 추천 표면에서는
+  배열이 곧 이름 출처라 결정적으로 확정할 수 있어, 후보 정확히 1건 + 부정 표지 없음일 때만
+  코드가 확정하는 규칙(N)을 신설했다(F-19, 부정 판정은 `cart/negation.py::has_any_negation`
+  재사용). `screen_reference_attempted` 도 추천 표면으로 넓혀, 추천 카드 참조 시도가 찜 해제
+  규칙 3(목록 1건 자동 삭제)을 화면 표면과 동일하게 차단하게 했다(#440 F27·F29 와 같은 클래스의
+  파괴적 동작 재발 방지). 화면 표면(`screen.products`) 동작은 한 줄도 바뀌지 않았다 — 화면이
+  있으면 그 표면이 항상 추천 카드보다 우선한다.
+- **#134 — Cloudflare 뒤에서 레이트 리밋 IP 백스톱이 근거 없는 홉 수를 신뢰하던 결함을,
+  "배포된 상태가 스스로 진위를 증명"하는 구조로 고쳤다.** 이슈 본문의 전제(cloudflared
+  터널 뒤 `127.0.0.1`)는 2026-08-10 인프라 실측으로 낡았다 — 터널은 이미 제거됐고 경로는
+  Cloudflare 엣지 → ALB → AI EC2 하나뿐이며 오리진은 잠겨 있다(80/443 미개방, ALB 는
+  Cloudflare IPv4 15개 대역에서만 수신). 대신 진짜 위험이 드러났다: `deploy.yml` 이
+  `TRUST_FORWARDED_FOR`/`FORWARDED_FOR_TRUSTED_HOPS` 변수 참조(`${{ vars.… }}`)를 무조건
+  주입하며 값은 조직(Organization) Variables 로 관리된다(커밋 `44d74cef` 기준 `true`/`2` —
+  조직 변수는 권한상 이 작업에서 직접 확인하지 못했다). 그 근거("2026-08-06 실측")는 AI 가
+  그때까지 XFF 를 로그로 남긴 적이 없어 **관측된 적 없는 값**이었다 — 틀렸다면 IP 백스톱이
+  위조로 조용히 우회되는 상태였다. 신설 `app/core/client_ip.py` 가
+  클라이언트 IP 판별 우선순위(`Cf-Connecting-IP`[홉 수 개념 없는 단일 값] →
+  `X-Forwarded-For` 우측 신뢰 홉 → TCP peer)를 한 곳에 모으고, 레이트 리밋 대상 경로마다
+  `client_ip_probe` 진단 로그 1건을 낸다(원문 IP 없이 `safe_fingerprint` 만, 기본 on) —
+  핵심 필드 `cfMatchIndexFromRight`(CF 값과 일치하는 XFF 원소의 우측 1-based 위치)를 보면
+  운영 로그 한 줄만으로 `FORWARDED_FOR_TRUSTED_HOPS` 가 맞는지 확인할 수 있고,
+  `hopMismatch=true` 는 즉시 오설정 신호다. 프록시가 XFF 를 append 대신 헤더를 한 줄 더
+  추가하는 경우(`headers.getlist`)도 도착 순서대로 결합해 처리한다. 새 설정 2개
+  (`client_ip_probe_enabled` 기본 on, `trusted_client_ip_header` 기본 `cf-connecting-ip`)는
+  둘 다 기본값이 곧 운영 동작이라 `deploy.yml` 배선이 필요 없다. 부수적으로, `deploy.yml`
+  이 이 경로의 두 필드(`trust_forwarded_for`/`forwarded_for_trusted_hops`)를 무조건
+  주입하는데 빈 문자열 관용 validator 가 없어 조직 Variable 미등록·삭제 시
+  `ValidationError: bool_parsing` 으로 **전체 서비스 기동 크래시 루프**에 빠지는 잠재 사고를
+  발견해 `_empty_trace_content_settings_use_default`(#326) 관례대로 같이 막았다(폴백은
+  신뢰 off/hops=1 — 조용한 저하지만 서비스 정지보다는 낫다). 계약(api-spec) 불변 — 로그·설정
+  전용 변경이다.
+
+### Docs
+- **#139 — 1차 완료(발표) 핵심 주장 4개와 claim-evidence matrix를 확정했다.** 발표(2026-08-14)가
+  나흘 남은 시점에 `evals/` 17개 하네스에 이미 쌓인 baseline 을 엮어, 새 실행 없이 무엇을
+  증명하는지 고정했다. **C1**(에이전트 경로가 no-op 대비 nDCG@10 유의 개선,
+  paired bootstrap 95% CI 하한 +0.0632) · **C2**(컨텍스트가 있어도 의도 라우팅이 흔들리지
+  않고 화면 밖 상품을 확정하지 않음, 출고판 `mainIntent` 0.979~0.983·`screenNoHallucination`
+  1.0) · **C3**(개인화는 후보를 줄이지 않고 순서에만 반영, 하드 제약 위반 0 + #119 전후 라이브
+  필터 유출 29/31건→1/31건) · **C4**(지연·비용 공개 가능, staging 실측 전까지 `pending(#152)`)
+  4개를 채택하고, 개인화 품질 향상 주장과 파이프라인 vs 단일 LLM 우위 주장은 라이브/최신
+  골든셋에서 `inconclusive`라 정직한 negative result 로 돌려 부록에 세웠다(필요 N 재산정
+  ≈176 paired cases 포함). 판매자 품질은 전용 하네스 부재(`SELLER-FINAL-RISKS` V1
+  "provider별 실 LLM 검증 0회")를 근거로 1차 주장에서 제외했다. `evals/README.md`(#328) 8항
+  인용 규율(datasetHash 세대 혼동 금지·로컬↔운영 비혼동)을 재확인하고, `intent_probe`의
+  출고판이 `adopted-*`이지 최신 timestamp인 `merged-*`가 아니라는 함정을 baseline 지정표로
+  고정했다. release gate(G0~G4)·run manifest 필수 6항·발표 산출물 9종·P0 재검토(열린 post-mvp
+  24건 전수 판정 — #152·#154·#139만 P0 유지)를 함께 정했다. §13 에는 과정 배포 자료(「LLM Agent 프로젝트
+  가이드 v2」)의 평가 항목(기획·협업·기술난이도·완성도·발표전달력)을 이 문서의 claim·산출물에
+  연결하는 대조표도 뒀다. 계약(api-spec) 변경 없음.
+  (`docs/specs/RELEASE-CLAIMS-139.md` v1.0.0, `docs/specs/README.md` 색인)
 
 ### Security
 - **#321 — "기억해" 원문의 하드 PII(전화번호·주민번호·카드번호·계좌번호·이메일·시크릿 토큰)가
@@ -46,9 +162,51 @@
   §3.9.4 OPEN-P5 서술 사본 동기화, `SPEC-PROFILE-001`·`SPEC-PROFILE-GRAPH-149` OPEN 항목 갱신).
 
 ### Fixed
+- **#443 — 정본 카탈로그 사전으로 빈 `categoryQueries` leg를 결정론 보강** — 모델이 상품군을
+  말한 첫 추천 턴에서 leg를 비우던 결함을 `seller_categories.json` 스냅샷의 최장 일치로 보완한다.
+  N=24 독립 2런에서 `namedCategoryHasLeg` 98.6%·100.0%(문턱 83.7%),
+  `conditionOnlyNoCategoryQuery` 90.0%·92.5%(문턱 84.2%), condition_only 주입 0건이라 기본 on.
 - **#553 — 운영 배포 전면 중단 복구: `deploy.yml` 설명문의 빈 Actions 표현식** — `script: |` 은 YAML 블록 스칼라라 `#` 가 주석이 아니라 리터럴이고 Actions 가 그 안의 표현식도 평가한다. #539 가 넣은 설명문의 **내용이 빈 표현식**이 문법 오류를 내 워크플로가 job 을 시작조차 못 했고(startup failure, run 2건 job 0개), 승격 #552 의 41커밋이 실서버에 반영되지 못했다. 설명문에서 표현식 리터럴을 걷어내고, 같은 블록에 "여기서는 표현식을 쓰지 않는다"는 경고를 남겼다. 로컬 YAML 파싱은 통과하므로 CI 로는 못 잡는 계열이라 `docs/lessons.md` 에 진단 단서(트리거 밖 브랜치에서도 run 생성 = startup failure)까지 기록했다.
 
 ### Fixed
+- **#454 — 장바구니 옵션 되물음 좁히기에 승인된 색상 동의어 사전을 연결해 "검정 셔츠"처럼
+  고유어로 말한 색상 조건이 옵션명("블랙")과 표기가 달라 못 좁혀지던 문제를 줄였다.** 카탈로그
+  실측(옵션 보유 상품 4,439쌍, `scripts/measure_option_color_miss_454.py` 실행 재현)에서 고유어
+  발화의 좁힘률이 **2.7% → 54.9%(+52.2%p)**, 외래어 발화는 51.1% → 54.9%(+3.8%p) — 두 표기가
+  사전으로 같은 것이 되며 수렴한다. 등가 판정은 누적 조건 매칭(R2/`by_condition`)에만 적용하고
+  이번 발화 자동 선택(R1/`by_message`, #114·#455)은 리터럴 일치만 본다(#455 리뷰 F-1 비대칭
+  유지). 좁혀지지 않은 45.1% 중 옵션명에 색상 축이 실재하는 3.3%는 "그 색은 없다/품절이다"라고
+  단정하지 않고 "찾지 못했어요"로만 안내한다 —
+  판매자가 승인 사전 밖 표기(영문·약어·미승인 색명)를 썼을 수 있어 단정할 근거가 없다. 신규
+  설정 `cart_option_color_synonym_enabled`(기본 `True`) — 사전 적재 실패·미설정은 예외 없이
+  오늘 동작으로 degrade한다. **[#508 흡수, 2026-08-10]** BE 가 옵션별 재고를 2026-08-09
+  구매자 쪽 전량 배포했다(`product.stock_quantity` → `product_stock(product_id, option_id,
+  quantity)`, 02 D33) — I-1·I-3 `options`/`optionCount` 는 품절 옵션 제외·"구매 가능한 것"
+  기준으로, I-2 는 전 옵션 품절 시 `CART_STOCK_INSUFFICIENT`(`availableStock: 0`)로,
+  I-18 은 `maxQuantity`(옵션 재고 기준) 신설로 반영했다(api-spec §4.1·§4.6·§4.9·§4.17,
+  `<!-- VERSION_TBD -->`). **2026-08-10 운영 실측으로 확인** — `product_stock` 24,390행(품절
+  3,170), I-1 `optionCount` 동일 상품 161→138(23개 품절 제외). **다만 #508 이 이 색상 표기
+  이형 문제를 대신 풀어주지 않는다** —
+  옵션이 사이즈인 상품은 색상이 상품 속성에만 있어 재고 필터가 색상별로 못 거르므로(BE 명시
+  한계), 이 PR 의 색상 동의어 좁히기는 #508 이후에도 그대로 필요하다. 상세 실측·경계는
+  `docs/specs/MEASURE-OPTION-COLOR-454.md`.
+- **#454 Phase 2 — #508(옵션별 재고) 이후에도 남는 "옵션에 그 색이 없다" 문제를 검색
+  사후필터로 줄였다.** BE 의 색상 매칭(`attributes.색상` 축)과 품절 제외(`options` 축)가 서로
+  몰라서, 속성엔 그 색이 있어도 보이는 옵션엔 그 색이 없는 후보가 그대로 반환됐다(운영 실측
+  `color=블랙`: 옵션 있는 144건 중 77건이 옵션 목록에 블랙 계열 0개, 그중 52건은 다색이라
+  판정 확실). `app.services.search_service._filter_unbuyable_color_options` 가 판정식(색상
+  조건 있음 ∧ `attributes.색상` 복수 ∧ `optionCount==len(options)`(절단 아님) ∧ 승인 동의어
+  확장 어디에도 그 색이 옵션명에 없음)을 모두 만족하는 후보만 뺀다 — D 판정은
+  `app.agents.buyer.cart.options.narrow_options`(#454 되물음 좁히기와 같은 함수, 재구현
+  아님)를 그대로 호출한다. `evals/option_color` 하네스(신규, before/after 같은 패스로 산출)
+  실측: `unbuyable_rate` 11.0%(2,152/19,536, 옵션 있는 후보 대비) → 필터 적용 시 정의상 0%,
+  `candidates_per_query` 중앙값 2,579.0 → 2,486.5(**−3.6%**, recall 손실이 크지 않음), 0건
+  가드 발동 0/20색(전량 카탈로그 스케일에서는 안 뜬다). 하네스 판정과 실제 구현이 19,536건
+  전건 일치(교차검증 0건 불일치). 신규 설정 `search_color_option_postfilter_enabled`(기본
+  `True`) — 사전 적재 실패·색상 조건 없음·제외 후 0건이면 예외 없이 무필터로 degrade한다.
+  §2-B 되물음 고지 문구는 바꾸지 않는다(단정 금지 근거가 재고와 무관해 그대로 유효). api-spec
+  §4.6 `[].options` 소비를 검색 사후필터까지 확대(`<!-- VERSION_TBD -->`). 상세는
+  `docs/specs/MEASURE-OPTION-COLOR-454.md` §7.
 - **#466 — 브랜드-only 발화에서 `filters.brand` 가 비던 결함을 고쳤다** (#430 후속, 과소지정
   오탐의 근원). `decompose` 프롬프트에는 색상 전용 규칙만 있고 **브랜드 추출 규칙이 아예
   없었다.** `- recommend:` 불릿에 브랜드 절 하나를 넣어 ① 추출 ② **발화 표기 그대로**(번안 금지)
@@ -219,6 +377,13 @@
   독립 어휘 앵커 4개를
   추가했다. 밝기·채도 수식어, 복합색, 데님 밝기 축은 확장 때 원래 조건을 잃으므로 보류했으며,
   코드·마케팅명 등 40건은 반려로 고정했다. 생성 JSON·SQL은 검수 오버레이에서 재파생한다.
+
+### Added
+- **#443/#465 — `evals/intent_probe` 에 `named_category` 6앵커·`namedCategoryHasLeg` 축 신설** —
+  상품군을 **명시한** 첫 턴("과일 추천해줘" 등)에서 `categoryQueries` leg 이 비는 결함을 재는
+  축이다. `conditionOnlyNoCategoryQuery`(#465, 조건 전용 턴은 leg 이 0개여야 정답)의 반대
+  방향 축이라 같은 필드의 양쪽 끝을 한 런에서 함께 읽는다 — 한쪽만 보고 채택 판정을 내리지
+  않기 위함.
 - **#358 — 개인화 그래프의 사용자 변경 경로에 저장 안전장치를 깔았다** (SPEC-PROFILE-GRAPH-149
   §5.4·§6.5·§7.1·§7.2). #356 이 배치 쓰기까지 만들었다면 이번은 **사용자가 직접 고치고 지우는**
   경로를 안전하게 만든다. `store.set_graph` 가 CAS 없는 blind overwrite 라 그 위에 네 층을 얹었다.
@@ -1382,6 +1547,20 @@
 - **#299 — 요청 바디 크기 상한** — 필드별 상한(`chat_message_max_chars`·`screen_products_raw_scan_max` 등)은 흩어져 있고 상한 없는 필드(`conditionActions` 등)도 계속 생기는데, 레이트 리밋(§2.8)은 요청 **건수**만 세 임의 크기 바디를 반복 전송할 수 있었다. `app/core/body_limit.py`에 `BodySizeLimitMiddleware`(순수 ASGI)를 신설해 `Content-Length` 초과는 바디를 읽기 전에, 헤더가 없는(chunked) 경우는 `receive`를 감싼 실수신 바이트 누적으로 상한(`request_body_max_bytes`, 기본 1MiB — 필드 상한이 절단 없이 받아들이는 최대 정상 페이로드의 약 4.8배)을 넘기면 거절한다. 초과 응답은 새 코드를 내지 않고 기존 `400 BAD_REQUEST` 봉투를 그대로 쓴다(§2.5에 413/`PAYLOAD_TOO_LARGE`가 없어 신설은 별도 명세 개정 대상) — 와이어 계약 변경 0. 미들웨어는 레이트 리밋 **바깥**(거대 바디가 JWT 서명 검증 비용·레이트 리밋 슬롯을 소모하지 않게)·CORS **안쪽**(400 응답에도 CORS 헤더가 실리게)에 등록한다.
 
 ### Docs
+- **#443/#465 — categoryQueries "넓은 상품군" 예시 한 줄(C5) 실측 후 기각, 프롬프트는 미변경** —
+  요인 분리 실측(`named_category` 6앵커, before 2런)으로 결함 원인을 상황 설명 유무·위치·case
+  판정이 아니라 **사용자가 말한 상품군의 추상도**로 좁혔다. 문면 후보 4종(빈 배열 2종·불릿
+  맨 앞 이동·예시 한 줄 C5)을 시도했고 전부 기각했다 — 채택 직전까지 갔던 C5 는 부분 셀
+  스크리닝에서 46/48 로 보였으나 전체 런 2회(N=8×6셀=48표본)에서 35·38/48 로 재현되지 않아
+  사전 등록 문턱(after 두 런 모두 before 최댓값 이상 + 평균 상승 ≥ +4/48) 미달로 기각했다.
+  **`decompose._SYSTEM` 은 한 글자도 바뀌지 않았다** — 계약·동작 변경 없음, `--dump-prompt`
+  sha256 앞 12자 `865ed6fd771e` 로 확인. #443/#465 양방향 실측 기준선 5런(`evals/intent_probe/
+  baselines/fast-2026-08-08-443-{before-1,before-2,cand5-1,cand5-2}`·`evals/underspecified_probe/
+  baselines/fast-2026-08-08-465-{before-1,cand5-1-partial}`)과 기각 근거는 각 디렉터리
+  README·`decompose.py` 의 `_SYSTEM` 바로 아래 주석에 남겼다. 반대 방향 비용으로 관측된
+  `categoryClear` 하락은 이미 등록된 **#463**, underspecified 재집계에서 드러난
+  `filters.attrConditions` 단독 차단은 이미 등록된 **#464** 의 소관이라 새 이슈는 만들지
+  않았다.
 - **#436 — api-spec 구현 반영 상태 표기 갱신(계약 불변, 서술만)** — I-24~I-28·§3.1 FE 수신
   두 지점의 상태 마커가 낡아 있어 #435 원인 추적이 "FE 수신부가 없어서인가"를 먼저 의심하며
   한 라운드를 버렸다. BE(`jarvis-backend` main `17bb44d`)·FE(`jarvis-frontend` main `08cd2c5`)를

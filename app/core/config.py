@@ -16,6 +16,7 @@ import json
 import math
 import os
 from functools import lru_cache
+from pathlib import Path
 from typing import Annotated, Literal, NamedTuple
 
 from pydantic import Field, SecretStr, field_validator, model_validator
@@ -727,6 +728,14 @@ class Settings(BaseSettings):
     # 쿼리 임베딩 입력으로 씀)에서는 드롭이 품질을 급락시키므로, graph 가 search_backend!=embedding_rerank
     # 이면 이 값과 무관하게 keyword 를 유지한다(가드는 소비 지점 graph.py).
     search_drop_keyword_with_category: bool = True
+    # [이슈 #454 Phase 2] 색상 조건 검색의 사후필터 — attributes.색상 이 복수이고(옵션 축과
+    # 별개로 상품 자체가 여러 색을 가진 것으로 표기됨) optionCount==len(options)(20개 절단
+    # 아님)인데 옵션 이름 어디에도 그 색(승인 동의어 확장 포함)이 없는 후보를 뺀다
+    # (`app.services.search_service._filter_unbuyable_color_options`, 판정식 A~D). **기본값
+    # True** — 결함을 고치는 플래그는 하방이 유계면 기본 on: 사전 적재 실패·설정 off·색상
+    # 조건 없음은 예외 없이 무필터로 degrade하고, 제외 후 0건이면 제외 자체를 취소한다(0건
+    # 가드) — 둘 다 오늘 동작(무필터)으로 되돌아갈 뿐이라 하방이 유계하다.
+    search_color_option_postfilter_enabled: bool = True
     # pgvector 의미 재정렬 후 Sonnet 입력 상한(옛 "FastAPI 30" 이관처, §4.6). products[:limit] 절단이라
     # ge=0 — 음수면 slice 가 뒤에서 잘려 "<=0 이면 0개" 불변식이 깨진다(형제 category_fanout_* 규약).
     embedding_rerank_limit: int = Field(default=30, ge=0)
@@ -890,6 +899,29 @@ class Settings(BaseSettings):
     # 번에 전체 롤백). 기본 off — 이 기능은 no_condition(#162) 위에 얹는 확장이라, 검증 전
     # 기본 배포에 영향을 주지 않는다.
     underspecified_reask_enabled: bool = False
+    # #465 단일 leg 후처리 — decompose 파싱부에서 **총칭 head** leg 을 제거한다.
+    # 기본 **on**: 하방이 유계이고 실측으로 0이다(아래). 위치가 논지다 — `cat_signal` 계산
+    # 직전이라야 leg 제거가 `semantic_query_is_fallback` 로 자동 전파된다.
+    # 실측: 보호 named_category 77표본 오발동 0, 조건전용 누출은 런당 2건 제거,
+    # 해로운 발동 0(화면 1건은 "리스트에서 3번째 거" 쓰레기 leg의 올바른 억제), LLM 호출 0.
+    # primary missRate는 before 10.7·15.2% → postprocess 16.1·12.5%로 개선되지 않았다.
+    # #466 병합 뒤 표적이 런당 2~3건으로 작아 missRate가 이 스위치의 감도 있는 지표가 아니었다.
+    category_leg_head_suppression_enabled: bool = True
+    # #443 사전 주입 기본 on — N=24 독립 2런에서 namedCategoryHasLeg 98.6%·100.0%
+    # (base 문턱 83.7%)이며 conditionOnlyNoCategoryQuery 90.0%·92.5%(문턱 84.2%)다.
+    # 문면 7종은 최대 +7.3%p를 벌며 반대 축을 −10.8%p 지불했지만, 사전 기반 주입은 +25%p를
+    # 벌면서 반대 축 손실이 없다. 사전에 조건어가 없어 condition_only 발화는 매칭 자체가 불가능하다.
+    category_leg_injection_enabled: bool = True
+    category_leg_injection_path: str = str(
+        Path(__file__).resolve().parents[1] / "data" / "seller_categories.json"
+    )
+    category_leg_injection_min_length: int = 2
+    category_leg_generic_heads: list[str] = Field(
+        default_factory=lambda: ["거", "것", "상품", "제품", "아이템", "아무거나"]
+    )
+    category_leg_condition_terms: list[str] = Field(
+        default_factory=lambda: ["무료배송", "가성비", "평점", "인기", "최저가"]
+    )
     # 제약(가격)만 있는 턴의 인기 상품 고지 — no_condition_notice_popular 와 같은 톤이되, 실제로
     # 가격 필터를 통과한 후보라는 사실만 말한다(거짓 주장 금지, #132). no_condition 턴에는 내지
     # 않는다(그 턴은 no_condition_notice_* 가 이미 담당 — 중복 고지 방지).
@@ -1230,6 +1262,15 @@ class Settings(BaseSettings):
         "걸로",
         "거로",
     ]
+    # [이슈 #454] I-2 400 옵션 되물음 좁히기(R2/`by_condition`)에 승인된 색상 동의어 사전
+    # (`app.pipelines.color_synonyms`, #258/#505 정본)을 연결할지 — 조건어 "검정"과 옵션명
+    # "블랙"처럼 표기가 다른 같은 색을 같은 것으로 본다. **기본값 True** — 결함을 고치는 플래그는
+    # 하방이 유계하면 기본 on 으로 켠다: 사전 적재 실패·미설정·타임아웃은 예외 없이 `None` 으로
+    # degrade해 **오늘 동작 그대로** 가므로(§2-A-4) 하방이 유계하다. `color_synonym_
+    # expansion_enabled` 를 재사용하지 않는 이유 — 그 플래그는 "BE 의 I-1 `color[]` 배열 계약이
+    # 배포됐다"는 신호라 계약이 안 됐으면 꺼져 있다. 장바구니 좁히기는 BE 계약과 무관하게(이미
+    # 받은 I-2 400 옵션 이름을 AI 안에서만 비교) 항상 안전하게 켤 수 있어 전제 자체가 다르다.
+    cart_option_color_synonym_enabled: bool = True
 
     # ── 장바구니 삭제 · 찜 (이슈 #116·#117, I-24~I-28 — 확정 2026-08-05, Spring 구현됨) ──
     # [#285] BE `jarvis-backend` main 실측(2026-08-08, BE PR #92·#93) — api-spec §4.12~4.16 v0.31.3.
@@ -1867,6 +1908,9 @@ class Settings(BaseSettings):
     chat_message_max_chars: int = 4000
     # sessionId/threadId 길이 상한 — 불투명 키가 registry·저장소·로그에 쌓이는 남용 방어.
     chat_key_max_chars: int = 200
+    # conditionActions[].value 길이 상한 (이슈 #434, api-spec §3.1) — 칩 값은 canonical
+    # 카테고리/브랜드 문자열이라 짧다. chat_key_max_chars 와 같은 자릿수.
+    condition_action_value_max_chars: int = 200
 
     # ── 화면 맥락 screen (이슈 #118, api-spec §3.1) ──
     # screen.products 상한(정본 명시 기본값) — 초과분은 화면 순서 앞쪽만 취하고 버린다.
@@ -2057,6 +2101,36 @@ class Settings(BaseSettings):
     trust_forwarded_for: bool = False
     # 신뢰하는 프록시 홉 수(우측부터). 자사 프록시 1대면 1 = 최우측 값.
     forwarded_for_trusted_hops: int = 1
+
+    @field_validator("trust_forwarded_for", "forwarded_for_trusted_hops", mode="before")
+    @classmethod
+    def _empty_forwarded_for_settings_use_default(cls, value: object, info) -> object:
+        # `.github/workflows/deploy.yml` 이 이 두 값을 무조건 주입하는데(조직 Variables
+        # 관리), 저장소/조직 변수가 미등록·삭제되면 빈 문자열이 온다 — bool/int 파싱 실패로
+        # 전체 서비스가 기동 크래시 루프에 빠진다(레이트 리밋 정밀도 저하와 비교할 수 없는
+        # 사고, 실증: `TRUST_FORWARDED_FOR=` → `ValidationError: bool_parsing`). 빈 값은 필드
+        # 기본값(신뢰 off / hops=1)으로 해석해 기동은 항상 성공시킨다 — 대신 신뢰가 꺼지면
+        # IP 백스톱 키가 프록시(ALB) IP 하나로 뭉쳐 전체 사용자가 상한을 공유하는 동작
+        # 저하가 조용히 발생한다는 점을 알고 선택한 폴백이다(이슈 #134). `_empty_trace_
+        # content_settings_use_default`(#326)·`_empty_color_synonym_gate_settings_use_
+        # default`(#447)와 같은 관례.
+        if isinstance(value, str) and value.strip() == "":
+            # Field 선언의 기본값을 그대로 참조한다 — 값을 복제해 적으면 선언만 바꿨을 때
+            # "미설정 → 빈 문자열" 경로가 조용히 어긋난다(PR #327 리뷰에서 지적된 함정).
+            return cls.model_fields[info.field_name].default
+        return value
+
+    # 진단 로그 `client_ip_probe`(이슈 #134) 온/오프 — **기본 on**. 아무도 XFF 홉 수를
+    # 검증한 적이 없어 운영이 근거 없는 `FORWARDED_FOR_TRUSTED_HOPS` 값을 신뢰해 왔다. 하방은
+    # 유계다 — 레이트 리밋 대상 경로(채팅 전송)당 INFO 로그 1줄이고 원문 IP 는 절대 싣지
+    # 않는다(전부 safe_fingerprint). `deploy.yml` 에 주입 경로를 만들지 않는다 — 운영은 이
+    # 코드 기본값(on)으로 돈다.
+    client_ip_probe_enabled: bool = True
+    # 클라이언트 IP 로 신뢰하는 벤더 헤더 이름. Cloudflare 값을 코드에 박지 않기 위한
+    # 튜너블 — 소문자로 정규화해 비교한다(Starlette 헤더 조회는 대소문자 무시지만 설정값이
+    # 대문자로 들어와도 동작해야 한다). 빈 문자열이면 "CF 헤더 사용 안 함"으로 해석해
+    # `resolve_client_ip` 의 1단계(Cf-Connecting-IP)를 건너뛰고 XFF 규칙으로 간다.
+    trusted_client_ip_header: str = "cf-connecting-ip"
 
     # ── 벤치마크 runner (이슈 #151) ──
     # measured 30건·p99 100건의 고정 계약 하한은 evals/benchmark/runner.py(measured)와

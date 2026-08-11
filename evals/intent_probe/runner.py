@@ -119,10 +119,15 @@ class Sample:
             ),
             category_legs_echo_prior=_legs_echo_prior(decision.category_queries, echo_tokens),
             category_legs=serialize_category_legs(decision.category_queries),
+            category_leg_injected=decision.category_leg_injected,
             resolved_product_id=resolved_product_id,
             screen_resolver_fired=screen_resolver_fired,
             screen_resolution_reason=screen_resolution_reason,
         )
+    # [#443] 모델 산출과 구분한 사전 보강 발동 여부 — condition_only 하드 불변식을 samples.csv
+    # 재집계만으로 판정할 수 있어야 한다. **기본값을 둔다** — 이 필드가 없던 시절에 쓰인 생성자
+    # 호출(테스트 픽스처 다수)이 전부 깨지고, 진단 필드라 "발동 안 함"이 안전한 기본값이다.
+    category_leg_injected: bool = False
 
 
 def _legs_echo_prior(queries, tokens: frozenset[str]) -> bool:  # noqa: ANN001
@@ -219,6 +224,14 @@ def _resolve_screen(
     분기 안에서만 일어난다, `graph.py:906` 참조), `screen` 이 있고 `screen.products` 가 비지 않고
     `pending_cart is None` 일 때만. 조건 미성립이면 `(decompose_product_id, False, None)` —
     resolved == 원본, 발동 안 함.
+
+    **[#571 이후 측정 범위 축소, 의도적]** 배포 경로(`app/agents/buyer/graph.py`)는 #571 부터
+    `screen.products` 뿐 아니라 **추천 카드 표면**(`last_reco[:turn_count]`, `screen` 없어도
+    돈다)에서도 이 해소기를 부른다 — 위 "발동 조건은 `graph.py` 와 같다"는 이제 **화면 표면에
+    한해서만** 참이다. 이 하네스는 그 확장을 재지 않는다: 픽스처(`Cell`/`build_context_kwargs`)
+    에 `ordinal_span`(표시 순서=저장 순서 증명, §571) 개념이 없어 추천 표면 재현이 불가능하고,
+    설령 넣더라도 기존 `screen` 계열 baseline(`evals/intent_probe/baselines/`)과의 산출
+    비교 가능성이 깨진다 — 축소는 조용히 둔 것이 아니라 이 트레이드오프를 택한 결과다.
     """
     screen = context_kwargs.get("screen")
     pending_cart = context_kwargs.get("pending_cart")
@@ -234,6 +247,13 @@ def _resolve_screen(
         deictic_markers=settings.screen_deictic_markers,
         context_reference_markers=settings.screen_context_reference_markers,
         last_recommendation_products=last_recommendations,
+        # [#571] 이 하네스는 `screen.products` 표면만 잰다(위 게이트가 그것만 통과시킨다) —
+        # 화면 표면은 순번 게이트가 항상 참이고 이름 확정(N)은 꺼져 있다(`graph.py` 의
+        # `screen_products` 분기와 같은 값, 오늘과 바이트 동일한 동작).
+        positional_order_verified=True,
+        name_confirmation_enabled=False,
+        negation_markers=settings.utterance_negation_markers,
+        prefix_negation_markers=settings.utterance_prefix_negation_markers,
     )
     if resolved is None:
         return decompose_product_id, False, None
@@ -285,6 +305,9 @@ async def run_cell(
                 tier=tier,
                 category_fanout_max=category_fanout_max,
                 repurchase_max=repurchase_max,
+                category_leg_injection=settings.category_leg_injection_enabled,
+                category_leg_injection_path=settings.category_leg_injection_path,
+                category_leg_injection_min_length=settings.category_leg_injection_min_length,
                 **context_kwargs,
             )
         except BudgetExceeded:

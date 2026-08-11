@@ -480,16 +480,15 @@ async def test_fanout_leg_unexpected_exception_isolated_not_stream_crash() -> No
 # ─────────── conditions 칩 멀티 카테고리 반영 (PR #73 리뷰 #6) ───────────
 
 
-def test_condition_chips_multi_category_joined_string_value() -> None:
-    """멀티 카테고리는 카테고리 칩 1개에 조인 문자열 값으로 담는다 — api-spec §3.1 예시가 value 를
-    스칼라 문자열로 명시하므로(계약 정합) 리스트가 아니라 문자열로 전체를 표현한다(칩 제거 왕복 유지)."""
+def test_condition_chips_multi_category_one_chip_per_value() -> None:
+    """[#434] 멀티 카테고리는 값당 칩 1개 — value 는 항상 스칼라이고 입력 순서를 보존한다."""
     cats = ["여행/캠핑 > 여행용품", "가전 > 어댑터", "패션 > 의류"]
     chips = build_condition_chips(ProductSearchFilters(category=cats[0]), categories=cats)
     cat_chips = [c for c in chips if c.field == "category"]
-    assert len(cat_chips) == 1
-    assert isinstance(cat_chips[0].value, str)  # 스칼라 문자열 — 계약(§3.1) 정합
-    assert all(c in cat_chips[0].value for c in cats)  # 값에 전체 포함
-    assert all(c in cat_chips[0].label for c in cats)
+    assert len(cat_chips) == len(cats)
+    assert [c.value for c in cat_chips] == cats
+    assert [c.label for c in cat_chips] == [f"카테고리 · {c}" for c in cats]
+    assert all(isinstance(c.value, str) for c in cat_chips)  # 스칼라 — 계약(§3.1) 정합
 
 
 def test_condition_chips_single_category_keeps_string_value() -> None:
@@ -527,10 +526,10 @@ async def test_fanout_conditions_reflect_all_categories() -> None:
     )
     conditions = next(e for e in events if e["type"] == "conditions")["data"]
     cat_chips = [c for c in conditions["chips"] if c["field"] == "category"]
-    assert len(cat_chips) == 1
-    val = cat_chips[0]["value"]
-    assert isinstance(val, str)  # 스칼라 문자열(계약 정합)
-    assert "여행/캠핑 > 여행용품" in val and "가전 > 어댑터" in val
+    assert len(cat_chips) == 2  # [#434] 값당 칩 1개
+    values = {c["value"] for c in cat_chips}
+    assert all(isinstance(v, str) for v in values)  # 스칼라 문자열(계약 정합)
+    assert values == {"여행/캠핑 > 여행용품", "가전 > 어댑터"}
 
 
 # ─────────── 멀티턴 카테고리 승계 (PR #73 리뷰 #10) ───────────
@@ -806,6 +805,37 @@ def test_condition_chips_empty_categories_no_fallback() -> None:
     # 미지정(None)은 기존대로 filters.category 파생 유지
     chips2 = build_condition_chips(ProductSearchFilters(category="가전 > TV"))
     assert any(c.field == "category" and c.value == "가전 > TV" for c in chips2)
+
+
+def test_condition_chips_multi_brand_one_chip_per_value() -> None:
+    """[#434] 멀티 브랜드는 값당 칩 M개, label==value==브랜드, 입력 순서 보존."""
+    brands = ["삼성", "LG", "애플"]
+    chips = build_condition_chips(ProductSearchFilters(brand=brands))
+    brand_chips = [c for c in chips if c.field == "brand"]
+    assert len(brand_chips) == len(brands)
+    assert [c.value for c in brand_chips] == brands
+    assert [c.label for c in brand_chips] == brands
+
+
+def test_condition_chips_single_brand_value_is_scalar_not_list() -> None:
+    """[#434, §3.1 v0.32.14 정정] 단일 브랜드는 label 종전 동일, value 는 스칼라 문자열(리스트 아님)."""
+    chips = build_condition_chips(ProductSearchFilters(brand=["삼성"]))
+    brand_chip = next(c for c in chips if c.field == "brand")
+    assert brand_chip.label == "삼성"
+    assert brand_chip.value == "삼성"
+    assert isinstance(brand_chip.value, str)
+
+
+def test_condition_chips_dedup_by_field_and_value() -> None:
+    """[#434] leg 매핑이 같은 canonical 을 두 번 내도 (field, value) 중복 칩은 생기지 않는다."""
+    cats = ["가전 > 이어폰", "가전 > 이어폰", "패션 > 의류"]
+    chips = build_condition_chips(ProductSearchFilters(category=cats[0]), categories=cats)
+    cat_chips = [c for c in chips if c.field == "category"]
+    assert [c.value for c in cat_chips] == ["가전 > 이어폰", "패션 > 의류"]
+
+    brand_chips = build_condition_chips(ProductSearchFilters(brand=["삼성", "삼성", "LG"]))
+    values = [c.value for c in brand_chips if c.field == "brand"]
+    assert values == ["삼성", "LG"]
 
 
 # ── #198 목적·상황형 발화의 상품 전개 배선 (DESIGN-NEEDS-EXPANSION-198 §4·§6·§7) ──
@@ -4133,7 +4163,9 @@ def _fruit_probe_mapper():
     )
 
 
-async def test_fruit_recommend_turn_expands_to_fruit_only_legs_not_popular_fallback() -> None:
+async def test_fruit_recommend_turn_expands_to_fruit_only_legs_not_popular_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """[#428 이 이슈의 사용자 가시 회귀, 리뷰 1차 F-1 갱신] "나 아기 키우는데 과일 추천해줘"
     — decompose 가 D1(`categoryQueries: []`, `case=3`)을 내도 전개 후 재매핑이 **과일 계열로만**
     fan-out 된다.
@@ -4143,7 +4175,14 @@ async def test_fruit_recommend_turn_expands_to_fruit_only_legs_not_popular_fallb
     폴백·rerank 지연(운영 실측 8.80s)의 원인이 됐다(#428 이슈 코멘트 ③). 형제 합의 필터가
     "배"의 노이즈만 걸러 이제는 **과일 대분류만** 남는다(리뷰 1차 F-1 — 지지 집계를 top-1 로
     좁혀 "과자/간식" 같은 꼬리 순위 우연한 겹침이 승자가 되지 않는다).
+
+    [#443] **주입이 켜진 프로덕션에서는 이 발화가 더 이상 이 경로에 도달하지 않는다.** 사전 기반
+    보강이 파싱 시점에 `과일` leg 을 채워 `needs_expansion`(#217) 게이트가 열리지 않기 때문이고,
+    그 우회가 바로 #443 이 비용으로 지목한 것이다(전개 LLM 1회 + fan-out N건 + 지연 14.52s).
+    이 경로의 남은 정의역은 **카탈로그 사전에 없는 카테고리 발화**이므로, 여기서는 보강을 꺼서
+    #428 이 지키려던 노이즈 필터링을 계속 재게 한다.
     """
+    monkeypatch.setattr(get_settings(), "category_leg_injection_enabled", False)
     calls: list = []
 
     async def _search(filters, exclude_product_ids=None):

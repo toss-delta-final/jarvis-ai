@@ -1,0 +1,729 @@
+cellId,utteranceId,contextId,group,sampleIndex,intent,productId,optionId,quantity,case,scopedToPrevious,hasCategorySignal,scopeFree,categoryLegs,categoryLegsEchoPrior,resolvedCategoryAction,resolvedProductId,screenResolverFired,screenResolutionReason,latencyMs
+cart-control-001|lastRecommendations,cart-control-001,lastRecommendations,cart_control,0,cart_view,,,1,2,False,False,,,False,carry,,False,,2747
+cart-control-001|lastRecommendations,cart-control-001,lastRecommendations,cart_control,1,cart_view,,,1,2,False,False,,,False,carry,,False,,2646
+cart-control-001|lastRecommendations,cart-control-001,lastRecommendations,cart_control,2,cart_view,,,1,2,False,False,,,False,carry,,False,,2206
+cart-control-001|lastRecommendations,cart-control-001,lastRecommendations,cart_control,3,cart_view,,,1,2,False,False,,,False,carry,,False,,1699
+cart-control-001|lastRecommendations,cart-control-001,lastRecommendations,cart_control,4,cart_view,,,1,2,False,False,,,False,carry,,False,,1821
+cart-control-001|lastRecommendations,cart-control-001,lastRecommendations,cart_control,5,cart_view,,,1,2,False,True,,|세탁 세제,False,replace,,False,,2085
+cart-control-001|lastRecommendations,cart-control-001,lastRecommendations,cart_control,6,cart_view,,,1,2,False,False,,,False,carry,,False,,2106
+cart-control-001|lastRecommendations,cart-control-001,lastRecommendations,cart_control,7,cart_view,,,1,2,False,False,,,False,carry,,False,,1768
+cart-control-001|none,cart-control-001,none,cart_control,0,cart_view,,,1,2,False,False,,,False,carry,,False,,2179
+cart-control-001|none,cart-control-001,none,cart_control,1,cart_view,,,1,2,False,False,,,False,carry,,False,,2272
+cart-control-001|none,cart-control-001,none,cart_control,2,cart_view,,,1,2,False,False,,,False,carry,,False,,1580
+cart-control-001|none,cart-control-001,none,cart_control,3,cart_view,,,1,2,False,False,,,False,carry,,False,,1624
+cart-control-001|none,cart-control-001,none,cart_control,4,cart_view,,,1,2,False,False,,,False,carry,,False,,1766
+cart-control-001|none,cart-control-001,none,cart_control,5,cart_view,,,1,2,False,False,,,False,carry,,False,,1811
+cart-control-001|none,cart-control-001,none,cart_control,6,cart_view,,,1,2,False,False,,,False,carry,,False,,1873
+cart-control-001|none,cart-control-001,none,cart_control,7,cart_view,,,1,2,False,False,,,False,carry,,False,,1869
+cart-control-001|pendingCart,cart-control-001,pendingCart,cart_control,0,cart_view,,,1,2,False,False,,,False,carry,,False,,2753
+cart-control-001|pendingCart,cart-control-001,pendingCart,cart_control,1,cart_view,,,1,2,False,True,,|세탁 세제,False,replace,,False,,2089
+cart-control-001|pendingCart,cart-control-001,pendingCart,cart_control,2,cart_view,,,1,2,False,False,,,False,carry,,False,,2079
+cart-control-001|pendingCart,cart-control-001,pendingCart,cart_control,3,cart_view,,,1,2,False,False,,,False,carry,,False,,2207
+cart-control-001|pendingCart,cart-control-001,pendingCart,cart_control,4,cart_view,,,1,2,False,False,,,False,carry,,False,,1802
+cart-control-001|pendingCart,cart-control-001,pendingCart,cart_control,5,cart_view,,,1,2,False,False,,,False,carry,,False,,2322
+cart-control-001|pendingCart,cart-control-001,pendingCart,cart_control,6,cart_view,,,1,2,False,False,,,False,carry,,False,,1899
+cart-control-001|pendingCart,cart-control-001,pendingCart,cart_control,7,cart_view,,,1,2,False,False,,,False,carry,,False,,1790
+cart-control-002|lastRecommendations,cart-control-002,lastRecommendations,cart_control,0,cart_view,,,1,2,False,False,,,False,carry,,False,,2144
+cart-control-002|lastRecommendations,cart-control-002,lastRecommendations,cart_control,1,cart_view,,,1,2,False,False,,,False,carry,,False,,1596
+cart-control-002|lastRecommendations,cart-control-002,lastRecommendations,cart_control,2,cart_view,,,1,2,False,True,,|리필 세탁 세제,False,replace,,False,,1877
+cart-control-002|lastRecommendations,cart-control-002,lastRecommendations,cart_control,3,cart_view,,,1,2,False,False,,,False,carry,,False,,1691
+cart-control-002|lastRecommendations,cart-control-002,lastRecommendations,cart_control,4,cart_view,,,1,2,False,False,,,False,carry,,False,,1860
+cart-control-002|lastRecommendations,cart-control-002,lastRecommendations,cart_control,5,cart_view,,,1,2,False,True,,|리필 세탁 세제;|고농축 액상 세탁 세제;|섬유유연제 라벤더 향,False,replace,,False,,2759
+cart-control-002|lastRecommendations,cart-control-002,lastRecommendations,cart_control,6,cart_view,,,1,2,False,False,,,False,carry,,False,,2121
+cart-control-002|lastRecommendations,cart-control-002,lastRecommendations,cart_control,7,cart_view,,,1,2,False,False,,,False,carry,,False,,1932
+cart-control-002|none,cart-control-002,none,cart_control,0,cart_view,,,1,2,False,False,,,False,carry,,False,,1858
+cart-control-002|none,cart-control-002,none,cart_control,1,cart_view,,,1,2,False,False,,,False,carry,,False,,1804
+cart-control-002|none,cart-control-002,none,cart_control,2,cart_view,,,1,2,False,False,,,False,carry,,False,,2286
+cart-control-002|none,cart-control-002,none,cart_control,3,cart_view,,,1,2,False,False,,,False,carry,,False,,1704
+cart-control-002|none,cart-control-002,none,cart_control,4,cart_view,,,1,2,False,False,,,False,carry,,False,,38988
+cart-control-002|none,cart-control-002,none,cart_control,5,cart_view,,,1,2,False,False,,,False,carry,,False,,2168
+cart-control-002|none,cart-control-002,none,cart_control,6,cart_view,,,1,2,False,False,,,False,carry,,False,,2358
+cart-control-002|none,cart-control-002,none,cart_control,7,cart_view,,,1,2,False,False,,,False,carry,,False,,1796
+cart-control-002|pendingCart,cart-control-002,pendingCart,cart_control,0,cart_view,,,1,2,False,False,,,False,carry,,False,,1700
+cart-control-002|pendingCart,cart-control-002,pendingCart,cart_control,1,cart_view,,,1,2,False,False,,,False,carry,,False,,1999
+cart-control-002|pendingCart,cart-control-002,pendingCart,cart_control,2,cart_view,,,1,2,False,False,,,False,carry,,False,,1645
+cart-control-002|pendingCart,cart-control-002,pendingCart,cart_control,3,cart_view,,,1,2,False,True,,|세탁 세제,False,replace,,False,,39473
+cart-control-002|pendingCart,cart-control-002,pendingCart,cart_control,4,cart_view,,,1,2,False,True,,|세탁 세제,False,replace,,False,,3813
+cart-control-002|pendingCart,cart-control-002,pendingCart,cart_control,5,cart_view,,,1,2,False,False,,,False,carry,,False,,2168
+cart-control-002|pendingCart,cart-control-002,pendingCart,cart_control,6,cart_view,,,1,2,False,True,,|세탁 세제,False,replace,,False,,2845
+cart-control-002|pendingCart,cart-control-002,pendingCart,cart_control,7,cart_view,,,1,2,False,False,,,False,carry,,False,,1857
+cart-control-003|lastRecommendations,cart-control-003,lastRecommendations,cart_control,0,cart_view,,,1,2,False,False,,,False,carry,,False,,1701
+cart-control-003|lastRecommendations,cart-control-003,lastRecommendations,cart_control,1,cart_view,,,1,2,False,False,,,False,carry,,False,,1773
+cart-control-003|lastRecommendations,cart-control-003,lastRecommendations,cart_control,2,cart_view,,,1,2,False,False,,,False,carry,,False,,1803
+cart-control-003|lastRecommendations,cart-control-003,lastRecommendations,cart_control,3,cart_view,,,1,2,False,False,,,False,carry,,False,,40309
+cart-control-003|lastRecommendations,cart-control-003,lastRecommendations,cart_control,4,cart_view,,,1,2,False,False,,,False,carry,,False,,2657
+cart-control-003|lastRecommendations,cart-control-003,lastRecommendations,cart_control,5,cart_view,,,1,2,False,False,,,False,carry,,False,,1836
+cart-control-003|lastRecommendations,cart-control-003,lastRecommendations,cart_control,6,cart_view,,,1,2,False,False,,,False,carry,,False,,2371
+cart-control-003|lastRecommendations,cart-control-003,lastRecommendations,cart_control,7,cart_view,,,1,2,False,False,,,False,carry,,False,,1636
+cart-control-003|none,cart-control-003,none,cart_control,0,cart_view,,,1,2,False,False,,,False,carry,,False,,1601
+cart-control-003|none,cart-control-003,none,cart_control,1,cart_view,,,1,2,False,False,,,False,carry,,False,,1769
+cart-control-003|none,cart-control-003,none,cart_control,2,cart_view,,,1,2,False,False,,,False,carry,,False,,1815
+cart-control-003|none,cart-control-003,none,cart_control,3,cart_view,,,1,2,False,False,,,False,carry,,False,,39575
+cart-control-003|none,cart-control-003,none,cart_control,4,cart_view,,,1,2,False,False,,,False,carry,,False,,2032
+cart-control-003|none,cart-control-003,none,cart_control,5,cart_view,,,1,2,False,False,,,False,carry,,False,,1580
+cart-control-003|none,cart-control-003,none,cart_control,6,cart_view,,,1,2,False,False,,,False,carry,,False,,1932
+cart-control-003|none,cart-control-003,none,cart_control,7,cart_view,,,1,2,False,False,,,False,carry,,False,,2243
+cart-control-003|pendingCart,cart-control-003,pendingCart,cart_control,0,cart_view,,,1,2,False,False,,,False,carry,,False,,1676
+cart-control-003|pendingCart,cart-control-003,pendingCart,cart_control,1,cart_view,,,1,2,False,False,,,False,carry,,False,,1804
+cart-control-003|pendingCart,cart-control-003,pendingCart,cart_control,2,cart_view,,,1,2,False,False,,,False,carry,,False,,1966
+cart-control-003|pendingCart,cart-control-003,pendingCart,cart_control,3,cart_view,102,,1,2,False,False,,,False,carry,102,False,,1927
+cart-control-003|pendingCart,cart-control-003,pendingCart,cart_control,4,cart_view,,,1,2,False,False,,,False,carry,,False,,2076
+cart-control-003|pendingCart,cart-control-003,pendingCart,cart_control,5,cart_view,,,1,2,False,False,,,False,carry,,False,,1700
+cart-control-003|pendingCart,cart-control-003,pendingCart,cart_control,6,cart_view,,,1,2,False,False,,,False,carry,,False,,2055
+cart-control-003|pendingCart,cart-control-003,pendingCart,cart_control,7,cart_view,,,1,2,False,False,,,False,carry,,False,,1913
+cart-control-004|lastRecommendations,cart-control-004,lastRecommendations,cart_control,0,cart_add,101,,1,1,False,False,,,False,carry,101,False,,2006
+cart-control-004|lastRecommendations,cart-control-004,lastRecommendations,cart_control,1,cart_add,101,,1,1,False,False,,,False,carry,101,False,,2593
+cart-control-004|lastRecommendations,cart-control-004,lastRecommendations,cart_control,2,cart_add,101,,1,1,False,False,,,False,carry,101,False,,2109
+cart-control-004|lastRecommendations,cart-control-004,lastRecommendations,cart_control,3,cart_add,101,,1,1,False,False,,,False,carry,101,False,,1774
+cart-control-004|lastRecommendations,cart-control-004,lastRecommendations,cart_control,4,cart_add,101,,1,1,False,False,,,False,carry,101,False,,1978
+cart-control-004|lastRecommendations,cart-control-004,lastRecommendations,cart_control,5,cart_add,101,,1,1,False,False,,,False,carry,101,False,,2096
+cart-control-004|lastRecommendations,cart-control-004,lastRecommendations,cart_control,6,cart_add,101,,1,1,False,False,,,False,carry,101,False,,1692
+cart-control-004|lastRecommendations,cart-control-004,lastRecommendations,cart_control,7,cart_add,101,,1,1,False,True,,|리필 세탁 세제 2L;|고농축 액상 세탁 세제,False,replace,101,False,,38726
+cart-control-004|none,cart-control-004,none,cart_control,0,cart_add,,,1,3,False,False,,,False,carry,,False,,2069
+cart-control-004|none,cart-control-004,none,cart_control,1,cart_add,,,1,3,False,False,,,False,carry,,False,,2260
+cart-control-004|none,cart-control-004,none,cart_control,2,cart_add,,,1,3,False,False,,,False,carry,,False,,1710
+cart-control-004|none,cart-control-004,none,cart_control,3,cart_add,,,1,3,False,False,,,False,carry,,False,,1885
+cart-control-004|none,cart-control-004,none,cart_control,4,cart_add,,,1,2,False,False,,,False,carry,,False,,1910
+cart-control-004|none,cart-control-004,none,cart_control,5,cart_add,,,1,3,False,False,,,False,carry,,False,,2036
+cart-control-004|none,cart-control-004,none,cart_control,6,cart_add,,,1,2,False,False,,,False,carry,,False,,2537
+cart-control-004|none,cart-control-004,none,cart_control,7,cart_add,,,1,3,False,False,,,False,carry,,False,,37525
+cart-control-004|pendingCart,cart-control-004,pendingCart,cart_control,0,cart_add,104,1002,1,2,False,False,,,False,carry,104,False,,4120
+cart-control-004|pendingCart,cart-control-004,pendingCart,cart_control,1,cart_add,102,1002,1,1,False,True,,|리필 세탁 세제,False,replace,102,False,,3233
+cart-control-004|pendingCart,cart-control-004,pendingCart,cart_control,2,cart_add,102,1002,1,1,False,False,,,False,carry,102,False,,1992
+cart-control-004|pendingCart,cart-control-004,pendingCart,cart_control,3,cart_add,102,1002,1,2,False,False,,,False,carry,102,False,,2015
+cart-control-004|pendingCart,cart-control-004,pendingCart,cart_control,4,cart_add,102,1001,1,1,False,False,,,False,carry,102,False,,38443
+cart-control-004|pendingCart,cart-control-004,pendingCart,cart_control,5,cart_add,102,1002,1,2,False,False,,,False,carry,102,False,,2940
+cart-control-004|pendingCart,cart-control-004,pendingCart,cart_control,6,cart_add,102,1001,1,1,False,False,,,False,carry,102,False,,2257
+cart-control-004|pendingCart,cart-control-004,pendingCart,cart_control,7,cart_add,102,1002,1,1,False,False,,,False,carry,102,False,,1835
+cart-control-005|lastRecommendations,cart-control-005,lastRecommendations,cart_control,0,cart_add,101,,1,1,False,False,,,False,carry,101,False,,39109
+cart-control-005|lastRecommendations,cart-control-005,lastRecommendations,cart_control,1,cart_add,101,,1,2,False,False,,,False,carry,101,False,,1885
+cart-control-005|lastRecommendations,cart-control-005,lastRecommendations,cart_control,2,cart_add,101,,1,1,False,False,,,False,carry,101,False,,1852
+cart-control-005|lastRecommendations,cart-control-005,lastRecommendations,cart_control,3,cart_add,101,,1,2,False,False,,,False,carry,101,False,,2032
+cart-control-005|lastRecommendations,cart-control-005,lastRecommendations,cart_control,4,cart_add,101,,1,2,False,False,,,False,carry,101,False,,1754
+cart-control-005|lastRecommendations,cart-control-005,lastRecommendations,cart_control,5,cart_add,101,,1,1,False,False,,,False,carry,101,False,,1828
+cart-control-005|lastRecommendations,cart-control-005,lastRecommendations,cart_control,6,cart_add,101,,1,2,False,False,,,False,carry,101,False,,2251
+cart-control-005|lastRecommendations,cart-control-005,lastRecommendations,cart_control,7,cart_add,101,,1,2,False,False,,,False,carry,101,False,,1996
+cart-control-005|none,cart-control-005,none,cart_control,0,cart_add,,,1,2,False,False,,,False,carry,,False,,1878
+cart-control-005|none,cart-control-005,none,cart_control,1,cart_add,,,1,2,False,False,,,False,carry,,False,,2511
+cart-control-005|none,cart-control-005,none,cart_control,2,cart_add,,,1,2,False,False,,,False,carry,,False,,1722
+cart-control-005|none,cart-control-005,none,cart_control,3,cart_add,,,1,2,False,False,,,False,carry,,False,,1602
+cart-control-005|none,cart-control-005,none,cart_control,4,cart_add,,,1,2,False,False,,,False,carry,,False,,2066
+cart-control-005|none,cart-control-005,none,cart_control,5,cart_add,,,1,2,False,False,,,False,carry,,False,,2015
+cart-control-005|none,cart-control-005,none,cart_control,6,cart_add,,,1,2,False,False,,,False,carry,,False,,2746
+cart-control-005|none,cart-control-005,none,cart_control,7,cart_add,,,1,2,False,False,,,False,carry,,False,,2194
+cart-control-005|pendingCart,cart-control-005,pendingCart,cart_control,0,cart_add,102,1002,1,1,False,True,,|세탁 세제,False,replace,102,False,,2234
+cart-control-005|pendingCart,cart-control-005,pendingCart,cart_control,1,cart_add,102,1002,1,2,False,False,,,False,carry,102,False,,2026
+cart-control-005|pendingCart,cart-control-005,pendingCart,cart_control,2,cart_add,102,1002,1,2,False,False,,,False,carry,102,False,,2579
+cart-control-005|pendingCart,cart-control-005,pendingCart,cart_control,3,cart_add,102,1001,1,2,False,False,,,False,carry,102,False,,3048
+cart-control-005|pendingCart,cart-control-005,pendingCart,cart_control,4,cart_add,104,1002,1,2,False,False,,,False,carry,104,False,,2658
+cart-control-005|pendingCart,cart-control-005,pendingCart,cart_control,5,cart_add,102,1002,1,2,False,False,,,False,carry,102,False,,2362
+cart-control-005|pendingCart,cart-control-005,pendingCart,cart_control,6,cart_add,102,1002,1,1,False,False,,,False,carry,102,False,,2034
+cart-control-005|pendingCart,cart-control-005,pendingCart,cart_control,7,cart_add,102,1001,1,1,False,False,,,False,carry,102,False,,2339
+cart-control-006|lastRecommendations,cart-control-006,lastRecommendations,cart_control,0,cart_add,103,,1,1,False,False,,,False,carry,103,False,,3131
+cart-control-006|lastRecommendations,cart-control-006,lastRecommendations,cart_control,1,cart_add,104,,1,1,False,False,,,False,carry,104,False,,2438
+cart-control-006|lastRecommendations,cart-control-006,lastRecommendations,cart_control,2,cart_add,102,,1,1,False,True,,|세탁 세제,False,replace,102,False,,2246
+cart-control-006|lastRecommendations,cart-control-006,lastRecommendations,cart_control,3,cart_add,103,,1,1,False,False,,,False,carry,103,False,,2003
+cart-control-006|lastRecommendations,cart-control-006,lastRecommendations,cart_control,4,cart_add,103,,1,1,False,False,,,False,carry,103,False,,2796
+cart-control-006|lastRecommendations,cart-control-006,lastRecommendations,cart_control,5,cart_add,104,,1,1,False,True,,|세탁 세제,False,replace,104,False,,2171
+cart-control-006|lastRecommendations,cart-control-006,lastRecommendations,cart_control,6,cart_add,102,,1,1,False,False,,,False,carry,102,False,,2858
+cart-control-006|lastRecommendations,cart-control-006,lastRecommendations,cart_control,7,cart_add,102,,1,1,False,False,,,False,carry,102,False,,37255
+cart-control-006|none,cart-control-006,none,cart_control,0,cart_add,,,1,2,False,False,,,False,carry,,False,,2130
+cart-control-006|none,cart-control-006,none,cart_control,1,cart_add,,,1,2,False,False,,,False,carry,,False,,2196
+cart-control-006|none,cart-control-006,none,cart_control,2,cart_add,,,1,2,False,False,,,False,carry,,False,,2679
+cart-control-006|none,cart-control-006,none,cart_control,3,cart_add,,,1,2,False,False,,,False,carry,,False,,2186
+cart-control-006|none,cart-control-006,none,cart_control,4,cart_add,,,1,2,False,False,,,False,carry,,False,,36205
+cart-control-006|none,cart-control-006,none,cart_control,5,cart_add,,,1,2,False,False,,,False,carry,,False,,2489
+cart-control-006|none,cart-control-006,none,cart_control,6,cart_add,,,1,2,False,False,,,False,carry,,False,,2298
+cart-control-006|none,cart-control-006,none,cart_control,7,cart_add,,,1,1,False,False,,,False,carry,,False,,2913
+cart-control-006|pendingCart,cart-control-006,pendingCart,cart_control,0,cart_add,104,1002,1,1,False,False,,,False,carry,104,False,,2752
+cart-control-006|pendingCart,cart-control-006,pendingCart,cart_control,1,cart_add,104,1002,1,1,False,False,,,False,carry,104,False,,2315
+cart-control-006|pendingCart,cart-control-006,pendingCart,cart_control,2,cart_add,102,1002,1,1,False,False,,,False,carry,102,False,,2159
+cart-control-006|pendingCart,cart-control-006,pendingCart,cart_control,3,cart_add,102,1002,1,1,False,False,,,False,carry,102,False,,35703
+cart-control-006|pendingCart,cart-control-006,pendingCart,cart_control,4,cart_add,102,1002,1,1,False,False,,,False,carry,102,False,,2350
+cart-control-006|pendingCart,cart-control-006,pendingCart,cart_control,5,cart_add,102,1002,1,1,False,False,,,False,carry,102,False,,4592
+cart-control-006|pendingCart,cart-control-006,pendingCart,cart_control,6,cart_add,104,1002,1,1,False,False,,,False,carry,104,False,,1684
+cart-control-006|pendingCart,cart-control-006,pendingCart,cart_control,7,cart_add,104,1002,1,1,False,False,,,False,carry,104,False,,2036
+category-carry-001|categoryPrior,category-carry-001,categoryPrior,category_action,0,recommend,,,1,3,False,True,False,|무선 이어폰,True,replace,,False,,39577
+category-carry-001|categoryPrior,category-carry-001,categoryPrior,category_action,1,recommend,,,1,3,False,False,False,,False,carry,,False,,4263
+category-carry-001|categoryPrior,category-carry-001,categoryPrior,category_action,2,recommend,,,1,2,False,False,False,,False,carry,,False,,4201
+category-carry-001|categoryPrior,category-carry-001,categoryPrior,category_action,3,recommend,,,1,3,False,True,False,|무선 이어폰,True,replace,,False,,3337
+category-carry-001|categoryPrior,category-carry-001,categoryPrior,category_action,4,recommend,,,1,2,False,False,False,,False,carry,,False,,2731
+category-carry-001|categoryPrior,category-carry-001,categoryPrior,category_action,5,recommend,,,1,2,False,False,False,,False,carry,,False,,4309
+category-carry-001|categoryPrior,category-carry-001,categoryPrior,category_action,6,recommend,,,1,3,False,True,False,음향가전|무선 이어폰,True,replace,,False,,41867
+category-carry-001|categoryPrior,category-carry-001,categoryPrior,category_action,7,recommend,,,1,2,False,True,False,|무선 이어폰,True,replace,,False,,3298
+category-carry-002|categoryPrior,category-carry-002,categoryPrior,category_action,0,recommend,,,1,3,False,True,False,|무선 이어폰,True,replace,,False,,7684
+category-carry-002|categoryPrior,category-carry-002,categoryPrior,category_action,1,recommend,,,1,2,False,False,False,,False,carry,,False,,2819
+category-carry-002|categoryPrior,category-carry-002,categoryPrior,category_action,2,recommend,,,1,3,False,True,False,|무선 이어폰,True,replace,,False,,5350
+category-carry-002|categoryPrior,category-carry-002,categoryPrior,category_action,3,recommend,,,1,2,False,True,False,|무선 이어폰,True,replace,,False,,4592
+category-carry-002|categoryPrior,category-carry-002,categoryPrior,category_action,4,recommend,,,1,2,False,True,False,|무선 이어폰,True,replace,,False,,39201
+category-carry-002|categoryPrior,category-carry-002,categoryPrior,category_action,5,recommend,,,1,2,False,True,False,|무선 이어폰,True,replace,,False,,7075
+category-carry-002|categoryPrior,category-carry-002,categoryPrior,category_action,6,recommend,,,1,2,False,True,False,|무선 이어폰,True,replace,,False,,4048
+category-carry-002|categoryPrior,category-carry-002,categoryPrior,category_action,7,recommend,,,1,2,False,True,False,음향가전|무선 이어폰,True,replace,,False,,3032
+category-carry-003|categoryPrior,category-carry-003,categoryPrior,category_action,0,recommend,,,1,2,False,True,False,|무선 이어폰,True,replace,,False,,3238
+category-carry-003|categoryPrior,category-carry-003,categoryPrior,category_action,1,recommend,,,1,2,False,True,False,음향가전|무선 이어폰,True,replace,,False,,3554
+category-carry-003|categoryPrior,category-carry-003,categoryPrior,category_action,2,recommend,,,1,2,False,False,False,,False,carry,,False,,3143
+category-carry-003|categoryPrior,category-carry-003,categoryPrior,category_action,3,recommend,,,1,2,False,True,False,음향가전|무선 이어폰,True,replace,,False,,4219
+category-carry-003|categoryPrior,category-carry-003,categoryPrior,category_action,4,recommend,,,1,2,False,True,False,음향가전|무선 이어폰,True,replace,,False,,38586
+category-carry-003|categoryPrior,category-carry-003,categoryPrior,category_action,5,recommend,,,1,2,False,False,False,,False,carry,,False,,4729
+category-carry-003|categoryPrior,category-carry-003,categoryPrior,category_action,6,recommend,,,1,2,False,False,False,,False,carry,,False,,4301
+category-carry-003|categoryPrior,category-carry-003,categoryPrior,category_action,7,recommend,,,1,2,False,True,False,음향가전|무선 이어폰,True,replace,,False,,4812
+category-carry-004|categoryPrior,category-carry-004,categoryPrior,category_action,0,recommend,,,1,3,False,True,False,음향가전|무선 이어폰,True,replace,,False,,3335
+category-carry-004|categoryPrior,category-carry-004,categoryPrior,category_action,1,recommend,,,1,3,False,True,False,음향가전|무선 이어폰,True,replace,,False,,3904
+category-carry-004|categoryPrior,category-carry-004,categoryPrior,category_action,2,recommend,,,1,3,False,False,False,,False,carry,,False,,6597
+category-carry-004|categoryPrior,category-carry-004,categoryPrior,category_action,3,recommend,,,1,3,False,True,False,음향가전|무선 이어폰,True,replace,,False,,37722
+category-carry-004|categoryPrior,category-carry-004,categoryPrior,category_action,4,recommend,,,1,3,False,True,False,음향가전|무선 이어폰,True,replace,,False,,5579
+category-carry-004|categoryPrior,category-carry-004,categoryPrior,category_action,5,recommend,,,1,3,False,True,False,|무선 이어폰,True,replace,,False,,4211
+category-carry-004|categoryPrior,category-carry-004,categoryPrior,category_action,6,recommend,,,1,2,False,True,False,음향가전|무선 이어폰,True,replace,,False,,3297
+category-carry-004|categoryPrior,category-carry-004,categoryPrior,category_action,7,recommend,,,1,3,False,False,False,,False,carry,,False,,4651
+category-clear-001|categoryPrior,category-clear-001,categoryPrior,category_action,0,recommend,,,1,2,False,True,True,음향가전|무선 이어폰,True,clear,,False,,4778
+category-clear-001|categoryPrior,category-clear-001,categoryPrior,category_action,1,recommend,,,1,2,False,True,True,|무선 이어폰,True,clear,,False,,5049
+category-clear-001|categoryPrior,category-clear-001,categoryPrior,category_action,2,recommend,,,1,2,False,True,True,|무선 이어폰,True,clear,,False,,3782
+category-clear-001|categoryPrior,category-clear-001,categoryPrior,category_action,3,recommend,,,1,2,False,True,True,|무선 이어폰,True,clear,,False,,3945
+category-clear-001|categoryPrior,category-clear-001,categoryPrior,category_action,4,recommend,,,1,2,False,True,True,|무선 이어폰,True,clear,,False,,38297
+category-clear-001|categoryPrior,category-clear-001,categoryPrior,category_action,5,recommend,,,1,2,False,True,True,음향가전|무선 이어폰,True,clear,,False,,4289
+category-clear-001|categoryPrior,category-clear-001,categoryPrior,category_action,6,recommend,,,1,2,False,True,True,|무선 이어폰,True,clear,,False,,5226
+category-clear-001|categoryPrior,category-clear-001,categoryPrior,category_action,7,recommend,,,1,2,False,True,True,|무선 이어폰,True,clear,,False,,4157
+category-clear-002|categoryPrior,category-clear-002,categoryPrior,category_action,0,recommend,,,1,3,False,True,True,|무선 이어폰,True,clear,,False,,3706
+category-clear-002|categoryPrior,category-clear-002,categoryPrior,category_action,1,recommend,,,1,3,False,True,True,|무선 이어폰,True,clear,,False,,4645
+category-clear-002|categoryPrior,category-clear-002,categoryPrior,category_action,2,recommend,,,1,3,False,True,True,|무선 이어폰,True,clear,,False,,40432
+category-clear-002|categoryPrior,category-clear-002,categoryPrior,category_action,3,recommend,,,1,3,False,True,True,음향가전|무선 이어폰,True,clear,,False,,5427
+category-clear-002|categoryPrior,category-clear-002,categoryPrior,category_action,4,recommend,,,1,3,False,True,True,음향가전|무선 이어폰,True,clear,,False,,3784
+category-clear-002|categoryPrior,category-clear-002,categoryPrior,category_action,5,recommend,,,1,3,False,True,True,|무선 이어폰,True,clear,,False,,3702
+category-clear-002|categoryPrior,category-clear-002,categoryPrior,category_action,6,recommend,,,1,3,False,True,True,|무선 이어폰,True,clear,,False,,3739
+category-clear-002|categoryPrior,category-clear-002,categoryPrior,category_action,7,recommend,,,1,3,False,True,True,|무선 이어폰,True,clear,,False,,40061
+category-clear-003|categoryPrior,category-clear-003,categoryPrior,category_action,0,recommend,,,1,3,False,True,True,|무선 이어폰;|음향가전 이어폰 무선,False,replace,,False,,4120
+category-clear-003|categoryPrior,category-clear-003,categoryPrior,category_action,1,recommend,,,1,2,False,True,True,|무선 이어폰,True,clear,,False,,40195
+category-clear-003|categoryPrior,category-clear-003,categoryPrior,category_action,2,recommend,,,1,2,False,True,True,음향가전|무선 이어폰,True,clear,,False,,6045
+category-clear-003|categoryPrior,category-clear-003,categoryPrior,category_action,3,recommend,,,1,2,False,True,True,|무선 이어폰,True,clear,,False,,5631
+category-clear-003|categoryPrior,category-clear-003,categoryPrior,category_action,4,recommend,,,1,2,False,True,True,|무선 이어폰,True,clear,,False,,3265
+category-clear-003|categoryPrior,category-clear-003,categoryPrior,category_action,5,recommend,,,1,3,False,True,True,|무선 이어폰,True,clear,,False,,3503
+category-clear-003|categoryPrior,category-clear-003,categoryPrior,category_action,6,recommend,,,1,2,False,True,True,|무선 이어폰,True,clear,,False,,5722
+category-clear-003|categoryPrior,category-clear-003,categoryPrior,category_action,7,recommend,,,1,2,False,True,True,|무선 이어폰,True,clear,,False,,38637
+category-clear-004|categoryPrior,category-clear-004,categoryPrior,category_action,0,recommend,,,1,2,False,True,True,|무선 이어폰,True,clear,,False,,39127
+category-clear-004|categoryPrior,category-clear-004,categoryPrior,category_action,1,recommend,,,1,2,False,False,True,,False,clear,,False,,3979
+category-clear-004|categoryPrior,category-clear-004,categoryPrior,category_action,2,recommend,,,1,2,False,False,True,,False,clear,,False,,4865
+category-clear-004|categoryPrior,category-clear-004,categoryPrior,category_action,3,recommend,,,1,2,False,True,True,|3만원대 무선 이어폰,False,replace,,False,,4804
+category-clear-004|categoryPrior,category-clear-004,categoryPrior,category_action,4,recommend,,,1,2,False,True,True,|3만원대,False,replace,,False,,3778
+category-clear-004|categoryPrior,category-clear-004,categoryPrior,category_action,5,recommend,,,1,2,False,False,True,,False,clear,,False,,4159
+category-clear-004|categoryPrior,category-clear-004,categoryPrior,category_action,6,recommend,,,1,2,False,False,True,,False,clear,,False,,38492
+category-clear-004|categoryPrior,category-clear-004,categoryPrior,category_action,7,recommend,,,1,2,False,False,True,,False,clear,,False,,4347
+category-mixed-001|categoryPrior,category-mixed-001,categoryPrior,category_action,0,recommend,,,1,3,False,False,True,,False,clear,,False,,4172
+category-mixed-001|categoryPrior,category-mixed-001,categoryPrior,category_action,1,recommend,,,1,3,False,True,True,|스피커,False,replace,,False,,4584
+category-mixed-001|categoryPrior,category-mixed-001,categoryPrior,category_action,2,recommend,,,1,2,False,True,True,|스피커,False,replace,,False,,39471
+category-mixed-001|categoryPrior,category-mixed-001,categoryPrior,category_action,3,recommend,,,1,3,False,True,True,|무선 이어폰,True,clear,,False,,6449
+category-mixed-001|categoryPrior,category-mixed-001,categoryPrior,category_action,4,recommend,,,1,3,False,True,True,|무선 스피커,False,replace,,False,,3995
+category-mixed-001|categoryPrior,category-mixed-001,categoryPrior,category_action,5,recommend,,,1,3,False,True,True,|스피커,False,replace,,False,,3687
+category-mixed-001|categoryPrior,category-mixed-001,categoryPrior,category_action,6,recommend,,,1,3,False,False,True,,False,clear,,False,,2906
+category-mixed-001|categoryPrior,category-mixed-001,categoryPrior,category_action,7,recommend,,,1,3,False,True,True,|스피커,False,replace,,False,,4746
+category-mixed-002|categoryPrior,category-mixed-002,categoryPrior,category_action,0,recommend,,,1,2,False,True,True,|노트북,False,replace,,False,,4407
+category-mixed-002|categoryPrior,category-mixed-002,categoryPrior,category_action,1,recommend,,,1,2,False,True,False,|노트북,False,replace,,False,,4462
+category-mixed-002|categoryPrior,category-mixed-002,categoryPrior,category_action,2,recommend,,,1,3,False,True,True,|노트북,False,replace,,False,,4945
+category-mixed-002|categoryPrior,category-mixed-002,categoryPrior,category_action,3,recommend,,,1,2,False,True,True,|노트북,False,replace,,False,,3787
+category-mixed-002|categoryPrior,category-mixed-002,categoryPrior,category_action,4,recommend,,,1,2,False,True,True,|노트북,False,replace,,False,,4260
+category-mixed-002|categoryPrior,category-mixed-002,categoryPrior,category_action,5,recommend,,,1,3,False,True,False,|노트북,False,replace,,False,,38652
+category-mixed-002|categoryPrior,category-mixed-002,categoryPrior,category_action,6,recommend,,,1,2,False,True,True,|노트북,False,replace,,False,,4452
+category-mixed-002|categoryPrior,category-mixed-002,categoryPrior,category_action,7,recommend,,,1,2,False,True,True,|노트북,False,replace,,False,,4743
+category-mixed-003|categoryPrior,category-mixed-003,categoryPrior,category_action,0,recommend,,,1,3,False,True,False,|운동화,False,replace,,False,,5575
+category-mixed-003|categoryPrior,category-mixed-003,categoryPrior,category_action,1,recommend,,,1,3,False,True,False,|무선 이어폰,True,replace,,False,,4645
+category-mixed-003|categoryPrior,category-mixed-003,categoryPrior,category_action,2,recommend,,,1,3,False,True,False,음향가전|무선 이어폰,True,replace,,False,,3838
+category-mixed-003|categoryPrior,category-mixed-003,categoryPrior,category_action,3,recommend,,,1,3,False,False,False,,False,carry,,False,,3526
+category-mixed-003|categoryPrior,category-mixed-003,categoryPrior,category_action,4,recommend,,,1,3,False,True,False,음향가전|무선 이어폰,True,replace,,False,,39209
+category-mixed-003|categoryPrior,category-mixed-003,categoryPrior,category_action,5,recommend,,,1,3,False,True,True,음향가전|무선 이어폰,True,clear,,False,,5289
+category-mixed-003|categoryPrior,category-mixed-003,categoryPrior,category_action,6,recommend,,,1,3,False,True,True,|운동화,False,replace,,False,,6935
+category-mixed-003|categoryPrior,category-mixed-003,categoryPrior,category_action,7,recommend,,,1,1,False,True,False,|무선 이어폰,True,replace,,False,,4019
+category-mixed-004|categoryPrior,category-mixed-004,categoryPrior,category_action,0,recommend,,,1,2,False,True,False,|청바지,False,replace,,False,,5452
+category-mixed-004|categoryPrior,category-mixed-004,categoryPrior,category_action,1,recommend,,,1,2,False,True,True,|청바지,False,replace,,False,,6033
+category-mixed-004|categoryPrior,category-mixed-004,categoryPrior,category_action,2,recommend,,,1,2,False,True,False,|청바지,False,replace,,False,,4197
+category-mixed-004|categoryPrior,category-mixed-004,categoryPrior,category_action,3,recommend,,,1,1,False,True,False,|청바지,False,replace,,False,,38995
+category-mixed-004|categoryPrior,category-mixed-004,categoryPrior,category_action,4,recommend,,,1,1,False,True,False,|청바지,False,replace,,False,,4897
+category-mixed-004|categoryPrior,category-mixed-004,categoryPrior,category_action,5,recommend,,,1,2,False,True,False,|청바지,False,replace,,False,,4770
+category-mixed-004|categoryPrior,category-mixed-004,categoryPrior,category_action,6,recommend,,,1,2,False,True,False,|청바지,False,replace,,False,,4582
+category-mixed-004|categoryPrior,category-mixed-004,categoryPrior,category_action,7,recommend,,,1,2,False,True,False,|청바지,False,replace,,False,,3664
+category-replace-001|categoryPrior,category-replace-001,categoryPrior,category_action,0,recommend,,,1,2,False,True,False,|노트북,False,replace,,False,,39161
+category-replace-001|categoryPrior,category-replace-001,categoryPrior,category_action,1,recommend,,,1,2,False,True,False,음향가전|노트북,False,replace,,False,,6212
+category-replace-001|categoryPrior,category-replace-001,categoryPrior,category_action,2,recommend,,,1,2,False,True,False,|노트북,False,replace,,False,,4602
+category-replace-001|categoryPrior,category-replace-001,categoryPrior,category_action,3,recommend,,,1,2,False,True,False,|무선 노트북,False,replace,,False,,3560
+category-replace-001|categoryPrior,category-replace-001,categoryPrior,category_action,4,recommend,,,1,3,False,True,False,|노트북,False,replace,,False,,4200
+category-replace-001|categoryPrior,category-replace-001,categoryPrior,category_action,5,recommend,,,1,3,False,True,False,|노트북,False,replace,,False,,38282
+category-replace-001|categoryPrior,category-replace-001,categoryPrior,category_action,6,recommend,,,1,3,False,True,False,|노트북,False,replace,,False,,4789
+category-replace-001|categoryPrior,category-replace-001,categoryPrior,category_action,7,recommend,,,1,2,False,True,False,|노트북,False,replace,,False,,4968
+category-replace-002|categoryPrior,category-replace-002,categoryPrior,category_action,0,recommend,,,1,3,False,True,False,|청바지,False,replace,,False,,4386
+category-replace-002|categoryPrior,category-replace-002,categoryPrior,category_action,1,recommend,,,1,1,False,True,False,음향가전|무선 이어폰,True,replace,,False,,4064
+category-replace-002|categoryPrior,category-replace-002,categoryPrior,category_action,2,recommend,,,1,1,False,True,False,|청바지,False,replace,,False,,4019
+category-replace-002|categoryPrior,category-replace-002,categoryPrior,category_action,3,recommend,,,1,1,False,True,False,음향가전|무선 이어폰,True,replace,,False,,40737
+category-replace-002|categoryPrior,category-replace-002,categoryPrior,category_action,4,recommend,,,1,1,False,True,False,음향가전|무선 이어폰,True,replace,,False,,3475
+category-replace-002|categoryPrior,category-replace-002,categoryPrior,category_action,5,recommend,,,1,1,False,True,False,음향가전|무선 이어폰,True,replace,,False,,5797
+category-replace-002|categoryPrior,category-replace-002,categoryPrior,category_action,6,recommend,,,1,1,False,True,False,|청바지,False,replace,,False,,3461
+category-replace-002|categoryPrior,category-replace-002,categoryPrior,category_action,7,recommend,,,1,1,False,True,False,음향가전|무선 이어폰,True,replace,,False,,3176
+category-replace-003|categoryPrior,category-replace-003,categoryPrior,category_action,0,recommend,,,1,3,False,True,False,|운동화,False,replace,,False,,3456
+category-replace-003|categoryPrior,category-replace-003,categoryPrior,category_action,1,recommend,,,1,2,False,True,False,|운동화,False,replace,,False,,4650
+category-replace-003|categoryPrior,category-replace-003,categoryPrior,category_action,2,recommend,,,1,2,False,True,False,|운동화,False,replace,,False,,38852
+category-replace-003|categoryPrior,category-replace-003,categoryPrior,category_action,3,recommend,,,1,3,False,True,False,|운동화,False,replace,,False,,5708
+category-replace-003|categoryPrior,category-replace-003,categoryPrior,category_action,4,recommend,,,1,2,False,False,False,,False,carry,,False,,4261
+category-replace-003|categoryPrior,category-replace-003,categoryPrior,category_action,5,recommend,,,1,2,False,True,False,|운동화,False,replace,,False,,3190
+category-replace-003|categoryPrior,category-replace-003,categoryPrior,category_action,6,recommend,,,1,3,False,True,False,|운동화,False,replace,,False,,2603
+category-replace-003|categoryPrior,category-replace-003,categoryPrior,category_action,7,recommend,,,1,3,False,True,False,|운동화,False,replace,,False,,3762
+condition-only-001|none,condition-only-001,none,condition_only,0,recommend,,,1,2,False,False,,,False,carry,,False,,2103
+condition-only-001|none,condition-only-001,none,condition_only,1,recommend,,,1,2,False,False,,,False,carry,,False,,1878
+condition-only-001|none,condition-only-001,none,condition_only,2,recommend,,,1,2,False,False,,,False,carry,,False,,2808
+condition-only-001|none,condition-only-001,none,condition_only,3,recommend,,,1,2,False,False,,,False,carry,,False,,36966
+condition-only-001|none,condition-only-001,none,condition_only,4,recommend,,,1,2,False,False,,,False,carry,,False,,2279
+condition-only-001|none,condition-only-001,none,condition_only,5,recommend,,,1,2,False,False,,,False,carry,,False,,2305
+condition-only-001|none,condition-only-001,none,condition_only,6,recommend,,,1,2,False,False,,,False,carry,,False,,4244
+condition-only-001|none,condition-only-001,none,condition_only,7,recommend,,,1,2,False,False,,,False,carry,,False,,1973
+condition-only-002|none,condition-only-002,none,condition_only,0,recommend,,,1,2,False,True,,|평점 높은 상품,False,replace,,False,,2945
+condition-only-002|none,condition-only-002,none,condition_only,1,recommend,,,1,2,False,False,,,False,carry,,False,,5614
+condition-only-002|none,condition-only-002,none,condition_only,2,recommend,,,1,2,False,False,,,False,carry,,False,,1937
+condition-only-002|none,condition-only-002,none,condition_only,3,recommend,,,1,2,False,False,,,False,carry,,False,,2694
+condition-only-002|none,condition-only-002,none,condition_only,4,recommend,,,1,3,False,False,,,False,carry,,False,,37625
+condition-only-002|none,condition-only-002,none,condition_only,5,recommend,,,1,2,False,False,,,False,carry,,False,,2415
+condition-only-002|none,condition-only-002,none,condition_only,6,recommend,,,1,2,False,False,,,False,carry,,False,,1966
+condition-only-002|none,condition-only-002,none,condition_only,7,recommend,,,1,2,False,False,,,False,carry,,False,,2037
+condition-only-003|none,condition-only-003,none,condition_only,0,recommend,,,1,3,False,False,,,False,carry,,False,,2597
+condition-only-003|none,condition-only-003,none,condition_only,1,recommend,,,1,3,False,False,,,False,carry,,False,,1838
+condition-only-003|none,condition-only-003,none,condition_only,2,recommend,,,1,3,False,False,,,False,carry,,False,,1760
+condition-only-003|none,condition-only-003,none,condition_only,3,recommend,,,1,2,False,False,,,False,carry,,False,,1702
+condition-only-003|none,condition-only-003,none,condition_only,4,recommend,,,1,3,False,False,,,False,carry,,False,,2327
+condition-only-003|none,condition-only-003,none,condition_only,5,recommend,,,1,3,False,False,,,False,carry,,False,,2214
+condition-only-003|none,condition-only-003,none,condition_only,6,recommend,,,1,3,False,False,,,False,carry,,False,,36887
+condition-only-003|none,condition-only-003,none,condition_only,7,recommend,,,1,3,False,False,,,False,carry,,False,,2616
+condition-only-004|none,condition-only-004,none,condition_only,0,recommend,,,1,2,False,False,,,False,carry,,False,,2092
+condition-only-004|none,condition-only-004,none,condition_only,1,recommend,,,1,2,False,False,,,False,carry,,False,,2386
+condition-only-004|none,condition-only-004,none,condition_only,2,recommend,,,1,3,False,False,,,False,carry,,False,,37954
+condition-only-004|none,condition-only-004,none,condition_only,3,recommend,,,1,3,False,False,,,False,carry,,False,,3344
+condition-only-004|none,condition-only-004,none,condition_only,4,recommend,,,1,3,False,False,,,False,carry,,False,,1979
+condition-only-004|none,condition-only-004,none,condition_only,5,recommend,,,1,2,False,False,,,False,carry,,False,,3210
+condition-only-004|none,condition-only-004,none,condition_only,6,recommend,,,1,2,False,False,,,False,carry,,False,,2533
+condition-only-004|none,condition-only-004,none,condition_only,7,recommend,,,1,2,False,False,,,False,carry,,False,,1881
+condition-only-005|none,condition-only-005,none,condition_only,0,recommend,,,1,3,False,False,,,False,carry,,False,,3016
+condition-only-005|none,condition-only-005,none,condition_only,1,recommend,,,1,3,False,False,,,False,carry,,False,,35431
+condition-only-005|none,condition-only-005,none,condition_only,2,recommend,,,1,2,False,False,,,False,carry,,False,,2694
+condition-only-005|none,condition-only-005,none,condition_only,3,recommend,,,1,2,False,False,,,False,carry,,False,,1767
+condition-only-005|none,condition-only-005,none,condition_only,4,recommend,,,1,3,False,False,,,False,carry,,False,,2043
+condition-only-005|none,condition-only-005,none,condition_only,5,recommend,,,1,3,False,False,,,False,carry,,False,,2956
+condition-only-005|none,condition-only-005,none,condition_only,6,recommend,,,1,3,False,False,,,False,carry,,False,,2938
+condition-only-005|none,condition-only-005,none,condition_only,7,recommend,,,1,3,False,False,,,False,carry,,False,,1736
+demonstrative-001|lastRecommendations,demonstrative-001,lastRecommendations,demonstrative,0,recommend,,,1,2,True,True,,|리필 세탁 세제 2L;|고농축 액상 세탁 세제;|섬유유연제 라벤더 향;|무선 블루투스 이어폰,False,replace,,False,,2752
+demonstrative-001|lastRecommendations,demonstrative-001,lastRecommendations,demonstrative,1,recommend,,,1,2,False,True,,|세탁 세제,False,replace,,False,,3727
+demonstrative-001|lastRecommendations,demonstrative-001,lastRecommendations,demonstrative,2,recommend,,,1,2,True,True,,|리필 세탁 세제 2L;|고농축 액상 세탁 세제;|섬유유연제 라벤더 향;|무선 블루투스 이어폰,False,replace,,False,,2733
+demonstrative-001|lastRecommendations,demonstrative-001,lastRecommendations,demonstrative,3,recommend,,,1,2,True,True,,|섬유유연제;|세탁 세제,False,replace,,False,,2385
+demonstrative-001|lastRecommendations,demonstrative-001,lastRecommendations,demonstrative,4,recommend,,,1,2,True,True,,|세탁 세제,False,replace,,False,,1960
+demonstrative-001|lastRecommendations,demonstrative-001,lastRecommendations,demonstrative,5,recommend,,,1,2,False,False,,,False,carry,,False,,1996
+demonstrative-001|lastRecommendations,demonstrative-001,lastRecommendations,demonstrative,6,recommend,,,1,2,True,True,,|세탁 세제,False,replace,,False,,2374
+demonstrative-001|lastRecommendations,demonstrative-001,lastRecommendations,demonstrative,7,recommend,,,1,3,True,True,,|세탁 세제,False,replace,,False,,2981
+demonstrative-001|none,demonstrative-001,none,demonstrative,0,recommend,,,1,3,False,False,,,False,carry,,False,,2671
+demonstrative-001|none,demonstrative-001,none,demonstrative,1,recommend,,,1,3,False,False,,,False,carry,,False,,1818
+demonstrative-001|none,demonstrative-001,none,demonstrative,2,recommend,,,1,2,False,False,,,False,carry,,False,,2895
+demonstrative-001|none,demonstrative-001,none,demonstrative,3,recommend,,,1,2,False,False,,,False,carry,,False,,1928
+demonstrative-001|none,demonstrative-001,none,demonstrative,4,recommend,,,1,3,False,False,,,False,carry,,False,,1775
+demonstrative-001|none,demonstrative-001,none,demonstrative,5,recommend,,,1,3,False,False,,,False,carry,,False,,1613
+demonstrative-001|none,demonstrative-001,none,demonstrative,6,recommend,,,1,3,False,False,,,False,carry,,False,,1874
+demonstrative-001|none,demonstrative-001,none,demonstrative,7,recommend,,,1,3,False,False,,,False,carry,,False,,1895
+demonstrative-001|pendingCart,demonstrative-001,pendingCart,demonstrative,0,recommend,,,1,3,True,False,,,False,carry,,False,,2188
+demonstrative-001|pendingCart,demonstrative-001,pendingCart,demonstrative,1,recommend,104,,1,3,True,False,,,False,carry,104,False,,1859
+demonstrative-001|pendingCart,demonstrative-001,pendingCart,demonstrative,2,recommend,,,1,3,True,False,,,False,carry,,False,,2514
+demonstrative-001|pendingCart,demonstrative-001,pendingCart,demonstrative,3,recommend,,,1,3,True,False,,,False,carry,,False,,1719
+demonstrative-001|pendingCart,demonstrative-001,pendingCart,demonstrative,4,recommend,,,1,3,True,False,,,False,carry,,False,,1923
+demonstrative-001|pendingCart,demonstrative-001,pendingCart,demonstrative,5,recommend,104,,1,3,True,False,,,False,carry,104,False,,36305
+demonstrative-001|pendingCart,demonstrative-001,pendingCart,demonstrative,6,recommend,,,1,3,True,False,,,False,carry,,False,,2871
+demonstrative-001|pendingCart,demonstrative-001,pendingCart,demonstrative,7,recommend,,,1,3,True,True,,|세탁 세제,False,replace,,False,,2800
+demonstrative-002|lastRecommendations,demonstrative-002,lastRecommendations,demonstrative,0,recommend,,,1,3,True,False,,,False,carry,,False,,2269
+demonstrative-002|lastRecommendations,demonstrative-002,lastRecommendations,demonstrative,1,recommend,,,1,3,True,False,,,False,carry,,False,,2136
+demonstrative-002|lastRecommendations,demonstrative-002,lastRecommendations,demonstrative,2,recommend,,,1,3,False,True,,|리필 세탁 세제 2L;|고농축 액상 세탁 세제;|섬유유연제 라벤더 향,False,replace,,False,,2710
+demonstrative-002|lastRecommendations,demonstrative-002,lastRecommendations,demonstrative,3,recommend,,,1,3,True,False,,,False,carry,,False,,2110
+demonstrative-002|lastRecommendations,demonstrative-002,lastRecommendations,demonstrative,4,recommend,,,1,3,False,False,,,False,carry,,False,,36857
+demonstrative-002|lastRecommendations,demonstrative-002,lastRecommendations,demonstrative,5,recommend,,,1,3,True,True,,음향가전|무선 블루투스 이어폰;|세탁 세제,False,replace,,False,,2929
+demonstrative-002|lastRecommendations,demonstrative-002,lastRecommendations,demonstrative,6,recommend,104,,1,3,True,False,,,False,carry,104,False,,2469
+demonstrative-002|lastRecommendations,demonstrative-002,lastRecommendations,demonstrative,7,recommend,,,1,3,False,False,,,False,carry,,False,,3314
+demonstrative-002|none,demonstrative-002,none,demonstrative,0,recommend,,,1,3,False,False,,,False,carry,,False,,1840
+demonstrative-002|none,demonstrative-002,none,demonstrative,1,recommend,,,1,3,False,False,,,False,carry,,False,,35776
+demonstrative-002|none,demonstrative-002,none,demonstrative,2,recommend,,,1,3,False,False,,,False,carry,,False,,2179
+demonstrative-002|none,demonstrative-002,none,demonstrative,3,recommend,,,1,3,False,True,,|그거,False,replace,,False,,2018
+demonstrative-002|none,demonstrative-002,none,demonstrative,4,recommend,,,1,3,False,False,,,False,carry,,False,,1677
+demonstrative-002|none,demonstrative-002,none,demonstrative,5,recommend,,,1,3,False,False,,,False,carry,,False,,2798
+demonstrative-002|none,demonstrative-002,none,demonstrative,6,recommend,,,1,3,False,False,,,False,carry,,False,,2344
+demonstrative-002|none,demonstrative-002,none,demonstrative,7,recommend,,,1,3,False,False,,,False,carry,,False,,2095
+demonstrative-002|pendingCart,demonstrative-002,pendingCart,demonstrative,0,recommend,,,1,3,True,False,,,False,carry,,False,,36999
+demonstrative-002|pendingCart,demonstrative-002,pendingCart,demonstrative,1,recommend,,,1,3,True,False,,,False,carry,,False,,2815
+demonstrative-002|pendingCart,demonstrative-002,pendingCart,demonstrative,2,recommend,102,1002,1,3,True,False,,,False,carry,102,False,,1969
+demonstrative-002|pendingCart,demonstrative-002,pendingCart,demonstrative,3,recommend,102,1002,1,3,True,False,,,False,carry,102,False,,2339
+demonstrative-002|pendingCart,demonstrative-002,pendingCart,demonstrative,4,recommend,,1001,1,3,True,False,,,False,carry,,False,,2795
+demonstrative-002|pendingCart,demonstrative-002,pendingCart,demonstrative,5,recommend,102,1001,1,3,True,False,,,False,carry,102,False,,2099
+demonstrative-002|pendingCart,demonstrative-002,pendingCart,demonstrative,6,recommend,102,1002,1,3,True,False,,,False,carry,102,False,,2219
+demonstrative-002|pendingCart,demonstrative-002,pendingCart,demonstrative,7,recommend,,,1,3,True,False,,,False,carry,,False,,2387
+demonstrative-003|lastRecommendations,demonstrative-003,lastRecommendations,demonstrative,0,recommend,,,1,3,True,False,,,False,carry,,False,,3381
+demonstrative-003|lastRecommendations,demonstrative-003,lastRecommendations,demonstrative,1,recommend,,,1,3,False,False,,,False,carry,,False,,2526
+demonstrative-003|lastRecommendations,demonstrative-003,lastRecommendations,demonstrative,2,recommend,,,1,3,False,True,,|세탁 세제,False,replace,,False,,2538
+demonstrative-003|lastRecommendations,demonstrative-003,lastRecommendations,demonstrative,3,recommend,,,1,3,True,True,,|리필 세탁 세제,False,replace,,False,,2322
+demonstrative-003|lastRecommendations,demonstrative-003,lastRecommendations,demonstrative,4,recommend,104,,1,3,True,False,,,False,carry,104,False,,2438
+demonstrative-003|lastRecommendations,demonstrative-003,lastRecommendations,demonstrative,5,recommend,,,1,3,False,True,,|세탁 세제,False,replace,,False,,2484
+demonstrative-003|lastRecommendations,demonstrative-003,lastRecommendations,demonstrative,6,recommend,,,1,3,False,False,,,False,carry,,False,,2055
+demonstrative-003|lastRecommendations,demonstrative-003,lastRecommendations,demonstrative,7,recommend,,,1,3,True,False,,,False,carry,,False,,2296
+demonstrative-003|none,demonstrative-003,none,demonstrative,0,recommend,,,1,3,False,False,,,False,carry,,False,,2669
+demonstrative-003|none,demonstrative-003,none,demonstrative,1,recommend,,,1,3,False,False,,,False,carry,,False,,2143
+demonstrative-003|none,demonstrative-003,none,demonstrative,2,recommend,,,1,3,False,False,,,False,carry,,False,,2126
+demonstrative-003|none,demonstrative-003,none,demonstrative,3,recommend,,,1,3,False,False,,,False,carry,,False,,2173
+demonstrative-003|none,demonstrative-003,none,demonstrative,4,recommend,,,1,3,False,False,,,False,carry,,False,,2051
+demonstrative-003|none,demonstrative-003,none,demonstrative,5,recommend,,,1,3,False,False,,,False,carry,,False,,1950
+demonstrative-003|none,demonstrative-003,none,demonstrative,6,recommend,,,1,3,False,False,,,False,carry,,False,,1880
+demonstrative-003|none,demonstrative-003,none,demonstrative,7,recommend,,,1,3,False,False,,,False,carry,,False,,35345
+demonstrative-003|pendingCart,demonstrative-003,pendingCart,demonstrative,0,recommend,102,1002,1,3,True,False,,,False,carry,102,False,,2190
+demonstrative-003|pendingCart,demonstrative-003,pendingCart,demonstrative,1,recommend,101,1001,1,3,True,True,,|세탁 세제,False,replace,101,False,,2951
+demonstrative-003|pendingCart,demonstrative-003,pendingCart,demonstrative,2,recommend,,,1,3,False,False,,,False,carry,,False,,2358
+demonstrative-003|pendingCart,demonstrative-003,pendingCart,demonstrative,3,recommend,102,1001,1,3,True,False,,,False,carry,102,False,,2115
+demonstrative-003|pendingCart,demonstrative-003,pendingCart,demonstrative,4,recommend,,,1,3,True,False,,,False,carry,,False,,10181
+demonstrative-003|pendingCart,demonstrative-003,pendingCart,demonstrative,5,recommend,104,,1,3,False,False,,,False,carry,104,False,,27955
+demonstrative-003|pendingCart,demonstrative-003,pendingCart,demonstrative,6,recommend,103,,1,3,False,False,,,False,carry,103,False,,2327
+demonstrative-003|pendingCart,demonstrative-003,pendingCart,demonstrative,7,recommend,104,,1,3,False,False,,,False,carry,104,False,,2330
+demonstrative-004|lastRecommendations,demonstrative-004,lastRecommendations,demonstrative,0,recommend,,,1,3,False,True,,|세탁 세제,False,replace,,False,,2752
+demonstrative-004|lastRecommendations,demonstrative-004,lastRecommendations,demonstrative,1,recommend,,,1,2,False,True,,|세탁 세제,False,replace,,False,,2217
+demonstrative-004|lastRecommendations,demonstrative-004,lastRecommendations,demonstrative,2,recommend,,,1,2,False,True,,|리필 세탁 세제 2L;|고농축 액상 세탁 세제;|섬유유연제 라벤더 향;|무선 블루투스 이어폰,False,replace,,False,,2658
+demonstrative-004|lastRecommendations,demonstrative-004,lastRecommendations,demonstrative,3,recommend,,,1,2,False,False,,,False,carry,,False,,35720
+demonstrative-004|lastRecommendations,demonstrative-004,lastRecommendations,demonstrative,4,recommend,,,1,2,False,True,,|세탁 세제,False,replace,,False,,2454
+demonstrative-004|lastRecommendations,demonstrative-004,lastRecommendations,demonstrative,5,recommend,,,1,2,False,True,,|세탁 세제,False,replace,,False,,2487
+demonstrative-004|lastRecommendations,demonstrative-004,lastRecommendations,demonstrative,6,recommend,,,1,2,False,True,,|리필 세탁 세제 2L,False,replace,,False,,3641
+demonstrative-004|lastRecommendations,demonstrative-004,lastRecommendations,demonstrative,7,recommend,,,1,2,False,True,,|세탁 세제,False,replace,,False,,2551
+demonstrative-004|none,demonstrative-004,none,demonstrative,0,recommend,,,1,3,False,False,,,False,carry,,False,,34616
+demonstrative-004|none,demonstrative-004,none,demonstrative,1,recommend,,,1,3,False,False,,,False,carry,,False,,2289
+demonstrative-004|none,demonstrative-004,none,demonstrative,2,recommend,,,1,2,False,False,,,False,carry,,False,,1959
+demonstrative-004|none,demonstrative-004,none,demonstrative,3,recommend,,,1,2,False,False,,,False,carry,,False,,1812
+demonstrative-004|none,demonstrative-004,none,demonstrative,4,recommend,,,1,2,False,False,,,False,carry,,False,,2672
+demonstrative-004|none,demonstrative-004,none,demonstrative,5,recommend,,,1,2,False,False,,,False,carry,,False,,2845
+demonstrative-004|none,demonstrative-004,none,demonstrative,6,recommend,,,1,2,False,False,,,False,carry,,False,,2078
+demonstrative-004|none,demonstrative-004,none,demonstrative,7,recommend,,,1,2,False,False,,,False,carry,,False,,2044
+demonstrative-004|pendingCart,demonstrative-004,pendingCart,demonstrative,0,recommend,,,1,2,False,False,,,False,carry,,False,,3041
+demonstrative-004|pendingCart,demonstrative-004,pendingCart,demonstrative,1,recommend,,,1,2,False,False,,,False,carry,,False,,2403
+demonstrative-004|pendingCart,demonstrative-004,pendingCart,demonstrative,2,recommend,,,1,2,False,True,,|세탁 세제,False,replace,,False,,2786
+demonstrative-004|pendingCart,demonstrative-004,pendingCart,demonstrative,3,recommend,,,1,2,False,True,,|세탁 세제,False,replace,,False,,2324
+demonstrative-004|pendingCart,demonstrative-004,pendingCart,demonstrative,4,recommend,,,1,2,False,False,,,False,carry,,False,,2289
+demonstrative-004|pendingCart,demonstrative-004,pendingCart,demonstrative,5,recommend,,,1,3,False,False,,,False,carry,,False,,1936
+demonstrative-004|pendingCart,demonstrative-004,pendingCart,demonstrative,6,recommend,,,1,3,False,False,,,False,carry,,False,,1992
+demonstrative-004|pendingCart,demonstrative-004,pendingCart,demonstrative,7,recommend,,,1,3,False,False,,,False,carry,,False,,1922
+general-001|lastRecommendations,general-001,lastRecommendations,general,0,general,,,1,3,False,False,,,False,carry,,False,,3273
+general-001|lastRecommendations,general-001,lastRecommendations,general,1,general,,,1,3,False,False,,,False,carry,,False,,2787
+general-001|lastRecommendations,general-001,lastRecommendations,general,2,general,,,1,3,False,False,,,False,carry,,False,,2062
+general-001|lastRecommendations,general-001,lastRecommendations,general,3,general,,,1,3,False,False,,,False,carry,,False,,2294
+general-001|lastRecommendations,general-001,lastRecommendations,general,4,general,,,1,3,False,False,,,False,carry,,False,,3063
+general-001|lastRecommendations,general-001,lastRecommendations,general,5,general,,,1,3,False,False,,,False,carry,,False,,2446
+general-001|lastRecommendations,general-001,lastRecommendations,general,6,general,,,1,3,False,False,,,False,carry,,False,,2680
+general-001|lastRecommendations,general-001,lastRecommendations,general,7,general,,,1,3,False,False,,,False,carry,,False,,2440
+general-001|none,general-001,none,general,0,order_status,,,1,3,False,False,,,False,carry,,False,,3153
+general-001|none,general-001,none,general,1,order_status,,,1,3,False,False,,,False,carry,,False,,1736
+general-001|none,general-001,none,general,2,general,,,1,3,False,False,,,False,carry,,False,,2707
+general-001|none,general-001,none,general,3,general,,,1,3,False,False,,,False,carry,,False,,3237
+general-001|none,general-001,none,general,4,general,,,1,3,False,False,,,False,carry,,False,,2336
+general-001|none,general-001,none,general,5,general,,,1,3,False,False,,,False,carry,,False,,37727
+general-001|none,general-001,none,general,6,general,,,1,3,False,False,,,False,carry,,False,,2044
+general-001|none,general-001,none,general,7,general,,,1,3,False,False,,,False,carry,,False,,2256
+general-001|pendingCart,general-001,pendingCart,general,0,general,,,1,3,False,False,,,False,carry,,False,,2505
+general-001|pendingCart,general-001,pendingCart,general,1,general,,,1,3,False,False,,,False,carry,,False,,2189
+general-001|pendingCart,general-001,pendingCart,general,2,general,,,1,3,False,False,,,False,carry,,False,,2405
+general-001|pendingCart,general-001,pendingCart,general,3,general,,,1,3,False,False,,,False,carry,,False,,1815
+general-001|pendingCart,general-001,pendingCart,general,4,general,,,1,3,False,False,,,False,carry,,False,,2160
+general-001|pendingCart,general-001,pendingCart,general,5,general,,,1,3,False,False,,,False,carry,,False,,33425
+general-001|pendingCart,general-001,pendingCart,general,6,general,,,1,3,False,False,,,False,carry,,False,,2246
+general-001|pendingCart,general-001,pendingCart,general,7,general,,,1,3,False,False,,,False,carry,,False,,2629
+general-002|lastRecommendations,general-002,lastRecommendations,general,0,recommend,,,1,2,False,True,,|세탁 세제,False,replace,,False,,2240
+general-002|lastRecommendations,general-002,lastRecommendations,general,1,recommend,,,1,2,False,True,,|세탁 세제,False,replace,,False,,5409
+general-002|lastRecommendations,general-002,lastRecommendations,general,2,recommend,,,1,3,False,False,,,False,carry,,False,,34685
+general-002|lastRecommendations,general-002,lastRecommendations,general,3,recommend,,,1,2,False,True,,|세탁 세제,False,replace,,False,,2064
+general-002|lastRecommendations,general-002,lastRecommendations,general,4,recommend,,,1,3,False,True,,|세탁 세제,False,replace,,False,,2704
+general-002|lastRecommendations,general-002,lastRecommendations,general,5,recommend,,,1,3,False,False,,,False,carry,,False,,4727
+general-002|lastRecommendations,general-002,lastRecommendations,general,6,recommend,,,1,2,False,True,,|세탁 세제,False,replace,,False,,2263
+general-002|lastRecommendations,general-002,lastRecommendations,general,7,recommend,,,1,3,False,True,,|리필 세탁 세제,False,replace,,False,,2588
+general-002|none,general-002,none,general,0,general,,,1,3,False,False,,,False,carry,,False,,33621
+general-002|none,general-002,none,general,1,general,,,1,3,False,False,,,False,carry,,False,,1857
+general-002|none,general-002,none,general,2,general,,,1,3,False,False,,,False,carry,,False,,1986
+general-002|none,general-002,none,general,3,recommend,,,1,3,False,False,,,False,carry,,False,,1985
+general-002|none,general-002,none,general,4,general,,,1,3,False,False,,,False,carry,,False,,2823
+general-002|none,general-002,none,general,5,general,,,1,3,False,False,,,False,carry,,False,,2587
+general-002|none,general-002,none,general,6,general,,,1,3,False,False,,,False,carry,,False,,2297
+general-002|none,general-002,none,general,7,general,,,1,3,False,False,,,False,carry,,False,,2147
+general-002|pendingCart,general-002,pendingCart,general,0,recommend,102,1001,1,3,False,False,,,False,carry,102,False,,2474
+general-002|pendingCart,general-002,pendingCart,general,1,recommend,,,1,3,False,False,,,False,carry,,False,,2129
+general-002|pendingCart,general-002,pendingCart,general,2,recommend,102,1001,1,3,False,False,,,False,carry,102,False,,2063
+general-002|pendingCart,general-002,pendingCart,general,3,recommend,102,1001,1,3,False,False,,,False,carry,102,False,,1847
+general-002|pendingCart,general-002,pendingCart,general,4,recommend,101,,1,3,False,False,,,False,carry,101,False,,2093
+general-002|pendingCart,general-002,pendingCart,general,5,recommend,,,1,3,False,False,,,False,carry,,False,,1855
+general-002|pendingCart,general-002,pendingCart,general,6,recommend,101,1001,1,3,False,False,,,False,carry,101,False,,2999
+general-002|pendingCart,general-002,pendingCart,general,7,recommend,102,1002,1,3,False,False,,,False,carry,102,False,,2046
+named-category-001|none,named-category-001,none,named_category,0,recommend,,,1,3,False,False,,,False,carry,,False,,3177
+named-category-001|none,named-category-001,none,named_category,1,recommend,,,1,3,False,False,,,False,carry,,False,,1958
+named-category-001|none,named-category-001,none,named_category,2,recommend,,,1,3,False,False,,,False,carry,,False,,2171
+named-category-001|none,named-category-001,none,named_category,3,recommend,,,1,3,False,False,,,False,carry,,False,,1994
+named-category-001|none,named-category-001,none,named_category,4,recommend,,,1,3,False,False,,,False,carry,,False,,2005
+named-category-001|none,named-category-001,none,named_category,5,recommend,,,1,3,False,False,,,False,carry,,False,,7071
+named-category-001|none,named-category-001,none,named_category,6,recommend,,,1,3,False,True,,|과일,False,replace,,False,,2508
+named-category-001|none,named-category-001,none,named_category,7,recommend,,,1,3,False,True,,|과일,False,replace,,False,,32943
+named-category-002|none,named-category-002,none,named_category,0,recommend,,,1,3,False,True,,|과일,False,replace,,False,,2126
+named-category-002|none,named-category-002,none,named_category,1,recommend,,,1,3,False,True,,|과일,False,replace,,False,,2334
+named-category-002|none,named-category-002,none,named_category,2,recommend,,,1,3,False,True,,|과일,False,replace,,False,,2271
+named-category-002|none,named-category-002,none,named_category,3,recommend,,,1,3,False,True,,|과일,False,replace,,False,,2003
+named-category-002|none,named-category-002,none,named_category,4,recommend,,,1,3,False,True,,|과일,False,replace,,False,,1925
+named-category-002|none,named-category-002,none,named_category,5,recommend,,,1,3,False,False,,,False,carry,,False,,2101
+named-category-002|none,named-category-002,none,named_category,6,recommend,,,1,3,False,False,,,False,carry,,False,,32521
+named-category-002|none,named-category-002,none,named_category,7,recommend,,,1,3,False,True,,|과일,False,replace,,False,,1983
+named-category-003|none,named-category-003,none,named_category,0,recommend,,,1,3,False,True,,|과일,False,replace,,False,,9147
+named-category-003|none,named-category-003,none,named_category,1,recommend,,,1,3,False,False,,,False,carry,,False,,2521
+named-category-003|none,named-category-003,none,named_category,2,recommend,,,1,3,False,True,,|과일,False,replace,,False,,32923
+named-category-003|none,named-category-003,none,named_category,3,recommend,,,1,3,False,True,,|과일,False,replace,,False,,2033
+named-category-003|none,named-category-003,none,named_category,4,recommend,,,1,3,False,False,,,False,carry,,False,,2017
+named-category-003|none,named-category-003,none,named_category,5,recommend,,,1,3,False,False,,,False,carry,,False,,2603
+named-category-003|none,named-category-003,none,named_category,6,recommend,,,1,3,False,True,,|과일,False,replace,,False,,3478
+named-category-003|none,named-category-003,none,named_category,7,recommend,,,1,3,False,True,,|과일,False,replace,,False,,2457
+named-category-004|none,named-category-004,none,named_category,0,recommend,,,1,3,False,True,,|유아용 물티슈,False,replace,,False,,2079
+named-category-004|none,named-category-004,none,named_category,1,recommend,,,1,3,False,True,,|유아용 물티슈,False,replace,,False,,2056
+named-category-004|none,named-category-004,none,named_category,2,recommend,,,1,3,False,True,,|유아용 물티슈,False,replace,,False,,32724
+named-category-004|none,named-category-004,none,named_category,3,recommend,,,1,3,False,True,,육아용품|유아용 물티슈,False,replace,,False,,4590
+named-category-004|none,named-category-004,none,named_category,4,recommend,,,1,3,False,True,,|유아용 물티슈,False,replace,,False,,2244
+named-category-004|none,named-category-004,none,named_category,5,recommend,,,1,3,False,True,,|유아용 물티슈,False,replace,,False,,2428
+named-category-004|none,named-category-004,none,named_category,6,recommend,,,1,3,False,True,,|유아용 물티슈,False,replace,,False,,3260
+named-category-004|none,named-category-004,none,named_category,7,recommend,,,1,3,False,True,,|유아용 물티슈,False,replace,,False,,2129
+named-category-005|none,named-category-005,none,named_category,0,recommend,,,1,3,False,True,,|텐트,False,replace,,False,,3498
+named-category-005|none,named-category-005,none,named_category,1,recommend,,,1,3,False,True,,|텐트,False,replace,,False,,2171
+named-category-005|none,named-category-005,none,named_category,2,recommend,,,1,3,False,True,,|텐트,False,replace,,False,,2530
+named-category-005|none,named-category-005,none,named_category,3,recommend,,,1,3,False,True,,|텐트,False,replace,,False,,2802
+named-category-005|none,named-category-005,none,named_category,4,recommend,,,1,3,False,True,,|텐트,False,replace,,False,,2286
+named-category-005|none,named-category-005,none,named_category,5,recommend,,,1,3,False,True,,|캠핑 텐트,False,replace,,False,,2233
+named-category-005|none,named-category-005,none,named_category,6,recommend,,,1,3,False,True,,|텐트,False,replace,,False,,1848
+named-category-005|none,named-category-005,none,named_category,7,recommend,,,1,3,False,True,,|텐트,False,replace,,False,,2429
+named-category-006|none,named-category-006,none,named_category,0,recommend,,,1,2,False,True,,|텀블러,False,replace,,False,,2255
+named-category-006|none,named-category-006,none,named_category,1,recommend,,,1,2,False,True,,|텀블러,False,replace,,False,,2283
+named-category-006|none,named-category-006,none,named_category,2,recommend,,,1,2,False,True,,|텀블러,False,replace,,False,,2857
+named-category-006|none,named-category-006,none,named_category,3,recommend,,,1,2,False,True,,|텀블러,False,replace,,False,,2860
+named-category-006|none,named-category-006,none,named_category,4,recommend,,,1,2,False,False,,,False,carry,,False,,2114
+named-category-006|none,named-category-006,none,named_category,5,recommend,,,1,2,False,True,,주방용품|텀블러,False,replace,,False,,2176
+named-category-006|none,named-category-006,none,named_category,6,recommend,,,1,2,False,True,,|텀블러,False,replace,,False,,2512
+named-category-006|none,named-category-006,none,named_category,7,recommend,,,1,2,False,True,,|텀블러,False,replace,,False,,2571
+option-answer-001|pendingCart,option-answer-001,pendingCart,option_answer,0,cart_add,102,1002,1,2,False,False,,,False,carry,102,False,,2097
+option-answer-001|pendingCart,option-answer-001,pendingCart,option_answer,1,cart_add,104,1002,1,2,True,True,,|세탁 세제,False,replace,104,False,,2602
+option-answer-001|pendingCart,option-answer-001,pendingCart,option_answer,2,cart_add,102,1002,1,2,False,False,,,False,carry,102,False,,2858
+option-answer-001|pendingCart,option-answer-001,pendingCart,option_answer,3,cart_add,103,1002,1,2,False,False,,,False,carry,103,False,,3585
+option-answer-001|pendingCart,option-answer-001,pendingCart,option_answer,4,cart_add,102,1002,1,2,False,False,,,False,carry,102,False,,2740
+option-answer-001|pendingCart,option-answer-001,pendingCart,option_answer,5,cart_add,104,1002,1,2,False,False,,,False,carry,104,False,,33294
+option-answer-001|pendingCart,option-answer-001,pendingCart,option_answer,6,cart_add,102,1002,1,2,False,False,,,False,carry,102,False,,1861
+option-answer-001|pendingCart,option-answer-001,pendingCart,option_answer,7,cart_add,102,1002,1,2,True,True,,|리필 세탁 세제 2L,False,replace,102,False,,2752
+option-answer-002|pendingCart,option-answer-002,pendingCart,option_answer,0,cart_add,101,1001,1,2,False,False,,,False,carry,101,False,,3060
+option-answer-002|pendingCart,option-answer-002,pendingCart,option_answer,1,cart_add,102,1001,1,2,False,False,,,False,carry,102,False,,2221
+option-answer-002|pendingCart,option-answer-002,pendingCart,option_answer,2,cart_add,102,1001,1,2,False,False,,,False,carry,102,False,,2323
+option-answer-002|pendingCart,option-answer-002,pendingCart,option_answer,3,cart_add,102,1002,1,2,False,False,,,False,carry,102,False,,3887
+option-answer-002|pendingCart,option-answer-002,pendingCart,option_answer,4,cart_add,102,1001,1,2,False,False,,,False,carry,102,False,,2535
+option-answer-002|pendingCart,option-answer-002,pendingCart,option_answer,5,cart_add,102,1001,1,2,False,False,,,False,carry,102,False,,31880
+option-answer-002|pendingCart,option-answer-002,pendingCart,option_answer,6,cart_add,102,1001,1,2,False,False,,,False,carry,102,False,,2148
+option-answer-002|pendingCart,option-answer-002,pendingCart,option_answer,7,cart_add,102,1002,1,2,False,False,,,False,carry,102,False,,4027
+option-answer-003|pendingCart,option-answer-003,pendingCart,option_answer,0,cart_add,104,1002,1,2,False,True,,|세탁 세제,False,replace,104,False,,3562
+option-answer-003|pendingCart,option-answer-003,pendingCart,option_answer,1,cart_add,102,1002,1,2,False,False,,,False,carry,102,False,,3007
+option-answer-003|pendingCart,option-answer-003,pendingCart,option_answer,2,cart_add,102,1002,1,2,False,True,,|세탁 세제,False,replace,102,False,,33582
+option-answer-003|pendingCart,option-answer-003,pendingCart,option_answer,3,cart_add,104,1002,1,2,True,True,,|세탁 세제,False,replace,104,False,,5577
+option-answer-003|pendingCart,option-answer-003,pendingCart,option_answer,4,cart_add,104,1002,1,2,False,False,,,False,carry,104,False,,2561
+option-answer-003|pendingCart,option-answer-003,pendingCart,option_answer,5,cart_add,102,1002,1,2,False,False,,,False,carry,102,False,,3550
+option-answer-003|pendingCart,option-answer-003,pendingCart,option_answer,6,cart_add,104,1002,1,2,False,False,,,False,carry,104,False,,2140
+option-answer-003|pendingCart,option-answer-003,pendingCart,option_answer,7,cart_add,102,1002,1,2,False,False,,,False,carry,102,False,,2073
+option-answer-004|pendingCart,option-answer-004,pendingCart,option_answer,0,cart_add,102,1002,1,1,False,False,,,False,carry,102,False,,2883
+option-answer-004|pendingCart,option-answer-004,pendingCart,option_answer,1,cart_add,104,1001,1,1,False,False,,,False,carry,104,False,,2409
+option-answer-004|pendingCart,option-answer-004,pendingCart,option_answer,2,cart_add,102,1002,1,1,False,False,,,False,carry,102,False,,32894
+option-answer-004|pendingCart,option-answer-004,pendingCart,option_answer,3,cart_add,101,1002,1,1,False,False,,,False,carry,101,False,,2111
+option-answer-004|pendingCart,option-answer-004,pendingCart,option_answer,4,cart_add,102,1002,1,1,False,False,,,False,carry,102,False,,2656
+option-answer-004|pendingCart,option-answer-004,pendingCart,option_answer,5,cart_add,102,1002,1,1,False,False,,,False,carry,102,False,,1972
+option-answer-004|pendingCart,option-answer-004,pendingCart,option_answer,6,cart_add,104,1002,1,1,False,False,,,False,carry,104,False,,2669
+option-answer-004|pendingCart,option-answer-004,pendingCart,option_answer,7,cart_add,102,1002,1,1,True,True,,|세탁 세제,False,replace,102,False,,2928
+order-status-001|lastRecommendations,order-status-001,lastRecommendations,order_status,0,order_status,,,1,3,False,False,,,False,carry,,False,,1966
+order-status-001|lastRecommendations,order-status-001,lastRecommendations,order_status,1,order_status,,,1,3,False,False,,,False,carry,,False,,1798
+order-status-001|lastRecommendations,order-status-001,lastRecommendations,order_status,2,order_status,,,1,3,False,False,,,False,carry,,False,,2567
+order-status-001|lastRecommendations,order-status-001,lastRecommendations,order_status,3,order_status,,,1,3,False,False,,,False,carry,,False,,1769
+order-status-001|lastRecommendations,order-status-001,lastRecommendations,order_status,4,order_status,,,1,3,False,False,,,False,carry,,False,,2335
+order-status-001|lastRecommendations,order-status-001,lastRecommendations,order_status,5,order_status,,,1,3,False,False,,,False,carry,,False,,1678
+order-status-001|lastRecommendations,order-status-001,lastRecommendations,order_status,6,order_status,,,1,3,False,False,,,False,carry,,False,,1768
+order-status-001|lastRecommendations,order-status-001,lastRecommendations,order_status,7,order_status,,,1,3,False,False,,,False,carry,,False,,2622
+order-status-001|none,order-status-001,none,order_status,0,order_status,,,1,3,False,False,,,False,carry,,False,,2368
+order-status-001|none,order-status-001,none,order_status,1,order_status,,,1,3,False,False,,,False,carry,,False,,7564
+order-status-001|none,order-status-001,none,order_status,2,order_status,,,1,3,False,False,,,False,carry,,False,,2316
+order-status-001|none,order-status-001,none,order_status,3,order_status,,,1,3,False,False,,,False,carry,,False,,1859
+order-status-001|none,order-status-001,none,order_status,4,order_status,,,1,3,False,False,,,False,carry,,False,,2405
+order-status-001|none,order-status-001,none,order_status,5,order_status,,,1,3,False,False,,,False,carry,,False,,3678
+order-status-001|none,order-status-001,none,order_status,6,order_status,,,1,3,False,False,,,False,carry,,False,,33233
+order-status-001|none,order-status-001,none,order_status,7,order_status,,,1,3,False,False,,,False,carry,,False,,2829
+order-status-001|pendingCart,order-status-001,pendingCart,order_status,0,order_status,,,1,3,False,False,,,False,carry,,False,,1949
+order-status-001|pendingCart,order-status-001,pendingCart,order_status,1,order_status,,,1,3,False,False,,,False,carry,,False,,2162
+order-status-001|pendingCart,order-status-001,pendingCart,order_status,2,order_status,,,1,3,False,False,,,False,carry,,False,,2922
+order-status-001|pendingCart,order-status-001,pendingCart,order_status,3,order_status,,,1,3,False,False,,,False,carry,,False,,1885
+order-status-001|pendingCart,order-status-001,pendingCart,order_status,4,order_status,,,1,3,False,False,,,False,carry,,False,,2371
+order-status-001|pendingCart,order-status-001,pendingCart,order_status,5,order_status,,,1,3,False,False,,,False,carry,,False,,3704
+order-status-001|pendingCart,order-status-001,pendingCart,order_status,6,order_status,,,1,3,False,False,,,False,carry,,False,,32635
+order-status-001|pendingCart,order-status-001,pendingCart,order_status,7,order_status,,,1,3,False,False,,,False,carry,,False,,2303
+order-status-002|lastRecommendations,order-status-002,lastRecommendations,order_status,0,order_status,,,1,3,False,False,,,False,carry,,False,,1730
+order-status-002|lastRecommendations,order-status-002,lastRecommendations,order_status,1,order_status,,,1,3,False,False,,,False,carry,,False,,2196
+order-status-002|lastRecommendations,order-status-002,lastRecommendations,order_status,2,order_status,,,1,3,False,False,,,False,carry,,False,,1921
+order-status-002|lastRecommendations,order-status-002,lastRecommendations,order_status,3,order_status,,,1,3,False,False,,,False,carry,,False,,3077
+order-status-002|lastRecommendations,order-status-002,lastRecommendations,order_status,4,order_status,,,1,3,False,False,,,False,carry,,False,,2385
+order-status-002|lastRecommendations,order-status-002,lastRecommendations,order_status,5,order_status,,,1,3,False,False,,,False,carry,,False,,32529
+order-status-002|lastRecommendations,order-status-002,lastRecommendations,order_status,6,order_status,,,1,3,False,False,,,False,carry,,False,,3496
+order-status-002|lastRecommendations,order-status-002,lastRecommendations,order_status,7,order_status,,,1,3,False,False,,,False,carry,,False,,2972
+order-status-002|none,order-status-002,none,order_status,0,order_status,,,1,3,False,False,,,False,carry,,False,,3072
+order-status-002|none,order-status-002,none,order_status,1,order_status,,,1,3,False,False,,,False,carry,,False,,2546
+order-status-002|none,order-status-002,none,order_status,2,order_status,,,1,3,False,False,,,False,carry,,False,,33023
+order-status-002|none,order-status-002,none,order_status,3,order_status,,,1,3,False,False,,,False,carry,,False,,2077
+order-status-002|none,order-status-002,none,order_status,4,order_status,,,1,3,False,False,,,False,carry,,False,,3110
+order-status-002|none,order-status-002,none,order_status,5,order_status,,,1,3,False,False,,,False,carry,,False,,1793
+order-status-002|none,order-status-002,none,order_status,6,order_status,,,1,3,False,False,,,False,carry,,False,,1888
+order-status-002|none,order-status-002,none,order_status,7,order_status,,,1,3,False,False,,,False,carry,,False,,1671
+order-status-002|pendingCart,order-status-002,pendingCart,order_status,0,order_status,,,1,3,False,False,,,False,carry,,False,,3386
+order-status-002|pendingCart,order-status-002,pendingCart,order_status,1,order_status,,,1,3,False,False,,,False,carry,,False,,2588
+order-status-002|pendingCart,order-status-002,pendingCart,order_status,2,order_status,,,1,3,False,False,,,False,carry,,False,,2230
+order-status-002|pendingCart,order-status-002,pendingCart,order_status,3,order_status,,,1,3,False,False,,,False,carry,,False,,2977
+order-status-002|pendingCart,order-status-002,pendingCart,order_status,4,order_status,,,1,3,False,False,,,False,carry,,False,,2577
+order-status-002|pendingCart,order-status-002,pendingCart,order_status,5,order_status,,,1,3,False,False,,,False,carry,,False,,2063
+order-status-002|pendingCart,order-status-002,pendingCart,order_status,6,order_status,,,1,3,False,False,,,False,carry,,False,,2182
+order-status-002|pendingCart,order-status-002,pendingCart,order_status,7,order_status,,,1,3,False,False,,,False,carry,,False,,2135
+screen-001|screenSingle,screen-001,screenSingle,screen,0,cart_add,3101,,1,1,False,True,,|코튼 워셔블 러그 150x200,False,replace,3101,True,sole_screen_candidate,3684
+screen-001|screenSingle,screen-001,screenSingle,screen,1,cart_add,3101,,1,1,False,True,,|코튼 워셔블 러그 150x200,False,replace,3101,True,sole_screen_candidate,2949
+screen-001|screenSingle,screen-001,screenSingle,screen,2,cart_add,3101,,1,1,False,True,,|코튼 워셔블 러그 150x200,False,replace,3101,True,sole_screen_candidate,2888
+screen-001|screenSingle,screen-001,screenSingle,screen,3,cart_add,3101,,1,2,False,False,,,False,carry,3101,True,sole_screen_candidate,2415
+screen-001|screenSingle,screen-001,screenSingle,screen,4,cart_add,,,1,2,False,False,,,False,carry,3101,True,sole_screen_candidate,2694
+screen-001|screenSingle,screen-001,screenSingle,screen,5,cart_add,3101,,1,2,False,True,,|코튼 워셔블 러그 150x200,False,replace,3101,True,sole_screen_candidate,1999
+screen-001|screenSingle,screen-001,screenSingle,screen,6,cart_add,3101,,1,1,False,True,,|코튼 워셔블 러그 150x200,False,replace,3101,True,sole_screen_candidate,3269
+screen-001|screenSingle,screen-001,screenSingle,screen,7,cart_add,3101,,1,1,False,True,,|코튼 워셔블 러그 150x200,False,replace,3101,True,sole_screen_candidate,4449
+screen-002|screenTriple,screen-002,screenTriple,screen,0,cart_add,3101,,1,1,False,False,,,False,carry,,True,ambiguous_screen_candidates,2349
+screen-002|screenTriple,screen-002,screenTriple,screen,1,cart_add,3101,,1,1,False,False,,,False,carry,,True,ambiguous_screen_candidates,3213
+screen-002|screenTriple,screen-002,screenTriple,screen,2,cart_add,3101,,1,1,False,False,,,False,carry,,True,ambiguous_screen_candidates,2843
+screen-002|screenTriple,screen-002,screenTriple,screen,3,cart_add,,,1,1,False,False,,,False,carry,,True,ambiguous_screen_candidates,2855
+screen-002|screenTriple,screen-002,screenTriple,screen,4,cart_add,,,1,1,False,False,,,False,carry,,True,ambiguous_screen_candidates,1940
+screen-002|screenTriple,screen-002,screenTriple,screen,5,cart_add,2001,,1,1,False,False,,,False,carry,,True,ambiguous_screen_candidates,2348
+screen-002|screenTriple,screen-002,screenTriple,screen,6,cart_add,,,1,2,False,False,,,False,carry,,True,ambiguous_screen_candidates,2221
+screen-002|screenTriple,screen-002,screenTriple,screen,7,cart_add,3101,,1,1,False,False,,,False,carry,,True,ambiguous_screen_candidates,2574
+screen-003|screenFive,screen-003,screenFive,screen,0,cart_add,3103,,1,1,False,False,,,False,carry,3103,True,ordinal,3727
+screen-003|screenFive,screen-003,screenFive,screen,1,cart_add,3103,,1,1,False,False,,,False,carry,3103,True,ordinal,2058
+screen-003|screenFive,screen-003,screenFive,screen,2,cart_add,3103,,1,1,False,False,,,False,carry,3103,True,ordinal,1735
+screen-003|screenFive,screen-003,screenFive,screen,3,cart_add,3103,,1,1,True,False,,,False,carry,3103,True,ordinal,2753
+screen-003|screenFive,screen-003,screenFive,screen,4,cart_add,3103,,1,3,True,False,,,False,carry,3103,True,ordinal,3169
+screen-003|screenFive,screen-003,screenFive,screen,5,cart_add,3103,,1,1,False,False,,,False,carry,3103,True,ordinal,2993
+screen-003|screenFive,screen-003,screenFive,screen,6,cart_add,3103,,1,1,False,False,,,False,carry,3103,True,ordinal,32879
+screen-003|screenFive,screen-003,screenFive,screen,7,cart_add,3103,,1,1,False,False,,,False,carry,3103,True,ordinal,2381
+screen-004|screenNine,screen-004,screenNine,screen,0,cart_add,3102,,1,1,False,False,,,False,carry,3108,True,coordinate,3513
+screen-004|screenNine,screen-004,screenNine,screen,1,cart_add,3102,,1,1,False,False,,,False,carry,3108,True,coordinate,1897
+screen-004|screenNine,screen-004,screenNine,screen,2,cart_add,3102,,1,1,False,False,,,False,carry,3108,True,coordinate,32400
+screen-004|screenNine,screen-004,screenNine,screen,3,cart_add,3102,,1,1,True,False,,,False,carry,3108,True,coordinate,2479
+screen-004|screenNine,screen-004,screenNine,screen,4,cart_add,3102,,1,1,False,False,,,False,carry,3108,True,coordinate,5452
+screen-004|screenNine,screen-004,screenNine,screen,5,cart_add,3102,,1,1,False,False,,,False,carry,3108,True,coordinate,2080
+screen-004|screenNine,screen-004,screenNine,screen,6,cart_add,3102,,1,1,True,False,,,False,carry,3108,True,coordinate,2307
+screen-004|screenNine,screen-004,screenNine,screen,7,cart_add,3102,,1,1,False,False,,,False,carry,3108,True,coordinate,2441
+screen-005|screenNamed,screen-005,screenNamed,screen,0,cart_add,3110,,1,1,False,False,,,False,carry,3110,False,,33062
+screen-005|screenNamed,screen-005,screenNamed,screen,1,cart_add,3110,,1,1,False,False,,,False,carry,3110,False,,2288
+screen-005|screenNamed,screen-005,screenNamed,screen,2,cart_add,3104,,1,1,False,False,,,False,carry,3104,False,,2739
+screen-005|screenNamed,screen-005,screenNamed,screen,3,cart_add,3110,,1,1,False,True,,|무선 이어폰,False,replace,3110,False,,2863
+screen-005|screenNamed,screen-005,screenNamed,screen,4,cart_add,3110,,1,1,False,False,,,False,carry,3110,False,,2067
+screen-005|screenNamed,screen-005,screenNamed,screen,5,cart_add,3110,,1,1,False,False,,,False,carry,3110,False,,2090
+screen-005|screenNamed,screen-005,screenNamed,screen,6,cart_add,3104,,1,1,False,False,,,False,carry,3104,False,,2598
+screen-005|screenNamed,screen-005,screenNamed,screen,7,cart_add,3110,,1,1,False,True,,|무선 이어폰,False,replace,3110,False,,2235
+screen-006|screenTriple,screen-006,screenTriple,screen,0,cart_add,3101,,1,2,False,False,,,False,carry,,True,unknown_product_id_spoken,33833
+screen-006|screenTriple,screen-006,screenTriple,screen,1,cart_add,3101,,1,1,False,False,,,False,carry,,True,unknown_product_id_spoken,3049
+screen-006|screenTriple,screen-006,screenTriple,screen,2,cart_add,3101,,1,1,False,False,,,False,carry,,True,unknown_product_id_spoken,2530
+screen-006|screenTriple,screen-006,screenTriple,screen,3,cart_add,3101,,1,1,False,False,,,False,carry,,True,unknown_product_id_spoken,2011
+screen-006|screenTriple,screen-006,screenTriple,screen,4,cart_add,,,1,1,False,True,,|301 담아줘,False,replace,,True,unknown_product_id_spoken,2500
+screen-006|screenTriple,screen-006,screenTriple,screen,5,cart_add,3101,,1,1,False,False,,,False,carry,,True,unknown_product_id_spoken,3810
+screen-006|screenTriple,screen-006,screenTriple,screen,6,cart_add,301,,1,2,False,False,,,False,carry,,True,unknown_product_id_spoken,2508
+screen-006|screenTriple,screen-006,screenTriple,screen,7,cart_add,301,,1,1,False,False,,,False,carry,,True,unknown_product_id_spoken,2607
+switch-001|pendingCart,switch-001,pendingCart,switch,0,cart_add,104,1002,1,1,False,False,,,False,carry,104,False,,3210
+switch-001|pendingCart,switch-001,pendingCart,switch,1,cart_add,104,1002,1,2,False,False,,,False,carry,104,False,,2986
+switch-001|pendingCart,switch-001,pendingCart,switch,2,cart_add,104,1001,1,2,False,False,,,False,carry,104,False,,2241
+switch-001|pendingCart,switch-001,pendingCart,switch,3,cart_add,104,1002,1,2,False,False,,,False,carry,104,False,,2581
+switch-001|pendingCart,switch-001,pendingCart,switch,4,cart_add,104,1002,1,2,False,False,,,False,carry,104,False,,3011
+switch-001|pendingCart,switch-001,pendingCart,switch,5,cart_add,104,1001,1,2,False,False,,,False,carry,104,False,,2238
+switch-001|pendingCart,switch-001,pendingCart,switch,6,cart_add,104,1002,1,2,False,False,,,False,carry,104,False,,2211
+switch-001|pendingCart,switch-001,pendingCart,switch,7,cart_add,104,1001,1,2,False,False,,,False,carry,104,False,,2085
+switch-002|pendingCart,switch-002,pendingCart,switch,0,cart_add,102,1002,1,2,False,False,,,False,carry,102,False,,3288
+switch-002|pendingCart,switch-002,pendingCart,switch,1,cart_add,102,1001,1,2,False,False,,,False,carry,102,False,,2014
+switch-002|pendingCart,switch-002,pendingCart,switch,2,cart_add,102,1001,1,2,False,False,,,False,carry,102,False,,1899
+switch-002|pendingCart,switch-002,pendingCart,switch,3,cart_add,102,1002,1,2,False,False,,,False,carry,102,False,,3381
+switch-002|pendingCart,switch-002,pendingCart,switch,4,cart_add,102,1001,1,2,False,False,,,False,carry,102,False,,2822
+switch-002|pendingCart,switch-002,pendingCart,switch,5,cart_add,102,1001,1,2,False,False,,,False,carry,102,False,,31832
+switch-002|pendingCart,switch-002,pendingCart,switch,6,cart_add,102,1001,1,2,False,False,,,False,carry,102,False,,2054
+switch-002|pendingCart,switch-002,pendingCart,switch,7,cart_add,102,1002,1,2,False,True,,|세탁 세제,False,replace,102,False,,2228
+switch-003|pendingCart,switch-003,pendingCart,switch,0,recommend,,,1,3,False,False,,,False,carry,,False,,1742
+switch-003|pendingCart,switch-003,pendingCart,switch,1,cart_add,104,1002,1,1,False,False,,,False,carry,104,False,,2397
+switch-003|pendingCart,switch-003,pendingCart,switch,2,cart_add,102,1001,1,2,False,False,,,False,carry,102,False,,3200
+switch-003|pendingCart,switch-003,pendingCart,switch,3,cart_add,102,1002,1,1,False,False,,,False,carry,102,False,,3124
+switch-003|pendingCart,switch-003,pendingCart,switch,4,cart_view,,,1,2,False,True,,|세탁 세제,False,replace,,False,,33124
+switch-003|pendingCart,switch-003,pendingCart,switch,5,cart_add,102,1002,1,2,False,True,,|세탁 세제,False,replace,102,False,,2244
+switch-003|pendingCart,switch-003,pendingCart,switch,6,cart_add,101,1001,1,2,False,False,,,False,carry,101,False,,2012
+switch-003|pendingCart,switch-003,pendingCart,switch,7,cart_add,0,1001,1,2,False,False,,,False,carry,0,False,,3231
+switch-004|pendingCart,switch-004,pendingCart,switch,0,cart_add,104,1002,1,2,False,False,,,False,carry,104,False,,2019
+switch-004|pendingCart,switch-004,pendingCart,switch,1,cart_add,104,1002,1,2,False,False,,,False,carry,104,False,,3068
+switch-004|pendingCart,switch-004,pendingCart,switch,2,cart_add,104,1001,1,1,False,False,,,False,carry,104,False,,2415
+switch-004|pendingCart,switch-004,pendingCart,switch,3,cart_add,104,1002,1,2,False,False,,,False,carry,104,False,,32799
+switch-004|pendingCart,switch-004,pendingCart,switch,4,cart_add,104,1001,1,2,False,False,,,False,carry,104,False,,2179
+switch-004|pendingCart,switch-004,pendingCart,switch,5,cart_add,104,1002,1,1,False,False,,,False,carry,104,False,,2226
+switch-004|pendingCart,switch-004,pendingCart,switch,6,cart_add,104,1001,1,2,False,False,,,False,carry,104,False,,3091
+switch-004|pendingCart,switch-004,pendingCart,switch,7,cart_add,104,1001,1,2,False,True,,|무선 블루투스 이어폰,False,replace,104,False,,3903
+switch-005|pendingCart,switch-005,pendingCart,switch,0,cart_add,104,1001,1,2,False,False,,,False,carry,104,False,,4172
+switch-005|pendingCart,switch-005,pendingCart,switch,1,cart_add,103,1002,1,2,False,False,,,False,carry,103,False,,38118
+switch-005|pendingCart,switch-005,pendingCart,switch,2,cart_add,104,1001,1,2,False,False,,,False,carry,104,False,,3221
+switch-005|pendingCart,switch-005,pendingCart,switch,3,cart_add,104,1002,1,2,False,False,,,False,carry,104,False,,2481
+switch-005|pendingCart,switch-005,pendingCart,switch,4,cart_add,104,1002,1,2,False,False,,,False,carry,104,False,,2044
+switch-005|pendingCart,switch-005,pendingCart,switch,5,cart_add,104,1001,1,2,True,False,,,False,carry,104,False,,2334
+switch-005|pendingCart,switch-005,pendingCart,switch,6,cart_add,104,1002,1,2,False,False,,,False,carry,104,False,,1826
+switch-005|pendingCart,switch-005,pendingCart,switch,7,cart_add,104,1002,1,2,False,False,,,False,carry,104,False,,2258
+switch-006|pendingCart,switch-006,pendingCart,switch,0,cart_add,101,1001,1,2,False,False,,,False,carry,101,False,,1947
+switch-006|pendingCart,switch-006,pendingCart,switch,1,cart_add,104,1001,1,2,False,False,,,False,carry,104,False,,5498
+switch-006|pendingCart,switch-006,pendingCart,switch,2,cart_add,104,1001,1,2,False,False,,,False,carry,104,False,,2358
+switch-006|pendingCart,switch-006,pendingCart,switch,3,cart_add,104,1001,1,1,False,False,,,False,carry,104,False,,2392
+switch-006|pendingCart,switch-006,pendingCart,switch,4,cart_add,104,1002,1,2,False,False,,,False,carry,104,False,,1906
+switch-006|pendingCart,switch-006,pendingCart,switch,5,cart_add,104,1002,1,1,False,False,,,False,carry,104,False,,2667
+switch-006|pendingCart,switch-006,pendingCart,switch,6,cart_add,104,1002,1,1,False,False,,,False,carry,104,False,,3035
+switch-006|pendingCart,switch-006,pendingCart,switch,7,cart_add,104,1002,1,2,False,False,,,False,carry,104,False,,3031
+switch-007|pendingCart,switch-007,pendingCart,switch,0,cart_add,104,1002,1,2,False,False,,,False,carry,104,False,,3195
+switch-007|pendingCart,switch-007,pendingCart,switch,1,cart_add,104,1002,1,2,False,False,,,False,carry,104,False,,1995
+switch-007|pendingCart,switch-007,pendingCart,switch,2,cart_add,104,1002,1,2,False,False,,,False,carry,104,False,,4551
+switch-007|pendingCart,switch-007,pendingCart,switch,3,cart_add,104,1001,1,2,False,False,,,False,carry,104,False,,2497
+switch-007|pendingCart,switch-007,pendingCart,switch,4,cart_add,104,1002,1,2,False,False,,,False,carry,104,False,,1662
+switch-007|pendingCart,switch-007,pendingCart,switch,5,cart_add,104,1002,1,2,False,False,,,False,carry,104,False,,2664
+switch-007|pendingCart,switch-007,pendingCart,switch,6,cart_add,104,1002,1,2,False,False,,,False,carry,104,False,,2612
+switch-007|pendingCart,switch-007,pendingCart,switch,7,cart_add,104,1002,1,2,False,False,,,False,carry,104,False,,33863
+wishlist-view-001|none,wishlist-view-001,none,wishlist_view,0,wishlist_view,,,1,2,False,False,,,False,carry,,False,,2016
+wishlist-view-001|none,wishlist-view-001,none,wishlist_view,1,wishlist_view,,,1,2,False,False,,,False,carry,,False,,1982
+wishlist-view-001|none,wishlist-view-001,none,wishlist_view,2,wishlist_view,,,1,3,False,False,,,False,carry,,False,,2457
+wishlist-view-001|none,wishlist-view-001,none,wishlist_view,3,wishlist_view,,,1,2,False,False,,,False,carry,,False,,1975
+wishlist-view-001|none,wishlist-view-001,none,wishlist_view,4,wishlist_view,,,1,2,False,False,,,False,carry,,False,,1667
+wishlist-view-001|none,wishlist-view-001,none,wishlist_view,5,wishlist_view,,,1,2,False,False,,,False,carry,,False,,1724
+wishlist-view-001|none,wishlist-view-001,none,wishlist_view,6,wishlist_view,,,1,2,False,False,,,False,carry,,False,,1887
+wishlist-view-001|none,wishlist-view-001,none,wishlist_view,7,wishlist_view,,,1,2,False,False,,,False,carry,,False,,2470
+wishlist-view-002|none,wishlist-view-002,none,wishlist_view,0,wishlist_view,,,1,2,False,False,,,False,carry,,False,,1881
+wishlist-view-002|none,wishlist-view-002,none,wishlist_view,1,wishlist_view,,,1,2,False,False,,,False,carry,,False,,2506
+wishlist-view-002|none,wishlist-view-002,none,wishlist_view,2,wishlist_view,,,1,2,False,False,,,False,carry,,False,,2973
+wishlist-view-002|none,wishlist-view-002,none,wishlist_view,3,wishlist_view,,,1,2,False,False,,,False,carry,,False,,32752
+wishlist-view-002|none,wishlist-view-002,none,wishlist_view,4,wishlist_view,,,1,2,False,False,,,False,carry,,False,,3433
+wishlist-view-002|none,wishlist-view-002,none,wishlist_view,5,wishlist_view,,,1,2,False,False,,,False,carry,,False,,2342
+wishlist-view-002|none,wishlist-view-002,none,wishlist_view,6,wishlist_view,,,1,2,False,False,,,False,carry,,False,,2724
+wishlist-view-002|none,wishlist-view-002,none,wishlist_view,7,wishlist_view,,,1,2,False,False,,,False,carry,,False,,2785
+wishlist-view-003|none,wishlist-view-003,none,wishlist_view,0,wishlist_view,,,1,2,False,False,,,False,carry,,False,,32870
+wishlist-view-003|none,wishlist-view-003,none,wishlist_view,1,wishlist_view,,,1,2,False,False,,,False,carry,,False,,2078
+wishlist-view-003|none,wishlist-view-003,none,wishlist_view,2,wishlist_view,,,1,2,False,False,,,False,carry,,False,,1998
+wishlist-view-003|none,wishlist-view-003,none,wishlist_view,3,wishlist_view,,,1,2,False,False,,,False,carry,,False,,2255
+wishlist-view-003|none,wishlist-view-003,none,wishlist_view,4,wishlist_view,,,1,2,False,False,,,False,carry,,False,,3196
+wishlist-view-003|none,wishlist-view-003,none,wishlist_view,5,wishlist_view,,,1,2,False,False,,,False,carry,,False,,2886
+wishlist-view-003|none,wishlist-view-003,none,wishlist_view,6,wishlist_view,,,1,2,False,False,,,False,carry,,False,,3306
+wishlist-view-003|none,wishlist-view-003,none,wishlist_view,7,wishlist_view,,,1,2,False,False,,,False,carry,,False,,2587
+wishlist-view-004|none,wishlist-view-004,none,wishlist_view,0,recommend,,,1,2,False,False,,,False,carry,,False,,32671
+wishlist-view-004|none,wishlist-view-004,none,wishlist_view,1,recommend,,,1,3,False,False,,,False,carry,,False,,2360
+wishlist-view-004|none,wishlist-view-004,none,wishlist_view,2,recommend,,,1,2,False,False,,,False,carry,,False,,3362
+wishlist-view-004|none,wishlist-view-004,none,wishlist_view,3,recommend,,,1,2,False,False,,,False,carry,,False,,3572
+wishlist-view-004|none,wishlist-view-004,none,wishlist_view,4,recommend,,,1,2,False,False,,,False,carry,,False,,2998
+wishlist-view-004|none,wishlist-view-004,none,wishlist_view,5,recommend,,,1,3,False,False,,,False,carry,,False,,2169
+wishlist-view-004|none,wishlist-view-004,none,wishlist_view,6,recommend,,,1,2,False,False,,,False,carry,,False,,2879
+wishlist-view-004|none,wishlist-view-004,none,wishlist_view,7,recommend,,,1,2,False,False,,,False,carry,,False,,2045
+wishlist-view-005|none,wishlist-view-005,none,wishlist_view,0,recommend,,,1,2,False,False,,,False,carry,,False,,3707
+wishlist-view-005|none,wishlist-view-005,none,wishlist_view,1,recommend,,,1,3,False,False,,,False,carry,,False,,2502
+wishlist-view-005|none,wishlist-view-005,none,wishlist_view,2,recommend,,,1,2,False,False,,,False,carry,,False,,2837
+wishlist-view-005|none,wishlist-view-005,none,wishlist_view,3,recommend,,,1,2,False,False,,,False,carry,,False,,3617
+wishlist-view-005|none,wishlist-view-005,none,wishlist_view,4,recommend,,,1,2,False,False,,,False,carry,,False,,2150
+wishlist-view-005|none,wishlist-view-005,none,wishlist_view,5,recommend,,,1,2,False,False,,,False,carry,,False,,1702
+wishlist-view-005|none,wishlist-view-005,none,wishlist_view,6,recommend,,,1,2,False,False,,,False,carry,,False,,2177
+wishlist-view-005|none,wishlist-view-005,none,wishlist_view,7,recommend,,,1,2,False,True,,|무엇이 있나요,False,replace,,False,,2130
+wishlist-view-006|none,wishlist-view-006,none,wishlist_view,0,cart_add,,,1,1,False,False,,,False,carry,,False,,3399
+wishlist-view-006|none,wishlist-view-006,none,wishlist_view,1,cart_add,,,1,2,False,False,,,False,carry,,False,,2202
+wishlist-view-006|none,wishlist-view-006,none,wishlist_view,2,cart_add,,,1,1,False,False,,,False,carry,,False,,2423
+wishlist-view-006|none,wishlist-view-006,none,wishlist_view,3,cart_add,,,1,2,False,False,,,False,carry,,False,,1846
+wishlist-view-006|none,wishlist-view-006,none,wishlist_view,4,cart_add,,,1,1,False,False,,,False,carry,,False,,1903
+wishlist-view-006|none,wishlist-view-006,none,wishlist_view,5,cart_add,,,1,1,False,False,,,False,carry,,False,,1652
+wishlist-view-006|none,wishlist-view-006,none,wishlist_view,6,cart_add,,,1,1,False,False,,,False,carry,,False,,1876
+wishlist-view-006|none,wishlist-view-006,none,wishlist_view,7,cart_add,,,1,2,False,False,,,False,carry,,False,,1701

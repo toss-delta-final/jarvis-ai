@@ -411,6 +411,37 @@ def test_degrade_notice_cannot_be_disabled_by_empty_value() -> None:
     assert Settings(_env_file=None, dedup_skipped_notice="").dedup_skipped_notice == ""
 
 
+async def test_overall_comment_markdown_collapses_to_one_line() -> None:
+    """[이슈 #570] LLM overallComment 가 `## 제목\\n| a | b |` 처럼 마크다운·개행을 실어도
+    실제 token.text 는 개행 0개인 한 줄로 나간다 — `_strip_unsafe` 가 **공백류(개행 포함)만**
+    단일 공백으로 접을 뿐, `#`·`|`·`-` 같은 문법 문자 자체는 지우지 않는다는 것도 함께 못 박는다
+    (아래 단언의 "## 제목 …"이 그 증거 — 마크다운이 "접히는" 게 아니라 개행만 접혀 표·코드펜스
+    처럼 여러 줄이 필요한 구성만 구조적으로 성립하지 못하게 된다). api-spec §3.1 `token` 렌더링
+    방식 두 번째 불릿(LLM 자유 문장은 프롬프트로만 금지하고 결정론적으로 보장하지 않는다)의
+    근거가 되는 회귀다.
+    """
+    events = await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=FakeLLM(
+                rerank={
+                    "ranked": [
+                        {"productId": 101, "rationale": "가성비가 좋아요"},
+                        {"productId": 102, "rationale": "음질이 우수해요"},
+                    ],
+                    "overallComment": "## 제목\n| a | b |\n- 목록1\n- 목록2",
+                }
+            ),
+            search=_make_search(DEFAULT_PRODUCTS),
+            push_fn=_RecordingPush(),
+        )
+    )
+    texts = " ".join(e["data"].get("text", "") for e in events if e["type"] == "token")
+    assert "\n" not in texts
+    assert "## 제목 | a | b | - 목록1 - 목록2" in texts
+
+
 async def test_push_skipped_notice_comes_from_config(monkeypatch: pytest.MonkeyPatch) -> None:
     """push 실패 안내도 config 주입이다 — 문구 정책을 한 곳에 모은다(#133)."""
     settings = get_settings()
@@ -587,6 +618,15 @@ async def test_decompose_error_maps_to_llm_code() -> None:
         )
     )
     assert ev2[-1]["data"]["code"] == "LLM_TIMEOUT"
+
+
+def test_rerank_prompt_forbids_markdown_in_overall_comment() -> None:
+    """[이슈 #570] `overallComment` 는 4종 밖 마크다운을 실을 수 있어 시스템 프롬프트가 금지
+    문장을 담고 있어야 한다 — 누가 조용히 지우면 이 트립와이어가 깨진다."""
+    from app.agents.buyer.recommendation.rerank import _SYSTEM
+
+    assert "마크다운을 쓰지 마세요" in _SYSTEM
+    assert "overallComment" in _SYSTEM.split("마크다운을 쓰지 마세요", 1)[0].rsplit("\n", 1)[-1]
 
 
 # ─────────── rerank 후보 부분집합 / 멀티턴 ───────────
@@ -1245,7 +1285,8 @@ async def test_general_reply_and_condition_chips_strip_unsafe_text() -> None:
     assert chips[0]["label"] == "카테고리 · 여행 용품"
     assert chips[0]["value"] == "여행 용품"
     assert chips[1]["label"] == "정상 브랜드"
-    assert chips[1]["value"] == ["정상 브랜드"]
+    # [이슈 #434, §3.1 v0.32.14 정정] brand 칩 value 는 스칼라다(리스트 아님) — 단일 값이어도.
+    assert chips[1]["value"] == "정상 브랜드"
 
 
 async def test_multiturn_filters_persisted_and_fed_back() -> None:
@@ -1430,7 +1471,8 @@ def test_i1_envelope_parses_review_count() -> None:
 
 
 def test_i1_envelope_parses_option_names_and_total_count() -> None:
-    """[#278] I-1 options/optionCount 를 이름 배열과 절단 전 전체 개수로 수신한다."""
+    """[#278] I-1 options/optionCount 를 이름 배열과 개수(int)로 수신한다(의미는 #508 개정 —
+    api-spec §4.6, 여기서는 파싱만 고정한다)."""
     from app.services.spring_client import _parse_search_response
 
     product = _parse_search_response(
@@ -1477,7 +1519,7 @@ def test_i1_options_over_20_preserve_product_and_unconsumed_metadata() -> None:
 
 
 def test_i1_option_count_rejects_negative_value() -> None:
-    """[#278] 절단 전 전체 옵션 개수는 음수가 될 수 없다."""
+    """[#278] optionCount 는 음수가 될 수 없다."""
     import pytest
     from pydantic import ValidationError
 
@@ -2490,6 +2532,11 @@ async def test_recommendation_deferred_conditions_keeps_search_retry(
     같은 이유로 `retrying` progress 가 이 턴에서도 나간다(api-spec §3.1 v0.32.5) —
     v0.32.4 까지는 미룬 턴이 재시도 자체를 안 해 그 프레임이 없었다.
     """
+    # [#443] 이 픽스처는 `categoryQueries: []` 인데 발화(`무선 이어폰 추천해줘`)에는 카탈로그
+    # 카테고리(`이어폰`)가 있어, 사전 기반 보강이 leg 을 채우면 흐름이 달라진다. 실제 decompose
+    # 라면 이 발화에 leg 을 내므로 그 조합은 프로덕션에 없는 픽스처 인공물이다 — 이 테스트의
+    # 주제는 I-1 재시도지 leg 산출이 아니므로 보강을 끈다(위 가드와 같은 규약).
+    monkeypatch.setattr(get_settings(), "category_leg_injection_enabled", False)
     import httpx
 
     # [#393] `ratingMin` 만 있는 턴은 payload 기준으로 무필터라 새 가드(A)가 인기 상품으로
@@ -2535,6 +2582,11 @@ async def test_recommendation_nondeferred_conditions_keeps_search_retry(
     [#393] `semanticQuery` 는 Spring payload 축이 아니라 여전히 payload 기준으로는 무필터다 —
     새 가드(A)도 함께 끈다.
     """
+    # [#443] 이 픽스처는 `categoryQueries: []` 인데 발화(`무선 이어폰 추천해줘`)에는 카탈로그
+    # 카테고리(`이어폰`)가 있어, 사전 기반 보강이 leg 을 채우면 흐름이 달라진다. 실제 decompose
+    # 라면 이 발화에 leg 을 내므로 그 조합은 프로덕션에 없는 픽스처 인공물이다 — 이 테스트의
+    # 주제는 I-1 재시도지 leg 산출이 아니므로 보강을 끈다(위 가드와 같은 규약).
+    monkeypatch.setattr(get_settings(), "category_leg_injection_enabled", False)
     import httpx
 
     # [#394] 기본값이 0으로 바뀌어 재시도 루프 자체를 켜서 검증하려면 명시 주입이 필요하다.
@@ -2580,6 +2632,11 @@ async def test_recommendation_relaxation_chip_probe_keeps_search_retry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """conditions 뒤 완화 칩 probe는 첫 이벤트 예산 밖이라 I-1 재시도를 유지한다(#277)."""
+    # [#443] 이 픽스처는 `categoryQueries: []` 인데 발화(`무선 이어폰 추천해줘`)에는 카탈로그
+    # 카테고리(`이어폰`)가 있어, 사전 기반 보강이 leg 을 채우면 흐름이 달라진다. 실제 decompose
+    # 라면 이 발화에 leg 을 내므로 그 조합은 프로덕션에 없는 픽스처 인공물이다 — 이 테스트의
+    # 주제는 I-1 재시도지 leg 산출이 아니므로 보강을 끈다(위 가드와 같은 규약).
+    monkeypatch.setattr(get_settings(), "category_leg_injection_enabled", False)
     import httpx
 
     # [#394] 기본값이 0으로 바뀌어 재시도 루프 자체를 켜서 검증하려면 명시 주입이 필요하다.
@@ -7323,3 +7380,88 @@ async def test_push_failure_does_not_load_option_hints() -> None:
 
     assert await cart_store.get_option_hint(key, 101) is None
     assert await cart_store.get_option_hint(key, 102) is None
+
+
+# ─────── #571 ordinal_span ───────
+
+
+async def test_ordinal_span_matches_list_length_for_a_single_list_push() -> None:
+    """[#571-19] 목록 1개 push → `ordinal_span` == 그 목록 길이(표시 순서 = 저장 순서 증명)."""
+    from app.agents.buyer.cart.state import get_cart_store
+
+    push = _RecordingPush()
+    request = _req(thread_id="t-571-single-list")
+    await _collect(
+        run_buyer_turn(
+            request, _member(), llm=FakeLLM(), search=_make_search(DEFAULT_PRODUCTS), push_fn=push
+        )
+    )
+    entry = _only_list(push.pushes[0])
+    key = await _thread_key(request, _member())
+    state = await (await get_cart_store()).get_last_reco_state(key)
+    assert state.ordinal_span == len(entry.product_ids)
+    assert state.ordinal_span > 0
+
+
+async def test_ordinal_span_is_zero_for_a_multi_list_push(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#571-19] 목록 2개 이상 push → `ordinal_span` == 0(전역 순번이 정의되지 않는다,
+    §2 결정 2 — 다목록 PICK_ONE 은 화면이 섹션으로 쪼개져 "3번째"가 전역 순번인지 섹션 내
+    순번인지 정의되지 않는다)."""
+    from app.agents.buyer.cart.state import get_cart_store
+    from app.agents.buyer.recommendation.category_mapping import CategoryMapping
+
+    monkeypatch.setattr(get_settings(), "expose_min", 1)
+    monkeypatch.setattr(get_settings(), "expose_max", 2)
+
+    async def _map(**kwargs):
+        return CategoryMapping(legs=[("여행용품", "여행용 파우치"), ("전자기기", "여행용 어댑터")])
+
+    async def _search(filters, exclude_product_ids=None):
+        products = (
+            [_prod(102, "여행용품", "여행용 파우치"), _prod(103, "여행용품", "압축 파우치")]
+            if filters.category == "여행용품"
+            else [_prod(201, "전자기기", "멀티 어댑터"), _prod(101, "전자기기", "여행용 어댑터")]
+        )
+        return ProductSearchResult(products=products, total_count=len(products))
+
+    push = _RecordingPush()
+    request = _req(message="여행용 파우치랑 어댑터 추천해줘", thread_id="t-571-multi-list")
+    llm = FakeLLM(
+        decompose={
+            "intent": "recommend",
+            "categoryQueries": [
+                {"category": "여행용품", "query": "여행용 파우치"},
+                {"category": "전자기기", "query": "여행용 어댑터"},
+            ],
+            "filters": {},
+            "case": 3,
+        }
+    )
+    await _collect(
+        run_buyer_turn(
+            request, _member_num(), llm=llm, search=_search, push_fn=push, map_categories=_map
+        )
+    )
+    assert len(push.pushes[0].lists) >= 2
+    key = await _thread_key(request, _member_num())
+    state = await (await get_cart_store()).get_last_reco_state(key)
+    assert state.ordinal_span == 0
+
+
+async def test_ordinal_span_matches_exposed_count_for_profile_vector_push(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#571-19] 프로필 벡터 경로도 목록 1개(PICK_ONE)라 `ordinal_span` == exposed 개수."""
+    from app.agents.buyer.cart.state import get_cart_store
+
+    thread_id = "t-571-profile-vector"
+    await _recommend_via_profile_and_get_named_reco(
+        monkeypatch, thread_id=thread_id, pids=[301, 302, 303]
+    )
+    request = _req(thread_id=thread_id)
+    key = await _thread_key(request, _member_num())
+    state = await (await get_cart_store()).get_last_reco_state(key)
+    assert state.ordinal_span == len(state.items)
+    assert state.ordinal_span > 0

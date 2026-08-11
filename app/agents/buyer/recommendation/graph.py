@@ -1049,7 +1049,11 @@ async def stream_recommendation(
                         exposed, profile_name_by_id, accumulated_names
                     )
                     await cart_store.set_last_reco(
-                        thread_key, [(pid, exposed_names.get(pid, "")) for pid in exposed]
+                        thread_key,
+                        [(pid, exposed_names.get(pid, "")) for pid in exposed],
+                        # #571 — 프로필 벡터 경로는 항상 목록 1개(`exposed`)라 표시 순서 = 저장
+                        # 순서가 성립한다.
+                        ordinal_span=len(exposed),
                     )
             else:
                 if trace := current_request_trace():
@@ -1994,11 +1998,18 @@ async def stream_recommendation(
     # 단위로 이미 번역된 턴(`expansion_grouped_by_need`)은 leaf 단위가 아니라 니즈 단위이므로
     # 이 가드에서 예외로 둔다(#168 이 의도적으로 바꾼 지점, PR #318 R12-2 고정 테스트가 예고).
     # `buy_all_mode`(아래)도 이 값을 참조하므로 니즈 단위 예산 세트(BUY_ALL)도 같이 열린다.
+    # [이슈 #434 라운드2] 복원 턴(값 지정 category 제거가 남은 집합을 멀티 leg 으로 되살린 턴,
+    # `category_legs_restored`)도 category_expanded 와 같은 이유로 니즈 경계 분할에서 뺀다 —
+    # 이 멀티 leg 은 새 니즈 전개가 아니라 사용자가 지운 뒤 **남은 조건 집합**이다(#51 표시=실제).
+    # 우연히 case==3 이 되는 턴이 와도(예: LLM 이 이번 발화를 목적형으로 오분류) 목록이 니즈별로
+    # 쪼개지면 buy_all_mode·expose_budget·need_priority_gate 까지 함께 열려 버려 사용자가 기대한
+    # "그 카테고리만 뺀 같은 목록"과 다른 결과가 나간다.
     split_by_need = (
         decision.case == 3
         and len(need_legs) > 1
         and bool(leg_of)
         and (not decision.category_expanded or expansion_grouped_by_need)
+        and not decision.category_legs_restored
     )
     buy_all_mode = settings.budget_set_enabled and decision.buy_all and split_by_need
 
@@ -2700,6 +2711,10 @@ async def stream_recommendation(
                 thread_key,
                 [(pid, name_by_id.get(pid, "")) for pid in ranked_ids],
                 option_hints=option_hints,
+                # #571 — 표시 순서 = 저장 순서는 목록이 정확히 1개일 때만 성립한다(BUY_ALL 은
+                # 세트 간 중복이 dedup 로 접혀 화면 칸 수와 저장 건수가 어긋나고, 다목록 PICK_ONE
+                # 은 화면이 섹션으로 쪼개져 전역 순번이 정의되지 않는다 — §2 결정 2).
+                ordinal_span=len(push.lists[0].product_ids) if len(push.lists) == 1 else 0,
             )
     else:
         # push 실패 → products.ready 없음. rerank 코멘트가 "찾았다"고 했으니 목록 지연을 고지하고

@@ -5,6 +5,18 @@
 SPEC-UNDERSPECIFIED-336 §7.3 이 남긴 게이트 잔여 항목 1("실 LLM decompose 가 판정 축을 실제
 발화에서 얼마나 정확히 산출하는지는 실측하지 않았다")을 채운다.
 
+## #465 팔
+
+`--arm before`는 원 decompose 결과, `--arm postprocess`는 head 후처리 주입, `--arm dedicated`는
+**evals 전용** 짧은 불리언 LLM 호출을 뜻한다. dedicated가 “지목 안 함”을 반환하면 `RouteDecision`
+사본의 `category_queries`를 비우고, 원 semantic query가 제거한 단일 leg query와 같을 때만
+`semantic_query_is_fallback=True`으로 뒤집어 파싱부 파생식을 재현한 뒤 프로덕션
+`is_underspecified_turn`을 다시 호출한다; 다른 semantic query(LLM 직접 신호)는 False를 유지하며,
+두 문자열이 우연히 같은 모호 표본은 `dedicatedFallbackAmbiguous`로 남긴다. leg만 비우고 fallback을
+무조건 True로 두면
+parsing부 후처리와 동등하지 않아 측정 대상이 달라진다. 호출 실패는 원 decompose 결정을 유지하는
+degrade이며, 표본별 호출 여부·판정 뒤집힘·실패는 `dedicated*` 진단 필드로 남긴다.
+
 ## 무엇을 재는가
 
 발화 1건 → `decompose` 1회 호출 → 그 `RouteDecision` 을 `is_underspecified_turn` 에 그대로 넣어

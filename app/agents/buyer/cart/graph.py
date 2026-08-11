@@ -5,15 +5,18 @@
       다음 턴 사용자 답을 optionId 로 해석해 재담기(§4.1 멀티턴). 단 후보가 1개뿐이면 되묻지
       않고 그 옵션으로 즉시 재담기한다(이슈 #114). 이번 발화 조건으로 후보가 정확히 1개로
       좁혀져도 마찬가지로 되묻지 않고 담는다(이슈 #455, I-1 options·optionCount 소비 —
-      담기 권위는 여전히 I-2 이고 optionId 는 그 400 응답에서만 온다). 담기 전 get_cart(§4.9)로
-      기존 보유를 확인해 합산 안내(조회 실패 시에도 담기 진행, degrade).
+      담기 권위는 여전히 I-2 이고 optionId 는 그 400 응답에서만 온다). 옵션이 안 좁혀지면
+      승인된 색상 동의어 사전(#258/#505)으로 조건어·옵션명 표기 이형("검정"↔"블랙")까지 보고
+      다시 좁히고(이슈 #454), 그래도 색상 조건이 안 맞으면 "없다/품절"이라 단정하지 않고
+      "찾지 못했어요"로만 안내한다(패킷 §3 — 승인 사전 밖 표기일 수 있어 단정할 근거가 없다).
+      담기 전 get_cart(§4.9)로 기존 보유를 확인해 합산 안내(조회 실패 시에도 담기 진행, degrade).
 조회: get_cart(I-18) → token 텍스트 답변(별도 이벤트 없음, §3.1).
 게스트 담기 허용(userId|guestId, §4.1) — 신원은 JWT sub 유래(요청 본문 불신).
 """
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 import logging
 
 from pydantic import ValidationError
@@ -24,7 +27,12 @@ from app.agents.buyer.cart.intent_guard import (
     classify_cart_utterance,
     has_wishlist_remove_evidence,
 )
-from app.agents.buyer.cart.options import OptionHint, narrow_options
+from app.agents.buyer.cart.options import (
+    OptionHint,
+    color_condition_terms,
+    narrow_options,
+    options_have_color_axis,
+)
 from app.agents.buyer.cart.purchase_state import state_advice_lines, state_suffix
 from app.agents.buyer.cart.quantity import stream_cart_quantity_change
 from app.agents.buyer.cart.remove import stream_cart_remove
@@ -68,9 +76,53 @@ def _has_surcharge(option: CartOption) -> bool:
 
 
 def _options_text(options: list[CartOption]) -> str:
-    """옵션 목록을 되물음 문구로 나열한다 — 추가금(extraPrice)이 있으면 함께 표시."""
+    """옵션 목록을 되물음 문구로 나열한다 — 추가금(extraPrice)이 있으면 함께 표시.
+
+    구분자는 `"\\n"`(이슈 #570) — 옵션명 자체에 `/` 가 흔해(로컬 카탈로그 21,373행 실측,
+    2026-08-10, 11,480건=53.7%가 `/` 포함) `" / "` 로 이으면 `블랙 / M`, `화이트 / M` 두 개가
+    `블랙 / M / 화이트 / M` 으로 붙어 네 개처럼 읽혔다. #118·#455 이후 지켜온 "되물음 문구는
+    한 글자도 바꾸지 않는다" 규약을 이 실측 근거로 의도적으로 푼다.
+    """
     parts = [label for opt in options if (label := _option_label(opt))]
-    return " / ".join(parts) if parts else "옵션"
+    return "\n".join(parts) if parts else "옵션"
+
+
+def _options_prompt(lead: str, options: list[CartOption], tail: str = "") -> str:
+    """'안내 줄 → 옵션 줄들 → 마무리 줄' 로 되물음 문구를 조립한다(이슈 #570).
+
+    옵션 하나가 한 줄을 온전히 차지하게 해 구분자를 없앤다 — 옵션명의 53.7%(로컬 카탈로그
+    21,373행 실측, 2026-08-10)가 `/` 를 포함해 한 줄 나열은 개수가 오독됐다.
+    옵션 줄에는 구두점을 붙이지 않는다(사용자가 옵션명을 그대로 복사해 답한다).
+    """
+    lines = [lead, _options_text(options)]
+    if tail:
+        lines.append(tail)
+    return "\n".join(lines)
+
+
+async def _load_cart_color_synonyms(settings) -> Mapping[str, Sequence[str]] | None:
+    """옵션 되물음(§2-B, 이슈 #454)에 쓸 색상 동의어 사전을 적재한다 — 실패·설정 off는 오늘 문구로
+    degrade(예외를 담기 흐름으로 올리지 않는다).
+
+    `spring_client._load_color_synonym_map` 을 재사용한다(패킷 §2-A-4) — I-1 색상 확장(#258)과
+    같은 캐시·동시 실행 상한·negative caching 을 공유해 두 번째 적재 경로를 만들지 않는다.
+    `color_synonym_expansion_enabled`(I-1 배선 게이트) 가 아니라 `cart_option_color_synonym_
+    enabled` 를 보는 이유는 그 필드의 docstring 참조(§2-A-5) — `color_synonym_expansion_enabled`
+    는 BE `color[]` 배열 계약 준비 신호라 전제가 다르다. 이 함수는 그 계약과 무관하게 항상
+    켤 수 있다.
+    """
+    if not settings.cart_option_color_synonym_enabled:
+        return None
+    try:
+        mapping = await spring_client._load_color_synonym_map(settings)
+    except Exception:
+        _log.warning("장바구니 색상 동의어 적재 실패 — 오늘 되물음 문구로 degrade", exc_info=True)
+        mapping = None
+    if mapping is None:
+        if trace := current_request_trace():
+            trace.mark_degraded("cart_option_color_synonym_skipped")
+        return None
+    return mapping
 
 
 def _cart_option_required_text(
@@ -80,26 +132,44 @@ def _cart_option_required_text(
     condition_terms: Sequence[str],
     hint: OptionHint | None,
     settings,
+    color_synonyms: Mapping[str, Sequence[str]] | None = None,
 ) -> str:
-    """CART_OPTION_REQUIRED 되물음 문구(이슈 #455) — 세 갈래.
+    """CART_OPTION_REQUIRED 되물음 문구(이슈 #455, #454, #508) — 네 갈래.
 
-    (a) 400 목록이 비었는데 I-1 힌트 이름이 있으면 그 이름으로 되묻는다(오늘은
-        `_options_text([])` 가 "옵션" 이라 아무 도움이 안 되는 문구가 나갔다).
+    (a) 400 목록이 비었을 때 — 두 갈래로 더 나뉜다.
+        - I-1 힌트 이름이 있으면 그 이름으로 되묻는다(오늘은 `_options_text([])` 가 "옵션"
+          이라 아무 도움이 안 되는 문구가 나갔다).
+        - [이슈 #508] 힌트 이름도 없으면 **품절 안내로 degrade** 한다. 신 계약(BE 가
+          `error.detail.options` 를 I-1 과 같은 "구매 가능한 것" 기준으로 필터, api-spec §4.1)
+          에서는 남은 옵션이 없으면 `CART_OPTION_REQUIRED` 대신 `CART_STOCK_INSUFFICIENT` 로
+          와야 하므로 이 경로는 방어(드리프트·계약 위반 대비)다. 여기서는 재고를 단정해도
+          된다 — **I-2 가 "옵션이 필수인데 고를 게 하나도 없다"고 말한 사실**에 근거하기
+          때문이다((c) 갈래의 색상 단정 금지와는 상황이 다르다 — 그건 옵션명 표기 추론이고
+          이건 목록이 비었다는 사실이다).
     (b) 400 목록이 있고 누적 조건(`by_condition`)으로 좁혀지면 좁힌 목록만 실은 문구.
-    (c) 그 외 — **오늘 문구를 한 글자도 바꾸지 않는다.**
+        `color_synonyms`(이슈 #454)를 주면 이 좁히기가 색상 이형 표기(조건어 "검정" ↔
+        옵션명 "블랙")까지 등가로 본다(`narrow_options` R2 확장, `_select_auto_option`/R1 은
+        건드리지 않는다).
+    (c) [이슈 #454] (b)로도 안 좁혀졌는데(0건 — `condition_matched_all` 로 전건 일치와 구별),
+        조건어 중 색상어가 있고, 옵션 목록이 색상 축을 실제로 담고 있고, 사전이 있으면 —
+        "그 색은 없다/품절이다"라고 **단정하지 않고** 못 찾았다고만 말한다(패킷 §3, 승인 사전
+        밖 표기·SKU 코드일 수 있어 없다고 잘라 말할 근거가 없다). 이 갈래는 실측상 색상 조건
+        턴의 3.3%에서만 발동한다(docs/specs/MEASURE-OPTION-COLOR-454.md §2) — 나머지는 (d)로
+        그대로 떨어진다.
+    (d) 그 외 — **오늘 문구를 한 글자도 바꾸지 않는다.**
     """
     if not options:
         if hint is not None and hint.names:
             names = [name for raw in hint.names if (name := _strip_unsafe(raw))]
             if names:
-                names_text = " / ".join(names)
+                # 이슈 #570 — 이 갈래는 CartOption 이 아니라 str 이름 목록을 다뤄 _options_prompt
+                # 를 쓸 수 없다 — 줄 구성만 같게 맞춘다.
+                lines = ["옵션을 선택해 주세요:", *names]
                 if hint.total is not None and hint.total > len(names):
-                    return (
-                        f"옵션을 선택해 주세요: {names_text} 외 {hint.total - len(names)}개. "
-                        "어떤 걸로 담을까요?"
-                    )
-                return f"옵션을 선택해 주세요: {names_text}. 어떤 걸로 담을까요?"
-        return f"옵션을 선택해 주세요: {_options_text(options)}. 어떤 걸로 담을까요?"
+                    lines.append(f"외 {hint.total - len(names)}개")
+                lines.append("어떤 걸로 담을까요?")
+                return "\n".join(lines)
+        return "지금은 고를 수 있는 옵션이 없어요. 품절된 것 같아요. 다른 상품을 보여드릴까요?"
 
     narrowing = narrow_options(
         options,
@@ -107,13 +177,27 @@ def _cart_option_required_text(
         terms=condition_terms,
         min_term_len=settings.cart_option_narrow_min_term_len,
         match_suffixes=settings.cart_option_match_suffixes,
+        color_synonyms=color_synonyms,
     )
     if narrowing.by_condition:
-        return (
-            f"말씀하신 조건에 맞는 옵션이에요: {_options_text(list(narrowing.by_condition))}. "
-            "이 중에서 고르시거나 다른 옵션을 말씀해 주세요."
+        return _options_prompt(
+            "말씀하신 조건에 맞는 옵션이에요:",
+            list(narrowing.by_condition),
+            "이 중에서 고르시거나 다른 옵션을 말씀해 주세요.",
         )
-    return f"옵션을 선택해 주세요: {_options_text(options)}. 어떤 걸로 담을까요?"
+    if (
+        color_synonyms is not None
+        and not narrowing.condition_matched_all
+        and (color_terms := color_condition_terms(condition_terms, color_synonyms))
+        and options_have_color_axis(options, color_synonyms)
+    ):
+        color_terms_text = " · ".join(_strip_unsafe(term) for term in color_terms)
+        return _options_prompt(
+            f"'{color_terms_text}' 조건에 맞는 옵션은 찾지 못했어요. 고를 수 있는 옵션은 이거예요:",
+            options,
+            "이 중에서 고르시거나 다른 상품을 말씀해 주세요.",
+        )
+    return _options_prompt("옵션을 선택해 주세요:", options, "어떤 걸로 담을까요?")
 
 
 def _all_spans(text: str, needle: str) -> list[tuple[int, int]]:
@@ -563,12 +647,16 @@ async def stream_cart_add(
                 product_id=product_id, quantity=quantity, options=exc.options, attempts=attempts
             ),
         )
+        # 색상 동의어 사전 적재(이슈 #454)는 **여기서만** — 담기 성공 경로에 DB 왕복을 새로 얹지
+        # 않는다(패킷 §2-A-4). 목록이 비면(a 갈래) 어차피 안 쓰이므로 로드조차 건너뛴다.
+        color_synonyms = await _load_cart_color_synonyms(settings) if exc.options else None
         text = _cart_option_required_text(
             exc.options,
             message=message,
             condition_terms=condition_terms,
             hint=hint,
             settings=settings,
+            color_synonyms=color_synonyms,
         )
         yield sse("token", TokenData(text=text).model_dump(by_alias=True))
         yield _done()
@@ -597,7 +685,7 @@ async def stream_cart_add(
         yield sse(
             "token",
             TokenData(
-                text=f"그 옵션을 찾지 못했어요. 다시 골라 주세요: {_options_text(exc.options)}"
+                text=_options_prompt("그 옵션을 찾지 못했어요. 다시 골라 주세요:", exc.options)
             ).model_dump(by_alias=True),
         )
         yield _done()
