@@ -807,6 +807,31 @@ async def get_recommendation(rec_id: UUID, *, brand_id: int) -> RecommendationRe
     return await run_with_query_timeout(_run())
 
 
+async def list_recommendations(report_id: UUID, *, brand_id: int) -> list[RecommendationRecord]:
+    """보고서에 딸린 추천을 rank 오름차순으로 반환한다 — "N번 적용해줘"의 N 이 곧 rank 다.
+
+    `brand_id` 필수(`get_report` 관행) — report_id 만으로 조회하면 남의 브랜드 추천이
+    열린다(IDOR). 정렬이 `UNIQUE (report_id, rank)` 를 그대로 따르므로 호출부는 목록
+    순서와 rank 를 같은 것으로 다룰 수 있다.
+    """
+    pool = await _get_pool()
+    if pool is None:
+        return []
+
+    async def _run() -> list[RecommendationRecord]:
+        async with pool.connection() as conn:
+            cur = await conn.execute(
+                "SELECT * FROM seller_analysis_recommendations "
+                "WHERE report_id = %s AND brand_id = %s ORDER BY rank",
+                (report_id, brand_id),
+            )
+            return [
+                _row_to(RecommendationRecord, cur.description, row) for row in await cur.fetchall()
+            ]
+
+    return await run_with_query_timeout(_run())
+
+
 async def find_by_draft_id(draft_id: str) -> RecommendationRecord | None:
     """draft_id(AI 발급 단명 토큰)로 조회 — `brand_id` 필터가 없는 유일한 조회 API.
 

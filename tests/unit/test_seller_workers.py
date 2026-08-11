@@ -192,15 +192,24 @@ def test_builder_compiles(analysis_type, tools, prompt, builder, expected) -> No
 
 
 def test_general_tool_assignment() -> None:
-    """배정표(HANDOFF §3, #297 확장) — 조회 5종 + calculate + 기준서, 쓰기 0."""
+    """[#591] search 레인 배정표 — 조회 11종 + get_latest_report, 쓰기 0.
+
+    스냅샷으로 고정하는 이유: 이 목록이 곧 GENERAL_PROMPT 3번 "지원 범위" 문구의 근거다.
+    한쪽만 늘면 프롬프트가 없는 도구를 약속하거나 있는 도구를 감춘다.
+    """
     assert {t.name for t in GENERAL_TOOLS} == {
         "get_sales_timeseries",
+        "get_funnel",  # [#591] I-7
+        "get_behavior_events",  # [#591] I-13
         "get_order_events",
         "get_orders",  # [#297] I-29 현재 상태 스냅샷
+        "get_product_change_logs",  # [#591] I-15
+        "get_churn_cohort",  # [#591] I-16
+        "get_account_events",  # [#591] I-8
         "get_reviews",  # [#297] I-31 리뷰 단순 조회
         "list_my_products",
         "calculate",
-        "search_analysis_guide",
+        "get_latest_report",  # [#591] 보고서 조회는 이 하나뿐(결정 10)
     }
     write_names = {t.name for t in PRODUCT_TOOLS} - {"list_my_products"}
     assert {t.name for t in GENERAL_TOOLS}.isdisjoint(write_names)
@@ -209,6 +218,16 @@ def test_general_tool_assignment() -> None:
     for t in GENERAL_TOOLS:
         for hidden in ("runtime", "brand_id", "seller_id"):
             assert hidden not in t.args
+
+
+def test_general_lane_does_not_bind_permanent_stub() -> None:
+    """[#591] 영구 스텁(search_analysis_guide)은 search 레인에 없다.
+
+    항상 "Error:" 를 돌려주는 도구가 바인딩돼 있으면 LLM 이 용어 질문에 그걸 호출하고
+    실패를 판매자에게 그대로 안내한다 — 도구가 없느니만 못한 상태였다. 분석 워커 6종의
+    바인딩은 상주 파이프라인 소관이라 건드리지 않았으므로, 여기서 **부재만** 고정한다.
+    """
+    assert "search_analysis_guide" not in {t.name for t in GENERAL_TOOLS}
 
 
 def test_general_prompt_principles() -> None:

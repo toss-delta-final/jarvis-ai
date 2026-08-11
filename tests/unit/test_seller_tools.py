@@ -6,14 +6,20 @@ DESIGN-SELLER-TOOLS-STAGE1 §6 테스트 목록. 실 Spring 호출 없이 FakeSp
 
 from __future__ import annotations
 
+from datetime import UTC, date, datetime
+from uuid import UUID
+
 from langchain_core.tools import BaseTool
 
+from app.agents.seller.analysis_records import RecommendationRecord, ReportRecord
 from app.agents.seller.context import SellerContext
+from app.agents.seller import tools as seller_tools
 from app.agents.seller.tools import (
     ORDER_WRITE_TOOLS,
     PRODUCT_TOOLS,
     READ_TOOLS,
     get_account_events,
+    get_latest_report,
     get_behavior_events,
     get_churn_cohort,
     get_funnel,
@@ -2725,3 +2731,92 @@ async def test_period_arg_guard_skips_optional_unset_period() -> None:
     result = await _call_runtime_tool(get_orders, {}, fake)
 
     assert not result.startswith("Error:")
+
+
+# ── [#591] get_latest_report — 보고서 조회 도구는 이것 하나뿐(결정 10) ──────────
+
+
+def _report(brand_id: int = 42) -> ReportRecord:
+    return ReportRecord(
+        id=UUID("11111111-1111-4111-8111-111111111111"),
+        brand_id=brand_id,
+        trigger_type="scheduled_daily",
+        period_from=date(2026, 8, 3),
+        period_to=date(2026, 8, 9),
+        title="주간 매출 진단",
+        summary="전환율이 결제 단계에서 유의하게 떨어졌습니다.",
+        report_md="# 본문",
+        verified=True,
+        attempts=1,
+        created_at=datetime(2026, 8, 10, 5, 0, tzinfo=UTC),
+    )
+
+
+def _recommendation(rank: int, title: str) -> RecommendationRecord:
+    return RecommendationRecord(
+        id=UUID(f"2222222{rank}-2222-4222-8222-222222222222"),
+        report_id=UUID("11111111-1111-4111-8111-111111111111"),
+        brand_id=42,
+        rank=rank,
+        action_type="price_adjust",
+        title=title,
+        rationale="근거",
+    )
+
+
+async def test_get_latest_report_returns_summary_and_ranked_recommendations(
+    monkeypatch,
+) -> None:
+    """요약 + rank 번호가 함께 나간다 — 채팅에서 바로 "N번 적용해줘"로 이어지는 근거다."""
+
+    async def _reports(brand_id: int, *, limit: int):
+        assert (brand_id, limit) == (42, 1)
+        return [_report()]
+
+    async def _recs(report_id, *, brand_id: int):
+        assert brand_id == 42
+        return [_recommendation(1, "가격 인하"), _recommendation(2, "재고 보충")]
+
+    monkeypatch.setattr(seller_tools.analysis_store, "list_reports", _reports)
+    monkeypatch.setattr(seller_tools.analysis_store, "list_recommendations", _recs)
+
+    result = await get_latest_report.coroutine(runtime=FakeRuntime())
+
+    assert not result.startswith("Error:")
+    assert "주간 매출 진단" in result
+    assert "2026-08-03~2026-08-09" in result  # 보고서 기간을 그대로 인용한다
+    assert "1. 가격 인하" in result and "2. 재고 보충" in result
+
+
+async def test_get_latest_report_empty_is_not_an_error(monkeypatch) -> None:
+    """보고서 0건은 장애가 아니다 — "Error:" 로 나가면 한 번도 분석된 적 없음이 고장으로 안내된다."""
+
+    async def _reports(brand_id: int, *, limit: int):
+        return []
+
+    monkeypatch.setattr(seller_tools.analysis_store, "list_reports", _reports)
+
+    result = await get_latest_report.coroutine(runtime=FakeRuntime())
+
+    assert not result.startswith("Error:")
+    assert "아직" in result
+
+
+async def test_get_latest_report_degrades_on_store_failure(monkeypatch) -> None:
+    """조회 장애는 degrade 문자열(§3.4) — raise 하면 스트림이 통째로 죽는다."""
+
+    async def _boom(brand_id: int, *, limit: int):
+        raise RuntimeError("pool down")
+
+    monkeypatch.setattr(seller_tools.analysis_store, "list_reports", _boom)
+
+    result = await get_latest_report.coroutine(runtime=FakeRuntime())
+
+    assert result.startswith("Error:")
+
+
+async def test_get_latest_report_never_takes_brand_id_arg() -> None:
+    """신원은 runtime.context 에서만 온다 — 인자로 열면 남의 보고서를 읽는다(IDOR)."""
+    tool = next(t for t in READ_TOOLS if t.name == "get_latest_report")
+
+    assert set(tool.args) == set()
