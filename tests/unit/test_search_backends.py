@@ -147,6 +147,30 @@ async def test_embedding_rerank_embeds_semantic_query_not_keyword(monkeypatch):
     assert [p.product_id for p in result.products][0] == 1  # keyword 없어도 재정렬됨
 
 
+async def test_embedding_rerank_receives_product_anchor_with_structured_filters(monkeypatch):
+    """[#603] 임베딩 경계는 구조화 필터와 함께 보정된 상품 앵커를 사용한다."""
+    store = _seed_store()
+    embedded: list[str] = []
+
+    def spy_embed(texts):
+        embedded.append(texts[0])
+        return _embed(texts)
+
+    async def fake_search(filters):
+        return ProductSearchResult(
+            products=[SpringProduct(product_id=i, name=f"p{i}", price=10) for i in (3, 2, 1)],
+            total_count=3,
+        )
+
+    monkeypatch.setattr(spring_client, "search_products", fake_search)
+    backend = EmbeddingRerankBackend(store=store, embed=spy_embed)
+    await backend.search(
+        ProductSearchFilters(semantic_query="바지", price_max=30000, color="파란색", limit=10)
+    )
+
+    assert embedded == ["바지"]
+
+
 async def test_embedding_rerank_degrades_to_spring_order_on_embed_failure(monkeypatch):
     """[#101 #7] 임베딩/pgvector 실패 시 추천 전체를 죽이지 않고 Spring 순서로 degrade한다.
 
