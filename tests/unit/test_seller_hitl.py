@@ -1445,28 +1445,86 @@ def test_gate_commits_attempted_at_before_execute_commits_result() -> None:
     )
 
 
-def test_confirm_unknown_when_only_attempted_at_committed() -> None:
-    """gate 커밋(attempted_at)만 있고 execute 커밋(result)이 없는 상태 — 절단·크래시로
-    실행 결과를 알 수 없는 창을 재현한다. confirm 은 unknown 을 반환하고 자동 재실행하지
-    않는다(#621 ①)."""
+def test_confirm_unknown_when_own_resume_hits_wait_for_cap(monkeypatch) -> None:
+    """[재현, LangGraph 1.2.9 실측] gate 는 interrupt 가 한 번 풀리면 재시도에서
+    다시 실행되지 않는다(그 다음부턴 execute 만 재스케줄) — 그래서 "attempted_at
+    有·result 無"는 방금 SpringUnavailableError 로 명확히 실패한 상태(재confirm
+    허용, 아래 retryable 테스트들)에서도 그대로 남아, 그 값만으로는 unknown 을 판단할
+    수 없다. unknown 은 confirm_draft **자신의** resume 시도가 execute 도중
+    wait_for 상한에 걸렸을 때만 낸다 — 이 테스트는 그 상황을 실제로 재현한다."""
     spring = _StubSpring()
     set_spring_client(spring)
     record = _record()
 
+    real = hitl.get_settings()
+    monkeypatch.setattr(
+        hitl,
+        "get_settings",
+        lambda: real.model_copy(update={"seller_confirm_execute_timeout_s": 0.05}),
+    )
+
+    original_update = spring.update_product
+
+    async def hanging_update(*args, **kwargs):
+        await asyncio.sleep(1.0)
+        return await original_update(*args, **kwargs)
+
+    spring.update_product = hanging_update
+
     async def run():
         await hitl.start_draft(record)
+        outcome = await hitl.confirm_draft(record.draft_id, seller_id=7, brand_id=3)
         graph = await hitl._get_graph()
-        await graph.aupdate_state(
-            hitl._thread_config(record.draft_id),
-            {"attempted_at": datetime.now(UTC).isoformat()},
-            as_node="gate",
-        )
-        return await hitl.confirm_draft(record.draft_id, seller_id=7, brand_id=3)
+        snapshot = await graph.aget_state(hitl._thread_config(record.draft_id))
+        return outcome, snapshot
 
-    outcome = asyncio.run(run())
+    outcome, snapshot = asyncio.run(run())
 
     assert outcome.status == "unknown"
-    assert spring.write_calls() == []  # execute 미호출 — 자동 재실행하지 않는다
+    assert spring.write_calls() == []  # Spring 요청이 잘려 실제로 나가지 않았다
+    # gate 커밋(attempted_at)은 남고 execute 는 다음 confirm 이 재시도할 대상으로 대기한다.
+    assert snapshot.values.get("attempted_at")
+    assert not snapshot.values.get("result")
+    assert snapshot.next == ("execute",)
+
+
+def test_confirm_after_unknown_can_still_retry(monkeypatch) -> None:
+    """unknown 은 그 호출 한정 판정이다 — 다음 confirm 은 wait_for 상한 없이 정상
+    재시도해 완주할 수 있다(#621, 사용자에게 "상품 목록에서 확인 후 안 됐으면 다시
+    말씀해달라" 안내만 하고 draft 자체는 죽이지 않는다는 계약의 실측 확인)."""
+    spring = _StubSpring()
+    set_spring_client(spring)
+    record = _record()
+
+    real = hitl.get_settings()
+    monkeypatch.setattr(
+        hitl,
+        "get_settings",
+        lambda: real.model_copy(update={"seller_confirm_execute_timeout_s": 0.05}),
+    )
+
+    original_update = spring.update_product
+    hang = {"on": True}
+
+    async def maybe_hanging_update(*args, **kwargs):
+        if hang["on"]:
+            await asyncio.sleep(1.0)
+        return await original_update(*args, **kwargs)
+
+    spring.update_product = maybe_hanging_update
+
+    async def run():
+        await hitl.start_draft(record)
+        first = await hitl.confirm_draft(record.draft_id, seller_id=7, brand_id=3)
+        hang["on"] = False
+        second = await hitl.confirm_draft(record.draft_id, seller_id=7, brand_id=3)
+        return first, second
+
+    first, second = asyncio.run(run())
+
+    assert first.status == "unknown"
+    assert second.status == "executed"
+    assert len(spring.write_calls()) == 1  # 실제로 나간 쓰기는 재시도 1회뿐
 
 
 def test_confirm_survives_outer_cancellation_via_shield() -> None:
