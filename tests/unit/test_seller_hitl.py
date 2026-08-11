@@ -1403,3 +1403,209 @@ def test_validate_draft_delete_without_status_change_normalizes_to_empty() -> No
     )
     assert problem is None and record is not None
     assert record.changes == []
+
+
+# ── 이슈 #621 — confirm 멱등(gate/execute 2노드 분리) ────────────────────────────
+
+
+def test_gate_commits_attempted_at_before_execute_commits_result() -> None:
+    """[증명, 이 이슈의 첫 커밋] gate 노드의 attempted_at 커밋이 execute 노드의 result
+    커밋보다 먼저 체크포인트 이력에 영속화된다 — LangGraph super-step 커밋 타이밍이라는
+    이 이슈의 전제를 확인한다. 이 전제가 깨지면 graph.aupdate_state 로 attempted_at 을
+    직접 쓰는 대안으로 전환한다(이슈 본문 대안)."""
+    spring = _StubSpring()
+    set_spring_client(spring)
+    record = _record()
+
+    async def run():
+        await hitl.start_draft(record)
+        await hitl.confirm_draft(record.draft_id, seller_id=7, brand_id=3)
+        graph = await hitl._get_graph()
+        history = [
+            state
+            async for state in graph.aget_state_history(hitl._thread_config(record.draft_id))
+        ]
+        return history
+
+    history = asyncio.run(run())
+
+    attempted_only = [
+        s for s in history if s.values.get("attempted_at") and not s.values.get("result")
+    ]
+    has_result = [s for s in history if s.values.get("result")]
+    assert attempted_only, "gate 커밋(attempted_at 단독)이 체크포인트 이력에 없다"
+    assert has_result, "execute 커밋(result)이 체크포인트 이력에 없다"
+    # created_at 타임스탬프로 직접 비교한다(이력 순서 규약에 기대지 않는 독립적 증거) —
+    # attempted_at 단독 체크포인트가 result 있는 체크포인트보다 시간상 앞서야 한다.
+    attempted_at_ts = min(s.created_at for s in attempted_only if s.created_at)
+    result_ts = min(s.created_at for s in has_result if s.created_at)
+    assert attempted_at_ts < result_ts, (
+        "attempted_at 커밋이 result 커밋보다 먼저 영속화되지 않았다 — "
+        "super-step 커밋 전제가 깨졌다"
+    )
+
+
+def test_confirm_unknown_when_own_resume_hits_wait_for_cap(monkeypatch) -> None:
+    """[재현, LangGraph 1.2.9 실측] gate 는 interrupt 가 한 번 풀리면 재시도에서
+    다시 실행되지 않는다(그 다음부턴 execute 만 재스케줄) — 그래서 "attempted_at
+    有·result 無"는 방금 SpringUnavailableError 로 명확히 실패한 상태(재confirm
+    허용, 아래 retryable 테스트들)에서도 그대로 남아, 그 값만으로는 unknown 을 판단할
+    수 없다. unknown 은 confirm_draft **자신의** resume 시도가 execute 도중
+    wait_for 상한에 걸렸을 때만 낸다 — 이 테스트는 그 상황을 실제로 재현한다."""
+    spring = _StubSpring()
+    set_spring_client(spring)
+    record = _record()
+
+    real = hitl.get_settings()
+    monkeypatch.setattr(
+        hitl,
+        "get_settings",
+        lambda: real.model_copy(update={"seller_confirm_execute_timeout_s": 0.05}),
+    )
+
+    original_update = spring.update_product
+
+    async def hanging_update(*args, **kwargs):
+        await asyncio.sleep(1.0)
+        return await original_update(*args, **kwargs)
+
+    spring.update_product = hanging_update
+
+    async def run():
+        await hitl.start_draft(record)
+        outcome = await hitl.confirm_draft(record.draft_id, seller_id=7, brand_id=3)
+        graph = await hitl._get_graph()
+        snapshot = await graph.aget_state(hitl._thread_config(record.draft_id))
+        return outcome, snapshot
+
+    outcome, snapshot = asyncio.run(run())
+
+    assert outcome.status == "unknown"
+    assert spring.write_calls() == []  # Spring 요청이 잘려 실제로 나가지 않았다
+    # gate 커밋(attempted_at)은 남고 execute 는 다음 confirm 이 재시도할 대상으로 대기한다.
+    assert snapshot.values.get("attempted_at")
+    assert not snapshot.values.get("result")
+    assert snapshot.next == ("execute",)
+
+
+def test_confirm_after_unknown_can_still_retry(monkeypatch) -> None:
+    """unknown 은 그 호출 한정 판정이다 — 다음 confirm 은 wait_for 상한 없이 정상
+    재시도해 완주할 수 있다(#621, 사용자에게 "상품 목록에서 확인 후 안 됐으면 다시
+    말씀해달라" 안내만 하고 draft 자체는 죽이지 않는다는 계약의 실측 확인)."""
+    spring = _StubSpring()
+    set_spring_client(spring)
+    record = _record()
+
+    real = hitl.get_settings()
+    monkeypatch.setattr(
+        hitl,
+        "get_settings",
+        lambda: real.model_copy(update={"seller_confirm_execute_timeout_s": 0.05}),
+    )
+
+    original_update = spring.update_product
+    hang = {"on": True}
+
+    async def maybe_hanging_update(*args, **kwargs):
+        if hang["on"]:
+            await asyncio.sleep(1.0)
+        return await original_update(*args, **kwargs)
+
+    spring.update_product = maybe_hanging_update
+
+    async def run():
+        await hitl.start_draft(record)
+        first = await hitl.confirm_draft(record.draft_id, seller_id=7, brand_id=3)
+        hang["on"] = False
+        second = await hitl.confirm_draft(record.draft_id, seller_id=7, brand_id=3)
+        return first, second
+
+    first, second = asyncio.run(run())
+
+    assert first.status == "unknown"
+    assert second.status == "executed"
+    assert len(spring.write_calls()) == 1  # 실제로 나간 쓰기는 재시도 1회뿐
+
+
+def test_confirm_survives_outer_cancellation_via_shield() -> None:
+    """[증명] confirm_draft 를 감싼 바깥 태스크가 취소돼도 asyncio.shield 덕분에 내부
+    resume 실행은 끝까지 돈다 — Spring 쓰기가 나간 뒤 절단되면 checkpoint 미기록으로
+    재confirm 시 중복 등록되는 문제(#621 ①)를 막는다."""
+    spring = _StubSpring()
+    set_spring_client(spring)
+    record = _record()
+
+    original_update = spring.update_product
+
+    async def slow_update(*args, **kwargs):
+        await asyncio.sleep(0.2)
+        return await original_update(*args, **kwargs)
+
+    spring.update_product = slow_update
+
+    async def run():
+        await hitl.start_draft(record)
+        task = asyncio.create_task(hitl.confirm_draft(record.draft_id, seller_id=7, brand_id=3))
+        await asyncio.sleep(0.05)  # inner 가 update_product 지연 중일 시점
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0.3)  # shield 로 보호된 inner 완주 대기
+        graph = await hitl._get_graph()
+        snapshot = await graph.aget_state(hitl._thread_config(record.draft_id))
+        return snapshot.values
+
+    values = asyncio.run(run())
+
+    assert values.get("outcome") == "executed"
+    assert len(spring.write_calls()) == 1  # shield 덕분에 실행은 정확히 1회 완주
+
+
+def test_mark_recommendation_applied_same_commit_as_write(monkeypatch) -> None:
+    """추천 적용 경로(rec_id 有)의 마킹 호출이 execute 노드 반환값 계산 안에 있어, 쓰기
+    (_execute_draft)와 같은 super-step 에 포함된다(#621 ④) — 별도 커밋으로 갈리면 쓰기는
+    끝났는데 마킹만 유실되는 창이 생긴다."""
+    spring = _StubSpring()
+    set_spring_client(spring)
+    calls: list[tuple] = []
+
+    async def _fake_mark(rec_id, *, brand_id, draft_id):
+        calls.append((rec_id, brand_id, draft_id))
+
+    monkeypatch.setattr(hitl.analysis_store, "mark_recommendation_applied", _fake_mark)
+    rec_id = "12345678-1234-5678-1234-567812345678"
+    record = _record(_proposal(rec_id=rec_id))
+
+    async def run():
+        await hitl.start_draft(record)
+        return await hitl.confirm_draft(record.draft_id, seller_id=7, brand_id=3)
+
+    outcome = asyncio.run(run())
+
+    assert outcome.status == "executed"
+    assert len(calls) == 1
+    assert str(calls[0][0]) == rec_id
+    assert calls[0][1:] == (3, record.draft_id)
+
+
+def test_confirm_fail_closed_when_outcome_missing(monkeypatch) -> None:
+    """[안전장치 ⑤] execute 노드가 outcome 없이 반환하는 그래프 상태 이상을 흉내낸다 —
+    resume 결과에 outcome 키가 없으면 이전(fail-open, "executed" 기본값) 대신 fail-closed
+    (stale)로 처리한다(#621, 사용자 결정: stale 문구 재사용)."""
+    spring = _StubSpring()
+    set_spring_client(spring)
+    record = _record()
+
+    async def _broken_execute_node(state):
+        return {}  # outcome/result 둘 다 없음
+
+    monkeypatch.setattr(hitl, "_execute_node", _broken_execute_node)
+
+    async def run():
+        await hitl.start_draft(record)
+        return await hitl.confirm_draft(record.draft_id, seller_id=7, brand_id=3)
+
+    outcome = asyncio.run(run())
+
+    assert outcome.status == "stale"
+    assert spring.write_calls() == []

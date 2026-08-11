@@ -809,28 +809,53 @@ class HitlState(TypedDict, total=False):
 
     cancelled 는 [#506] 무효화 마킹 — 수정 턴이 새 draft 를 발급하면 이전 draft 에
     True 를 기록해, 브라우저에 남은 옛 카드의 confirm(수정 전 값 등록 사고)을 차단한다.
+
+    attempted_at 은 [이슈 #621] gate 노드 전용 마커 — "실행을 시도했음"을 실제 실행
+    (execute 노드, result)보다 먼저 커밋한다(test_gate_commits_attempted_at_before_
+    execute_commits_result 로 커밋 순서를 증명). gate 는 interrupt 가 한 번 풀리면
+    이후 재시도에서 다시 실행되지 않으므로(LangGraph 가 execute 만 재스케줄) 이
+    필드만으로 "SpringUnavailableError 등으로 명확히 실패해 재confirm 이 안전한
+    상태"와 "우리 쪽 wait_for 상한이 끊겨 실행 여부를 알 수 없는 상태"를 구분할 수
+    없다 — `unknown` 판정은 confirm_draft 가 이번 호출 자신의 resume 시도에서
+    wait_for 상한에 걸렸을 때만 내린다(confirm_draft 본문 주석 참고).
     """
 
     draft: dict
     outcome: str
     result: str
     cancelled: bool
+    attempted_at: str
 
 
-async def _hitl_node(state: HitlState) -> HitlState:
-    """단일 노드: interrupt 로 승인 대기 → resume 시 코드 실행.
+async def _gate_node(state: HitlState) -> HitlState:
+    """1/2 노드: interrupt 로 승인 대기 → resume 시 "시도했음"만 커밋(이슈 #621 커밋①).
 
     interrupt() 이전 구간은 노드 재실행(resume) 시 다시 돌므로 부수효과를 두지
     않는다. resume 값 자체는 쓰지 않는다 — confirm 판정·신원/TTL/멱등 검사는
     confirm_draft(코드)가 resume 이전에 끝낸다.
+
+    이 노드의 반환값(attempted_at)이 LangGraph super-step 커밋 단위라 다음 노드
+    (execute)의 쓰기보다 먼저 checkpoint 에 영속화된다 — confirm_draft 자신의
+    resume 시도가 그 직후(execute 실행 도중) wait_for 상한에 걸리면 `unknown` 을
+    반환해 "실행됐는지 모르는 채로 재실행"을 막는다(과거 시도의 잔여 attempted_at
+    만으로는 판단하지 않는다 — confirm_draft 본문 주석 참고).
     """
     record = DraftRecord.model_validate(state["draft"])
     interrupt({"draftId": record.draft_id, "op": record.op})
+    return {"attempted_at": datetime.now(UTC).isoformat()}
+
+
+async def _execute_node(state: HitlState) -> HitlState:
+    """2/2 노드: gate 커밋 뒤에만 실행(이슈 #621 커밋②) — LLM 0회, draft 그대로 매핑.
+
+    mark_recommendation_applied 호출을 이 노드의 반환값 계산 안에 둔다(이슈 #621 ④) —
+    쓰기(_execute_draft)와 같은 super-step 커밋에 포함시켜, 쓰기는 끝났는데 마킹만
+    유실되는 창을 없앤다. 마킹 자체의 실패는 여전히 부가 데이터 degrade 원칙을 따른다
+    (실행을 되돌리거나 막지 않는다 — save_history 와 동일).
+    """
+    record = DraftRecord.model_validate(state["draft"])
     with trace_span("seller.worker.hitl_write", "chain"):
         outcome, text = await _execute_draft(record)
-    # [이슈 #590] 추천 적용 경로(rec_id 有) 실행 성공 시 저장 계층에 상태를 되돌려 쓴다.
-    # 실행(가격/재고 변경)은 이미 끝난 뒤이므로, 이 갱신이 실패해도 실행 자체를 되돌리거나
-    # 막지 않는다 — 추천 추적은 부가 데이터(save_history 와 동일한 degrade 원칙).
     if outcome == "executed" and record.rec_id:
         try:
             await analysis_store.mark_recommendation_applied(
@@ -880,14 +905,21 @@ def _confirm_lock(draft_id: str) -> asyncio.Lock:
 
 
 async def _get_graph():
-    """HITL 그래프 싱글턴 — 공용 checkpointer(checkpoint.py) 준비 후 1회 컴파일."""
+    """HITL 그래프 싱글턴 — 공용 checkpointer(checkpoint.py) 준비 후 1회 컴파일.
+
+    [이슈 #621] gate → execute 2노드 — 승인 대기(interrupt)와 실행(Spring 쓰기)을
+    별도 super-step(별도 커밋)으로 분리해, "시도했음"이 실행 결과보다 먼저 영속화되게
+    한다(모듈 docstring §1 안전장치 ①의 구현).
+    """
     global _graph
     if _graph is None:
         checkpointer = await seller_checkpoint.get_checkpointer()
         builder = StateGraph(HitlState)
-        builder.add_node("hitl", _hitl_node)
-        builder.add_edge(START, "hitl")
-        builder.add_edge("hitl", END)
+        builder.add_node("gate", _gate_node)
+        builder.add_node("execute", _execute_node)
+        builder.add_edge(START, "gate")
+        builder.add_edge("gate", "execute")
+        builder.add_edge("execute", END)
         _graph = builder.compile(checkpointer=checkpointer)
     return _graph
 
@@ -926,7 +958,11 @@ async def invalidate_draft(draft_id: str) -> None:
     try:
         graph = await _get_graph()
         async with _confirm_lock(draft_id):
-            await graph.aupdate_state(_thread_config(draft_id), {"cancelled": True}, as_node="hitl")
+            # [이슈 #621] 그래프가 gate/execute 2노드로 갈리며 대기 중인 노드 이름이
+            # "hitl" → "gate" 로 바뀌었다 — 존재하지 않는 노드명을 주면 aupdate_state 가
+            # InvalidUpdateError 로 실패해(경고 후 계속) cancelled 가 조용히 반영되지
+            # 않는다. 무효화는 항상 interrupt 대기 중인 gate 노드를 대상으로 한다.
+            await graph.aupdate_state(_thread_config(draft_id), {"cancelled": True}, as_node="gate")
     except Exception:
         logger.warning(
             "draft 무효화 실패 — TTL 만료가 최종 방어 (draftId=%s)", draft_id, exc_info=True
@@ -935,9 +971,19 @@ async def invalidate_draft(draft_id: str) -> None:
 
 @dataclass(frozen=True)
 class ConfirmOutcome:
-    """confirm 처리 결과 — text 는 그대로 사용자 token 이 된다."""
+    """confirm 처리 결과 — text 는 그대로 사용자 token 이 된다.
 
-    status: Literal["executed", "stale", "already_done", "not_found", "expired"]
+    unknown [이슈 #621] — confirm_draft 자신의 resume 시도가 execute 실행 도중
+    wait_for 상한(seller_confirm_execute_timeout_s)에 걸려, Spring 요청이 실제로
+    반영됐는지 우리 쪽에서 알 수 없는 상태. 자동 재실행하지 않는다(중복 쓰기 위험).
+    SpringUnavailableError 등 명확한 예외 전파는 여기 해당하지 않는다 — 그 경우는
+    checkpoint 가 execute 대기 상태로 남아 다음 confirm 이 정상적으로 재시도한다
+    (`_execute_draft` 기존 계약 유지). Notion S-4 confirm 어휘엔 없는 상태값이라
+    `done.panel` 은 기존 계약대로 `keep` 으로 낸다(신규 계약 값 추가 없음, 사용자
+    결정 2026-08-11).
+    """
+
+    status: Literal["executed", "stale", "already_done", "not_found", "expired", "unknown"]
     text: str
 
 
@@ -986,6 +1032,18 @@ async def confirm_draft(draft_id: str, *, seller_id: int, brand_id: int) -> Conf
                 f"이미 처리된 승인 요청입니다 — 중복 실행하지 않았습니다. 이전 결과: {values['result']}",
             )
 
+        # [이슈 #621, 실측 정정] 애초 설계는 "attempted_at 有·result 無"를 여기서
+        # (resume 시도 전에) 곧바로 unknown 으로 막는 것이었다 — 하지만 gate 는
+        # interrupt 가 한 번 풀리고 나면 이후 재시도에서 다시 실행되지 않고
+        # (LangGraph 는 그 다음부터 execute 만 재스케줄한다), execute 가 예외로
+        # 실패해도 "attempted_at 有·result 無" 는 그대로 남는다. 즉 이 값만으로는
+        # "방금 SpringUnavailableError 로 명확히 실패해 재confirm 이 안전한 상태"와
+        # "우리 쪽 대기 상한이 끊겨 실행 여부를 알 수 없는 상태"를 구분할 수 없다
+        # (LangGraph 1.2.9 대상 실측 재현으로 확인). 앞의 경우를 여기서 막으면
+        # `_execute_draft` 의 기존 계약("500·타임아웃은 예외 전파 — 재confirm 가능")
+        # 이 깨진다. 그래서 unknown 판정은 resume 을 실제로 시도해 **이번 호출
+        # 자신의** wait_for 상한에 걸렸을 때만 내린다(아래).
+
         settings = get_settings()
         created = datetime.fromisoformat(record.created_at)
         # 경계 포함(>=) — draft_session(#346)과 같은 판정: ttl=0 은
@@ -997,5 +1055,38 @@ async def confirm_draft(draft_id: str, *, seller_id: int, brand_id: int) -> Conf
                 "변경 내용을 다시 말씀해 주시면 새 초안을 만들어 드리겠습니다.",
             )
 
-        result = await graph.ainvoke(Command(resume=True), config=config)
-    return ConfirmOutcome(result.get("outcome", "executed"), result.get("result", ""))
+        # [이슈 #621 ①] shield — 클라이언트 절단·90s 캡 절단으로 이 await 을 감싼 바깥
+        # 태스크가 취소돼도, resume 실행(gate 커밋 뒤 execute 의 Spring 쓰기 + result
+        # 커밋)은 asyncio.wait_for 상한(seller_confirm_execute_timeout_s) 안에서 계속
+        # 돈다. shield 가 없으면 Spring 쓰기가 이미 나간 뒤 취소되는 경우 checkpoint 가
+        # 미기록으로 남아, 다음 confirm 이 재실행되는(중복 등록) 창이 생긴다.
+        #
+        # 이 wait_for 자체의 상한(우리 쪽 판단으로 포기하는 시점)이 execute 도중에
+        # 발동하면 — Spring 요청이 이미 나갔을 수도 있는 채로 우리가 기다리기를
+        # 그만둔 것이라, 반영 여부를 우리 쪽에서 알 방법이 없다. 이때만 unknown 으로
+        # fail-closed 하고 자동 재실행하지 않는다(judgement 는 이번 호출 자신의 결과
+        # 로만 내린다 — 위 주석 참고, 과거 시도의 잔여 상태로는 내리지 않는다).
+        try:
+            result = await asyncio.shield(
+                asyncio.wait_for(
+                    graph.ainvoke(Command(resume=True), config=config),
+                    timeout=settings.seller_confirm_execute_timeout_s,
+                )
+            )
+        except TimeoutError:
+            return ConfirmOutcome(
+                "unknown",
+                "이전 승인 처리 결과를 확인하지 못했습니다. 상품 목록에서 반영 여부를 "
+                "확인해 주신 뒤, 반영되지 않았다면 다시 말씀해 주세요.",
+            )
+    outcome_status = result.get("outcome")
+    if outcome_status is None:
+        # [이슈 #621 ⑤] outcome 누락은 그래프 상태 이상 — 이전엔 `"executed"` 로
+        # fail-open 했다(실행 안 됐는데 성공 안내). 사용자 결정(2026-08-11): 별도 예외
+        # 대신 기존 stale 응답 경로(token+done keep)를 재사용해 fail-closed 로 바꾼다 —
+        # 반영 여부가 불확실하므로 성공 안내를 내지 않는다.
+        return ConfirmOutcome(
+            "stale",
+            f"승인 처리 결과를 확인하지 못해 반영 여부가 불확실합니다. {_STALE_RETRY_GUIDE}",
+        )
+    return ConfirmOutcome(outcome_status, result.get("result", ""))
