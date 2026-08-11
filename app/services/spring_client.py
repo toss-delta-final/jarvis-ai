@@ -75,6 +75,7 @@ from app.schemas.spring import (
     RecentPurchases,
     RecommendationPush,
     SalesResult,
+    SellerCustomerFeaturesResult,
     SellerOrderList,
     SellerProductList,
     SellerReviewList,
@@ -107,6 +108,7 @@ _SpringOperation = Literal[
     "get_product_changes",
     "get_churn",
     "get_account_events",
+    "get_customer_features",
     "list_products",
     "create_product",
     "update_product",
@@ -1845,6 +1847,60 @@ class SpringClient:
             params=params,
         )
         return self._validate(AccountEventsResult, data)
+
+    async def get_customer_features(
+        self,
+        brand_id: int,
+        from_: str,
+        to: str,
+        *,
+        retries: int = 0,
+    ) -> SellerCustomerFeaturesResult:
+        """I-38 고객 행동 피처 집계 조회 (노션 2026-08-10 확정, BE #582 실장 — 이슈 #592).
+
+        `from`/`to`는 필수다(BE `AnalysisPeriod.of` — 누락·형식 오류·역전은 400
+        INVALID_PERIOD, 다른 seller GET 과 동일 계약). 코호트가 30명(`MIN_COHORT_SIZE`)
+        미만이면 BE가 `insufficientCohort=true` + `rows=[]`로 단락 응답한다 — "고객 없음"이
+        아니라 표본 부족으로 인한 판정 보류다(노션 규약). 1,000명(`CUSTOMER_ROW_LIMIT`) 초과는
+        활동량 내림차순으로 절단하고 `truncated=true`를 세운다.
+
+        `retries`: 무인 배치 경로 전용(OPS-RUNTIME 결정 R-1) — 대화형 호출은 기본값
+        0(재시도 없음, 조회 1회)을 그대로 쓴다. 배치 호출부만 `retries=1`을 넘긴다.
+        재시도 판정은 기존 `_is_retryable`(타임아웃·연결 오류·5xx·408·429)을 그대로 쓰되,
+        `_request`가 감싸 던진 `SpringUnavailableError.__cause__`(원본 httpx 예외)를
+        본다 — `_request` 자체는 손대지 않으므로 다른 판매자 GET 10여 종은 이 변경으로
+        영향받지 않는다(무재시도 그대로, #592 범위 밖).
+        """
+        settings = get_settings()
+        attempts = retries + 1
+        for attempt in range(1, attempts + 1):
+            try:
+                data = await self._request(
+                    "GET",
+                    f"/internal/seller/{brand_id}/customer-features",
+                    operation="get_customer_features",
+                    params={"from": from_, "to": to},
+                )
+                return self._validate(SellerCustomerFeaturesResult, data)
+            except SpringUnavailableError as exc:
+                cause = exc.__cause__ or exc
+                if attempt >= attempts or not _is_retryable(cause):
+                    raise
+                _log.warning(
+                    "spring_customer_features_retry",
+                    extra={
+                        "attempt": attempt,
+                        "maxAttempts": attempts,
+                        "brandId": brand_id,
+                        "statusClass": _failure_status_class(cause),
+                    },
+                )
+                await asyncio.sleep(
+                    settings.seller_customer_features_retry_backoff_s * attempt
+                )
+        raise SpringUnavailableError(  # pragma: no cover — 루프가 항상 return/raise 함
+            f"get_customer_features: retries 소진(brand_id={brand_id})"
+        )
 
     async def list_products(
         self,

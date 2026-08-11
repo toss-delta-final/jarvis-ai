@@ -651,6 +651,10 @@ class Settings(BaseSettings):
     #   stocks:   신 계약 stocks[{optionId,quantity}] — BE PR B 배포 확인 후 이 값으로 전환.
     # quantity 모드에서 옵션별 재고 발화는 반영하지 않고 안내한다(BE 가 저장할 곳이 없다).
     seller_stock_wire_mode: Literal["quantity", "stocks"] = "quantity"
+    # 무인 배치 경로(OPS-RUNTIME R-1) 재시도 백오프 기준값 — get_customer_features(I-38,
+    # 이슈 #592) 전용. 실제 대기 = 이 값 × 시도 번호(선형 백오프). 대화형 호출(retries=0)은
+    # 적용되지 않는다.
+    seller_customer_features_retry_backoff_s: float = 0.5
     # 초안 대기 게이트(수정/승인안내/취소/딴주제 분류) LLM 상한 — 실패 시 일반 흐름 폴백.
     seller_pending_gate_timeout_s: float = 8.0
     # 4-2 HITL 실행(hitl.py): confirm 시점 I-9 재조회(stale 검증)의 페이지 순회 상한 —
