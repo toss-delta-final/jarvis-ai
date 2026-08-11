@@ -11,6 +11,12 @@
 - 관련: 파일/§/커밋
 ```
 
+## [2026-08-11] `date.today()`·naive `datetime.now()` 는 컨테이너 TZ 를 따른다 — 도메인 기준 시각에 쓰지 말 것
+- 증상: 판매자가 00~09 KST 사이에 "어제 매출" 을 물으면 **이틀 전** 데이터가 나갔다. 같은 응답의 `report.generatedAt` 은 KST 로 정상이라 로그만 보면 어긋난 곳을 짚기 어려웠다.
+- 원인: `generatedAt` 만 `_KST` 로 명시하고(#296), 기간 해석의 "오늘" 은 `date.today()` 로 남겨 뒀다. 운영 컨테이너 TZ 가 UTC 라 09시 이전에는 기준일이 KST 기준 하루 전이 되고, 거기서 "어제" 를 또 빼 이틀이 밀렸다. jarvis-back 은 `BackendApplication` 에서 JVM·DB 세션 TZ 를 `Asia/Seoul` 로 고정해 두어 **AI 만** 어긋나 있었다.
+- 규칙: 도메인 기준 시각(오늘/어제/기간)은 `app/core/clock.py` 의 `today_kst()`·`now_kst()` 만 쓴다. `date.today()`·인자 없는 `datetime.now()`·`.astimezone()`·`datetime.fromtimestamp()` 는 프로세스 TZ 를 타므로 금지하고, 저장·비교용 절대 시각은 `datetime.now(UTC)` 로 명시한다. **배포에 `TZ` 를 박는 것으로 대신하지 않는다** — 코드가 TZ 독립이어야 로컬(UTC WSL)·CI·운영이 같은 값을 낸다. 시각을 다루는 필드를 하나만 명시 TZ 로 고칠 때는 같은 흐름의 나머지 시각 소스도 함께 훑을 것.
+- 관련: #583 `app/core/clock.py`·`app/api/seller.py`·`app/main.py`·`Dockerfile`·`docker-compose.yml`, jarvis-back `BackendApplication.java`
+
 ## [2026-08-11] LLM이 내는 축 이름은 한국어만이 아니다
 - 증상: 한국어 어휘 8개로 억제를 넣었는데 480표본에서 억제가 **2번만** 발동했다. miss는 줄어 보였지만 억제 0발동 런에서도 줄어 그 개선분은 노이즈였다.
 - 원인: `gpt-5-nano`가 축 이름을 `price`·`Price`·`priceMax`처럼 영어·대문자·camelCase로도 냈다. 어휘를 세 번(`price` → `Price` → `priceMax`) 메운 뒤에야 원인이 0이 됐다.
