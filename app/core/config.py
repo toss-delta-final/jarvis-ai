@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import math
 import os
+from datetime import date
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Literal, NamedTuple
@@ -786,6 +787,29 @@ class Settings(BaseSettings):
     seller_segment_shift_pct: float = Field(default=0.03, gt=0.0, lt=1.0)
     # 이동 표시 최소 규모(교집합 대비 비율) — 미만은 노이즈라 표에 싣지 않는다.
     seller_move_report_min_pct: float = Field(default=0.01, gt=0.0, lt=1.0)
+
+    # ── V1 입력 검증 (이슈 #596, `06-REPORT.md` §4.0.2) ───────────────────────────
+    # compute 와 interpret 사이에서 ctx 의 숫자·기간·evidence 정합성을 코드가 본다.
+    # 목적은 "못 쓸 재료로 LLM 을 부르지 않는 것"이라, 여기서 걸리면 보고서 3회 + judge
+    # 3회가 통째로 절약된다 — 입력이 깨진 상태는 재작성으로 고쳐지지 않기 때문이다.
+    seller_sop_validate_timeout_s: float = Field(default=10.0, gt=0)
+    # 격리 킬스위치 — false 면 ctx 를 고치지 않고 Hold(경고)만 남긴다. 초기 안정화 구간에
+    # 과차단을 되돌리는 스위치라 기간 역전에도 예외를 두지 않는다(예외를 두면 "꺼두면
+    # 예전과 같다"는 보장이 깨진다).
+    seller_validate_strict: bool = True
+    # 비교 기준 기간이 분석 기간과 겹치면 그 비교를 보류할지.
+    seller_period_overlap_guard: bool = True
+    # 비교 금지 경계일 — 그 날 지표 '정의'가 바뀌어 전후 비교가 성립하지 않는다.
+    # 2026-08-06: I-13 counts 4종 → 5종(removeFromCart 편입, 02-DATA-SOURCES §E4).
+    # ⚠️ 어느 지표가 영향받는지는 튜너블이 아니라 계약 사실이라 코드 상수다
+    # (sop/validate.BOUNDARY_AFFECTED_PREFIXES) — 여기는 날짜 목록만 둔다.
+    seller_comparison_boundary_dates: list[date] = Field(
+        default_factory=lambda: [date(2026, 8, 6)]
+    )
+    # 고객 피처 스냅샷 신선도 상한(시간). 초과분은 Hold 로 드러낼 뿐 재계산하지 않는다 —
+    # 재계산은 I-38 재조회 + K-Means 재학습이라 load 스텝 소관이고, 검증 함수가 I/O 경계를
+    # 넘으면 단위 테스트가 Spring/DB 스텁을 요구하게 된다(sop/compute 규약 승계).
+    seller_snapshot_freshness_hours: float = Field(default=24.0, gt=0)
 
     @field_validator(
         "seller_amount_bucket_map",
