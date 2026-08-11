@@ -134,3 +134,85 @@ class ProxyValue:
     name: str
     value: float
     basis: str
+
+
+@dataclass(frozen=True)
+class CountComparison:
+    """두 기간 **카운트** 비교 1건 — 포아송 비율 검정 (proportions.compare_counts).
+
+    비율(성공/시행)이 아니라 발생 건수만 있는 지표 전용이다 — 트리거 5(신규 고객)의
+    원천 I-8 은 groupBy=eventType 에서 ``{key, count}`` 버킷만 주고 분모가 없다.
+
+    ``expected`` 는 현재 구간 길이로 환산한 기대 건수
+    (= baseline_total / baseline_days × current_days)이고, ``rate_ratio`` 는
+    current / expected 다 — expected 가 0 이면 정의 불가라 호출부가 생성 자체를
+    생략한다(0 나눗셈 위장 금지, #194 계승).
+    ``current_days`` 가 있는 이유: 매출 트리거는 7일 합끼리, 신규 고객은 1일 대 7일로
+    재기 때문이다. 구간 길이를 인자로 받지 않으면 검정이 조용히 틀린다.
+    verdict 어휘는 RateComparison 과 같다(significant_drop | significant_rise |
+    no_significant_change) — 소비처가 두 검정을 같은 분기로 다룰 수 있어야 한다.
+    """
+
+    current: int
+    current_days: int
+    baseline_total: int
+    baseline_days: int
+    expected: float
+    rate_ratio: float | None
+    p_value: float
+    alpha: float
+    verdict: str
+
+
+@dataclass(frozen=True)
+class TriggerEvaluation:
+    """트리거 1종 판정 — **고정 임계 AND 통계 유의** (이슈 #595, `10-TRIGGER` 결정 94).
+
+    ``decided=False`` 는 판정 보류다 — **"이상 없음"이 아니다.** 빈 이상 목록 하나가
+    두 뜻을 겸하던 모호성을 타입으로 가른 `SeasonalAnomalyDetection.decided`(#512)의
+    규약을 트리거 층으로 올린 것이다. 보류인데 ``fired=False`` 하나만 보고 넘어가면
+    "표본이 부족해 못 봤다"가 "봤는데 정상이다"로 둔갑한다.
+
+    ``threshold_met``·``significant`` 를 각각 보존하는 이유는 AND 의 어느 쪽이 막았는지가
+    임계 조정의 근거이기 때문이다 — null 시뮬레이션 리포트가 이 두 값을 따로 센다.
+    ``significant=None`` 은 검정을 돌리지 않았다는 뜻이다(트리거 7 은 BE 판정을 그대로
+    쓰므로 상시 None — 결정 103).
+
+    ``change_unit`` 은 ``change`` 의 단위다: ``"pct"``(상대 변화율, 0.05=5%) ·
+    ``"pp"``(퍼센트포인트 차, 0.10=10%p) · ``"count"``(건수 차). 매출·전환율·상품
+    판매량은 상대 변화율이고 장바구니 이탈률·재구매율은 퍼센트포인트다 —
+    `10-TRIGGER` §3.2 표의 단위를 그대로 옮겼으므로 섞어 쓰면 임계 의미가 바뀐다.
+    ``change=None`` 은 정의 불가(기준값 0 이하)다 — 0 으로 위장하지 않는다.
+    """
+
+    trigger: str
+    tier: int
+    fired: bool
+    decided: bool
+    threshold_met: bool | None
+    significant: bool | None
+    change: float | None
+    change_unit: str
+    threshold: float
+    method: str
+    direction: str | None = None
+    p_value: float | None = None
+    alpha: float | None = None
+    basis: str = ""
+    detail: dict[str, float] = field(default_factory=dict)
+    hold_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class ScanResult:
+    """스캔 1회 결과 — 티어1(문을 연다) + 티어2(서술 재료) (`10-TRIGGER` §4.2).
+
+    ``opened`` 는 티어1 중 하나라도 발동했는가다 — **이 값이 곧 보고서 생성 여부**이고,
+    null 시뮬레이션의 게이트 지표(tier1.openRate)도 이것을 센다. 티어2 발동은 발동
+    조건이 아니라 보고서 1부를 두텁게 하는 재료라 ``opened`` 에 기여하지 않는다.
+    """
+
+    tier1: list[TriggerEvaluation] = field(default_factory=list)
+    tier2: list[TriggerEvaluation] = field(default_factory=list)
+    opened: bool = False
+    fired: list[str] = field(default_factory=list)

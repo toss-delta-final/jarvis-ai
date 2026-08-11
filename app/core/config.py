@@ -630,6 +630,32 @@ class Settings(BaseSettings):
     # [churn — 신호 순위화] pre_churn_signals 정규화 후 보고할 원인 후보 상위 k.
     seller_churn_signal_top_k: int = 3
 
+    # ── 무인 스캔 트리거 고정 임계 (이슈 #595, 10-TRIGGER §3.2 · 결정 94) ──────────
+    # 판정은 **고정 임계 AND 통계 유의** 이중 조건이다. 유의수준은 위 seller_gesd_alpha·
+    # seller_rate_test_alpha 를 그대로 재사용한다 — 새 alpha 를 만들면 골든셋이 운영과
+    # 다른 값으로 재게 된다(12-EVAL §8). 아래는 고정 임계(우리가 정한 값)뿐이다.
+    # ⚠️ 단위가 둘이다 — *_pct 는 상대 변화율, *_pp 는 퍼센트포인트 차. 이탈률 2%→3% 를
+    # 상대로 재면 +50% 라 저이탈 브랜드에서 상시 발동한다(그래서 pp).
+    seller_trigger_sales_pct: float = 0.05  # 트리거 1 매출 변화(양방향)
+    seller_trigger_conversion_pct: float = 0.10  # 트리거 2 전환율 변화(양방향, overall)
+    seller_trigger_product_drop_pct: float = 0.30  # 트리거 3 상품 판매량 급감(하락만)
+    seller_trigger_cart_abandon_pp: float = 0.10  # 트리거 4 장바구니 이탈률 증가(상승만)
+    seller_trigger_new_customer_drop_pct: float = 0.30  # 트리거 5 신규 고객 급감(하락만)
+    seller_trigger_repurchase_drop_pp: float = 0.10  # 트리거 6 재구매율 하락(하락만)
+    # 브랜드 축 비교 구간(일) — "직전 7일 구간"이다. 고객 축의 seller_baseline_offset_days
+    # ("7일 전 스냅샷 1개")와 **다른 축**이라 같은 말로 부르지 않는다(10-TRIGGER §5.3).
+    seller_scan_baseline_days: int = 7
+
+    # ── 판정 검증 게이트 (이슈 #595, 12-EVAL §6 · 결정 119·121) ────────────────────
+    # null 시뮬레이션: 이상 0건·요일 효과만 있는 합성 브랜드를 이만큼 돌려 티어1 열림률을
+    # 잰다. 결정 94 의 임계를 실증으로 고정하는 유일한 수단이라 배포 전 필수 게이트다.
+    seller_eval_null_days: int = 1000
+    seller_eval_trigger_rate_max: float = 0.01  # null 에서 허용하는 티어1 열림률 상한
+    # 군집 안정성 하한(ARI) — random_state 고정은 재현성이지 안정성이 아니다. churn 의
+    # 이동 행렬 전체가 "어제 충성형이 오늘 이탈위험형"이라는 비교 위에 서 있어서,
+    # 군집이 불안정하면 이동이 전부 난수가 된다(12-EVAL §6.3).
+    seller_cluster_stability_min: float = 0.7
+
     # ── 판매자 후속 단계 대비 선등록 (1단계 미소비, 하드코딩 재발 방지) ──
     seller_report_score_threshold: int = 21  # 보고서 검증 통과 점수(21/30)
     seller_report_max_retries: int = 3  # 검증 루프 상한
@@ -699,6 +725,25 @@ class Settings(BaseSettings):
     seller_sop_compute_timeout_s: float = Field(default=30.0, gt=0)
     seller_sop_feedback_timeout_s: float = Field(default=3.0, gt=0)
     seller_sop_interpret_timeout_s: float = Field(default=30.0, gt=0)
+
+    # ── 원인 후보 · 추천 후보 · rule cards (이슈 #597, `06-REPORT.md` §2~3 · `12-EVAL` §2.2) ──
+    # 원인 후보는 "지표 변화보다 앞선 이벤트"만 센다. 창을 넓히면 무관한 사건이 원인처럼
+    # 붙고, 좁히면 진짜 선행 사건을 놓친다 — 14일은 주간 리듬 2주기다.
+    seller_cause_window_days: int = Field(default=14, ge=1)
+    # LLM 에 넘길 원인 후보 상한. 많이 주면 전부 서술하려 들어 2부가 목록이 된다.
+    seller_cause_max_candidates: int = Field(default=5, ge=1)
+    # 재고 보충 권장 수량 = 일평균 판매 × 이 일수(올림).
+    seller_restock_cover_days: int = Field(default=14, ge=1)
+    # LLM 에 넘길 추천 후보 상한 — 이 중 ≤5건을 LLM 이 고른다(MAX_RECOMMENDATIONS).
+    seller_recommend_candidate_max: int = Field(default=10, ge=1)
+    # 재고 부족 판정 임계(이하이면 보충 후보). 0 은 품절 슬롯이 따로 받는다.
+    seller_stock_alert_threshold: int = Field(default=5, ge=0)
+    # 미출고 임계 — `order_fulfillment` 후보 생성이 열릴 때 쓴다(v1 미소비, 선등록).
+    seller_unshipped_alert_threshold: int = Field(default=10, ge=0)
+    # rule cards 주입 킬스위치 — 카드 문구가 판매자에게 그대로 나가므로 즉시 끌 수 있어야 한다.
+    seller_rule_cards_enabled: bool = True
+    # 워커당 주입 상한 — 많이 넣으면 LLM 이 전부 쓰려 든다(`12-EVAL` §2.2).
+    seller_rule_cards_max: int = Field(default=3, ge=0)
 
     # general 레인(3-7) 전체 벽시계 상한 (#266 P1). 이 레인만 상한이 없어 스트림 전체
     # 90s 에만 의존했고, 그래서 LLM 지연이 계약상 LLM_TIMEOUT 이 아니라 INTERNAL 로 나갔다.
@@ -3438,6 +3483,55 @@ class Settings(BaseSettings):
             raise ValueError(
                 f"SELLER_CHURN_SIGNAL_TOP_K 는 1 이상이어야 합니다"
                 f" (got {self.seller_churn_signal_top_k})"
+            )
+        # ── 무인 스캔 트리거·검증 게이트 정합(#595) ──
+        for threshold_name, threshold_value in (
+            ("SELLER_TRIGGER_SALES_PCT", self.seller_trigger_sales_pct),
+            ("SELLER_TRIGGER_CONVERSION_PCT", self.seller_trigger_conversion_pct),
+            ("SELLER_TRIGGER_PRODUCT_DROP_PCT", self.seller_trigger_product_drop_pct),
+            ("SELLER_TRIGGER_CART_ABANDON_PP", self.seller_trigger_cart_abandon_pp),
+            ("SELLER_TRIGGER_NEW_CUSTOMER_DROP_PCT", self.seller_trigger_new_customer_drop_pct),
+            ("SELLER_TRIGGER_REPURCHASE_DROP_PP", self.seller_trigger_repurchase_drop_pp),
+        ):
+            # 0 이면 전 브랜드가 매일 임계를 통과해 AND 의 한쪽이 사라지고, 1 이상이면
+            # (상대 100%·절대 100%p) 사실상 도달 불가라 트리거가 죽는다 — 둘 다 조용한
+            # 무력화라서 기동 시점에 막는다.
+            if not 0.0 < threshold_value < 1.0:
+                raise ValueError(
+                    f"{threshold_name} 는 (0, 1) 구간이어야 합니다 (got {threshold_value})"
+                )
+        if self.seller_scan_baseline_days < 1:
+            raise ValueError(
+                "SELLER_SCAN_BASELINE_DAYS 는 1 이상이어야 합니다"
+                f" (got {self.seller_scan_baseline_days})"
+            )
+        if self.seller_analysis_lookback_days <= self.seller_scan_baseline_days:
+            # 대상일 1일 + 기준 구간이 lookback 안에 들어가야 한 번의 조회로 둘 다 잰다.
+            # 같으면 대상일 자리가 없어 트리거 1 이 상시 no_baseline 으로 보류된다.
+            raise ValueError(
+                "SELLER_ANALYSIS_LOOKBACK_DAYS 는 SELLER_SCAN_BASELINE_DAYS 보다 커야 합니다"
+                f" (lookback={self.seller_analysis_lookback_days},"
+                f" baseline={self.seller_scan_baseline_days})"
+            )
+        if self.seller_eval_null_days < self.seller_analysis_lookback_days:
+            # 시뮬레이션 길이가 lookback 보다 짧으면 STL 창이 한 번도 안 차서 발동률을
+            # 잴 날이 0 일이 된다(게이트가 조용히 통과한다).
+            raise ValueError(
+                "SELLER_EVAL_NULL_DAYS 는 SELLER_ANALYSIS_LOOKBACK_DAYS 이상이어야 합니다"
+                f" (null_days={self.seller_eval_null_days},"
+                f" lookback={self.seller_analysis_lookback_days})"
+            )
+        if not 0.0 < self.seller_eval_trigger_rate_max < 1.0:
+            raise ValueError(
+                "SELLER_EVAL_TRIGGER_RATE_MAX 는 (0, 1) 구간이어야 합니다"
+                f" (got {self.seller_eval_trigger_rate_max})"
+            )
+        if not 0.0 <= self.seller_cluster_stability_min <= 1.0:
+            # ARI 는 기대값 0·완전 일치 1 이라 그 밖의 하한은 의미가 없다(음수도 가능하지만
+            # 하한으로 음수를 두면 게이트가 항상 통과한다).
+            raise ValueError(
+                "SELLER_CLUSTER_STABILITY_MIN 는 [0, 1] 구간이어야 합니다"
+                f" (got {self.seller_cluster_stability_min})"
             )
         if not (self.review_tier_many >= self.review_tier_some >= self.review_tier_few):
             raise ValueError(
