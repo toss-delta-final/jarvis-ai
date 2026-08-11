@@ -725,6 +725,10 @@ class Settings(BaseSettings):
     seller_sop_compute_timeout_s: float = Field(default=30.0, gt=0)
     seller_sop_feedback_timeout_s: float = Field(default=3.0, gt=0)
     seller_sop_interpret_timeout_s: float = Field(default=30.0, gt=0)
+    # [#598] verify 스텝 — F1~F3(결정론, LLM 0회) + analysis_judge 1회. judge 호출 자체는
+    # `seller_analysis_judge_timeout_s`(20s)로 개별 감싸므로, 이 값은 그 위에 F검사
+    # 오버헤드만큼 여유를 둔 상한이다.
+    seller_sop_verify_timeout_s: float = Field(default=25.0, gt=0)
 
     # ── 원인 후보 · 추천 후보 · rule cards (이슈 #597, `06-REPORT.md` §2~3 · `12-EVAL` §2.2) ──
     # 원인 후보는 "지표 변화보다 앞선 이벤트"만 센다. 창을 넓히면 무관한 사건이 원인처럼
@@ -877,6 +881,21 @@ class Settings(BaseSettings):
                 return default_factory()
             return json.loads(value)
         return value
+
+    # ── 판매자 상주 분석 파이프라인 (이슈 #598, `06-REPORT.md` §4.0) ──────────────────
+    # V2 C2(`check_cause_hedged`) — 이 목록의 인과 단정 어휘가 원인 후보 없이(또는
+    # `strength="temporal_only"`인 후보만으로) 쓰이면 재작성을 태운다. 상관(correlated)
+    # 조차 과장하지 않는 것이 목표라 완화어(hedge)와 짝을 이룬다.
+    seller_report_causal_terms: list[str] = Field(
+        default_factory=lambda: ["때문에", "원인은", "그래서", "유발", "야기"]
+    )
+    # 완화어 — causal_terms 가 있어도 같은 문장에 이 목록 중 하나가 있으면 통과시킨다
+    # ("추정된다"·"가능성" 류로 이미 스스로 단정을 낮췄다는 뜻).
+    seller_report_hedge_terms: list[str] = Field(
+        default_factory=lambda: ["추정", "가능성", "것으로 보임", "일부"]
+    )
+    # report_md 길이 상한(자) — 상주 보고서 L2(3000자 이내) 완료 조건의 코드 측 근거.
+    seller_report_max_chars: int = Field(default=3000, gt=0)
 
     # ── 판매자 대화 스레드 (thread.py — checkpointer 기반 멀티턴 누적) ──
     # supervisor/planner 입력 주입 상한: 최근 턴(user+assistant 쌍) 수와 메시지당 절단.
