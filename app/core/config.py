@@ -775,6 +775,17 @@ class Settings(BaseSettings):
     # I-38 rowLimit 정합 기대치 — 정본은 BE 상수(CUSTOMER_ROW_LIMIT)이고, 응답 에코와
     # 어긋나면 저장값이 아니라 Hold 로 드러낸다.
     seller_snapshot_row_limit: int = Field(default=1000, ge=1)
+    # 스냅샷 보관 일수 — delete_expired_snapshots 인자(08 §5·05 §5). 개인 단위 행이
+    # 실린 테이블이라 보관을 늘리는 것은 재식별 표면을 늘리는 것과 같다.
+    seller_snapshot_retention_days: int = Field(default=14, ge=1)
+    # churn 비교 기준 거리(일) — "7일 전 스냅샷 1개"이지 "직전 7일 구간"이 아니다.
+    # 브랜드 축의 7일(10-TRIGGER §5.3)과 같은 말로 부르지 않는다.
+    seller_baseline_offset_days: int = Field(default=7, ge=1)
+    # 세그먼트 순증감 각인 임계(교집합 대비 비율) — 판정을 바꾸지 않고 detail 에
+    # 표시만 한다. 트리거 발동 판정은 scan(#595) 소관이다.
+    seller_segment_shift_pct: float = Field(default=0.03, gt=0.0, lt=1.0)
+    # 이동 표시 최소 규모(교집합 대비 비율) — 미만은 노이즈라 표에 싣지 않는다.
+    seller_move_report_min_pct: float = Field(default=0.01, gt=0.0, lt=1.0)
 
     @field_validator(
         "seller_amount_bucket_map",
@@ -3476,6 +3487,14 @@ class Settings(BaseSettings):
             not 0.0 <= value <= 100.0 for value in self.seller_customer_label_thresholds.values()
         ):
             raise ValueError("SELLER_CUSTOMER_LABEL_THRESHOLDS 는 백분위(0~100)여야 합니다")
+        # 보관이 비교 거리보다 짧으면 churn 이 **구조적으로 영원히** no_baseline 이 된다
+        # — 7일 전 스냅샷을 읽으려 할 때 그 행이 이미 지워져 있기 때문이다(이슈 #594).
+        if self.seller_snapshot_retention_days < self.seller_baseline_offset_days:
+            raise ValueError(
+                "SELLER_SNAPSHOT_RETENTION_DAYS 는 SELLER_BASELINE_OFFSET_DAYS 이상이어야"
+                f" 합니다 (retention={self.seller_snapshot_retention_days},"
+                f" offset={self.seller_baseline_offset_days})"
+            )
         return self
 
 

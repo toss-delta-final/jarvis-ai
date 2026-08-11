@@ -332,3 +332,21 @@ def test_feature_dict_settings_survive_empty_env_string() -> None:
     )
     assert settings.seller_amount_bucket_map == spec.AMOUNT_BUCKET_MAP
     assert settings.seller_customer_label_thresholds == spec.DEFAULT_LABEL_THRESHOLDS
+
+
+def test_snapshot_comparison_settings_defaults() -> None:
+    """이슈 #594 신설 4종 — 보관 14일 / 비교 거리 7일 / 순유입 3% / 이동 표시 1%."""
+    settings = Settings(_env_file=None)
+
+    assert settings.seller_snapshot_retention_days == 14
+    assert settings.seller_baseline_offset_days == 7
+    assert settings.seller_segment_shift_pct == 0.03
+    assert settings.seller_move_report_min_pct == 0.01
+    # 소규모 군집 임계는 #593 이 이미 둔 키다 — 신설하지 않고 재사용한다.
+    assert settings.seller_customer_segment_min_size == 30
+
+
+def test_retention_shorter_than_baseline_offset_fails_fast() -> None:
+    """보관이 비교 거리보다 짧으면 churn 이 구조적으로 영원히 no_baseline 이 된다."""
+    with pytest.raises(ValidationError, match="SELLER_SNAPSHOT_RETENTION_DAYS"):
+        Settings(_env_file=None, seller_snapshot_retention_days=3, seller_baseline_offset_days=7)
