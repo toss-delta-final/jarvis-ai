@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from app.agents.buyer.recommendation.rerank_grounding import (
@@ -7,6 +9,7 @@ from app.agents.buyer.recommendation.rerank_grounding import (
     CandidateGroundingFacts,
     validate_and_render_grounding,
 )
+from app.schemas.spring import SpringProduct
 
 
 def _facts(**changes: object) -> CandidateGroundingFacts:
@@ -170,3 +173,162 @@ def test_malformed_evidence_downgrades_safely(item: dict[str, object], failure_r
     assert decision.downgraded is True
     assert decision.rendered_rationale == NEUTRAL_RATIONALE
     assert decision.failure_reason == failure_reason
+
+
+class _StructuredLLM:
+    def __init__(self, ranked: list[dict[str, object]]) -> None:
+        self.ranked = ranked
+        self.systems: list[str] = []
+
+    async def complete(
+        self,
+        *,
+        system: str,
+        user: str,
+        tier: str,
+        max_tokens: int = 1024,
+        json_output: bool = True,
+    ) -> str:
+        self.systems.append(system)
+        return json.dumps(
+            {"ranked": self.ranked, "overallComment": "골라봤어요"}, ensure_ascii=False
+        )
+
+
+async def _call_rerank(
+    llm: _StructuredLLM,
+    *,
+    grounding_arm: str,
+    rating: float | None = None,
+    review_count: int | None = 0,
+):
+    from app.agents.buyer.recommendation.rerank import rerank
+
+    return await rerank(
+        llm,
+        query="q",
+        candidates=[
+            SpringProduct(
+                product_id=101,
+                name="p",
+                price=10000,
+                rating=rating,
+                review_count=review_count,
+                category="c",
+            )
+        ],
+        profile_summary=None,
+        tier="smart",
+        expose_max=1,
+        grounding_arm=grounding_arm,
+    )
+
+
+async def test_current_arm_keeps_legacy_prompt_and_rationale() -> None:
+    from app.agents.buyer.recommendation.rerank import _SYSTEM, rerank
+
+    llm = _StructuredLLM([{"productId": 101, "rationale": "legacy"}])
+    result = await rerank(
+        llm,
+        query="q",
+        candidates=[SpringProduct(product_id=101, name="p")],
+        profile_summary=None,
+        tier="smart",
+        expose_max=1,
+    )
+
+    assert llm.systems == [_SYSTEM]
+    assert result.ranked == [(101, "legacy")]
+    assert result.grounding_decisions == []
+
+
+async def test_prompt_only_preserves_model_rationale_when_metadata_is_invalid() -> None:
+    llm = _StructuredLLM(
+        [
+            {
+                "productId": 101,
+                "rationale": "평점이 아주 높아요",
+                "reasonCode": "RATING_HIGH",
+                "evidenceFields": ["ratingLevel"],
+            }
+        ]
+    )
+
+    result = await _call_rerank(llm, grounding_arm="prompt_only")
+
+    assert result.ranked == [(101, "평점이 아주 높아요")]
+    assert result.grounding_decisions[0].supported is False
+    assert result.grounding_decisions[0].failure_reason == "candidate_tier_not_supported"
+
+
+async def test_validated_replaces_invalid_model_rationale_with_neutral_template() -> None:
+    llm = _StructuredLLM(
+        [
+            {
+                "productId": 101,
+                "rationale": "평점이 아주 높아요",
+                "reasonCode": "RATING_HIGH",
+                "evidenceFields": ["ratingLevel"],
+            }
+        ]
+    )
+
+    result = await _call_rerank(llm, grounding_arm="validated")
+
+    assert result.ranked == [(101, NEUTRAL_RATIONALE)]
+    assert result.grounding_decisions[0].downgraded is True
+
+
+async def test_validated_uses_template_for_supported_evidence() -> None:
+    llm = _StructuredLLM(
+        [
+            {
+                "productId": 101,
+                "rationale": "모델이 쓴 다른 문장",
+                "reasonCode": "RATING_HIGH",
+                "evidenceFields": ["ratingLevel"],
+            }
+        ]
+    )
+
+    result = await _call_rerank(
+        llm,
+        grounding_arm="validated",
+        rating=4.8,
+        review_count=120,
+    )
+
+    assert result.ranked == [(101, "평점 평가가 높은 상품이에요")]
+    assert result.grounding_decisions[0].supported is True
+
+
+async def test_validated_keeps_candidate_when_only_evidence_is_invalid() -> None:
+    llm = _StructuredLLM(
+        [
+            {
+                "productId": 101,
+                "rationale": "리뷰가 많아요",
+                "reasonCode": "REVIEW_MANY",
+                "evidenceFields": ["ratingLevel"],
+            }
+        ]
+    )
+
+    result = await _call_rerank(llm, grounding_arm="validated")
+
+    assert [product_id for product_id, _ in result.ranked] == [101]
+    assert result.ranked[0][1] == NEUTRAL_RATIONALE
+
+
+async def test_structured_prompt_declares_exact_grounding_contract() -> None:
+    from app.agents.buyer.recommendation.rerank import _SYSTEM_STRUCTURED_GROUNDING
+
+    for value in (
+        "RATING_HIGH",
+        "REVIEW_MANY",
+        "PRICE_RELATIVE_LOW",
+        "NO_VERIFIABLE_EVIDENCE",
+        "rationale",
+        "후보 목록(CANDIDATES)",
+    ):
+        assert value in _SYSTEM_STRUCTURED_GROUNDING

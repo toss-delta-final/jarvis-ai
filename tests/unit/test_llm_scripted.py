@@ -150,6 +150,7 @@ async def test_loadtest_llm_rerank_survives_arbitrary_real_catalog_ids() -> None
     )
 
     assert result.ranked  # LLMError로 떨어지지 않음 = 정상 경로
+    assert result.grounding_decisions == []  # 기본 arm은 기존 자유문장 경로를 유지
     # 부분집합이 아니라 정확한 등장 순서 — 결정론의 실질(#438 R2 F6). 후보 3건·expose_max=3
     # 이면 1건만 나와도 통과하는 느슨한 단언은 "정상 경로를 지킨다"를 실제로 증명하지 못한다.
     assert [pid for pid, _ in result.ranked] == [777, 888, 999]

@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 from weakref import WeakValueDictionary
 
 from langgraph.store.base import BaseStore
@@ -22,6 +22,9 @@ from app.core.pg_resilience import mutation_lock, run_with_query_timeout
 from app.core.text import _strip_unsafe
 from app.schemas.chat import ConditionChip
 from app.schemas.spring import ProductSearchFilters
+
+if TYPE_CHECKING:
+    from app.agents.buyer.recommendation.rerank_grounding import GroundingDecision
 
 _NAMESPACE_ROOT = "buyer_revert_v2"
 _CATEGORIES_KEY = "categories"
@@ -182,6 +185,7 @@ class RerankResult:
 
     ranked: list[tuple[int, str]] = field(default_factory=list)  # (productId, rationale)
     overall_comment: str = ""
+    grounding_decisions: list[GroundingDecision] = field(default_factory=list)
 
 
 def extract_json(text: str) -> dict:
