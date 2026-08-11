@@ -129,8 +129,12 @@ def _mark_degraded(reason: str) -> None:
 ROUTE_FALLBACK_REASON = "라우팅 장애 — general 폴백(코드 지정)"
 # [#180, 2026-07-29] 저신뢰 폴백 역전 — 구 ROUTE_CONSERVATIVE_REASON(analysis 보수
 # 재지정, 2026-07-19 결정) 폐기. 오분류 비용 비대칭이 전제와 반대였다: 단순 조회가
-# analysis 로 가면 5단 파이프라인(회복 불가·최고 비용), 분석 질문이 general 로 가면
-# general 프롬프트의 "분석을 요청해 주세요" 안내로 한 턴에 회복된다.
+# analysis 로 가면 5단 파이프라인(회복 불가·최고 비용)이 돌았다.
+# [#591] 그 비대칭 자체가 사라졌다 — analysis 도 이제 search 레인(조회 도구 +
+# get_latest_report)이라 두 레인의 비용이 같다. 재지정 로직은 그대로 둔다: 보고서를
+# 찾는 발화가 general 로 가도 같은 도구를 쥔 레인이 보고서 페이지 안내로 회복하고,
+# "불확실하면 general" 단일 원칙이 장애 폴백과 방향이 같기 때문이다. 다만
+# seller_route_confidence_min(0.6)은 재보정 후보다 — 잘못 가도 손해가 작아졌다.
 ROUTE_LOW_CONFIDENCE_REASON = "confidence 미달 — general 재지정(코드 지정)"
 
 

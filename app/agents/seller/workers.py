@@ -161,16 +161,29 @@ def build_review_agent() -> CompiledStateGraph:
 
 # ── general_agent (2-6) — 분석 워커가 아닌 일반 질문 레인 ──────────────────────
 
+# [#591] search 레인 도구 12종 — supervisor 의 `general`(조회)과 `analysis`(저장된 보고서를
+# 찾는 의도)가 **같은 이 레인**을 쓴다. 조회 11종 + 보고서 조회 1종이고 쓰기는 0개다.
+#
+# search_analysis_guide 를 뺀 이유: 영구 스텁이라 항상 "Error:" 를 돌려주는데, LLM 은 쓸 수
+# 있는 도구로 보고 용어 질문("장바구니 전환율이 뭐야?")에 호출했다가 그 실패를 판매자에게
+# 그대로 안내한다 — 도구가 없느니만 못하다. 용어 설명은 GENERAL_PROMPT 의 "용어·서비스
+# 설명" 절이 이미 담당한다. 함수와 분석 워커 6종의 바인딩은 그대로 둔다(상주 파이프라인 소관).
 GENERAL_TOOLS = [
     seller_tools.get_sales_timeseries,
+    seller_tools.get_funnel,  # [#591] I-7 퍼널
+    seller_tools.get_behavior_events,  # [#591] I-13 행동 이벤트
     seller_tools.get_order_events,
     # [#297] I-29 현재 상태 스냅샷("신규 주문 뭐 있어?") — 전이 이력(I-14)과 역할 분리.
     seller_tools.get_orders,
-    # [#297] I-31 리뷰 단순 조회("최근 리뷰 보여줘") — 해석·진단은 analysis(review 워커).
+    seller_tools.get_product_change_logs,  # [#591] I-15 변경 이력
+    seller_tools.get_churn_cohort,  # [#591] I-16 이탈 코호트
+    seller_tools.get_account_events,  # [#591] I-8 계정 이벤트
+    # [#297] I-31 리뷰 단순 조회("최근 리뷰 보여줘") — 요약·해석은 하지 않는다(프롬프트 1번).
     seller_tools.get_reviews,
     seller_tools.list_my_products,
     seller_tools.calculate,
-    seller_tools.search_analysis_guide,
+    # [#591] 보고서 조회 도구는 이것 하나뿐 — 목록 브라우징은 보고서 페이지의 일이다.
+    seller_tools.get_latest_report,
 ]
 
 
