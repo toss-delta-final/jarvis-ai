@@ -1,6 +1,6 @@
 {
   "schemaVersion": "1.0.0",
-  "datasetVersion": "2026-08-08.2",
+  "datasetVersion": "2026-08-11.1",
   "sessions": [
     {
       "sessionId": "kc-brand-01",
@@ -107,13 +107,13 @@
           "kind": "ratingBand",
           "predicate": "prefers",
           "accept": [
-            "4-5"
+            "4-"
           ],
-          "canonicalLabel": "4-5",
-          "nodeId": "ratingBand:4-5"
+          "canonicalLabel": "4-",
+          "nodeId": "ratingBand:4-"
         }
       ],
-      "boundaryNote": "평점 성향 — ratingBand 상한은 5(_RATING_SCALE_MAX), resolver._resolve_band 로 검증된다."
+      "boundaryNote": "평점 성향 — '4점 이상'에는 상한이 없고 #581 이후 그것을 그대로 인코딩한다. **accept 에 '4-5' 를 두지 않는 이유**: 하네스가 재는 것은 LLM 원문이 아니라 resolver 를 통과한 뒤의 node.label 인데(runner._to_produced_triple), 도메인 경계 접기가 '4-5' 를 '4-' 로 바꾸므로 '4-5' 는 산출물에 **나타날 수 없는 값**이다. 죽은 항목을 두면 이 표가 무엇을 재는지 오해를 만든다. 결과적으로 이 항목은 '모델이 상한 5 를 명시했는지'를 구분하지 못한다 — 접기가 그 차이를 지우기 때문이다. 구분이 필요해지면 하네스가 접기 전 라벨을 따로 실어야 한다(현재 범위 밖)."
     },
     {
       "sessionId": "kc-product-01",
@@ -197,15 +197,13 @@
           "kind": "priceBand",
           "predicate": "prefers",
           "accept": [
-            "0-100000",
-            "10000-100000",
-            "50000-100000"
+            "-100000"
           ],
-          "canonicalLabel": "0-100000",
-          "nodeId": "priceBand:0-100000"
+          "canonicalLabel": "-100000",
+          "nodeId": "priceBand:-100000"
         }
       ],
-      "boundaryNote": "priceBand 가중 배정 — '이하'는 하한이 없는 표현이라 모델이 합리적인 하한(예: 10000·50000)을 잡아도 정답이다. 하한 없는 표현은 구조적으로 모호해 복수 정답을 연다(category_probe 가 taxonomy 모호성에 accept 복수를 쓰는 것과 같은 규약, A-8). canonicalLabel(0-100000, 하한 없음 읽기)과 다른 accept 값이 매칭되면 nodeIdAgreement 가 그 인코딩 불일치를 정직하게 반영한다."
+      "boundaryNote": "priceBand 하한 없는 표현 — '10만원 이하'에는 하한이 없고, #581 이후 그것을 그대로 인코딩할 수 있다('-100000'). 종전에는 canonical 이 양쪽 경계를 강제해서 모델이 하한을 지어내야 했고(0·10000·50000), 그 지어낸 값들을 전부 정답으로 받는 accept 복수가 이 항목의 모호성을 흡수하고 있었다. 이제 정답은 하나다. **다만 이 항목이 잡아내는 지어내기는 0 이 아닌 하한뿐이다** — 하네스는 LLM 원문이 아니라 resolver 통과 후의 node.label 을 보는데(runner._to_produced_triple), 도메인 경계 접기가 '0-100000' 을 '-100000' 으로 바꾸므로 하한 0 을 지어낸 경우는 정답과 구분되지 않는다. 하필 베이스라인에 실재하던 값이 그 0 이라 이 한계를 분명히 적어 둔다. '10000-100000'·'50000-100000' 같은 지어내기는 accept 밖이라 그대로 잡힌다."
     },
     {
       "sessionId": "kc-attribute-02",

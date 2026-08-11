@@ -31,6 +31,29 @@
 
 ---
 
+## [2026-08-11] 심볼을 **옮기면** 이름을 바꾼 것과 같다 — 옮기기 전에 `grep -rn`으로 전체를 훑는다
+- 증상: #581 에서 `_BAND_RE` 를 `app/agents/profile/resolver.py` 에서 `graph_models.py` 로
+  옮기고(파서와 렌더러가 같은 정규식을 봐야 해서), 표적 테스트
+  (`test_profile_resolver.py`·`test_profile_object_spec.py` 122건)와 "관련 파일"로 고른
+  6개 파일 154건, `ruff check` 까지 전부 통과시킨 뒤 커밋했다. 그런데
+  `tests/unit/test_profile_graph_scripts.py:56` 이 `from app.agents.profile.resolver import
+  _BAND_RE` 로 그 심볼을 함수 안에서 지연 임포트하고 있었고, 전체 스위트에서
+  `ImportError` 로 깨졌다. 커밋을 amend 해야 했다.
+- 원인: **"관련 파일"을 의미로 골랐다.** 프로필 그래프 관련 테스트 파일들을 머리로 추려
+  돌렸는데, 정작 깨진 파일은 이름에 `graph` 가 들어가면서도 내 목록에 없던
+  `test_profile_graph_scripts.py`(시드 스크립트 테스트)였다. 게다가 임포트가 **함수 안에**
+  있어서 파일 상단 임포트만 훑는 감각으로는 안 보였고, private 이름(`_` 접두어)이라
+  "모듈 밖에서 쓸 리 없다"고 무의식적으로 가정했다 — `_` 는 관행일 뿐 강제가 아니다.
+- 규칙: 심볼을 다른 모듈로 옮기거나 이름을 바꾸기 전에 **반드시 `grep -rn "<심볼>"
+  --include='*.py' .` 로 저장소 전체를 먼저 훑고**, 나온 개수만큼 고쳤는지 센다.
+  `_` 로 시작하는 이름도 예외가 아니다(테스트·스크립트가 흔히 가져다 쓴다).
+  지연 임포트(함수 내부 `from ... import`)는 파일 상단 임포트 검색으로는 안 잡히므로
+  심볼 이름 자체로 검색해야 한다. "관련 있어 보이는 테스트 파일"을 골라 돌리는 것은
+  전체 스위트의 대체재가 아니다 — 2026-08-10 「전체 pytest」·「함수 시그니처」 항목과
+  같은 교훈이 **옮기기(move)** 에서 재발한 사례다.
+- 관련: `app/agents/profile/graph_models.py`(BAND_RE 새 위치) ·
+  `tests/unit/test_profile_graph_scripts.py:56` · 커밋 `eac594b`(amend) · 이슈 #581
+
 ## [2026-08-10] 함수 시그니처 변경은 `grep -rn`으로 전체 저장소를 훑어야 한다 — `app/`·`tests/`만으로는 부족
 - 증상: #571 에서 `resolve_screen_reference()`에 기본값 없는 키워드 인자 4개를 추가한 뒤
   `app/`·`tests/unit/`의 호출부는 전부 고쳤고 표적 테스트(`test_screen_context.py` 등)와

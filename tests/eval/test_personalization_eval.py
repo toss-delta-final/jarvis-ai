@@ -11,6 +11,10 @@ from evals.metrics.settings import EvaluationSettings
 from evals.personalization import cli as personalization_cli
 from evals.personalization.cli import main, normalize_paired_artifacts
 
+# 대부분의 테스트가 main() 전체 CLI 파이프라인(arm 생성 × 케이스 스코어링 × nDCG)을
+# 독립적으로 다시 돈다 — 기본 PR pytest에서 제외하고 별도 워크플로우에서만 실행한다.
+pytestmark = pytest.mark.slow
+
 BASELINE = Path("evals/personalization/baselines/dev-v2")
 
 # Tier D 는 `provider: "scripted"` 라 LLM 을 타지 않고, 같은 플랫폼에서는 바이트 단위로 재현된다

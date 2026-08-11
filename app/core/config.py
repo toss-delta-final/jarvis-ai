@@ -665,6 +665,19 @@ class Settings(BaseSettings):
     seller_history_report_max_chars: int = 500
     seller_tool_call_limit: int = 8  # ToolCallLimit 전역 한도(선택)
     seller_worker_timeout_s: float = 60.0  # 분석 워커 1종 실행 상한(3-3 팬아웃, §7 90s 목표 내)
+
+    # ── SOP 스텝 타임아웃 (이슈 #589, `OPS-RUNTIME.md` T-3 / `01-ARCHITECTURE.md` §4.4) ──
+    # 상주 analysis 파이프라인(채팅 밖)의 스텝별 상한. 대화형 예산(90s)과 무관한 배치
+    # 경로라 워커 타임아웃(60s)을 재사용하지 않고 스텝 성격별로 나눈다 — 초과 시
+    # `sop.run_sop` 이 raise 대신 `Hold` 를 남기므로, 값이 곧 "판정 보류 임계"다.
+    seller_sop_load_timeout_s: float = Field(default=5.0, gt=0)
+    seller_sop_compare_timeout_s: float = Field(default=5.0, gt=0)
+    # compute 만 30s — K-Means 를 PCA on/off 2회 × k 후보 5개 = 학습 10회 돌린다.
+    # (`01` §4.4 초판의 10s 는 OPS-RUNTIME T-3 에서 30s 로 상향 확정됐다.)
+    seller_sop_compute_timeout_s: float = Field(default=30.0, gt=0)
+    seller_sop_feedback_timeout_s: float = Field(default=3.0, gt=0)
+    seller_sop_interpret_timeout_s: float = Field(default=30.0, gt=0)
+
     # general 레인(3-7) 전체 벽시계 상한 (#266 P1). 이 레인만 상한이 없어 스트림 전체
     # 90s 에만 의존했고, 그래서 LLM 지연이 계약상 LLM_TIMEOUT 이 아니라 INTERNAL 로 나갔다.
     # **다른 레인처럼 wait_for 로 감쌀 수 없다** — astream 은 중간에 yield 하는 async

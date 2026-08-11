@@ -36,16 +36,18 @@ def settings() -> Settings:
 def _edge(
     label: str,
     *,
+    node_type: str = "brand",
     predicate: str = "likes",
     status: str = "active",
     observed_at: str = "2026-07-02T00:00:00+00:00",
     derived_from_sensitive: bool = False,
 ) -> GraphEdge:
-    key = make_edge_key(predicate, f"brand:{label}")
+    node_id = f"{node_type}:{label}"
+    key = make_edge_key(predicate, node_id)
     return GraphEdge(
         edge_key=key,
         edge_id=make_edge_id(key),
-        node_id=f"brand:{label}",
+        node_id=node_id,
         predicate=predicate,  # type: ignore[arg-type]
         status=status,  # type: ignore[arg-type]
         promoted=True,
@@ -69,12 +71,20 @@ def _edge(
 
 
 def _document(*edges: GraphEdge) -> GraphDocument:
-    labels = {edge.node_id.split(":", 1)[1] for edge in edges}
+    # 노드는 edge 의 `node_id` 에서 되짚는다 — `_edge(node_type=...)` 를 쓰면 타입도 따라온다.
+    # 라벨은 **저장 canonical 그대로**다(밴드면 `"30000-50000"`) — 문장으로 바꾸는 것은
+    # 투영의 일이고, 여기서 미리 바꾸면 렌더러가 실제로 도는지 검증할 수 없다.
+    node_ids = {edge.node_id for edge in edges}
     return GraphDocument(
         revision=42,
         nodes=[
-            GraphNode(node_id=f"brand:{label}", type="brand", label=label, verified=False)
-            for label in sorted(labels)
+            GraphNode(
+                node_id=node_id,
+                type=node_id.split(":", 1)[0],  # type: ignore[arg-type]
+                label=node_id.split(":", 1)[1],
+                verified=False,
+            )
+            for node_id in sorted(node_ids)
         ],
         edges=list(edges),
         unprojected_count=0,
@@ -305,3 +315,97 @@ def test_single_projection_of_a_hidden_edge_is_none(settings: Settings) -> None:
     document = _document(_edge("ok"), hidden)
 
     assert project_edge(document, hidden.edge_id, settings=settings) is None
+
+
+# ─────────── 밴드 라벨 렌더 (#581, api-spec §3.8) ───────────
+
+
+@pytest.mark.parametrize(
+    ("node_type", "canonical", "expected"),
+    [
+        ("priceBand", "30000-50000", "30,000원 이상, 50,000원 이하"),
+        ("priceBand", "-50000", "50,000원 이하"),
+        ("priceBand", "100000-", "100,000원 이상"),
+        ("ratingBand", "4-5", "4점 이상, 5점 이하"),
+        ("ratingBand", "4-", "4점 이상"),
+        ("ratingBand", "-5", "5점 이하"),
+    ],
+)
+def test_band_labels_are_rendered_as_sentences(
+    settings: Settings, node_type: str, canonical: str, expected: str
+) -> None:
+    """저장 canonical 은 사람이 읽을 수 없다 — 나갈 때만 문장으로 만든다.
+
+    저장을 문장으로 바꾸지 않는 이유는 `node_id` → `edge_id` 가 라벨 파생이기 때문이다
+    (REQ-PGRAPH-010). 표시 규칙을 한 번만 손대도 같은 취향이 다른 `edge_id` 를 얻어
+    **사용자가 지운 항목이 tombstone 을 비켜 되살아난다.**
+    """
+    document = _document(_edge(canonical, node_type=node_type, predicate="prefers"))
+
+    item = project_edges(document, settings=settings)[0]
+
+    assert item.object.label == expected
+    assert item.object.node_id == f"{node_type}:{canonical}"  # 식별자는 canonical 그대로다
+
+
+@pytest.mark.parametrize(
+    ("node_type", "stored"),
+    [
+        # 소수점 — 파서를 안 거친 라벨이 저장 문서에 실재한다(`tests/_graph_fixtures.py` 의
+        # ratingBand "4.5-5"). `int("4.5")` 는 ValueError 라 방어가 없으면 조회가 500 이 된다.
+        ("ratingBand", "4.5-5"),
+        ("priceBand", "3만원-5만원"),
+        # 경계가 둘 다 없는 값. resolver 라면 애초에 안 만들지만 우회 경로를 가정한다.
+        ("priceBand", "-"),
+    ],
+)
+def test_unrenderable_band_label_falls_back_to_the_stored_string(
+    settings: Settings, node_type: str, stored: str
+) -> None:
+    """렌더 못 하면 **원문 그대로** 낸다 — 못생긴 문자열이 500 보다 항상 낫다.
+
+    저장 문서에는 resolver 를 거치지 않은 라벨이 들어올 수 있다(손으로 조립한 픽스처,
+    파서 개정 전에 저장된 값). 렌더러가 그 입력에 터지면 사용자는 취향 화면 자체를
+    잃고 지울 수도 없게 된다.
+    """
+    document = _document(_edge(stored, node_type=node_type, predicate="prefers"))
+
+    assert project_edges(document, settings=settings)[0].object.label == stored
+
+
+def test_non_band_labels_are_untouched(settings: Settings) -> None:
+    """밴드가 아닌 타입은 저장 라벨을 그대로 낸다 — 렌더러가 남의 라벨을 건드리지 않는다."""
+    document = _document(
+        _edge("소니", node_type="brand"),
+        _edge("30000-50000", node_type="attribute"),  # 밴드처럼 생겼어도 타입이 아니면 그대로
+    )
+
+    labels = {item.object.label for item in project_edges(document, settings=settings)}
+
+    assert labels == {"소니", "30000-50000"}
+
+
+def test_the_worst_case_rendered_band_fits_the_label_cap(settings: Settings) -> None:
+    """렌더 최악값이 `profile_graph_label_max_chars` 를 넘지 않는다 — **여유가 정확히 0이다**.
+
+    api-spec §3.8 이 "상한은 저장 라벨 기준"이라고 적은 근거가 이 수치다. 상한을 낮추거나
+    표시 형식에 글자를 더하면 여기서 먼저 깨진다.
+    """
+    bigint_max = 9_223_372_036_854_775_807
+    document = _document(
+        _edge(f"{bigint_max - 1}-{bigint_max}", node_type="priceBand", predicate="prefers")
+    )
+
+    label = project_edges(document, settings=settings)[0].object.label
+
+    assert len(label) == settings.profile_graph_label_max_chars == 60
+
+
+def test_single_projection_renders_the_band_label_too(settings: Settings) -> None:
+    """I-33 응답도 목록과 같은 문장을 낸다 — 두 표면이 `_view` 를 공유함을 밴드로도 고정한다."""
+    edge = _edge("-50000", node_type="priceBand", predicate="prefers")
+    document = _document(edge)
+
+    single = project_edge(document, edge.edge_id, settings=settings)
+
+    assert single is not None and single.object.label == "50,000원 이하"

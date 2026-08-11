@@ -21,6 +21,16 @@
   제공한다. `/seller/chat` 스트림 진입부에 fire-and-forget targets 자동 등록 훅을 달아
   브랜드가 접속할 때마다 무인 분석 대상으로 등록되게 했다(`require_seller`는 buyer 와 공용이라
   훅 위치에서 제외). 소비자(buyer) 경로·jarvis-front·jarvis-back 은 변경하지 않았다.
+- **#589 — 판매자 상주 analysis 파이프라인의 SOP 층**(`app/agents/seller/sop/`)을 신설했다.
+  `run_sop` 은 스텝을 순차 실행하며 예외를 `Hold` 로 흡수하는 것이 전부다(조건 분기·재시도·
+  롤백 없음 — `01-ARCHITECTURE.md` §4.1). 실패해도 raise 하지 않고 부분 채워진 ctx 를
+  돌려주는데, 그 부분 결과 + `holds` 가 무인 실행 실패 규약(`OPS-RUNTIME.md` F-3)의 재료다.
+  `AnalysisContext` 는 LLM 이 보는 유일한 입력으로, 수치·판정·원인 후보를 전부 코드가 채우고
+  LLM 은 `Segment.llm_label`·`llm_desc` 둘만 쓴다. `Verdict.verdict` 에는 기존
+  `RateComparison`(3종)에 없는 **`undecided`** 를 넣어 "판정 보류 ≠ 이상 없음"을 타입으로
+  가른다(감사 C-12). SOP 스텝 타임아웃 5키(`seller_sop_*_timeout_s`: load 5 / compare 5 /
+  compute 30 / feedback 3 / interpret 30)를 신설했다 — `compute` 만 30s 인 것은 K-Means 를
+  PCA on/off × k 후보 5개 = 학습 10회 돌리기 때문이다(`OPS-RUNTIME.md` T-3). 계약 변경 없음.
 - **#153 — buyer-only blind pairwise 사람 평가 패키지** (`evals/blind_pairwise/`)를 추가했다.
   수집 전 고정된 seed A/B 배정, 비식별 raw response schema, tie/abstain 보존, rubric별 ordinal
   분포, 분모가 명시된 Wilson 95% interval, Krippendorff alpha, 선택적 LLM judge 비교와
@@ -29,6 +39,17 @@
   포함한다. 실제 human response는 포함하지 않으며 결과는 exploratory로만 해석한다.
 
 ### Changed
+- **#581 — 취향 밴드(`priceBand`·`ratingBand`)에 한쪽 경계만 있는 표현을 담을 수 있게 하고,
+  조회 응답의 라벨을 사람이 읽는 문장으로 바꿨다** (api-spec §3.8·§3.9.1, v0.33.0).
+  종전 canonical 은 양쪽 경계를 강제해서 "5만원 이하"·"평점 4점 이상" 같은 취향을 담을
+  그릇이 없었고, 추출 LLM 이 없는 쪽을 지어내 메웠다 — 실측에 하한을 지어낸 `0-100000` 과
+  상한이 센티널 쓰레기인 `100000-999999999` 가 남아 있다. 형식을 **항상** 만족시키는
+  지어내기라 드롭 지표에도 안 잡혔다(#462 "밴드 라벨 거부 0건"). 이제 `"-50000"`(이하만)·
+  `"100000-"`(이상만)을 그대로 저장하고, 마이페이지에는 `"30,000원 이상, 50,000원 이하"` ·
+  `"50,000원 이하"` 로 나간다(종전에는 원시 `"30000-50000"` 이 그대로 보였다).
+  **저장 형식과 `nodeId`, I-33 수정 요청은 canonical 그대로다** — 표시 규칙이 `edgeId`
+  파생에 영향을 주면 사용자가 지운 취향이 tombstone 을 비켜 되살아난다(REQ-PGRAPH-010).
+  렌더는 투영 한 곳에서만 일어나고, 파서를 안 거친 저장 라벨(`"4.5-5"`)은 원문 폴백한다.
 - **#582 — 구매자 장바구니 옵션 되물음의 실제 선택지를 번호 목록 + 굵은 라벨로 표시한다**
   (api-spec §3.1·§4.1, v0.32.18). #455 조건 좁힘·#454 색상 미충족·기본
   `CART_OPTION_REQUIRED`·`CART_OPTION_INVALID`·I-1 힌트 폴백의 다섯 출력에서 각 선택지가
