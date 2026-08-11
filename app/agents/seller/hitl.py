@@ -825,7 +825,7 @@ async def confirm_draft(draft_id: str, *, seller_id: int, brand_id: int) -> Conf
 
         settings = get_settings()
         created = datetime.fromisoformat(record.created_at)
-        # 경계 포함(>=) — draft_session·period_confirm(#346)과 같은 판정: ttl=0 은
+        # 경계 포함(>=) — draft_session(#346)과 같은 판정: ttl=0 은
         # "즉시 만료"이고, 엄격 부등호는 시계 분해능(Windows ~15.6ms 틱)에 걸린다.
         if datetime.now(UTC) - created >= timedelta(minutes=settings.seller_draft_ttl_minutes):
             return ConfirmOutcome(
