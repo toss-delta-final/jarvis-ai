@@ -1,4 +1,4 @@
-"""워커별 `compute` 스텝 — 통계 판정 4종 (이슈 #594, `05-WORKERS` §2~3 · `01` §4.4).
+"""워커별 `compute` 스텝 — 통계 판정 4종 + 원인·추천 후보 생성 (이슈 #594·#597).
 
 공통 프레임(load → compare → compute → feedback → interpret) 중 **워커마다 다른 유일한
 스텝**이다(`01` 결정 4). 여기 함수들의 공통 성질 셋:
@@ -19,20 +19,37 @@
 - ``churn``         : 스냅샷 2개 → 명단 3분할 · 이동 행렬 · 순증감 · `delta_size`
 - ``sales_anomaly`` : I-6 매출 시계열 → STL+GESD 이상 판정
 - ``conversion``    : I-7 퍼널 2기간 → 단계별 2-proportion z
+- ``causes``        : 판정 + I-15/I-14/I-31 → `ctx.causes` (원인 후보 7규칙)
+- ``candidates``    : I-9/I-13 + 원인 후보 → `ctx.candidate_actions` (추천 후보 4슬롯)
 - ``render``        : 위 결과를 LLM 이 읽는 표로 직렬화(JSON 덤프 금지 — `05` §2.2)
 """
 
 from app.agents.seller.sop.compute.behavior import compute_behavior
+from app.agents.seller.sop.compute.candidates import compute_candidates
+from app.agents.seller.sop.compute.causes import compute_causes
 from app.agents.seller.sop.compute.churn import compute_churn
 from app.agents.seller.sop.compute.conversion import compute_conversion
-from app.agents.seller.sop.compute.render import render_segment_block, render_shift_block
+from app.agents.seller.sop.compute.render import (
+    VERDICT_TEXT,
+    render_candidate_block,
+    render_cause_block,
+    render_rule_card_block,
+    render_segment_block,
+    render_shift_block,
+)
 from app.agents.seller.sop.compute.sales_anomaly import compute_sales_anomaly
 
 __all__ = [
+    "VERDICT_TEXT",
     "compute_behavior",
+    "compute_candidates",
+    "compute_causes",
     "compute_churn",
     "compute_conversion",
     "compute_sales_anomaly",
+    "render_candidate_block",
+    "render_cause_block",
+    "render_rule_card_block",
     "render_segment_block",
     "render_shift_block",
 ]
