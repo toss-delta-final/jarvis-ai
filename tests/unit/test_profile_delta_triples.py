@@ -85,6 +85,20 @@ def test_delta_prompt_specifies_band_label_format() -> None:
     assert "30000-50000" in builder_mod._DELTA_SYSTEM
 
 
+def test_delta_prompt_forbids_inventing_a_missing_bound() -> None:
+    """한쪽 경계만 있는 표현에 **없는 쪽을 지어내지 말라**고 지시해야 한다 (#581).
+
+    이 지시가 없던 동안 모델은 형식을 맞추려고 경계를 만들어 냈다 — 실측 베이스라인에
+    하한을 지어낸 `0-100000` 과 상한이 센티널인 `100000-999999999` 가 남아 있다.
+    파서가 열린 밴드를 받아도 프롬프트가 그걸 **제안하지 않으면** 아무것도 달라지지 않는다.
+    """
+    prompt = builder_mod._DELTA_SYSTEM
+
+    assert "-50000" in prompt
+    assert "100000-" in prompt
+    assert "지어내지" in prompt
+
+
 # ─────────── resolve-at-write ───────────
 
 

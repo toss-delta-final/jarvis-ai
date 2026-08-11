@@ -15,6 +15,7 @@ SPEC §5.2는 필드에 기본값을 두지 않는다. 여기서도 두지 않�
 from __future__ import annotations
 
 import hashlib
+import re
 import unicodedata
 from typing import TYPE_CHECKING, Literal
 
@@ -35,6 +36,19 @@ EdgeSource = Literal["conversation", "purchase", "user"]
 
 _EDGE_ID_PREFIX = "e_"
 _EDGE_ID_HEX_LEN = 16  # api-spec §3.8 `edgeId` = "e_" + 16자 hex
+
+BAND_RE = re.compile(r"^(\d*)-(\d*)$")
+"""밴드형 노드(`priceBand`·`ratingBand`)의 canonical 라벨 (#581).
+
+**한쪽 경계 생략을 허용한다** — `"30000-50000"`(양쪽) · `"-50000"`(이하만) · `"100000-"`(이상만).
+양쪽을 강제하던 시절에는 "5만원 이하" 같은 취향을 담을 자리가 없어 추출 LLM 이 없는 경계를
+지어냈다(실측: 하한 `0`, 상한 `999999999`). 경계가 둘 다 없는 `"-"` 는 매치되지만 밴드가
+아니므로 **호출부가 걸러야 한다** — 정규식으로 표현하면 읽을 수 없어진다.
+
+**이 모듈에 두는 이유**는 파서(`resolver._resolve_band`)와 렌더러(`graph_projection`)가 반드시
+같은 것을 봐야 하기 때문이다. 갈리면 저장은 되는데 화면에서는 폴백되는 라벨이 생긴다.
+`normalize_label`·`make_node_id` 와 같은 자리다 — 여기가 라벨 규약의 주인이다.
+"""
 
 
 def normalize_label(text: str) -> str:
