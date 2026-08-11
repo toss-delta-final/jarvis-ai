@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from app.agents.seller.features import spec
 from app.agents.seller.sop.compute.behavior import UNKNOWN_BUCKET
-from app.agents.seller.sop.context import AnalysisContext, Segment
+from app.agents.seller.sop.context import AnalysisContext, Segment, Verdict
 
 # 배수가 이만큼 벌어진 축에 `←` 를 붙인다 — 양방향(상회·하회 대칭)이다. 표기 규약이라
 # Settings 가 아니다(`01` §7.3 상수 선례). `05` §1 의 "무엇이 특이한가"를 놓치지 않게
@@ -223,5 +223,117 @@ def render_shift_block(ctx: AnalysisContext) -> str:
             parts.append(f"재활동 복귀 {returned:,}명")
         if dropped is not None:
             parts.append(f"명단 밖 {dropped:,}명(판정 보류)")
+        lines.append("  " + " · ".join(parts))
+    return "\n".join(lines).rstrip()
+
+
+# ── conversion 워커용 (이슈 #598) ────────────────────────────────────────────────
+
+_FUNNEL_COUNT_KEYS: tuple[tuple[str, str], ...] = (
+    ("funnel_view", "조회"),
+    ("funnel_cart", "담기"),
+    ("funnel_checkout", "결제 시작"),
+    ("funnel_purchase", "구매"),
+)
+
+# (Verdict/Comparison 키, 표시명) — `compute_conversion._STAGES` 와 동일 3단.
+_FUNNEL_STAGES: tuple[tuple[str, str], ...] = (
+    ("conversion:view_to_cart", "조회→담기"),
+    ("conversion:cart_to_checkout", "담기→결제 시작"),
+    ("conversion:checkout_to_purchase", "결제 시작→구매"),
+)
+
+
+def _verdict_by_key(ctx: AnalysisContext) -> dict[str, Verdict]:
+    return {verdict.key: verdict for verdict in ctx.verdicts}
+
+
+def render_funnel_block(ctx: AnalysisContext) -> str:
+    """구매전환 퍼널 표 — `compute_conversion` 산출을 그대로 옮긴다(`05` §... 형태 준용).
+
+    비율은 이미 `Comparison.current`/`baseline`(0~1)로 계산돼 있다 — 여기서는
+    백분율 표기와 배열만 한다(나눗셈 재계산 없음, 모듈 docstring 원칙).
+    """
+    scope = f"{ctx.period_from.isoformat()}~{ctx.period_to.isoformat()}"
+    lines = [f"[구매전환 퍼널 — {scope}]", ""]
+
+    counts = [
+        f"{label} {_int(value):,}건" if (value := _metric(ctx, key)) is not None else f"{label} 미집계"
+        for key, label in _FUNNEL_COUNT_KEYS
+    ]
+    lines.append("  " + " → ".join(counts))
+    lines.append("")
+
+    verdicts = _verdict_by_key(ctx)
+    comparisons = {comparison.key: comparison for comparison in ctx.comparisons}
+    stage_lines: list[str] = []
+    for key, label in _FUNNEL_STAGES:
+        verdict = verdicts.get(key)
+        if verdict is None:
+            continue
+        note = _VERDICT_TEXT.get(verdict.verdict, verdict.verdict)
+        comparison = comparisons.get(key)
+        if comparison is not None:
+            rate_text = f"{comparison.current:.1%} (기준 {comparison.baseline:.1%})"
+            baseline_range = f"{comparison.baseline_from.isoformat()}~{comparison.baseline_to.isoformat()}"
+        else:
+            rate_text = "비율 산출 불가"
+            baseline_range = None
+        p_text = f" (p={verdict.p_value:.3f})" if verdict.p_value is not None else ""
+        line = f"  {label.ljust(14)}{rate_text}   {note}{p_text}"
+        if baseline_range:
+            line += f"  [기준기간 {baseline_range}]"
+        stage_lines.append(line)
+
+    if stage_lines:
+        lines.extend(stage_lines)
+    else:
+        lines.append("  단계별 판정이 없습니다 — 사유는 판정 보류 목록을 참조하십시오.")
+    return "\n".join(lines).rstrip()
+
+
+# ── sales_anomaly 워커용 (이슈 #598) ─────────────────────────────────────────────
+
+
+def render_anomaly_block(ctx: AnalysisContext) -> str:
+    """매출 이상 탐지 표 — `compute_sales_anomaly` 산출을 그대로 옮긴다.
+
+    `sigma=inf`·`deviation_pct=None` 은 compute 단계가 이미 `detail` 에서 뺐으므로
+    (모듈 docstring — "무한대로 위장하지 않는다") 여기서는 있는 값만 표기한다.
+    """
+    scope = f"{ctx.period_from.isoformat()}~{ctx.period_to.isoformat()}"
+    lines = [f"[매출 이상 탐지 — {scope}]", ""]
+
+    days = _int(_metric(ctx, "sales_series_days"))
+    if days is not None:
+        lines.append(f"  조회 일수: {days}일")
+
+    anomaly_verdicts = [v for v in ctx.verdicts if v.key.startswith("sales_anomaly:")]
+    overall = next((v for v in ctx.verdicts if v.key == "sales_anomaly"), None)
+
+    if not anomaly_verdicts:
+        if overall is not None:
+            lines.append(f"  판정: {_VERDICT_TEXT.get(overall.verdict, overall.verdict)}")
+        else:
+            lines.append("  판정 재료가 없습니다 — 사유는 판정 보류 목록을 참조하십시오.")
+        return "\n".join(lines).rstrip()
+
+    lines.append("")
+    lines.append("[이상점]")
+    for verdict in anomaly_verdicts:
+        event_date = verdict.key.split(":", 1)[1]
+        detail = verdict.detail
+        direction = _VERDICT_TEXT.get(verdict.verdict, verdict.verdict)
+        parts = [f"■ {event_date} · {direction}"]
+        actual = detail.get("actual")
+        expected = detail.get("expected")
+        if actual is not None and expected is not None:
+            parts.append(f"실측 {actual:,.0f}원 (기대 {expected:,.0f}원)")
+        deviation = detail.get("deviation_pct")
+        if deviation is not None:
+            parts.append(f"편차 {deviation:+.1f}%")
+        sigma = detail.get("sigma")
+        if sigma is not None:
+            parts.append(f"σ={sigma:.2f}")
         lines.append("  " + " · ".join(parts))
     return "\n".join(lines).rstrip()
