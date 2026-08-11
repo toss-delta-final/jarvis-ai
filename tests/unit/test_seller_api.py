@@ -750,7 +750,9 @@ def test_chart_keyword_does_not_bypass_image_product_lane(
 
     monkeypatch.setattr(seller_api, "run_analysis_pipeline", _must_not_run)
 
-    async def _fake_product_stream(request, context, *, request_id=None, pending=None):
+    async def _fake_product_stream(
+        request, context, *, request_id=None, pending=None, pending_unknown=False
+    ):
         yield seller_api._meta("product")
         yield seller_api._done("keep")
 
