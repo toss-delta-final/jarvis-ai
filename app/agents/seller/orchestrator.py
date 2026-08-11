@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from uuid import uuid4
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import date
@@ -34,8 +35,9 @@ from typing import TYPE_CHECKING, Literal
 from langchain_core.messages import HumanMessage, ToolMessage
 from langgraph.graph.state import CompiledStateGraph
 
-from app.agents.seller import history
+from app.agents.seller import analysis_store, history
 from app.agents.seller import thread as seller_thread
+from app.agents.seller.analysis_records import ReportRecord, RecommendationRecord
 from app.agents.seller.context import SellerContext
 from app.agents.seller.middleware import check_scope
 from app.agents.seller.models import SellerRole, seller_trace_model_metadata
@@ -892,6 +894,44 @@ async def run_resolved_pipeline(
         )
     except Exception:
         logger.warning("분석 이력 저장 실패 — 응답은 계속", exc_info=True)
+
+    # [이슈 #590] Store 저장(위)과 별개로 analysis_store(DB, 이슈 #585)에도 같은 결과를
+    # 남긴다 — history.apply_recommendation("N번 적용해줘")이 이 테이블을 읽는다(§6.3).
+    # 실패는 응답을 죽이지 않는다(위 save_history 와 동일한 degrade 원칙 — 저장은 부가
+    # 데이터, 판매자에게 보여줄 답은 이미 만들어졌다).
+    try:
+        report_id = uuid4()
+        report_record = ReportRecord(
+            id=report_id,
+            brand_id=context.brand_id,
+            trigger_type="manual",  # 채팅 온디맨드 — 배치(scheduled_daily)는 후속 이슈
+            period_from=resolved.date_from,
+            period_to=resolved.date_to,
+            title=f"{resolved.date_from.isoformat()}~{resolved.date_to.isoformat()} 분석 보고서",
+            summary=verified.report[:300],
+            report_md=verified.report,
+            verified=verified.passed,
+            score_total=verified.last_score.total if verified.last_score else None,
+            attempts=verified.attempts,
+        )
+        recommendation_records = [
+            RecommendationRecord(
+                id=uuid4(),
+                report_id=report_id,
+                brand_id=context.brand_id,
+                rank=i + 1,
+                action_type=rec.action_type,
+                product_ids=[rec.product_id],
+                title=rec.title,
+                rationale=rec.rationale,
+                expected_effect=rec.expected_effect,
+                changes=[change.model_dump() for change in rec.changes],
+            )
+            for i, rec in enumerate(recommendations.recommendations)
+        ]
+        await analysis_store.save_report(report_record, recommendation_records)
+    except Exception:
+        logger.warning("분석 저장 계층(analysis_store) 기록 실패 — 응답은 계속", exc_info=True)
 
     return PipelineResult(
         kind="report",

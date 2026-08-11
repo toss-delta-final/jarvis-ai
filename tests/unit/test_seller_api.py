@@ -1468,8 +1468,17 @@ def test_apply_message_short_circuits_without_llm(monkeypatch: pytest.MonkeyPatc
 
 
 def test_apply_message_with_history_emits_draft(monkeypatch: pytest.MonkeyPatch) -> None:
-    """①.5 → 이력 recommendations[N-1] 이 draft 이벤트로 — before 는 I-9 현재값."""
-    from app.agents.seller import history
+    """①.5 → 최신 보고서 recommendations[N-1] 이 draft 이벤트로 — before 는 I-9 현재값.
+
+    [이슈 #590] apply_recommendation 참조처가 Store -> analysis_store(DB, 이슈 #585)로
+    바뀌어, history.save_history(Store) 와 별개로 analysis_store 조회 함수를 가짜로
+    대체해 같은 추천을 돌려준다(실 PG 연결 없음).
+    """
+    from datetime import date
+    from uuid import uuid4
+
+    from app.agents.seller import analysis_store, history
+    from app.agents.seller.analysis_records import RecommendationRecord, ReportRecord
     from app.agents.seller.schemas import ActionRecommendation, ProposedChange, RecommendationSet
     from app.schemas.spring import SellerProductList, SellerProductRow
     from app.services.spring_client import set_spring_client
@@ -1492,6 +1501,43 @@ def test_apply_message_with_history_emits_draft(monkeypatch: pytest.MonkeyPatch)
             )
         ]
     )
+    report = ReportRecord(
+        id=uuid4(),
+        brand_id=3,
+        trigger_type="manual",
+        period_from=date(2026, 6, 1),
+        period_to=date(2026, 6, 30),
+        title="지난달 매출 분석 보고서",
+        summary="보고서",
+        report_md="보고서",
+        verified=True,
+        attempts=1,
+    )
+    rec_records = [
+        RecommendationRecord(
+            id=uuid4(),
+            report_id=report.id,
+            brand_id=3,
+            rank=1,
+            action_type="price_adjust",
+            product_ids=[101],
+            title="감귤청 가격 10% 인하",
+            rationale="r",
+            changes=[{"field": "price", "after": "13500"}],
+        )
+    ]
+
+    async def _fake_list_reports(brand_id, *, limit, before=None):
+        return [report] if brand_id == 3 else []
+
+    async def _fake_list_recommendations_by_report(report_id, *, brand_id):
+        return rec_records if report_id == report.id and brand_id == 3 else []
+
+    monkeypatch.setattr(analysis_store, "list_reports", _fake_list_reports)
+    monkeypatch.setattr(
+        analysis_store, "list_recommendations_by_report", _fake_list_recommendations_by_report
+    )
+
     try:
         asyncio.run(
             history.save_history(
@@ -1514,7 +1560,8 @@ def test_apply_message_with_history_emits_draft(monkeypatch: pytest.MonkeyPatch)
     draft = events[1]["data"]
     assert draft["op"] == "update" and draft["productId"] == 101
     assert draft["changes"] == [{"field": "price", "before": "15000", "after": "13500"}]
-    assert draft["summary"] == "감귤청 가격 10% 인하"
+    # [결정 61] summary 에 출처 보고서를 명시한다.
+    assert draft["summary"] == "지난달 매출 분석 보고서 · 1번 — 감귤청 가격 10% 인하"
 
 
 def test_general_route_uses_general_stream(monkeypatch: pytest.MonkeyPatch) -> None:
