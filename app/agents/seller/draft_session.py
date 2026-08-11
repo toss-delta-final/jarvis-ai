@@ -1,6 +1,6 @@
 """판매자 등록 초안 세션 저장소 (#506, api-spec §3.2 v0.31.0).
 
-이미지 기반 create 초안의 **스레드별 대기 상태** — `period_confirm.py` 의 recorder
+이미지 기반 create 초안의 **스레드별 대기 상태** — `thread.py` 의 recorder
 그래프 패턴(no-op 1노드 + aget_state/aupdate_state)을 그대로 따른다.
 
 보관하는 것: 진행 중인 create 초안의 원천 재료 전부 —
@@ -14,7 +14,7 @@
 ② 수정 턴의 초안 원천 복원 ③ 새 draft 발급 시 이전 draftId 무효화 대상 조회.
 
 thread_id 네임스페이스: ``seller-draft-session:{seller_id}:{thread_id}`` —
-seller_id 접두가 곧 IDOR 차단이다(period_confirm 과 동일 원칙).
+seller_id 접두가 곧 IDOR 차단이다 — 신원은 검증된 JWT 에서만 온다.
 
 대기 상태는 **부가 데이터**다: 조회·기록 실패는 warning 후 계속한다(응답을 죽이지
 않는다). TTL 은 draft 본체와 같은 `seller_draft_ttl_minutes` — FE 의 10분 타이머,
@@ -147,7 +147,7 @@ async def save_pending(context: SellerContext, thread_id: str, pending: PendingC
 async def load_pending(context: SellerContext, thread_id: str) -> PendingCreate | None:
     """유효한 대기를 반환한다 — 없음·만료·손상은 전부 None(만료·손상은 폐기까지).
 
-    TTL 경계는 포함(>=) — period_confirm 과 동일한 이유(시계 분해능, #346).
+    TTL 경계는 포함(>=) — 시계 분해능 때문이다(#346, docs/lessons.md).
     """
     try:
         graph = await _get_graph()

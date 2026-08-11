@@ -126,6 +126,20 @@
   신뢰 off/hops=1 — 조용한 저하지만 서비스 정지보다는 낫다). 계약(api-spec) 불변 — 로그·설정
   전용 변경이다.
 
+### Removed
+- **#584 — 판매자 기간 확인 게이트(①.7)를 철거하고 관용 해석 + 응답 내 기간 고지로 일원화했다.**
+  코드가 값을 보충한 기간 해석("이번 달"·"올해"·"최근 3개월")을 실행 전에 확인받던 왕복을
+  없앴다 — `period_confirm.py` 모듈(pending 저장·TTL·IDOR 네임스페이스), 입구 선판정 ①.7,
+  승인 판정 `parse_period_approval`(전 토큰 긍정 어휘 ~50종), `confirmation_text`,
+  `PipelineResult(kind="period_confirmation")`·`.resolved`, `seller_period_confirm_ttl_minutes`
+  를 모두 제거했다. 확인이 막던 "조용한 대체"는 이제 general 레인이 쓰던 것과 **같은**
+  `period.disclosure_text` 고지가 막는다(분석 레인은 `_with_period_disclosure` 로 보고서 첫 줄에
+  접두). `ResolvedPlan.needs_confirmation` 은 의미(코드가 값을 보충했는가)를 유지한 채
+  `period_supplemented` 로 개명했고, `run_resolved_pipeline` 분리는 상주 파이프라인이 그 성질을
+  쓰므로 유지한다(결정 109). 와이어 계약 불변 — 확인 턴은 애초에 `token`+`done(keep)` 이라
+  api-spec·FE 무변경. 전용 테스트 15개 폐기(`test_seller_period_confirm.py`).
+  명세는 `docs/specs/DESIGN-SELLER-PERIOD.md` v0.2.0 으로 개정했다.
+
 ### Docs
 - **#139 — 1차 완료(발표) 핵심 주장 4개와 claim-evidence matrix를 확정했다.** 발표(2026-08-14)가
   나흘 남은 시점에 `evals/` 17개 하네스에 이미 쌓인 baseline 을 엮어, 새 실행 없이 무엇을

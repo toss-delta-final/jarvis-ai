@@ -99,14 +99,15 @@ def test_both_lanes_resolve_to_same_range(period_expr: str, message: str) -> Non
 
 
 @pytest.mark.parametrize(("period_expr", "message"), _VOCAB_PAIRS)
-def test_both_lanes_agree_on_confirmation_need(period_expr: str, message: str) -> None:
+def test_both_lanes_agree_on_supplement_flag(period_expr: str, message: str) -> None:
     """코드가 값을 보충했는가 — 그 판정도 두 레인이 같아야 한다.
 
-    값이 같아도 이 판정이 갈리면 한쪽 레인만 고지·확인 없이 지나간다 — 정합이
+    값이 같아도 이 판정이 갈리면 한쪽 레인만 고지 없이 지나간다 — 정합이
     (from, to) 에서만 성립하고 판매자가 보는 화면에서는 깨진다.
     """
     assert (
-        _general_lane(message).needs_confirmation == _analysis_lane(period_expr).needs_confirmation
+        _general_lane(message).needs_confirmation
+        == _analysis_lane(period_expr).period_supplemented
     )
 
 
@@ -184,11 +185,11 @@ def test_both_lanes_keep_the_base_period_intact_with_comparison(
 
 
 @pytest.mark.parametrize(("period_expr", "comparison_expr", "message"), _COMPARISON_TRIPLES)
-def test_both_lanes_agree_on_confirmation_need_with_comparison(
+def test_both_lanes_agree_on_supplement_flag_with_comparison(
     period_expr: str, comparison_expr: str, message: str
 ) -> None:
-    """확인 판정도 **합집합**으로 같다 — 비교 기간만 보충된 경우를 놓치지 않는다."""
+    """고지 판정도 **합집합**으로 같다 — 비교 기간만 보충된 경우를 놓치지 않는다."""
     analysis = _analysis_lane(period_expr, comparison_expr)
     general = _general_lane(message)
 
-    assert general.any_confirmation_needed == analysis.needs_confirmation
+    assert general.any_confirmation_needed == analysis.period_supplemented
