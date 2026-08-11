@@ -11,6 +11,14 @@
 
 ## [Unreleased]
 
+### Added
+- **#153 — buyer-only blind pairwise 사람 평가 패키지** (`evals/blind_pairwise/`)를 추가했다.
+  수집 전 고정된 seed A/B 배정, 비식별 raw response schema, tie/abstain 보존, rubric별 ordinal
+  분포, 분모가 명시된 Wilson 95% interval, Krippendorff alpha, 선택적 LLM judge 비교와
+  재현 가능한 artifact 분석을 제공한다. evaluator별 blind presentation 분리, pair-input/
+  preregistration hash provenance, constrained A/B balance와 엄격한 3-of-3 coverage gate를
+  포함한다. 실제 human response는 포함하지 않으며 결과는 exploratory로만 해석한다.
+
 ### Changed
 - **#570 — 장바구니 옵션 되물음 나열을 `" / "` 이어붙이기에서 옵션 하나가 한 줄을 온전히
   차지하는 줄바꿈 나열로 바꿨다** (api-spec §3.1, v0.32.17). 되물음 문구는 #118·#455 이후
