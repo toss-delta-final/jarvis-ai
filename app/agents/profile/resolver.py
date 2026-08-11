@@ -60,6 +60,15 @@ _RATING_SCALE_MAX = 5  # 별점 도메인 상수 — 비즈니스 튜너블이 �
 # Long 으로 파싱하면 오버플로우다(PR #410 리뷰). 상품 id 는 BIGINT 라는 CLAUDE.md 규약에서 오는
 # **도메인 상수**지 튜너블이 아니다 — 값을 낮추면 정당한 id 가 드롭되고 높이면 DB 가 못 받는다.
 _BIGINT_MAX = 9_223_372_036_854_775_807
+# 밴드 kind 별 **도메인 경계**. 경계와 같은 값은 아무것도 걸러내지 않으므로(가격은 늘 0 이상,
+# 평점은 늘 5 이하) 경계를 명시한 밴드와 생략한 밴드는 **같은 취향**이다 — `_resolve_band` 가
+# 그 값을 접어 하나의 `node_id` 로 수렴시킨다(#581). 접지 않으면 `"0-100000"` 과 `"-100000"` 이
+# 별개 노드가 되어, 같은 취향이 두 줄로 보이고 한쪽을 지워도 다른 쪽이 살아남는다
+# (REQ-PGRAPH-010 — `"007"`→`"7"` 수렴을 만든 것과 같은 이유).
+_BAND_DOMAIN: dict[str, tuple[int, int]] = {
+    "priceBand": (0, _BIGINT_MAX),
+    "ratingBand": (0, _RATING_SCALE_MAX),
+}
 _CATEGORY_LEXICON = "catalog_categories"
 
 
@@ -344,6 +353,18 @@ def _resolve_band(kind: str, label: str, *, anchor_phrase: str, now: str) -> Gra
         or (high is not None and high > _RATING_SCALE_MAX)
     ):
         return None  # `"6-"`("6점 이상")은 존재할 수 없는 평점이다
+
+    # **도메인 경계와 같은 값은 접는다** — 아무것도 걸러내지 않는 경계라 명시하든 생략하든 같은
+    # 취향이고, 접지 않으면 같은 취향이 두 `node_id` 를 얻는다(`_BAND_DOMAIN` 주석).
+    # 검증 **뒤에** 접는 것이 중요하다 — 먼저 접으면 `"0-0"` 의 하한이 사라져 `low >= high` 를
+    # 비켜간다(종전에 거부하던 값이 통과하는 퇴행).
+    domain_min, domain_max = _BAND_DOMAIN[kind]
+    if low == domain_min:
+        low = None
+    if high == domain_max:
+        high = None
+    if low is None and high is None:
+        return None  # 양쪽이 다 도메인 경계였다 — 아무것도 안 거르는 밴드는 취향이 아니다
 
     # 빈 쪽은 빈 채로 재조립한다 — `int()` 왕복이 앞자리 0 을 없애는 수렴은 그대로 유지된다
     # (`"030-"` → `"30-"`). 이 문자열이 곧 `node_id` 이므로 두 경로가 같은 규칙을 써야 한다.

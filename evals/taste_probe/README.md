@@ -53,6 +53,11 @@ CLI 에 `--tier` 플래그가 없다(`app/agents/profile/builder.py` 호출부�
 
 ## 실 LLM 기준선
 
+> 🔴 **[#581] 아래 정본 판은 무효다 — 재측정 대기.** 열린 밴드 도입으로 `_DELTA_SYSTEM` 과
+> 골든셋이 함께 바뀌어, 이 판의 `promptSha12`·`datasetVersion` 이 가리키는 상태는 저장소에
+> 더는 없다(현재 데이터셋은 `2026-08-11.1`). **새 런을 이 수치와 비교하지 말 것** — 아래
+> 「다른 해시끼리 비교 금지」가 그대로 적용된다.
+
 정본은 `evals/taste_probe/baselines/openai-20260809-n5/`(provider=openai · model=gpt-5.6-luna ·
 N=5 · promptSha12=`f1087ac09a78` · datasetVersion=`2026-08-08.2`) — 정본 선언 표·해석은
 `evals/taste_probe/baselines/README.md` 를 보라. 2026-08-08 확인 시점에는 `LLM_PROVIDER=openai`

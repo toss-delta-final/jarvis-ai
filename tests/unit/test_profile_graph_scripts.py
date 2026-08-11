@@ -52,12 +52,19 @@ def test_seed_scenario_includes_a_negative_polarity(seed_script) -> None:
 
 
 def test_seed_band_labels_pass_the_strict_parser(seed_script) -> None:
-    """시드 라벨이 엄격 파서를 통과하지 못하면 시드가 조용히 밴드 없는 그래프를 만든다."""
-    from app.agents.profile.graph_models import BAND_RE
+    """시드 라벨이 엄격 파서를 통과하지 못하면 시드가 조용히 밴드 없는 그래프를 만든다.
+
+    **정규식이 아니라 파서를 부른다.** `BAND_RE` 는 `"-"` 도 매치하고(그 모듈 docstring 이
+    직접 그렇게 적었다) 크기·스케일·도메인 경계 접기를 전혀 모른다 — 정규식만 보면
+    `"50000-30000"`·`ratingBand "4-9"`·`"0-5"` 가 전부 통과한 뒤 `_resolve_band` 에서
+    드롭되어, 이 테스트가 막으라고 있는 바로 그 "조용히 밴드 없는 그래프"가 만들어진다.
+    """
+    from app.agents.profile.resolver import _resolve_band
 
     for fact, kind, label, *_ in seed_script._SCENARIO:
         if kind in ("priceBand", "ratingBand"):
-            assert BAND_RE.match(label), f"{fact}: {label!r} 은 밴드 형식이 아니다"
+            node = _resolve_band(kind, label, anchor_phrase="", now="2026-08-11T00:00:00+00:00")
+            assert node is not None, f"{fact}: {label!r} 이 파서에서 드롭된다"
 
 
 def test_seed_calls_production_code_not_a_copy(seed_script) -> None:

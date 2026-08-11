@@ -1657,7 +1657,7 @@ If-Match: "g42"                          ← §3.8 응답의 graphVersion (§3.9
 |---|---|---|---|
 | `predicate` | string | 아니오 | `prefers` \| `likes` \| `avoids` \| `interestedIn`. **`purchased` 지정은 `400`** — 구매는 의견이 아니라 사실이라 사용자가 만들 수 없다 |
 | `object.type` | string | `type`+`label` 형태에서 예 | §3.8 `edges[].object.type` 어휘. `user`류 자기 노드는 없다 |
-| `object.label` | string | `type`+`label` 형태에서 예 | 1 ~ config `profile_graph_label_max_chars`자. 정규화 후 `nodeId`가 된다. **[개정 v0.33.0, #581] `priceBand`·`ratingBand`는 canonical만 받는다** — `"30000-50000"`(양쪽) · `"-50000"`(이하만) · `"100000-"`(이상만). §3.8이 내보낸 **렌더 문장(`"50,000원 이하"`)을 그대로 되보내면 `400`**이다. canonical은 `nodeId`에서 `"{type}:"` 접두어를 떼면 얻는다 |
+| `object.label` | string | `type`+`label` 형태에서 예 | 1 ~ config `profile_graph_label_max_chars`자. 정규화 후 `nodeId`가 된다. **[개정 v0.33.0, #581] `priceBand`·`ratingBand`는 canonical만 받는다** — `"30000-50000"`(양쪽) · `"-50000"`(이하만) · `"100000-"`(이상만). §3.8이 내보낸 **렌더 문장(`"50,000원 이하"`)을 그대로 되보내면 `400`**이다. canonical은 `nodeId`에서 `"{type}:"` 접두어를 떼면 얻는다. **도메인 경계는 정규화 과정에서 접힌다** — 가격은 늘 0 이상이고 평점은 늘 5 이하라 그 값을 명시해도 아무것도 걸러내지 않으므로, `"0-10000"`은 `"-10000"`과 **같은 `nodeId`가 되고**(응답의 `object.nodeId`가 보낸 라벨과 다를 수 있다) 양쪽이 다 도메인 경계인 `"0-"`·`"-5"`(평점)는 전체 집합이라 `400`이다 |
 | `object.nodeId` | string | `nodeId` 형태에서 예 | **[신규 v0.26.0]** §3.8 `edges[].object.nodeId`와 동일 형식(`{type}:{정규화 라벨}`). **resolver(라벨 정규화·근접 매칭)를 건너뛰고 그 노드를 직접 참조한다** — **[v0.32.0]** 조회 응답의 `object`를 그대로 실으면 되므로 FE가 값을 재구성할 필요가 없다 |
 
 - `object`를 지정할 때는 **`type`+`label` 형태와 `nodeId` 형태 중 정확히 하나**여야 한다. **둘을 함께 실으면 `400`**(어느 쪽이 우선인지가 계약에 없고, 우선순위를 정하는 순간 무시된 필드가 조용한 오작동이 된다).

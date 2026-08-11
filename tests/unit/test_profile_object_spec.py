@@ -172,9 +172,19 @@ async def test_both_forms_together_are_refused(settings: Settings) -> None:
 # ─────────── type+label 형태 — 배치와 같은 식별자가 나와야 한다 ───────────
 
 
-@pytest.mark.parametrize("label", ["30000-50000", "0-10000", "-50000", "100000-"])
-async def test_price_band_accepts_the_canonical_form(settings: Settings, label: str) -> None:
-    """열린 밴드(`"-50000"`·`"100000-"`)도 canonical 이다 (#581, api-spec §3.9.1)."""
+@pytest.mark.parametrize(
+    ("label", "expected_node_id"),
+    [
+        ("30000-50000", "priceBand:30000-50000"),
+        ("-50000", "priceBand:-50000"),  # 열린 밴드도 canonical 이다(#581, api-spec §3.9.1)
+        ("100000-", "priceBand:100000-"),
+        # 도메인 경계(가격 하한 0)는 접힌다 — 사용자가 명시해도 배치 경로와 같은 노드로 간다.
+        ("0-10000", "priceBand:-10000"),
+    ],
+)
+async def test_price_band_accepts_the_canonical_form(
+    settings: Settings, label: str, expected_node_id: str
+) -> None:
     resolved = await resolve_user_object(
         ObjectSpec(node_type="priceBand", label=label),
         document=_document(),
@@ -183,7 +193,7 @@ async def test_price_band_accepts_the_canonical_form(settings: Settings, label: 
         now=NOW,
     )
 
-    assert resolved is not None and resolved.node_id == f"priceBand:{label}"
+    assert resolved is not None and resolved.node_id == expected_node_id
 
 
 @pytest.mark.parametrize(
