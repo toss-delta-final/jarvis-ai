@@ -69,7 +69,7 @@ N=5 · promptSha12=`f1087ac09a78` · datasetVersion=`2026-08-08.2`) — 정본 �
 
 ## 데이터셋 — 슬라이스와 쿼터
 
-`fixtures/sessions.json`(30세션, v`2026-08-08.2`) — `fixtures/manifest.json` 의 sha256 과
+`fixtures/sessions.json`(30세션, v`2026-08-11.1`) — `fixtures/manifest.json` 의 sha256 과
 대조해 읽는다(불일치 → 종료 코드 2). 외부 경로(`--fixture <path>`)는 대조를 건너뛰되 해시를
 산출물에 기록한다.
 
