@@ -23,6 +23,9 @@ from typing import Any
 
 from app.agents.buyer.recommendation import decompose as decompose_module
 from app.agents.buyer.recommendation.category_scope import _SYSTEM as CATEGORY_SCOPE_SYSTEM
+from app.agents.buyer.recommendation.underspecified_classifier import (
+    _SYSTEM as UNDERSPECIFIED_SYSTEM,
+)
 from app.core.config import Settings
 from app.core.llm import AnthropicLLM, LLMClient, OpenAILLM, resolve_provider_model
 from evals.intent_probe.pacer import GlobalPacer
@@ -32,7 +35,7 @@ from evals.model_eval.pricing import PriceBook
 from evals.model_eval.recording import RecordingLLM
 
 DECOMPOSE_RELPATH = "app/agents/buyer/recommendation/decompose.py"
-REPO_PROMPT_SOURCE = "repo:_SYSTEM"
+REPO_PROMPT_SOURCE = "repo:_SYSTEM_WITH_DEDICATED_UNDERSPECIFIED"
 # `git show` 는 CWD 기준으로 리포를 찾는다 — 실행 위치에 기대지 않도록 루트를 명시한다
 # (`evals/metrics/run_manifest.py` 가 커밋 해시를 읽을 때와 같은 규약).
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -60,8 +63,8 @@ class PromptIdentity:
 
 
 def repo_system_prompt() -> str:
-    """현재 리포의 `_SYSTEM` 원문."""
-    return decompose_module._SYSTEM
+    """#463 기본 배포 경로가 provider에 보내는 decompose 문면."""
+    return decompose_module._SYSTEM_WITH_DEDICATED_UNDERSPECIFIED
 
 
 def prompt_identity(text: str, *, source: str) -> PromptIdentity:
@@ -126,7 +129,7 @@ def resolve_system_prompt(
 # 아래 래퍼의 초판 docstring 이 스스로 경고한 자리다("다른 노드를 함께 재게 되면 호출부 라벨로
 # 분기해야 한다"). 그대로 뒀다면 `--prompt`/`--prompt-rev` 런에서 분류기가 **decompose 후보
 # 프롬프트**를 받아 판정이 무의미해지고, 그 사실이 표에는 "분류기가 갑자기 무동작"으로만 보인다.
-PASSTHROUGH_SYSTEMS = frozenset({CATEGORY_SCOPE_SYSTEM})
+PASSTHROUGH_SYSTEMS = frozenset({CATEGORY_SCOPE_SYSTEM, UNDERSPECIFIED_SYSTEM})
 
 
 class SystemPromptOverrideLLM:

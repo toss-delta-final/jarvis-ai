@@ -85,6 +85,7 @@ def build_results(
     budget: dict[str, Any],
     dry_run: bool,
     category_scope_prompt: dict[str, Any] | None = None,
+    underspecified_prompt: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "prompt": prompt,
@@ -98,6 +99,8 @@ def build_results(
         # 유일한 근거라 산출물 본문에 남긴다(F-5·G-1).
         "categoryScopePrompt": category_scope_prompt,
         "categoryScopeEnabled": category_scope_prompt is not None,
+        "underspecifiedPrompt": underspecified_prompt,
+        "underspecifiedEnabled": underspecified_prompt is not None,
         "issue240Line": issue240_line(axes),
         "issue240AxisOrder": list(ISSUE_240_AXIS_ORDER),
         "axes": {axis_id: axis.as_dict() for axis_id, axis in axes.items()},
