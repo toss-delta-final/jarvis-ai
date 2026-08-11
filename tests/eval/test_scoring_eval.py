@@ -13,6 +13,9 @@ _REAL_GET_RECENT_PURCHASES = spring_client.get_recent_purchases
 
 
 @pytest.mark.eval
+# dev goldenset 전체 × passthrough/scoring 2 arm을 결정론 검증을 위해 2번 도는
+# 전체 그래프 재실행 — combo_matrix/personalization과 같은 이유로 CI에서 제외.
+@pytest.mark.slow
 def test_paired_scoring_run_is_deterministic_and_complete(tmp_path, monkeypatch) -> None:
     first = tmp_path / "first"
     second = tmp_path / "second"

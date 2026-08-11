@@ -48,6 +48,125 @@ async def test_semantic_query_lands_on_filters() -> None:
     assert d.filters.semantic_query == "시원한 여름 셔츠"
 
 
+async def test_semantic_query_repairs_structured_only_llm_output_to_product_anchor() -> None:
+    """[#603] 가격·색상만 남은 LLM 의미쿼리는 단일 상품 leg 앵커로 보정한다."""
+    d = await decompose(
+        _FakeLLM(
+            _raw(
+                semanticQuery="3만원 이하 파란색",
+                categoryQueries=[{"category": "패션 > 바지", "query": "바지"}],
+                filters={"priceMax": 30000, "color": "파란색"},
+            )
+        ),
+        query="3만원 이하 파란색 바지",
+        prior_filters=None,
+        profile_summary=None,
+        tier="fast",
+    )
+
+    assert d.filters.semantic_query == "바지"
+    assert d.filters.price_max == 30000
+    assert d.filters.color == "파란색"
+
+
+async def test_semantic_query_preserves_rich_terms_with_structured_filters() -> None:
+    """[#603] 구조화 표면은 제거하고 문맥·상품 앵커는 보존한다."""
+    d = await decompose(
+        _FakeLLM(
+            _raw(
+                semanticQuery="3만원 이하 여름용 파란색",
+                categoryQueries=[{"category": "패션 > 바지", "query": "바지"}],
+                filters={"priceMax": 30000, "color": "파란색"},
+            )
+        ),
+        query="3만원 이하 여름용 파란색 바지",
+        prior_filters=None,
+        profile_summary=None,
+        tier="fast",
+    )
+
+    assert d.filters.semantic_query == "여름용 바지"
+
+
+async def test_semantic_query_does_not_duplicate_existing_product_anchor() -> None:
+    """[#603] LLM 의미쿼리의 구조화 표면을 제거해도 literal 상품 앵커는 중복 없이 남는다."""
+    d = await decompose(
+        _FakeLLM(
+            _raw(
+                semanticQuery="여름용 파란색 바지",
+                categoryQueries=[{"category": "패션 > 바지", "query": "바지"}],
+                filters={"priceMax": 30000, "color": "파란색"},
+            )
+        ),
+        query="3만원 이하 여름용 파란색 바지",
+        prior_filters=None,
+        profile_summary=None,
+        tier="fast",
+    )
+
+    assert d.filters.semantic_query == "여름용 바지"
+
+
+async def test_semantic_query_removes_exact_brand_surface_but_keeps_product_anchor() -> None:
+    """[#603] 정확히 일치한 브랜드 표면만 제거하고 상품 앵커는 보존한다."""
+    d = await decompose(
+        _FakeLLM(
+            _raw(
+                semanticQuery="나이키 여름용 바지",
+                categoryQueries=[{"category": "패션 > 바지", "query": "바지"}],
+                filters={"brand": ["나이키"]},
+            )
+        ),
+        query="나이키 여름용 바지",
+        prior_filters=None,
+        profile_summary=None,
+        tier="fast",
+    )
+
+    assert d.filters.semantic_query == "여름용 바지"
+
+
+async def test_semantic_query_does_not_strip_brand_substring_inside_product_anchor() -> None:
+    """[#603] 브랜드가 상품명 내부에만 있으면 surface term으로 오인해 제거하지 않는다."""
+    d = await decompose(
+        _FakeLLM(
+            _raw(
+                semanticQuery="애플워치 여름용",
+                categoryQueries=[{"category": "웨어러블", "query": "애플워치"}],
+                filters={"brand": ["애플"]},
+            )
+        ),
+        query="애플워치 여름용",
+        prior_filters=None,
+        profile_summary=None,
+        tier="fast",
+    )
+
+    assert d.filters.semantic_query == "애플워치 여름용"
+
+
+async def test_semantic_query_does_not_promote_structured_only_value_from_multi_category() -> None:
+    """[#603] 멀티 카테고리는 단일 leg 앵커 승격 규약을 건드리지 않는다."""
+    d = await decompose(
+        _FakeLLM(
+            _raw(
+                semanticQuery="3만원 이하 파란색",
+                categoryQueries=[
+                    {"category": "패션 > 바지", "query": "바지"},
+                    {"category": "패션 > 셔츠", "query": "셔츠"},
+                ],
+                filters={"priceMax": 30000, "color": "파란색"},
+            )
+        ),
+        query="3만원 이하 파란색 바지와 셔츠",
+        prior_filters=None,
+        profile_summary=None,
+        tier="fast",
+    )
+
+    assert d.filters.semantic_query == "3만원 이하 파란색"
+
+
 async def test_leg_suppression_keeps_attr_condition_turn_in_real_parse_flow() -> None:
     decision = await _run(
         _raw(
@@ -88,7 +207,9 @@ async def test_category_leg_injection_marks_only_its_own_added_leg() -> None:
     assert decision.category_leg_injected is True
 
 
-async def test_category_leg_injection_runs_before_suppression_without_refilling_suppressed_leg() -> None:
+async def test_category_leg_injection_runs_before_suppression_without_refilling_suppressed_leg() -> (
+    None
+):
     """[#443] 모델의 총칭 leg를 #465가 비운 뒤 사전 주입이 다시 채우면 안 된다."""
     decision = await decompose(
         _FakeLLM(_raw(categoryQueries=[{"category": None, "query": "가성비 좋은 거"}])),
@@ -129,6 +250,28 @@ async def test_semantic_query_falls_back_to_prior_before_raw_query() -> None:
         tier="fast",
     )
     assert d.filters.semantic_query == "무선 이어폰"  # 이번 턴 원문 아님, 직전 값 승계
+
+
+async def test_semantic_query_structured_filter_refinement_keeps_prior_anchor() -> None:
+    """[#603] 정제 턴에서 LLM 의미쿼리가 비면 직전 상품 앵커를 그대로 유지한다."""
+    from app.schemas.spring import ProductSearchFilters
+
+    prior = ProductSearchFilters(semantic_query="무선 이어폰")
+    d = await decompose(
+        _FakeLLM(
+            _raw(
+                semanticQuery="",
+                categoryQueries=[{"category": "음향가전", "query": None}],
+                filters={"priceMax": 30000, "color": "파란색"},
+            )
+        ),
+        query="더 저렴한 파란색으로",
+        prior_filters=prior,
+        profile_summary=None,
+        tier="fast",
+    )
+
+    assert d.filters.semantic_query == "무선 이어폰"
 
 
 async def test_semantic_query_prefers_current_category_over_prior_on_topic_change() -> None:
