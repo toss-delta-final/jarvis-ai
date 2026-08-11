@@ -25,6 +25,7 @@ from dataclasses import dataclass
 
 from app.agents.profile.graph_models import (
     GraphDocument,
+    BAND_RE,
     GraphEdge,
     GraphNode,
     NodeResolution,
@@ -52,7 +53,6 @@ _POSITIVE_PREDICATE: dict[str, Predicate] = {
     "situation": "interestedIn",
 }
 
-_BAND_RE = re.compile(r"^(\d+)-(\d+)$")
 _PRODUCT_ID_RE = re.compile(r"^\d+$")
 _RATING_SCALE_MAX = 5  # 별점 도메인 상수 — 비즈니스 튜너블이 아니다(HTTP status code 와 동급)
 # 숫자 라벨의 **크기** 상한. 형식(`^\d+$`)만 보면 30자리도 통과하고 `int()` 는 파이썬 임의 정밀도라
@@ -316,19 +316,38 @@ def _resolve_band(kind: str, label: str, *, anchor_phrase: str, now: str) -> Gra
     **시도하지 않는다** — 반쯤 맞는 정규식은 조용히 틀린 밴드를 만든다. 대신 델타 추출 프롬프트가
     `label` 을 정규 형식으로 *제안*하게 하고, 여기서 결정론적으로 검증만 한다. 제안이 형식을
     못 맞추면 드롭이고, 그 빈도는 분포 프로브가 관측한다(OPEN-G8).
+
+    **[#581] 한쪽 경계만 있는 밴드를 받는다** — `"-50000"`(이하만)·`"100000-"`(이상만).
+    양쪽을 강제하던 시절에는 "5만원 이하" 같은 취향을 담을 자리가 없어 LLM 이 없는 쪽을
+    지어냈고(실측: 하한 `0`, 상한 `999999999`), 지어낸 값이 형식을 **항상** 만족시켜서
+    드롭 지표에도 안 잡혔다. 자연어를 해석하지 않는다는 위 규약은 그대로다 — 바뀐 것은
+    LLM 이 제안할 수 있는 정규 형식의 범위지 파서가 추측을 시작한 것이 아니다.
     """
-    match = _BAND_RE.match(label)
+    match = BAND_RE.match(label)
     if match is None:
         return None
-    low, high = int(match.group(1)), int(match.group(2))
-    if low >= high:
-        return None
-    if high > _BIGINT_MAX:  # 형식만 보면 30자리도 통과한다 — 크기도 도메인 범위 안이어야 한다
-        return None
-    if kind == "ratingBand" and high > _RATING_SCALE_MAX:
-        return None
+    low_text, high_text = match.groups()
+    if not low_text and not high_text:
+        return None  # `"-"` — 정규식은 통과하지만 경계가 없으면 밴드가 아니다
 
-    canonical = f"{low}-{high}"
+    low = int(low_text) if low_text else None
+    high = int(high_text) if high_text else None
+
+    # 아래 세 검사는 **각 경계를 따로 잰다.** 종전에는 `low >= high` 드롭 덕에 상한 하나만
+    # 재도 하한이 함께 걸렸는데, 열린 밴드에는 짝이 되는 경계가 아예 없어 그 보장이 사라진다.
+    if low is not None and high is not None and low >= high:
+        return None
+    if (low is not None and low > _BIGINT_MAX) or (high is not None and high > _BIGINT_MAX):
+        return None  # 형식만 보면 30자리도 통과한다 — 크기도 도메인 범위 안이어야 한다
+    if kind == "ratingBand" and (
+        (low is not None and low > _RATING_SCALE_MAX)
+        or (high is not None and high > _RATING_SCALE_MAX)
+    ):
+        return None  # `"6-"`("6점 이상")은 존재할 수 없는 평점이다
+
+    # 빈 쪽은 빈 채로 재조립한다 — `int()` 왕복이 앞자리 0 을 없애는 수렴은 그대로 유지된다
+    # (`"030-"` → `"30-"`). 이 문자열이 곧 `node_id` 이므로 두 경로가 같은 규칙을 써야 한다.
+    canonical = f"{'' if low is None else low}-{'' if high is None else high}"
     return GraphNode(
         node_id=make_node_id(kind, canonical),
         type=kind,  # type: ignore[arg-type]

@@ -53,11 +53,11 @@ def test_seed_scenario_includes_a_negative_polarity(seed_script) -> None:
 
 def test_seed_band_labels_pass_the_strict_parser(seed_script) -> None:
     """시드 라벨이 엄격 파서를 통과하지 못하면 시드가 조용히 밴드 없는 그래프를 만든다."""
-    from app.agents.profile.resolver import _BAND_RE
+    from app.agents.profile.graph_models import BAND_RE
 
     for fact, kind, label, *_ in seed_script._SCENARIO:
         if kind in ("priceBand", "ratingBand"):
-            assert _BAND_RE.match(label), f"{fact}: {label!r} 은 밴드 형식이 아니다"
+            assert BAND_RE.match(label), f"{fact}: {label!r} 은 밴드 형식이 아니다"
 
 
 def test_seed_calls_production_code_not_a_copy(seed_script) -> None:
