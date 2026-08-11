@@ -308,6 +308,47 @@ def test_search_call_carries_internal_token_and_filters(client, spring, llm) -> 
     assert "size" not in search["query"]
 
 
+def test_structured_only_semantic_query_reaches_single_leg_search_boundary(
+    client, spring, llm, monkeypatch
+) -> None:
+    """[#603] 실제 구매 그래프의 단일 leg 검색 입력은 보정된 상품 앵커를 사용한다."""
+    from app.schemas.spring import ProductSearchResult, SpringProduct
+    from app.services import search_service
+
+    class _CaptureBackend:
+        def __init__(self) -> None:
+            self.filters = []
+
+        async def search(self, filters):
+            self.filters.append(filters)
+            return ProductSearchResult(
+                products=[
+                    SpringProduct(product_id=101, name="파란 바지", price=24000, rating=4.5),
+                    SpringProduct(product_id=102, name="파란 팬츠", price=28000, rating=4.3),
+                ],
+                total_count=2,
+            )
+
+    backend = _CaptureBackend()
+    monkeypatch.setattr(search_service, "default_backend", backend)
+    llm._decompose = {
+        "intent": "recommend",
+        "reply": "",
+        "case": 1,
+        "semanticQuery": "3만원 이하 파란색",
+        "categoryQueries": [{"category": "패션 > 바지", "query": "바지"}],
+        "filters": {"priceMax": 30000, "color": "파란색"},
+    }
+
+    response = _chat(client, "3만원 이하 파란색 바지", headers=auth_header())
+
+    assert response.status_code == 200
+    assert backend.filters
+    assert backend.filters[0].semantic_query == "바지"
+    assert backend.filters[0].price_max == 30000
+    assert backend.filters[0].color == "파란색"
+
+
 def test_path_b_list_id_resolves_to_cards_via_spring(client, spring, spring_http, llm) -> None:
     """경로 B 종단 — products.ready 의 listIds로 FE가 Spring 목록(CH-5)을 조회한다.
 
