@@ -75,24 +75,31 @@ def _has_surcharge(option: CartOption) -> bool:
     return bool(option.extra_price and option.extra_price > 0)
 
 
-def _options_text(options: list[CartOption]) -> str:
-    """옵션 목록을 되물음 문구로 나열한다 — 추가금(extraPrice)이 있으면 함께 표시.
+def _numbered_option_rows(labels: Sequence[str]) -> str:
+    """완성된 옵션 표시 라벨을 1-based 번호 목록과 굵은 글씨로 꾸민다(이슈 #582)."""
+    return "\n".join(f"{index}. **{label}**" for index, label in enumerate(labels, start=1))
 
-    구분자는 `"\\n"`(이슈 #570) — 옵션명 자체에 `/` 가 흔해(로컬 카탈로그 21,373행 실측,
+
+def _options_text(options: list[CartOption]) -> str:
+    """옵션 목록을 되물음 문구로 번호 매겨 나열한다 — 추가금(extraPrice)이 있으면 함께 표시.
+
+    이슈 #570 은 옵션 하나를 한 줄에 두도록 정했고, 이슈 #582 는 정제된 완성 라벨을 1-based
+    순서 번호와 굵은 글씨로 꾸민다. 구분자는 `"\\n"` — 옵션명 자체에 `/` 가 흔해(로컬 카탈로그 21,373행 실측,
     2026-08-10, 11,480건=53.7%가 `/` 포함) `" / "` 로 이으면 `블랙 / M`, `화이트 / M` 두 개가
     `블랙 / M / 화이트 / M` 으로 붙어 네 개처럼 읽혔다. #118·#455 이후 지켜온 "되물음 문구는
     한 글자도 바꾸지 않는다" 규약을 이 실측 근거로 의도적으로 푼다.
     """
-    parts = [label for opt in options if (label := _option_label(opt))]
-    return "\n".join(parts) if parts else "옵션"
+    labels = [label for opt in options if (label := _option_label(opt))]
+    return _numbered_option_rows(labels) if labels else "옵션"
 
 
 def _options_prompt(lead: str, options: list[CartOption], tail: str = "") -> str:
-    """'안내 줄 → 옵션 줄들 → 마무리 줄' 로 되물음 문구를 조립한다(이슈 #570).
+    """'안내 줄 → 번호 매긴 옵션 행들 → 마무리 줄' 로 되물음 문구를 조립한다(이슈 #570, #582).
 
-    옵션 하나가 한 줄을 온전히 차지하게 해 구분자를 없앤다 — 옵션명의 53.7%(로컬 카탈로그
-    21,373행 실측, 2026-08-10)가 `/` 를 포함해 한 줄 나열은 개수가 오독됐다.
-    옵션 줄에는 구두점을 붙이지 않는다(사용자가 옵션명을 그대로 복사해 답한다).
+    이슈 #570 의 한 옵션 한 줄 원칙 위에 #582 의 1-based 번호와 완성 라벨 굵은 글씨를 더한다.
+    옵션 하나가 번호 매긴 한 줄을 온전히 차지하게 해 구분자를 없앤다 — 옵션명의 53.7%(로컬
+    카탈로그 21,373행 실측, 2026-08-10)가 `/` 를 포함해 한 줄 나열은 개수가 오독됐다.
+    옵션 행에는 구두점을 붙이지 않는다(사용자가 옵션명을 그대로 복사해 답한다).
     """
     lines = [lead, _options_text(options)]
     if tail:
@@ -162,9 +169,8 @@ def _cart_option_required_text(
         if hint is not None and hint.names:
             names = [name for raw in hint.names if (name := _strip_unsafe(raw))]
             if names:
-                # 이슈 #570 — 이 갈래는 CartOption 이 아니라 str 이름 목록을 다뤄 _options_prompt
-                # 를 쓸 수 없다 — 줄 구성만 같게 맞춘다.
-                lines = ["옵션을 선택해 주세요:", *names]
+                # 이슈 #570 은 한 옵션 한 줄을 정했고 #582 는 완성 라벨을 번호·굵은 글씨로 꾸민다.
+                lines = ["옵션을 선택해 주세요:", _numbered_option_rows(names)]
                 if hint.total is not None and hint.total > len(names):
                     lines.append(f"외 {hint.total - len(names)}개")
                 lines.append("어떤 걸로 담을까요?")
