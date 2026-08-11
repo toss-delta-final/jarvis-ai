@@ -70,3 +70,14 @@ N=3은 screening, N=8×2도 exploratory confirmation이다. 두 run의 dataset/p
 
 `supported`는 세 tier-backed 근거군에 대해서만 말한다. 검색 관련성이나 전체 자연어 진실성을
 증명하지 않는다. live 설정이 없으면 `not tested`로 남기고 production 기본 arm `current`를 유지한다.
+
+## Current decision (2026-08-12)
+
+- **Status:** `not tested`
+- **Primary:** live numerator/denominator 없음; API key preflight에서 provider 호출 전 중단;
+- **Guardrails:** deterministic dry-run에서 candidate ID 0, duplicate 0, validated 0/27, coverage 1.0;
+- **Operational:** live latency/token/cost 미측정;
+- **Limit:** dry-run은 validator 동작만 증명하며 실제 모델 개선을 증명하지 않음;
+- **Release claims:** C1~C4 unchanged; production default `current` 유지.
+
+실패 명령과 scrubbed 사유는 `baselines/20260812-not-tested/README.md`에 보존했다.
