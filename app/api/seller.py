@@ -37,7 +37,6 @@ import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator
-from datetime import date, datetime, timedelta, timezone
 from time import perf_counter
 from typing import Literal
 
@@ -82,6 +81,7 @@ from app.agents.seller.schemas import DraftChange, DraftProposal, PendingDraftAc
 from app.agents.seller.workers import build_general_agent, build_product_agent
 from app.api.deps import require_seller
 from app.core.auth import Identity
+from app.core.clock import now_kst, today_kst
 from app.core.config import get_settings
 from app.core.conversation import TurnStatus, get_conversation_store
 from app.core.errors import get_request_id, new_request_id
@@ -118,9 +118,6 @@ _ANALYSIS_APOLOGY_TOKEN = (
 
 # 진행 token 큐 종료 신호 — 파이프라인 완료(정상/예외 공통)를 스트림 루프에 알린다.
 _PIPELINE_DONE = object()
-
-# report.generatedAt 타임존 — KST 고정(이슈 #296, api-spec §3.2 v0.24.0 계약).
-_KST = timezone(timedelta(hours=9))
 
 
 def _seller_log(
@@ -349,7 +346,7 @@ async def _general_stream(
     try:
         resolution = resolve_from_message(
             request.message,
-            today=date.today(),
+            today=today_kst(),
             recent_default_days=settings.seller_recent_days_default,
             max_days=settings.seller_period_max_days,
         )
@@ -396,7 +393,7 @@ async def _general_stream(
             with trace_span("seller.graph.general", "chain"):
                 # 빌드도 producer 안 — 실패 시 기존 error 이벤트 봉투로 종료한다.
                 agent = build_general_agent(
-                    today=date.today().isoformat(), checkpointer=checkpointer
+                    today=today_kst().isoformat(), checkpointer=checkpointer
                 )
                 output_guard = StreamingOutputGuard()
                 started = perf_counter()
@@ -556,7 +553,7 @@ async def _analysis_stream(
             return await run_analysis_pipeline(
                 request.message,
                 context,
-                today=date.today(),
+                today=today_kst(),
                 emit=emit,
                 recent_turns=recent_turns,
                 screen=request.screen,
@@ -1114,7 +1111,8 @@ def _report_event(result: PipelineResult) -> str:
                 else None
             ),
             "chartPeriod": chart_period,
-            "generatedAt": datetime.now(_KST).isoformat(timespec="seconds"),
+            # KST 고정(이슈 #296, api-spec §3.2 v0.24.0 계약) — 기준 시각은 app/core/clock.py.
+            "generatedAt": now_kst().isoformat(timespec="seconds"),
             "summary": mask_output(_strip_unsafe_multiline(split_report_summary(report_text))),
             "body": mask_output(_strip_unsafe_multiline(report_text)),
             "findings": [

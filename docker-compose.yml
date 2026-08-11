@@ -19,6 +19,11 @@ services:
       - "8000:8000"
     env_file:
       - .env
+    environment:
+      # [이슈 #583] 로그 타임스탬프를 KST 로 맞춘다. Dockerfile ENV 로도 박혀 있지만
+      # compose 로 띄울 때 이 파일만 보고도 TZ 전제를 알 수 있게 명시한다.
+      # 계산 기준 시각은 이 값과 무관하다(app/core/clock.py 가 명시 오프셋으로 계산).
+      TZ: Asia/Seoul
     depends_on:
       pg-catalog:
         condition: service_healthy
