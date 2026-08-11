@@ -695,6 +695,19 @@ class Settings(BaseSettings):
     # can_retry 판단(잔여 예산 ≥ worker+judge 타임아웃 합)과 짝을 맞춰 160.0 으로 상향한다.
     seller_branch_deadline_s: float = 160.0
 
+    # ── 판매자 분석 저장 계층 (이슈 #585, docs/specs/DESIGN-SELLER-ANALYSIS-STORE-585.md) ──
+    # 스냅샷·보고서 저장 트랜잭션의 SET LOCAL statement_timeout — feature_rows(최대 1000행,
+    # 1~2MB JSONB)가 기본 state_store_query_timeout_s(3s) 안에 써지는지 아직 실측되지 않아
+    # 분리한다(OPS-RUNTIME.md §1.5). 실제 값은 미정이므로 save_snapshot 이 저장 직전 직렬화
+    # 크기를 로그로 남기고, 첫 주 로그로 조정한다.
+    seller_analysis_write_timeout_s: float = 15.0
+    # analysis_store._write 의 DB **쓰기** 재시도 횟수 — 읽기는 재시도하지 않는다(이슈 명시,
+    # 대화형 조회 경로를 늦추지 않기 위함). is_state_store_unavailable() 판정에서만 재시도한다.
+    seller_db_write_retries: int = 1
+    # 무인 순회(list_active_targets) 대상 비활성 임계 — last_seen_at 이 이보다 오래되면
+    # 순회에서 빠진다(결정 112).
+    seller_analysis_target_ttl_days: int = 14
+
     # ── 판매자 대화 스레드 (thread.py — checkpointer 기반 멀티턴 누적) ──
     # supervisor/planner 입력 주입 상한: 최근 턴(user+assistant 쌍) 수와 메시지당 절단.
     seller_chat_context_turns: int = 6
@@ -3321,6 +3334,18 @@ class Settings(BaseSettings):
                 "EXPOSE_MIN 은 EXPOSE_MAX 이하여야 합니다"
                 f" (min={self.expose_min}, max={self.expose_max})"
             )
+        # 판매자 분석 저장 계층(#585) — 쓰기 상한이 conninfo 기본 쿼리 상한보다 작으면
+        # SET LOCAL 이 상한을 오히려 낮추는 역효과가 난다(DESIGN-SELLER-ANALYSIS-STORE-585.md §5).
+        if self.seller_analysis_write_timeout_s < self.state_store_query_timeout_s:
+            raise ValueError(
+                "SELLER_ANALYSIS_WRITE_TIMEOUT_S must be >= STATE_STORE_QUERY_TIMEOUT_S"
+                f" (got {self.seller_analysis_write_timeout_s} <"
+                f" {self.state_store_query_timeout_s})"
+            )
+        if self.seller_db_write_retries < 0:
+            raise ValueError("SELLER_DB_WRITE_RETRIES must be non-negative")
+        if self.seller_analysis_target_ttl_days <= 0:
+            raise ValueError("SELLER_ANALYSIS_TARGET_TTL_DAYS must be positive")
         return self
 
 
