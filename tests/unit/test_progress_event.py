@@ -26,6 +26,7 @@ from app.api import seller as seller_api
 from app.api.deps import buyer_owner_id
 from app.core import session_context
 from app.core.auth import Identity
+from app.core.clock import KST
 from app.core.config import get_settings
 from app.core.observability import RequestObservation
 from app.core.session_context import BuyerSessionInput, SessionStateUnavailable
@@ -855,10 +856,11 @@ def test_seller_analysis_progress_unaffected_by_buyer_progress_flag(
     from app.agents.seller.orchestrator import PipelineResult
     from app.agents.seller.schemas import RouteDecision
 
-    class _FixedDateTime(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return cls(2026, 8, 9, 12, 0, 0, tzinfo=tz)
+    # [#583] 기준 시각은 app/core/clock.py 로 옮겨졌다 — 종전에는 seller_api 의 모듈 지역
+    # `datetime` 을 갈아끼웠지만 그 import 가 사라졌으므로 now_kst 를 직접 고정한다.
+    # 산출 문자열은 종전과 동일하다(2026-08-09T12:00:00+09:00).
+    def _fixed_now_kst():
+        return datetime(2026, 8, 9, 12, 0, 0, tzinfo=KST)
 
     hitl.set_checkpointer(InMemorySaver())
     try:
@@ -874,7 +876,7 @@ def test_seller_analysis_progress_unaffected_by_buyer_progress_flag(
             await emit("매출 이상 분석 중…")
             return PipelineResult(kind="report", text="6월 매출 보고서 본문")
 
-        monkeypatch.setattr(seller_api, "datetime", _FixedDateTime)
+        monkeypatch.setattr(seller_api, "now_kst", _fixed_now_kst)
 
         def _run() -> list[str]:
             monkeypatch.setattr(seller_api, "route_question", _route_stub)

@@ -66,6 +66,20 @@
   결과 기준으로 추가하고 `no_op` 판정에도 반영했다.
 
 ### Fixed
+- **#583 — UTC 컨테이너에서 판매자 "어제 매출" 질의가 이틀 전 데이터를 반환하던 결함을
+  고쳤다.** `report.generatedAt` 은 KST 로 내보내면서(#296) 기간 해석의 "오늘" 은
+  `date.today()` = 컨테이너 로컬 TZ 였다. 운영 컨테이너가 UTC 라 00~09 KST 사이에는 기준일이
+  KST 기준 하루 전이 되고, 거기서 "어제" 를 다시 빼 이틀 전 (from, to) 가 Spring 으로 나갔다
+  (jarvis-back `BackendApplication` 이 JVM·DB 세션 TZ 를 `Asia/Seoul` 로 고정하므로 BE 는
+  KST 로 해석한다 — AI 만 어긋나 있었다). 기준 시각을 `app/core/clock.py`(`KST`·`now_kst()`·
+  `today_kst()`) 단일 출처로 모으고 `app/api/seller.py` 의 `date.today()` 3곳(general 레인
+  기간 환산·general worker `today`·분석 파이프라인)과 `generatedAt` 을 그리로 옮겼다.
+  KST 는 `ZoneInfo` 가 아닌 고정 오프셋(`+09:00`)으로 둔다 — 한국은 DST 가 없어 결과가 같고,
+  OS tzdata 에 의존하지 않으며, `generatedAt` 직렬화 결과가 바이트 단위로 보존돼 FE
+  (`AnalysisReport.tsx` `formatGeneratedAt` 이 오프셋을 정규식으로 잘라 쓴다)에 영향이 없다.
+  재발 방지로 Dockerfile·docker-compose 에 `TZ=Asia/Seoul` 을 박고, 프로세스 TZ 가 KST 가
+  아니면 기동 로그에 경고를 남긴다(`app/main.py` `_warn_if_timezone_mismatch` — 로컬 UTC·CI
+  가 막히지 않도록 기동은 차단하지 않는다). 계약(와이어 포맷·필드·이벤트)은 변경 없다.
 - **#464 — decompose가 가격·평점 제약을 `attrConditions`에 잘못 실어 과소지정 되물음을 끄던 결함을 프롬프트 변경 없이 결정론 후처리로 제거했다.** 제약 축 어휘는 `config.py`에서 주입해 영문·camelCase·snake_case 변형도 함께 걸러낸다.
 - **#571 — 추천 카드(CH-5)만 뜬 턴에는 화면 지시어 해소기가 아예 호출되지 않던 결함을 고쳤다**
   (api-spec §3.1, v0.32.16). `app/agents/buyer/graph.py` 의 게이트가
