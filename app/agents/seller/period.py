@@ -69,9 +69,11 @@ class PeriodResolution:
     """기간 어휘 판정 결과 — 값 + 확인 필요 여부 + 해석 근거(#269 P1 원안).
 
     - `expr`: NFKC·공백 정규화된 입력 표현. 확인 문구에 그대로 되비친다.
-    - `needs_confirmation`: 코드가 값을 보충한 해석이면 True — 호출부는 실행 전에
-      판매자 확인을 받는다(DESIGN §5). 기존 어휘 5종은 항상 False(회귀 금지).
-    - `clipped`: R2(미래 절단)로 `date_to` 가 어제까지 줄었는가. 확인 문구가 이 사실을
+    - `needs_confirmation`: 코드가 값을 보충한 해석이면 True — 호출부는 그 해석을
+      응답에 고지한다(DESIGN §7). 기존 어휘 5종은 항상 False(회귀 금지).
+      [#584] 이름은 확인 게이트 시절의 것이다. 게이트가 사라진 지금 이 값이 켜는 것은
+      확인이 아니라 **고지**다 — 판정 의미(코드가 값을 보충했는가)는 그대로다.
+    - `clipped`: R2(미래 절단)로 `date_to` 가 어제까지 줄었는가. 고지 문구가 이 사실을
       반드시 밝힌다 — 자르고 말하지 않으면 P0 가 없앤 "조용한 대체"가 형태만 바꿔 돌아온다.
     """
 
@@ -94,7 +96,7 @@ class PeriodResolution:
     def any_confirmation_needed(self) -> bool:
         """본 기간·비교 기간 중 하나라도 코드가 값을 보충했는가.
 
-        호출부의 확인·고지 판정은 이 값을 봐야 한다 — `needs_confirmation` 만 보면
+        호출부의 고지 판정은 이 값을 봐야 한다 — `needs_confirmation` 만 보면
         본 기간이 명시적이고 비교 기간만 보충된 경우("2026-06-01~2026-06-30 을 작년 대비")
         보충 사실이 조용히 지나간다.
         """
@@ -539,16 +541,14 @@ def resolve_from_message(
     return replace(base, comparison=resolve_comparison(comparison_expr, base, max_days=max_days))
 
 
-# ── 확인 문구 (DESIGN §4.3 — 기간 문구의 유일한 생성 지점) ──────────────────────
-
-_CONFIRM_CLIPPED_NOTE = "(아직 지나지 않은 날짜는 제외해 어제까지만 봅니다.)"
+# ── 고지 문구 (DESIGN §4.3 — 기간 문구의 유일한 생성 지점) ──────────────────────
 
 
 def _comparison_line(comparison: PeriodResolution) -> str:
-    """비교 기간을 확인·고지 문구에 붙이는 한 줄 — 본 기간과 같은 형식으로 날짜를 밝힌다.
+    """비교 기간을 고지 문구에 붙이는 한 줄 — 본 기간과 같은 형식으로 날짜를 밝힌다.
 
     비교 기간도 코드가 정렬 방식을 고른 해석이다("지난달 대비" → 달력 시프트).
-    본 기간만 밝히고 대조군을 감추면 확인의 의미가 절반만 성립한다(§2.5).
+    본 기간만 밝히고 대조군을 감추면 고지의 의미가 절반만 성립한다(§2.5).
     """
     return (
         f"비교 기준은 '{_echo(comparison.expr)}' — {comparison.date_from.isoformat()} ~ "
@@ -556,45 +556,20 @@ def _comparison_line(comparison: PeriodResolution) -> str:
     )
 
 
-_CONFIRM_ASK = (
-    '이대로 진행할까요? 맞으면 "응" 이라고 답해 주시고, '
-    "다른 기간이면 원하시는 기간을 말씀해 주세요."
-)
-
-
-def confirmation_text(resolution: PeriodResolution) -> str:
-    """확인 대기 문구 — 환산 결과를 **날짜로** 되돌려 보여준다.
-
-    어휘를 되풀이하기만 하면("이번 달로 분석할까요?") 판매자는 코드가 무엇으로
-    해석했는지 알 수 없다. 절단(R2)이 있었으면 그 사실도 함께 밝힌다.
-    """
-    lines = [
-        f"'{_echo(resolution.expr)}' 을 {resolution.date_from.isoformat()} ~ "
-        f"{resolution.date_to.isoformat()} 기간으로 보고 분석하겠습니다."
-    ]
-    if resolution.clipped:
-        lines.append(_CONFIRM_CLIPPED_NOTE)
-    if resolution.comparison is not None:
-        lines.append(_comparison_line(resolution.comparison))
-    lines.append(_CONFIRM_ASK)
-    return "\n".join(lines)
-
-
 _DISCLOSURE_CLIPPED_NOTE = " (아직 지나지 않은 날짜는 빼고 어제까지만 봤습니다.)"
 
 
 def disclosure_text(resolution: PeriodResolution) -> str:
-    """general 레인 해석 고지 — 확인 대신 "무엇으로 봤는지"를 먼저 밝힌다(§7, #346).
+    """해석 고지 — 확인 대신 "무엇으로 봤는지"를 먼저 밝힌다(§7, #346·#584).
 
-    분석 레인은 코드가 값을 보충한 해석을 실행 **전에** 확인받지만(§5) general 레인은
-    고지만 하고 바로 실행한다. 오해석 비용이 비대칭이기 때문이다 — 분석 레인은 잘못
-    해석한 기간으로 워커 팬아웃·검증 루프·추천까지 돌지만, general 은 조회 한두 번이고
-    판매자가 곧바로 정정하면 그만이다. 확인 상태기계를 레인마다 두는 대신 해석을 먼저
-    밝혀 P0 가 없앤 "조용한 대체"를 막는다.
+    [#584] 두 레인이 **같은 이 문구**를 쓴다. 종전에는 분석 레인만 실행 전에 확인을
+    받았고(구 게이트 ①.7) general 은 고지만 했는데, 그 비대칭이 확인 상태기계·승인
+    어휘·TTL 을 한 레인에만 얹는 값을 치렀다. 게이트를 걷어낸 지금은 두 레인 모두
+    관용 해석 후 고지한다 — P0 가 없앤 "조용한 대체"는 확인이 아니라 이 고지가 막는다.
 
-    고지는 **확인이 필요한 해석에만** 붙인다(needs_confirmation). 기간을 말하지 않은
-    질문까지 "최근 7일 기준입니다"로 열면 "재고 얼마 남았어?" 같은 기간 무관 질문에
-    무관한 고지가 매번 따라붙는다.
+    고지는 **코드가 값을 보충한 해석에만** 붙인다(needs_confirmation). 기간을 말하지
+    않은 질문까지 "최근 7일 기준입니다"로 열면 "재고 얼마 남았어?" 같은 기간 무관
+    질문에 무관한 고지가 매번 따라붙는다.
     """
     note = _DISCLOSURE_CLIPPED_NOTE if resolution.clipped else ""
     text = (
@@ -604,85 +579,6 @@ def disclosure_text(resolution: PeriodResolution) -> str:
     if resolution.comparison is not None:
         text = f"{text}\n{_comparison_line(resolution.comparison)}"
     return text
-
-
-# ── 승인 판정 (DESIGN §5.3 — 코드 선판정, LLM 0회) ──────────────────────────────
-
-# 공백으로 나눈 **모든 토큰**이 이 집합에 있을 때만 승인이다. 정규식 누적보다 오탐이
-# 예측 가능하고, 부정어("아니")나 기간 표현("7월로")이 하나라도 섞이면 자동으로
-# 승인에서 빠져 '새 질문' 경로로 간다 — 이슈 원안의 '수정' 경로가 이렇게 흡수된다.
-_AFFIRMATIVE_SOURCE = frozenset(
-    {
-        "ㅇ",
-        "ㅇㅇ",
-        "ㄱㄱ",
-        "ok",
-        "okay",
-        "오케이",
-        "콜",
-        "굿",
-        "응",
-        "웅",
-        "엉",
-        "어",
-        "네",
-        "넹",
-        "넵",
-        "예",
-        "응응",
-        "맞아",
-        "맞어",
-        "맞아요",
-        "맞습니다",
-        "맞다",
-        "그래",
-        "그래요",
-        "그렇게",
-        "그걸로",
-        "좋아",
-        "좋아요",
-        "좋습니다",
-        "확인",
-        "진행",
-        "진행해",
-        "진행해줘",
-        "해",
-        "해줘",
-        "해주세요",
-        "부탁해",
-        "부탁해요",
-        "부탁드려요",
-        "분석해줘",
-        "보여줘",
-    }
-)
-
-# 어휘 집합·절단 문자에도 입력과 **같은 정규화**를 걸어 둔다. NFKC 는 호환 자모를
-# 초성 자모로 옮기므로("ㅇ" U+3147 → U+110B), 소스 리터럴을 그대로 두면 "ㅇㅇ" 같은
-# 초성체 승인이 정규화된 입력과 어긋나 조용히 새 질문으로 빠진다.
-_AFFIRMATIVE_TOKENS = frozenset(
-    unicodedata.normalize("NFKC", token).lower() for token in _AFFIRMATIVE_SOURCE
-)
-
-# 토큰 끝에 붙는 문장부호·자모 감탄사 — 승인 판정에서 제거한다("응!!", "ㅇㅇㅋㅋ").
-_TOKEN_TRIM = unicodedata.normalize("NFKC", ".!?~,…ㅋㅎ")
-
-# 승인 판정 대상 발화 길이 상한 — 장문은 승인이 아니라 새 질문이다(조기 탈출).
-_APPROVAL_MAX_CHARS = 40
-
-
-def parse_period_approval(message: str) -> bool:
-    """발화가 기간 확인 승인이면 True — 아니면 전부 '새 질문'이다(DESIGN §5.1).
-
-    호출부는 **확인 대기(pending)가 있을 때만** 이 판정을 수행한다. 대기가 없는
-    상태에서 "응" 한 마디를 승인으로 오인할 여지를 구조적으로 없애기 위함이다.
-    """
-    text = unicodedata.normalize("NFKC", message).strip().lower()
-    if not text or len(text) > _APPROVAL_MAX_CHARS:
-        return False
-    tokens = [token.strip(_TOKEN_TRIM) for token in text.split()]
-    tokens = [token for token in tokens if token]
-    return bool(tokens) and all(token in _AFFIRMATIVE_TOKENS for token in tokens)
 
 
 # ── 기간 버킷 분할 (이슈 #518 — I-31 리뷰 추이) ────────────────────────────────

@@ -54,10 +54,10 @@ class ResolvedPlan:
     analyses 는 tuple(불변) — AnalysisPlan validator 가 중복을 제거했고
     순서는 팬아웃에서 무의미하지만 진행 token 방출 순서로는 쓰인다.
 
-    [#345] period 3필드는 확인 흐름(DESIGN-SELLER-PERIOD §5)용 확장이다.
-    needs_confirmation 이 True 면 코드가 값을 보충한 해석이라 실행 전에 판매자
-    확인을 받는다 — 확인 대기에 이 ResolvedPlan 을 통째로 저장했다가 승인 시
-    그대로 재개하므로 planner 재호출이 0회가 된다(#269 완료 조건).
+    [#345·#584] period 3필드는 기간 해석 고지(DESIGN-SELLER-PERIOD §7)용 확장이다.
+    period_supplemented 가 True 면 코드가 값을 보충한 해석이라, 실행한 뒤 **무엇으로
+    봤는지를 응답 첫 줄에 밝힌다**(period_disclosure_text). 구 게이트 ①.7 은 같은
+    판정으로 실행 **전에** 확인을 받았으나 #584 로 철거됐다 — 판정은 남고 조치만 바뀐다.
     신규 필드는 전부 default 있는 keyword 로만 추가한다(frozen dataclass —
     기존 생성부·픽스처의 positional 호환 유지, PipelineResult 와 같은 규약).
     """
@@ -66,20 +66,20 @@ class ResolvedPlan:
     date_from: date
     date_to: date
     wants_chart: bool = False
-    needs_confirmation: bool = False
+    period_supplemented: bool = False
     period_expr: str = ""
     period_clipped: bool = False
     # [#346] 비교(기준) 기간 — 판매자가 대조군을 함께 말했을 때만 채워진다.
-    # needs_confirmation 은 **본 기간과 비교 기간의 합집합**이다(어느 쪽이든 코드가 값을
-    # 보충했으면 확인을 받는다) — period.PeriodResolution.any_confirmation_needed 참조.
+    # period_supplemented 는 **본 기간과 비교 기간의 합집합**이다(어느 쪽이든 코드가 값을
+    # 보충했으면 고지한다) — period.PeriodResolution.any_confirmation_needed 참조.
     comparison_expr: str = ""
     compare_from: date | None = None
     compare_to: date | None = None
     # [#504] 차트 전용 기간 — 판매자가 그래프 기간을 분석 기간과 별도로 말했을 때만
     # 채워진다("지난달 보고서 + 최근 7일 매출 그래프"). 비워지면 차트는 본 기간을 따른다.
-    # 차트 기간은 확인(needs_confirmation) 대상이 **아니다** — 차트는 부가 가치이고,
+    # 차트 기간은 고지(period_supplemented) 대상이 **아니다** — 차트는 부가 가치이고,
     # 해석 결과가 report.chartPeriod 뱃지로 그대로 노출되므로 고지로 갈음한다
-    # (DESIGN-SELLER-PERIOD §7.2 확인/고지 비대칭의 고지 측). 해석 실패는 파이프라인을
+    # (DESIGN-SELLER-PERIOD §7.2 — chartPeriod 뱃지가 곧 고지다). 해석 실패는 파이프라인을
     # 죽이지 않고 chart_period_error 에 담아 chartUnavailable(chart_period_unclear)로
     # 강등한다 — 보고서는 살린다.
     chart_period_expr: str = ""
@@ -175,7 +175,7 @@ def resolve_plan(
         date_from=resolution.date_from,
         date_to=resolution.date_to,
         wants_chart=wants_chart,
-        needs_confirmation=resolution.any_confirmation_needed,
+        period_supplemented=resolution.any_confirmation_needed,
         period_expr=resolution.expr,
         period_clipped=resolution.clipped,
         comparison_expr=comparison.expr if comparison else "",
@@ -189,13 +189,14 @@ def resolve_plan(
     )
 
 
-def period_confirmation_text(plan: ResolvedPlan) -> str:
-    """확인 대기 문구 — 문구 생성은 period.py 소관이고 여기는 어댑터다(§4.2).
+def period_disclosure_text(plan: ResolvedPlan) -> str:
+    """기간 해석 고지 문구 — 문구 생성은 period.py 소관이고 여기는 어댑터다(§4.2).
 
-    ResolvedPlan 은 확인 대기 저장·재개의 단위(DESIGN §6)라 PeriodResolution 을
-    따로 들고 다니지 않는다. 대신 필요한 3필드를 되돌려 문구를 만든다.
+    ResolvedPlan 은 실행 단위라 PeriodResolution 을 따로 들고 다니지 않는다. 대신
+    필요한 3필드를 되돌려 문구를 만든다. [#584] general 레인과 **같은 함수**를
+    부른다 — 기간 문구가 레인마다 갈리지 않게 하는 지점이다.
     """
-    return seller_period.confirmation_text(
+    return seller_period.disclosure_text(
         seller_period.PeriodResolution(
             date_from=plan.date_from,
             date_to=plan.date_to,
@@ -210,9 +211,9 @@ def period_confirmation_text(plan: ResolvedPlan) -> str:
 def _plan_comparison(plan: ResolvedPlan) -> seller_period.PeriodResolution | None:
     """ResolvedPlan 의 비교 3필드 → PeriodResolution 되돌리기 (#346).
 
-    확인 문구·워커 입력이 둘 다 필요로 해 한 곳에 둔다. needs_confirmation 을 True 로
-    두는 것은 문구 생성용이다 — 저장·재개 단위인 ResolvedPlan 은 합집합 판정만 들고 있고
-    어느 쪽이 보충됐는지는 구분하지 않는다(문구가 양쪽 날짜를 다 밝히므로 필요 없다).
+    고지 문구·워커 입력이 둘 다 필요로 해 한 곳에 둔다. needs_confirmation 을 True 로
+    두는 것은 문구 생성용이다 — ResolvedPlan 은 합집합 판정만 들고 있고 어느 쪽이
+    보충됐는지는 구분하지 않는다(문구가 양쪽 날짜를 다 밝히므로 필요 없다).
     """
     if plan.compare_from is None or plan.compare_to is None:
         return None
