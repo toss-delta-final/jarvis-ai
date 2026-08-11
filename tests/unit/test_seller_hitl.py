@@ -25,6 +25,7 @@ from app.schemas.spring import (
     SellerStockRow,
 )
 from app.services.spring_client import (
+    InvalidPrice,
     InvalidStock,
     OrderAlreadyShipped,
     OrderInvalidTransition,
@@ -85,12 +86,17 @@ class _StubSpring:
     # [#511] I-11/I-12 409 전용 예외 주입 — "안 되는 일"이 장애로 뭉개지지 않는지 검증한다.
     update_error: Exception | None = None
     delete_error: Exception | None = None
+    # [#620] I-11 응답 changes — 기본은 "뭔가 바뀌었다"(비어있지 않음, 실행 완료
+    # 판정을 유지)로 두고, 빈 배열(실질 변경 없음 → already_done) 검증용 테스트만
+    # None 이 아닌 [] 로 덮어쓴다.
+    update_result_changes: list[str] | None = None
 
     async def update_product(self, brand_id, product_id, patch):
         self.calls.append(("update", brand_id, product_id, patch))
         if self.update_error is not None:
             raise self.update_error
-        return ProductUpdateResult(productId=product_id)
+        changes = self.update_result_changes if self.update_result_changes is not None else ["PRICE"]
+        return ProductUpdateResult(productId=product_id, changes=changes)
 
     async def delete_product(self, brand_id, product_id):
         self.calls.append(("delete", brand_id, product_id))
@@ -1260,4 +1266,141 @@ def test_create_missing_field_does_not_promise_retry() -> None:
     outcome = _run_confirm(record)
     assert outcome.status == "stale"
     assert "등록했습니다" not in outcome.text
+
+
+# ── [#620] update 카테고리 선차단 · INVALID_PRICE 선차단 · 상품명 길이 · 중복 필드 ──
+
+
+def test_validate_draft_update_rejects_category_change() -> None:
+    """update 초안에 category 가 실리면 카드를 보여주기 전에 되묻는다.
+
+    ProductUpdate 스키마에도 이제 category 필드가 없다(BE DTO 와 대칭) — 여기서 막지
+    않으면 카드엔 "카테고리 변경"이 보이는데 confirm 해도 조용히 무시된다.
+    """
+    record, problem = hitl.validate_draft(
+        _proposal(changes=[DraftChange(field="category", before="", after=_category_id())]),
+        seller_id=7,
+        brand_id=3,
+    )
+    assert record is None
+    assert "카테고리" in problem and "수정" in problem
+
+
+def test_validate_draft_update_price_over_original_price_blocked_with_row() -> None:
+    """row 가 주어지면 BE validatePriceRange 와 같은 규칙을 카드 표시 전에 선계산한다.
+
+    _ROW.original_price=18000 — 20000 원으로 바꾸면 정가를 넘는다.
+    """
+    record, problem = hitl.validate_draft(
+        _proposal(changes=[DraftChange(field="price", before="15000", after="20000")]),
+        seller_id=7,
+        brand_id=3,
+        row=_ROW,
+    )
+    assert record is None
+    assert "정가" in problem and "20,000" in problem and "18,000" in problem
+
+
+def test_validate_draft_update_price_change_without_row_is_not_prechecked() -> None:
+    """row 를 안 넘긴 호출부(레거시)는 이 선차단을 건너뛴다 — confirm 시점 BE 422 에 맡긴다."""
+    record = _record(changes=[DraftChange(field="price", before="15000", after="20000")])
+    assert record is not None
+
+
+def test_validate_draft_update_price_within_original_price_with_row_passes() -> None:
+    """정가 이하로 낮추는 정상 변경은 row 가 있어도 막히지 않는다."""
+    record, problem = hitl.validate_draft(
+        _proposal(changes=[DraftChange(field="price", before="15000", after="12900")]),
+        seller_id=7,
+        brand_id=3,
+        row=_ROW,
+    )
+    assert problem is None and record is not None
+
+
+def test_confirm_update_invalid_price_reports_stale() -> None:
+    """422 INVALID_PRICE(선차단을 우회한 레이스) — 재시도 대신 재조회 후 새 초안을 권한다."""
+    spring = _StubSpring()
+    spring.update_error = InvalidPrice("INVALID_PRICE")
+    set_spring_client(spring)
+    record = _record()
+    outcome = _run_confirm(record)
+    assert outcome.status == "stale"
+    assert "정가" in outcome.text
+
+
+def test_confirm_update_empty_changes_reports_already_done() -> None:
+    """[#620] BE changes:[] (실질 변경 없음) — "반영했습니다" 대신 already_done 으로 갈음한다.
+
+    panel 분기(_confirm_stream)는 status=="executed" 만 refresh 이므로, already_done 은
+    자연히 keep 이 된다(추가 배선 없이).
+    """
+    spring = _StubSpring()
+    spring.update_result_changes = []
+    set_spring_client(spring)
+    record = _record()
+    outcome = _run_confirm(record)
+    assert outcome.status == "already_done"
+    assert "바뀐 내용이 없습니다" in outcome.text
+
+
+def test_validate_draft_rejects_duplicate_non_stock_field() -> None:
+    """같은 필드(재고 제외)가 changes 에 두 번 실리면 나중 값이 조용히 이기게 두지 않는다."""
+    record, problem = hitl.validate_draft(
+        _proposal(
+            changes=[
+                DraftChange(field="price", before="15000", after="12900"),
+                DraftChange(field="price", before="15000", after="11000"),
+            ]
+        ),
+        seller_id=7,
+        brand_id=3,
+    )
+    assert record is None and "가격" in problem
+
+
+def test_validate_draft_rejects_name_over_max_length() -> None:
+    """[#620] BE @Size(max=200) 2차 방어 — 초과분은 카드 표시 전에 되묻는다."""
+    from app.core.config import get_settings
+
+    too_long = "가" * (get_settings().seller_name_max_len + 1)
+    record, problem = hitl.validate_draft(
+        _proposal(changes=[DraftChange(field="name", before="감귤청", after=too_long)]),
+        seller_id=7,
+        brand_id=3,
+    )
+    assert record is None and "상품명" in problem
+
+
+def test_validate_draft_delete_normalizes_junk_changes_to_status_only() -> None:
+    """delete 초안에 status 외 필드가 섞여도 카드 changes 는 status 한 건으로만 정규화된다.
+
+    실행(I-12)은 changes 를 보지 않으므로("보여준 것==실행하는 것") 잡음을 카드에도
+    보이지 않게 한다.
+    """
+    record, problem = hitl.validate_draft(
+        _proposal(
+            op="delete",
+            changes=[
+                DraftChange(field="status", before="ON_SALE", after="DELETED"),
+                DraftChange(field="price", before="15000", after="0"),
+            ],
+        ),
+        seller_id=7,
+        brand_id=3,
+    )
+    assert problem is None and record is not None
+    assert [c.field for c in record.changes] == ["status"]
+
+
+def test_validate_draft_delete_without_status_change_normalizes_to_empty() -> None:
+    """delete 초안이 status 변경을 안 실었으면(LLM 이 지시를 안 따른 경우) changes 를 비운다
+    (ship 과 같은 패턴, I-9 재조회로 placeholder 를 합성하지 않는다)."""
+    record, problem = hitl.validate_draft(
+        _proposal(op="delete", changes=[]),
+        seller_id=7,
+        brand_id=3,
+    )
+    assert problem is None and record is not None
+    assert record.changes == []
     assert hitl._STALE_RETRY_GUIDE not in outcome.text

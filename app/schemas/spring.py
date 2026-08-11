@@ -1113,11 +1113,13 @@ class ProductCreate(CamelModel):
 class ProductUpdate(CamelModel):
     """I-11 PATCH 요청 본문 — 바꿀 필드만(전 필드 Optional). 재고도 이 API로 통합.
 
-    ⚠️ `category` 는 BE `SellerProductUpdateRequest` 에 **없는 필드**다(2026-08-09 실측)
-    — Jackson 이 모르는 키로 버리므로 카테고리 수정 요청은 조용히 무시된다. I-10 등록
-    시에만 정할 수 있는 값이라는 뜻이고, preview 의 "카테고리는 등록 후 변경할 수
-    없습니다" 경고와도 일치한다. BE 가 필드를 열기 전까지 여기 남는 값은 전송돼도
-    효과가 없다 — 수정 흐름에서 카테고리를 다루려면 별도 이슈로 BE 를 먼저 연다."""
+    ⚠️ `category` 는 BE `SellerProductUpdateRequest` 에 **없는 필드**다(2026-08-09 실측,
+    #620 재확인) — DTO 자체에 필드가 없어 Jackson 이 모르는 키로 버리므로 카테고리 수정
+    요청은 조용히 무시된다. I-10 등록 시에만 정할 수 있는 값이라는 뜻이고, preview 의
+    "카테고리는 등록 후 변경할 수 없습니다" 경고와도 일치한다. 그래서 이 스키마엔 애초에
+    `category` 필드를 두지 않는다 — draft 단계(hitl.validate_draft)에서 update 초안에
+    category 변경이 섞여 있으면 선차단한다. BE 가 필드를 열기 전까지는 수정 흐름에서
+    카테고리를 다루려면 별도 이슈로 BE 를 먼저 연다."""
 
     name: str | None = None
     price: int | None = None
@@ -1126,7 +1128,6 @@ class ProductUpdate(CamelModel):
     # stocks 는 부분 수정이다: 배열에 실린 옵션만 갱신되고 나머지는 그대로다(05 §I-11).
     stock_quantity: int | None = Field(default=None, ge=0)
     stocks: list[StockEntry] | None = None
-    category: str | None = None
     description: str | None = None
     image_url: str | None = None
     status: str | None = None  # ON_SALE | HIDDEN — DELETED 는 BE 가 거부(삭제는 I-12 전용)
@@ -1140,9 +1141,15 @@ class ProductCreateResult(SellerAggregateModel):
 
 
 class ProductUpdateResult(SellerAggregateModel):
-    """I-11 200 응답 — 갱신분(🔴 스키마 미확정, extra="allow"로 여분 필드 보존)."""
+    """I-11 200 응답 — 갱신분(🔴 스키마 미확정, extra="allow"로 여분 필드 보존).
+
+    `changes` 는 BE change-log 어휘 대문자 배열(PRICE/STOCK/STATUS만 — 로그 없는 필드
+    변경은 미포함, SellerProductUpdateResponse 참조). 빈 배열은 "요청은 성공했지만
+    실제로 바뀐 값이 없다"는 뜻(#620) — `_execute_draft` 가 이 경우 "이미 그 값이었어요"
+    로 갈음한다."""
 
     product_id: int
+    changes: list[str] = Field(default_factory=list)
 
 
 class ProductDeleteResult(SellerAggregateModel):

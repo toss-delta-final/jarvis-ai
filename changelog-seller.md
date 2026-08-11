@@ -51,6 +51,42 @@
 
 ### Fixed
 
+- **#620 — 매핑 안 된 4xx 가 5xx 와 뭉뚱그려 "일시적 오류(재시도 가능)"로 나가던 문제**
+  (api-spec-seller §6.3). `_request` 의 공용 폴백이 `error_code_map` 에 없는 응답을
+  전부 `SpringUnavailableError` 로 냈다 — 그러면 진짜 일시 장애(5xx·타임아웃)와 서버가
+  영구 거부한 4xx 가 같은 예외·같은 안내로 섞인다. 4xx 는 `SpringRejected`
+  (`SpringUnavailableError` 하위, catch-all 호환)로 분리하고, `_confirm_stream` 이 이를
+  먼저 잡아 `retryable=false` 로 낸다.
+- **#620 — I-11 `INVALID_PRICE` 미매핑 + update 초안이 price≤originalPrice 를 사후에만
+  알던 문제** (api-spec-seller §6.3). `update_product`/`create_product` 의
+  `error_code_map` 에 `INVALID_PRICE` → `InvalidPrice` 전용 예외를 추가했고,
+  `validate_draft` 가 (a) create 는 changes 값끼리, (b) update 는 `row`(선택 인자 —
+  호출부가 price/originalPrice 를 건드릴 때만 I-9 재조회해 넘긴다)로 BE
+  `validatePriceRange` 와 같은 규칙을 **카드 표시 전에** 선계산해 되묻는다.
+- **#620 — update 초안의 category 변경이 카드엔 보이는데 조용히 드롭되던 문제**
+  (api-spec-seller §6). `ProductUpdate` 스키마에서 `category` 필드를 제거(BE DTO 와
+  대칭 — I-11 에는 애초에 그 필드가 없다)하고, `validate_draft` 가 `op=="update"` 에서
+  `category` change 를 보면 카드를 보여주기 전에 되묻는다.
+- **#620 — delete 초안에 status 외 잡음 필드가 섞이면 카드에 그대로 노출되던 문제.**
+  `validate_draft` 가 delete 초안의 changes 를 `status` 필드 하나로만 정규화한다(없으면
+  ship 과 동일하게 빈 목록) — 실행(I-12)은 애초에 changes 를 안 본다("보여준 것==
+  실행하는 것").
+- **#620 — 같은 필드가 초안에 중복으로 실려도 나중 값이 조용히 이기던 문제.**
+  `validate_draft` 가 `(field, option_name)` 중복을 선차단하고 다시 말해 달라고 되묻는다.
+- **#620 — 상품명 200자 초과가 BE 400 `VALIDATION_ERROR`(미매핑 → "일시적 오류")로만
+  보이던 문제.** BE `@Size(max=200)`(create/update DTO 공통)과 동일한
+  `seller_name_max_len` 설정을 추가하고 `validate_draft` 가 카드 표시 전에 되묻는다.
+- **#620 — I-11 응답이 실질 변경 없이 `changes:[]` 로 와도 "변경을 반영했습니다"로
+  보이던 문제.** `ProductUpdateResult` 에 `changes` 필드를 추가하고, 비어 있으면
+  `already_done`("이미 요청하신 값으로 되어 있어…")으로 갈음한다 — `_confirm_stream` 의
+  패널 분기(`status=="executed"` 만 refresh)가 자연히 keep 이 된다.
+- **#620 — 바인딩되지 않는 죽은 쓰기 도구 4종 제거.** `tools.py` 의
+  `create_product`/`update_product`/`delete_product`/`update_order_status` @tool 은
+  어느 에이전트에도 바인딩된 적이 없다(실행은 `hitl._execute_draft` 가 코드로 담당,
+  HITL 모듈 결정 1) — `workers.py` 의 관련 죽은 주석(`PRODUCT_TOOLS`/`ORDER_WRITE_TOOLS`)도
+  함께 정리했다. `SpringClient.create_product`/`update_product`/`delete_product`
+  (HTTP 호출 본체, spring_client.py)는 이름만 같을 뿐 별개이며 그대로 유지된다.
+
 - **#541 — I-10 카테고리·필수값 거부가 "일시적인 오류(재시도 가능)" 로 뭉개지던 문제**
   (api-spec-seller §6.2). `create_product` 에만 `error_code_map` 이 없어(update 는
   `PRODUCT_DELETED`, delete 는 `ALREADY_DELETED` 를 이미 매핑) 400

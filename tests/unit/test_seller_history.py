@@ -404,7 +404,9 @@ def test_applied_draft_flows_into_confirm(monkeypatch: pytest.MonkeyPatch) -> No
 
         async def update_product(self, brand_id, product_id, patch):
             self.patches.append((brand_id, product_id, patch))
-            return ProductUpdateResult(productId=product_id)
+            # [#620] changes 가 비면 already_done 으로 갈음된다 — 이 테스트는 실제
+            # 반영(executed)을 검증하므로 비어있지 않은 값을 준다.
+            return ProductUpdateResult(productId=product_id, changes=["PRICE"])
 
     spring = _WritableSpring()
     set_spring_client(spring)
