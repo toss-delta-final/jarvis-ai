@@ -77,7 +77,7 @@ from app.core.pg_resilience import run_with_query_timeout
 from app.core.tracing import current_request_trace, trace_span
 from app.core.session_context import SessionStateUnavailable
 from app.core.text import _strip_unsafe
-from app.agents.buyer.recommendation.state import CartIntent, CategoryQuery
+from app.agents.buyer.recommendation.state import CartIntent, CategoryQuery, RouteDecision
 from app.agents.buyer.screen_reference import mentions_screen_reference, resolve_screen_reference
 from app.schemas.chat import CONDITION_FIELD_TO_FILTER, ConditionAction, DoneData, ErrorData
 from app.schemas.spring import ProductSearchFilters
@@ -785,6 +785,34 @@ async def run_buyer_turn(
     )
     thread_key = context_thread_key(context_id, request.thread_id)
 
+    search = search or search_service.search_catalog
+    push_fn = push_fn or spring_client.push_recommendations
+    popular_fn = popular_fn or spring_client.get_popular_products  # [#162] I-3
+    thread_store = await get_thread_store()
+    prior = await thread_store.get(thread_key)
+    condition_actions = getattr(request, "condition_actions", None) or []
+    action_only = bool(condition_actions and not request.message.strip())
+    # [#442] buyer_chat_turn metadata(`SAFE_METADATA_KEYS`)에는 축 이름을 얹지 않는다 — 아래
+    # 결정 로그 한 줄로 이미 관측되고, 화이트리스트 개정은 트레이스 metadata 계약 표면을 넓힌다
+    # (관측 값어치 < 계약 표면 증가). 판단 재검토가 필요하면 이 코드가 아니라 이슈에서 다시 논의.
+    if condition_actions and prior is None:
+        # 칩이 떠 있었다면 prior 가 있어야 정상이라 이 조합 자체가 신호다(#442) — 스레드 만료·
+        # 첫 턴일 수 있어 동작은 바꾸지 않는다(지울 대상이 없으니 무시가 맞다). 레벨은 info
+        # (정상 경로일 수 있다).
+        logger.info(
+            "condition_actions_skipped_no_prior",
+            extra={
+                "requested_fields": [action.field for action in condition_actions],
+                "action_only": action_only,
+                "request_id": resolved_request_id,
+            },
+        )
+        if action_only:
+            # prior 없는 칩 제거는 검색할 경계가 없다. 빈 발화에 대한 LLM 라우팅은 임의의
+            # 추천 상태를 만들 수 있으므로, no-op 으로 종료한다(LLM 호출·검색 0회).
+            yield sse("done", DoneData(finish_reason="stop").model_dump(by_alias=True))
+            return
+
     llm = llm or get_llm()
     if llm is None:
         yield sse(
@@ -797,26 +825,6 @@ async def run_buyer_turn(
             ).model_dump(by_alias=True),
         )
         return
-    search = search or search_service.search_catalog
-    push_fn = push_fn or spring_client.push_recommendations
-    popular_fn = popular_fn or spring_client.get_popular_products  # [#162] I-3
-    thread_store = await get_thread_store()
-    prior = await thread_store.get(thread_key)
-    condition_actions = getattr(request, "condition_actions", None) or []
-    # [#442] buyer_chat_turn metadata(`SAFE_METADATA_KEYS`)에는 축 이름을 얹지 않는다 — 아래
-    # 결정 로그 한 줄로 이미 관측되고, 화이트리스트 개정은 트레이스 metadata 계약 표면을 넓힌다
-    # (관측 값어치 < 계약 표면 증가). 판단 재검토가 필요하면 이 코드가 아니라 이슈에서 다시 논의.
-    if condition_actions and prior is None:
-        # 칩이 떠 있었다면 prior 가 있어야 정상이라 이 조합 자체가 신호다(#442) — 스레드 만료·
-        # 첫 턴일 수 있어 동작은 바꾸지 않는다(지울 대상이 없으니 무시가 맞다). 레벨은 info
-        # (정상 경로일 수 있다).
-        logger.info(
-            "condition_actions_skipped_no_prior",
-            extra={
-                "requested_fields": [action.field for action in condition_actions],
-                "request_id": resolved_request_id,
-            },
-        )
     # [이슈 #434 라운드2] 값 지정 category 제거가 이 턴에 "복원"을 일으켰는지 — 일으켰다면 그
     # 남은 카테고리 집합(대표 1개가 아니라 전체)이 담긴다. `_prepare_recommendation` 의 승계
     # 분기가 이 신호가 있는 턴에만 멀티 leg 로 검색한다(B-1: 일반 승계 턴은 절대 안 바뀐다 —
@@ -937,6 +945,7 @@ async def run_buyer_turn(
                 "category_legs_restored": category_legs_restored,
                 "no_op": not changed_fields and not category_legs_restored,
                 "unmatched_values": unmatched_values,
+                "action_only": action_only,
                 "request_id": resolved_request_id,
             },
         )
@@ -1066,7 +1075,7 @@ async def run_buyer_turn(
             yield progress_frame("analyzing", settings.progress_analyzing_message)
         # decompose — fast tier 1회 (intent 9-way 라우팅 + 필터 + 장바구니 의도)
         # 정본은 `RouteDecision.intent` Literal 이다 — 여기 숫자는 설명용이라 늘 낡을 수 있다.
-        if observer is not None:
+        if observer is not None and not action_only:
             observer.record_model_call(resolve_model_id(settings, "fast"))
         reco_state = await cart_store.get_last_reco_state(thread_key)
         last_reco = reco_state.items
@@ -1109,43 +1118,52 @@ async def run_buyer_turn(
             else None
         )
         try:
-            with trace_span("buyer.routing", "chain"):
-                with trace_span(
-                    "llm.decompose",
-                    "llm",
-                    {"model": resolve_model_id(settings, "fast")},
-                ):
-                    decision = await decompose(
-                        llm,
-                        query=request.message,
-                        prior_filters=prior,
-                        # [#119] 프로필은 **후보를 줄이는 단계에 넣지 않는다**(REQ-REC-005-A).
-                        # decompose 는 하드필터(WHERE 술어)를 산출하는데, 프로필을 발화와 같은 격으로
-                        # 주면 LLM 이 "3~5만원대 선호"를 priceMax 로 승격시키고 그 필터가
-                        # thread_store 에 영속돼 다음 턴 PRIOR_FILTERS 로 재주입된다(세션 내 래칫).
-                        # 게스트는 그 손실이 없어 개인화가 순손실이 됐다 — 주입을 끊으면 회원
-                        # 프롬프트가 게스트와 바이트 동일해진다. 취향은 rerank 순서로만 반영한다.
-                        profile_summary=(
-                            profile if settings.profile_injection_scope == "both" else None
-                        ),
-                        tier="fast",
-                        last_recommendations=prompt_reco,
-                        pending_cart=pending_dict,
-                        # [#118] 지금 보고 있는 화면 — "이거 담아줘"의 대상 확정. screen 이 없거나
-                        # 관대 무시로 사라졌으면(또는 되물음 턴이면, 위 prompt_screen 주석 참조)
-                        # None 이라 프롬프트가 오늘과 바이트 동일하다.
-                        screen=prompt_screen,
-                        category_fanout_max=settings.category_fanout_max,
-                        repurchase_max=settings.dedup_repurchase_max,
-                        leg_head_suppression=settings.category_leg_head_suppression_enabled,
-                        leg_generic_heads=frozenset(settings.category_leg_generic_heads),
-                        leg_condition_terms=frozenset(settings.category_leg_condition_terms),
-                        category_leg_injection=settings.category_leg_injection_enabled,
-                        category_leg_injection_path=settings.category_leg_injection_path,
-                        category_leg_injection_min_length=settings.category_leg_injection_min_length,
-                        attr_axis_suppression=settings.attr_condition_axis_suppression_enabled,
-                        attr_constraint_axes=frozenset(settings.attr_condition_constraint_axes),
-                    )
+            if action_only:
+                # FE conditionActions has already mutated `prior` above. A blank-message turn has
+                # no new intent or filters to infer, so retain that exact boundary and skip both
+                # decompose and category-scope classification.
+                decision = RouteDecision(
+                    intent="recommend",
+                    filters=prior.model_copy(deep=True),
+                )
+            else:
+                with trace_span("buyer.routing", "chain"):
+                    with trace_span(
+                        "llm.decompose",
+                        "llm",
+                        {"model": resolve_model_id(settings, "fast")},
+                    ):
+                        decision = await decompose(
+                            llm,
+                            query=request.message,
+                            prior_filters=prior,
+                            # [#119] 프로필은 **후보를 줄이는 단계에 넣지 않는다**(REQ-REC-005-A).
+                            # decompose 는 하드필터(WHERE 술어)를 산출하는데, 프로필을 발화와 같은 격으로
+                            # 주면 LLM 이 "3~5만원대 선호"를 priceMax 로 승격시키고 그 필터가
+                            # thread_store 에 영속돼 다음 턴 PRIOR_FILTERS 로 재주입된다(세션 내 래칫).
+                            # 게스트는 그 손실이 없어 개인화가 순손실이 됐다 — 주입을 끊으면 회원
+                            # 프롬프트가 게스트와 바이트 동일해진다. 취향은 rerank 순서로만 반영한다.
+                            profile_summary=(
+                                profile if settings.profile_injection_scope == "both" else None
+                            ),
+                            tier="fast",
+                            last_recommendations=prompt_reco,
+                            pending_cart=pending_dict,
+                            # [#118] 지금 보고 있는 화면 — "이거 담아줘"의 대상 확정. screen 이 없거나
+                            # 관대 무시로 사라졌으면(또는 되물음 턴이면, 위 prompt_screen 주석 참조)
+                            # None 이라 프롬프트가 오늘과 바이트 동일하다.
+                            screen=prompt_screen,
+                            category_fanout_max=settings.category_fanout_max,
+                            repurchase_max=settings.dedup_repurchase_max,
+                            leg_head_suppression=settings.category_leg_head_suppression_enabled,
+                            leg_generic_heads=frozenset(settings.category_leg_generic_heads),
+                            leg_condition_terms=frozenset(settings.category_leg_condition_terms),
+                            category_leg_injection=settings.category_leg_injection_enabled,
+                            category_leg_injection_path=settings.category_leg_injection_path,
+                            category_leg_injection_min_length=settings.category_leg_injection_min_length,
+                            attr_axis_suppression=settings.attr_condition_axis_suppression_enabled,
+                            attr_constraint_axes=frozenset(settings.attr_condition_constraint_axes),
+                        )
         except LLMError as exc:
             # [#84] 이 경로에서 나가기 전에 병렬 태스크를 반드시 정리한다 — 안 하면 취소되지 않은
             # LLM 호출이 스트림이 끝난 뒤까지 예산을 먹는다. **동기 취소만 한다**(라운드 4) —
