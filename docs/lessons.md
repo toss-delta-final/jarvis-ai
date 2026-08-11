@@ -23,6 +23,12 @@
 - 규칙: LLM 산출 키 이름에 어휘 매칭을 걸 때는 한국어/영어·대소문자·camelCase/snake_case를 처음부터 함께 덮고, 스키마 필드명 변형은 드리프트 가드 테스트로 못박는다. 어휘 목록만 늘리면 두더지잡기가 된다.
 - 관련: #464 `app/core/config.py`·`app/agents/buyer/recommendation/attr_axis.py`·`tests/unit/test_attr_axis.py`
 
+## [2026-08-11] LLM 평가 분모는 호출 성공 수가 아니라 production 도달 조건을 함께 기록해야 한다
+- 증상: #463 after-2의 missRate 분모가 112가 아니라 111이었다. 표본·N은 모두 채워졌지만 `under-cbs-0003` 한 회차가 `cart_add`로 라우팅되어 production의 `intent==recommend` 판정에 도달하지 않았다.
+- 원인: confirmatory 지표가 의도적으로 production 게이트 뒤 표본만 세므로, LLM 라우팅 분포가 분모를 바꿀 수 있다. 또 results의 `baseline`은 arm 결과가 아니라 항상-false comparator라 이름만 보고 전후 정책으로 오독하기 쉽다.
+- 규칙: 전후 측정은 prompt·fixture·N뿐 아니라 confirmatory 분모와 `nonRecommendIntentCount`를 같이 비교하고, 분모가 달라지면 원인 case·intent를 표에 적는다. 보조 LLM 실패는 fail-open인지 retry 실패인지 별도 컬럼/로그로 구분해 수치를 과장하지 않는다.
+- 관련: #463 `evals/underspecified_probe/*463-*`·`app/agents/buyer/recommendation/underspecified_classifier.py`
+
 ## [2026-08-11] 억제/보강 스위치는 발동 건수를 산출물에 남겨야 한다
 - 증상: 전후 비교표만 보면 3·5 → 1·1로 좋아 보였지만, 실제로는 억제가 거의 발동하지 않았고 개선분 대부분이 런간 노이즈였다.
 - 원인: 산출물에 효과(미탐 수)만 있고 발동 여부가 없어 둘을 가를 수 없었다.

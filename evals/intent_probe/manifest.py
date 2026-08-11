@@ -7,11 +7,13 @@ from pathlib import Path
 from typing import Any
 
 from app.agents.buyer.recommendation import category_scope as category_scope_module
+from app.agents.buyer.recommendation import underspecified_classifier as underspecified_module
 from evals.intent_probe.client import CATEGORY_SCOPE_SYSTEM, PromptIdentity
 from evals.metrics.run_manifest import build_run_manifest
 
 MODULE_ROOT = Path(__file__).parent
 CATEGORY_SCOPE_MODULE = Path(category_scope_module.__file__)
+UNDERSPECIFIED_MODULE = Path(underspecified_module.__file__)
 
 
 def _sha256(path: Path) -> str:
@@ -36,6 +38,7 @@ def build_intent_probe_manifest(
     axis_definitions: dict[str, Any],
     dry_run: bool,
     classifier_enabled: bool = True,
+    underspecified_classifier_enabled: bool = True,
 ) -> dict[str, Any]:
     """`build_run_manifest` 위에 이 프로브 고유의 지문을 얹는다.
 
@@ -59,6 +62,7 @@ def build_intent_probe_manifest(
         "dryRun": dry_run,
         # [#84·G-1] 분류기 팔의 on/off — 이 값이 없으면 같은 프롬프트 해시의 두 표를 구분할 수 없다.
         "categoryScopeClassifier": "on" if classifier_enabled else "off",
+        "underspecifiedClassifier": "on" if underspecified_classifier_enabled else "off",
         "fixtureName": anchor_path.name,
         "fixtureVersion": fixture_version,
         "pacer": pacer,
@@ -78,9 +82,14 @@ def build_intent_probe_manifest(
     # 분류기를 끈 런은 그 문면이 표에 관여하지 않았으므로 해시를 남기지 않는다(None) — 남기면
     # "이 문면으로 쟀다"는 거짓 신호가 된다.
     hashes["categoryScopePrompt"] = category_scope_prompt_sha256() if classifier_enabled else None
+    hashes["underspecifiedPrompt"] = (
+        underspecified_prompt_sha256() if underspecified_classifier_enabled else None
+    )
     prompts = hashes.get("prompts")
     if isinstance(prompts, dict) and classifier_enabled:
         prompts["categoryScope"] = _sha256(CATEGORY_SCOPE_MODULE)
+    if isinstance(prompts, dict) and underspecified_classifier_enabled:
+        prompts["underspecified"] = _sha256(UNDERSPECIFIED_MODULE)
     hashes["intentProbeModules"] = {
         path.name: _sha256(path) for path in sorted(MODULE_ROOT.glob("*.py"))
     }
@@ -90,3 +99,8 @@ def build_intent_probe_manifest(
 def category_scope_prompt_sha256() -> str:
     """분류기 `_SYSTEM` 문면의 sha256 — decompose 프롬프트와 **같은 방식**(문면 바이트)이다."""
     return hashlib.sha256(CATEGORY_SCOPE_SYSTEM.encode("utf-8")).hexdigest()
+
+
+def underspecified_prompt_sha256() -> str:
+    """#463 전용 분류기 문면의 sha256 — 끈 런에는 manifest가 None을 남긴다."""
+    return hashlib.sha256(underspecified_module._SYSTEM.encode("utf-8")).hexdigest()

@@ -122,6 +122,7 @@
   재발 방지로 Dockerfile·docker-compose 에 `TZ=Asia/Seoul` 을 박고, 프로세스 TZ 가 KST 가
   아니면 기동 로그에 경고를 남긴다(`app/main.py` `_warn_if_timezone_mismatch` — 로컬 UTC·CI
   가 막히지 않도록 기동은 차단하지 않는다). 계약(와이어 포맷·필드·이벤트)은 변경 없다.
+- **#463 — #430의 빈 `semanticQuery` 계약을 유지하면서 화면 지시어·카테고리 해제의 프롬프트 충돌을 전용 첫-턴 분류기로 분리했다.** `decompose`는 전용 분류기가 켜진 경로에서 #430 문장을 제거하고, 무맥락 첫 추천 후보만 smart 분류기를 병렬 호출한다. `true`일 때만 원문 fallback·빈 category legs·case 2를 복원하며, 실패/비정상 JSON은 **fail-open**(`None`, 원 decompose 결정 보존)이다. v8 intent N=8 독립 2회에서 `categoryClear` **30/32·31/32 → 32/32·32/32**, `screenExactPick` **31/32·31/32 → 32/32·31/32**. underspecified v1 N=8에서는 동일 confirmatory 정의로 `missRate` **12/112·7/112 → 1/112·0/111**, falseAlarm **0/104·2/104 → 0/104·0/104**. after-2의 분모 111은 `under-cbs-0003` 한 표본이 `cart_add`로 라우팅되어 production의 `intent==recommend` 게이트에서 제외된 결과라 before와 단독 동등 비교하지 않는다. 결과의 `baseline`은 모든 런에 붙는 trivial “항상 reask=false” comparator이며 채택 비교는 `axes.missRate`·`axes.falseAlarmRate`만 쓴다. 실행 로그의 classifier 실패 2건도 이 fail-open 경로로 원 결정이 보존됐으며, retry failure 표본/`unfilledCells`와 구분한다.
 - **#464 — decompose가 가격·평점 제약을 `attrConditions`에 잘못 실어 과소지정 되물음을 끄던 결함을 프롬프트 변경 없이 결정론 후처리로 제거했다.** 제약 축 어휘는 `config.py`에서 주입해 영문·camelCase·snake_case 변형도 함께 걸러낸다.
 - **#571 — 추천 카드(CH-5)만 뜬 턴에는 화면 지시어 해소기가 아예 호출되지 않던 결함을 고쳤다**
   (api-spec §3.1, v0.32.16). `app/agents/buyer/graph.py` 의 게이트가

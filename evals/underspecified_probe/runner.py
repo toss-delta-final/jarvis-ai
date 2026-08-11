@@ -12,7 +12,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
@@ -25,6 +24,10 @@ from app.agents.buyer.recommendation.needs_expansion import detect_expansion_nee
 from app.agents.buyer.recommendation.no_condition import _is_blank
 from app.agents.buyer.recommendation.state import RouteDecision
 from app.agents.buyer.recommendation.underspecified import is_underspecified_turn
+from app.agents.buyer.recommendation.underspecified_classifier import (
+    apply_underspecified_classification,
+    classify_underspecified,
+)
 from app.core.config import Settings
 from app.core.llm import LLMClient
 from app.schemas.spring import ProductSearchFilters
@@ -63,7 +66,9 @@ def dedicated_suppressed_decision(decision: RouteDecision) -> tuple[RouteDecisio
     문자열을 냈을 수도 있어 구분 불가하며, 그 모호 표본은 두번째 반환값으로 산출물에 남긴다.
     """
     clone = _clone_decision(decision)
-    leg_query = (clone.category_queries[0].query or "").strip() if len(clone.category_queries) == 1 else ""
+    leg_query = (
+        (clone.category_queries[0].query or "").strip() if len(clone.category_queries) == 1 else ""
+    )
     semantic = (clone.filters.semantic_query or "").strip()
     ambiguous = bool(leg_query and semantic == leg_query and not clone.semantic_query_is_fallback)
     clone.category_queries = []
@@ -77,8 +82,11 @@ def postprocessed_decision(
 ) -> tuple[RouteDecision, bool]:
     """파싱부 head 억제와 동형인 사본; fallback 파생은 dedicated와 단일 구현을 공유한다."""
     legs = suppress_generic_single_leg(
-        decision.category_queries, decision.filters, enabled=True,
-        generic_heads=generic_heads, condition_terms=condition_terms,
+        decision.category_queries,
+        decision.filters,
+        enabled=True,
+        generic_heads=generic_heads,
+        condition_terms=condition_terms,
     )
     if len(legs) == len(decision.category_queries):
         return _clone_decision(decision), False
@@ -340,6 +348,7 @@ async def run_cell(
     union_llm: Any | None = None,
     union_settings: Settings | None = None,
     dedicated_llm: LLMClient | None = None,
+    dedicated_settings: Settings | None = None,
     tri_generic_heads: frozenset[str] = frozenset(),
     tri_condition_terms: frozenset[str] = frozenset(),
 ) -> CellResult:
@@ -399,22 +408,24 @@ async def run_cell(
             await sleep(backoff_seconds(len(result.failures)))
             continue
         before_verdict = is_underspecified_turn(decision, prior, judgment_settings)
-        post_decision, _ = postprocessed_decision(decision, generic_heads=tri_generic_heads, condition_terms=tri_condition_terms)
+        post_decision, _ = postprocessed_decision(
+            decision, generic_heads=tri_generic_heads, condition_terms=tri_condition_terms
+        )
         postprocess_verdict = is_underspecified_turn(post_decision, prior, judgment_settings)
         dedicated_called = dedicated_disagreed = dedicated_failed = dedicated_ambiguous = False
-        if dedicated_llm is not None:
+        if dedicated_llm is not None and dedicated_settings is not None and prior is None:
             dedicated_called = True
             try:
-                raw = await dedicated_llm.complete(
-                    system='사용자가 무엇을 살지 지목하지 않았으면 {"underspecified":true}, 아니면 false만 JSON으로 답하세요.',
-                    user=anchor.utterance,
-                    tier=tier,
-                    max_tokens=24,
+                verdict = await classify_underspecified(
+                    dedicated_llm, message=anchor.utterance, settings=dedicated_settings
                 )
-                suppress = json.loads(raw).get("underspecified") is True
-                if suppress:
-                    clone, dedicated_ambiguous = dedicated_suppressed_decision(decision)
-                    dedicated_disagreed = is_underspecified_turn(clone, prior, judgment_settings) != is_underspecified_turn(decision, prior, judgment_settings)
+                clone = _clone_decision(decision)
+                if apply_underspecified_classification(
+                    clone, message=anchor.utterance, verdict=verdict
+                ):
+                    dedicated_disagreed = is_underspecified_turn(
+                        clone, prior, judgment_settings
+                    ) != is_underspecified_turn(decision, prior, judgment_settings)
                     decision = clone
             except Exception:
                 dedicated_failed = True
@@ -486,6 +497,7 @@ async def run_probe(
     union_llm: Any | None = None,
     union_settings: Settings | None = None,
     dedicated_llm: LLMClient | None = None,
+    dedicated_settings: Settings | None = None,
     tri_generic_heads: frozenset[str] = frozenset(),
     tri_condition_terms: frozenset[str] = frozenset(),
 ) -> list[CellResult]:
@@ -513,6 +525,7 @@ async def run_probe(
                 union_llm=union_llm,
                 union_settings=union_settings,
                 dedicated_llm=dedicated_llm,
+                dedicated_settings=dedicated_settings,
                 tri_generic_heads=tri_generic_heads,
                 tri_condition_terms=tri_condition_terms,
             )
