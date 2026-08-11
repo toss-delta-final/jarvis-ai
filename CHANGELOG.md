@@ -12,6 +12,16 @@
 ## [Unreleased]
 
 ### Added
+- **#589 — 판매자 상주 analysis 파이프라인의 SOP 층**(`app/agents/seller/sop/`)을 신설했다.
+  `run_sop` 은 스텝을 순차 실행하며 예외를 `Hold` 로 흡수하는 것이 전부다(조건 분기·재시도·
+  롤백 없음 — `01-ARCHITECTURE.md` §4.1). 실패해도 raise 하지 않고 부분 채워진 ctx 를
+  돌려주는데, 그 부분 결과 + `holds` 가 무인 실행 실패 규약(`OPS-RUNTIME.md` F-3)의 재료다.
+  `AnalysisContext` 는 LLM 이 보는 유일한 입력으로, 수치·판정·원인 후보를 전부 코드가 채우고
+  LLM 은 `Segment.llm_label`·`llm_desc` 둘만 쓴다. `Verdict.verdict` 에는 기존
+  `RateComparison`(3종)에 없는 **`undecided`** 를 넣어 "판정 보류 ≠ 이상 없음"을 타입으로
+  가른다(감사 C-12). SOP 스텝 타임아웃 5키(`seller_sop_*_timeout_s`: load 5 / compare 5 /
+  compute 30 / feedback 3 / interpret 30)를 신설했다 — `compute` 만 30s 인 것은 K-Means 를
+  PCA on/off × k 후보 5개 = 학습 10회 돌리기 때문이다(`OPS-RUNTIME.md` T-3). 계약 변경 없음.
 - **#153 — buyer-only blind pairwise 사람 평가 패키지** (`evals/blind_pairwise/`)를 추가했다.
   수집 전 고정된 seed A/B 배정, 비식별 raw response schema, tie/abstain 보존, rubric별 ordinal
   분포, 분모가 명시된 Wilson 95% interval, Krippendorff alpha, 선택적 LLM judge 비교와
