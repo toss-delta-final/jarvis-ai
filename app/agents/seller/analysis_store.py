@@ -807,12 +807,15 @@ async def get_recommendation(rec_id: UUID, *, brand_id: int) -> RecommendationRe
     return await run_with_query_timeout(_run())
 
 
-async def list_recommendations(report_id: UUID, *, brand_id: int) -> list[RecommendationRecord]:
-    """보고서에 딸린 추천을 rank 오름차순으로 반환한다 — "N번 적용해줘"의 N 이 곧 rank 다.
+async def list_recommendations_by_report(
+    report_id: UUID, *, brand_id: int
+) -> list[RecommendationRecord]:
+    """보고서 1건에 딸린 추천 전체 — `rank` 순(= "N번"의 저장 측 근거).
 
-    `brand_id` 필수(`get_report` 관행) — report_id 만으로 조회하면 남의 브랜드 추천이
-    열린다(IDOR). 정렬이 `UNIQUE (report_id, rank)` 를 그대로 따르므로 호출부는 목록
-    순서와 rank 를 같은 것으로 다룰 수 있다.
+    `brand_id` 필수 — report_id 만으로 조회하면 남의 브랜드 데이터가 열린다(IDOR,
+    다른 조회 API와 동일 규약). 07 결정 49 — `apply_recommendation`이 "N번"을 풀 때 쓴다.
+    [#591] `get_latest_report` 도구도 같은 함수를 쓴다 — 채팅에서 본 번호와 "N번 적용해줘"가
+    푸는 번호가 갈리면 안 되므로 조회 경로를 하나로 둔다.
     """
     pool = await _get_pool()
     if pool is None:

@@ -2778,7 +2778,7 @@ async def test_get_latest_report_returns_summary_and_ranked_recommendations(
         return [_recommendation(1, "가격 인하"), _recommendation(2, "재고 보충")]
 
     monkeypatch.setattr(seller_tools.analysis_store, "list_reports", _reports)
-    monkeypatch.setattr(seller_tools.analysis_store, "list_recommendations", _recs)
+    monkeypatch.setattr(seller_tools.analysis_store, "list_recommendations_by_report", _recs)
 
     result = await get_latest_report.coroutine(runtime=FakeRuntime())
 

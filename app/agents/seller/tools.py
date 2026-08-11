@@ -1847,7 +1847,9 @@ async def get_latest_report(runtime: ToolRuntime[SellerContext]) -> str:
         if not reports:
             return "저장된 분석 보고서가 아직 없습니다."
         report = reports[0]
-        recommendations = await analysis_store.list_recommendations(report.id, brand_id=brand_id)
+        recommendations = await analysis_store.list_recommendations_by_report(
+            report.id, brand_id=brand_id
+        )
     except Exception as exc:  # degrade 규약(§3.4) — 조회 장애는 문자열로 알린다
         _log.warning("get_latest_report 조회 실패", exc_info=True)
         return f"Error: 보고서 조회에 실패했습니다({type(exc).__name__})."
