@@ -1,0 +1,46 @@
+{
+  "schemaVersion": "blind-pairwise-prereg-v1",
+  "issue": 153,
+  "scope": "buyer",
+  "pairCount": 20,
+  "ratingsPerPair": 3,
+  "minimumEligibleEvaluators": 5,
+  "seed": 20260811,
+  "randomization": {
+    "algorithm": "sha256-seeded-constrained-balanced-left-right-v2",
+    "algorithmIdentityVisibleToEvaluator": false,
+    "labels": [
+      "A",
+      "B"
+    ]
+  },
+  "dimensions": [
+    "relevance_fit",
+    "explainability",
+    "trustworthiness"
+  ],
+  "ordinalScale": {
+    "min": 1,
+    "max": 5,
+    "values": [
+      1,
+      2,
+      3,
+      4,
+      5
+    ]
+  },
+  "confidence": 0.95,
+  "intervalEstimand": {
+    "method": "wilson",
+    "scope": "descriptive-conditional-response-level",
+    "accountsForCrossedPairEvaluatorDependence": false
+  },
+  "agreement": {
+    "method": "krippendorff-alpha",
+    "ordinalDistance": "pooled-marginal-cumulative"
+  },
+  "preferenceAlphaAbstain": "missing",
+  "fixedBeforeCollection": true,
+  "humanResponsesArtifact": null
+}
