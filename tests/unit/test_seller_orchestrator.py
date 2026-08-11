@@ -966,33 +966,6 @@ def test_pipeline_happy_path_composes_report_and_recommendations(
     ]
 
 
-def test_pipeline_period_confirmation_short_circuits_before_fanout(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """[#345] 확인 필요 기간("이번 달") → 팬아웃 전에 kind=period_confirmation 으로 종료.
-
-    확인을 팬아웃 **앞**에 두는 이유: 잘못 해석한 기간으로 워커 LLM·Spring 호출 비용을
-    쓰지 않기 위함이다. 진행 token 이 planner 하나로 끝나는 것이 그 증거다.
-    """
-    plan = AnalysisPlan(analyses=["sales_anomaly"], period_expr="이번 달", reason="r")
-    _patch_pipeline(monkeypatch, plan)
-    tokens, emit = _collect_emit()
-
-    result = asyncio.run(
-        orchestrator.run_analysis_pipeline(
-            "이번 달 매출 분석해줘", _CTX, today=dt.date(2026, 8, 6), emit=emit
-        )
-    )
-
-    assert result.kind == "period_confirmation"
-    assert result.resolved is not None
-    assert result.resolved.date_from == dt.date(2026, 8, 1)
-    assert result.resolved.date_to == dt.date(2026, 8, 5)  # R1 — 오늘 제외
-    assert "2026-08-01" in result.text  # 어휘가 아니라 환산된 날짜를 보여준다
-    assert result.verified is None
-    assert tokens == ["질문을 분석하고 있습니다…"]  # 워커 token 없음
-
-
 def test_run_resolved_pipeline_executes_without_planner(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

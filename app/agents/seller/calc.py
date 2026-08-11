@@ -3,8 +3,8 @@
 3층 분담("Spring 원시 집계 → AI 고도화 계산 → LLM 자연어화") 중 계산 층의 stdlib 부분.
 [#290] 통계 알고리즘(이상 탐지·비율 검정·군집화)은 `analysis/` 패키지로 이관됐다 —
 구 detect_sales_anomalies(SMA 편차)는 analysis.timeseries(S-H-ESD)가 대체한다.
-[#345] 기간 어휘 판정·환산(구 normalize_period)은 `period.py` 로 이관됐다 — 어휘 확장과
-확인 흐름(needs_confirmation)이 붙으면서 "기간 문구의 유일한 소유자"를 한 모듈로 모았다
+[#345] 기간 어휘 판정·환산(구 normalize_period)은 `period.py` 로 이관됐다 — 어휘가
+확장되면서 "기간 문구의 유일한 소유자"를 한 모듈로 모았다
 (docs/specs/DESIGN-SELLER-PERIOD.md §4.2). 이 모듈에는 전환율 산식과 safe_eval 만 남는다.
 
 부작용 없는 순수 함수로만 구성해 같은 입력이면 같은 출력을 보장한다(결정론, §10-②).

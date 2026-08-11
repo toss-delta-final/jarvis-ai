@@ -710,35 +710,6 @@ def test_chart_keyword_does_not_bypass_scope_refusal(monkeypatch: pytest.MonkeyP
     assert events[0]["data"]["lane"] == "refused"
 
 
-def test_chart_keyword_does_not_bypass_pending_period_clear(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """[순서 ①.7] 기간 확인 대기 폐기가 차트 선판정보다 앞이다.
-
-    뒤집히면 승인이 아닌 발화가 대기를 남긴 채 지나가, 다음 턴의 "응" 이 엉뚱한
-    옛 계획을 재개시킨다.
-    """
-    from app.agents.seller import period_confirm as seller_period_confirm
-
-    cleared: list[str] = []
-
-    async def _fake_load_pending(context, thread_id):
-        return object()  # 대기 존재 — 내용은 이 테스트와 무관
-
-    async def _fake_clear_pending(context, thread_id):
-        cleared.append(thread_id)
-
-    monkeypatch.setattr(seller_period_confirm, "load_pending", _fake_load_pending)
-    monkeypatch.setattr(seller_period_confirm, "clear_pending", _fake_clear_pending)
-    monkeypatch.setattr(seller_api, "route_question", _no_route)
-    monkeypatch.setattr(seller_api, "run_analysis_pipeline", _chart_pipeline_stub())
-
-    events = _collect_seller(_request("이번달 매출 그래프 보여줘"))
-
-    assert cleared == ["t-1"], "대기를 남긴 채 차트 레인으로 새면 안 된다"
-    assert events[0]["data"]["lane"] == "analysis"
-
-
 def test_chart_keyword_does_not_bypass_image_product_lane(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
