@@ -47,6 +47,7 @@ from pydantic.alias_generators import to_camel
 
 from app.agents.seller import category_catalog, category_resolver, draft_session
 from app.agents.seller import thread as seller_thread
+from app.agents.seller.analysis_store import note_seller_seen
 from app.agents.seller.checkpoint import get_checkpointer
 from app.agents.seller.context import SellerContext
 from app.agents.seller.history import apply_recommendation
@@ -1395,6 +1396,11 @@ async def _seller_stream(
             retryable=False,
         )
         return
+
+    # 무인 분석 대상 자동 등록(결정 110~112, 이슈 #585) — fire-and-forget, 실패해도 이 스트림에
+    # 영향 없다. 신원 캐스팅 성공 직후 1회만(캐스팅 실패 요청을 대상에 넣지 않기 위해 위쪽이 아닌
+    # 여기다). require_seller 에 넣지 않는 이유는 OPS §1.7 참조(buyer 공용 sync 의존성).
+    note_seller_seen(context)
 
     # ① confirm 필드 선판정 (A-2 최상위 구조화 필드, LLM 0회) → HITL 실행 레인(4-2).
     # action=="confirm" 이면 draftId 는 스키마 validator 가 보장한다(발화 ≠ 동의 [HARD]).

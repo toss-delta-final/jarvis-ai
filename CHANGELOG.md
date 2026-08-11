@@ -12,6 +12,15 @@
 ## [Unreleased]
 
 ### Added
+- **#585 — 판매자 분석 저장 계층: DDL 5테이블 + 리포지토리 + targets 자동 등록 훅**을 추가했다
+  (OPS-RUNTIME.md §1.3~§1.7, 결정 71·72·80·110~112). `db/profile/init/05_seller_analysis.sql`에
+  `seller_analysis_targets`·`snapshots`·`reports`·`recommendations`·`outcomes` 5테이블을 신설하고,
+  `app/agents/seller/analysis_store.py`(전용 pg-profile 커넥션 풀, 부팅 시 idempotent 스키마
+  생성+검증, `SET LOCAL statement_timeout` 쓰기 경계 + 1회 재시도, 보고서+추천 단일 트랜잭션
+  저장)와 `app/agents/seller/analysis_records.py`(저장 전용 Pydantic 레코드 모델 4종)로 CRUD를
+  제공한다. `/seller/chat` 스트림 진입부에 fire-and-forget targets 자동 등록 훅을 달아
+  브랜드가 접속할 때마다 무인 분석 대상으로 등록되게 했다(`require_seller`는 buyer 와 공용이라
+  훅 위치에서 제외). 소비자(buyer) 경로·jarvis-front·jarvis-back 은 변경하지 않았다.
 - **#589 — 판매자 상주 analysis 파이프라인의 SOP 층**(`app/agents/seller/sop/`)을 신설했다.
   `run_sop` 은 스텝을 순차 실행하며 예외를 `Hold` 로 흡수하는 것이 전부다(조건 분기·재시도·
   롤백 없음 — `01-ARCHITECTURE.md` §4.1). 실패해도 raise 하지 않고 부분 채워진 ctx 를
