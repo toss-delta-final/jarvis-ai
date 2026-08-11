@@ -813,7 +813,10 @@ async def _product_stream(
                         {"messages": [HumanMessage(content=agent_input)]},
                         context=context,
                     ),
-                    timeout=settings.seller_worker_timeout_s,
+                    # [이슈 #621] product 단독 호출 전용 상한으로 분리 — 분석 워커 6종과
+                    # 공유하던 seller_worker_timeout_s(60s, 팬아웃 기준)는 management
+                    # 레인엔 느슨했다(§config._require_management_lane_within_stream_cap).
+                    timeout=settings.seller_product_agent_timeout_s,
                 )
         proposal = result.get("structured_response")
         if not isinstance(proposal, DraftProposal):

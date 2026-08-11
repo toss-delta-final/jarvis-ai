@@ -809,28 +809,47 @@ class HitlState(TypedDict, total=False):
 
     cancelled 는 [#506] 무효화 마킹 — 수정 턴이 새 draft 를 발급하면 이전 draft 에
     True 를 기록해, 브라우저에 남은 옛 카드의 confirm(수정 전 값 등록 사고)을 차단한다.
+
+    attempted_at 은 [이슈 #621] gate 노드 전용 마커 — "실행을 시도했음"을 실제 실행
+    (execute 노드, result)보다 먼저 커밋한다. 절단·크래시로 실행 결과를 알 수 없는
+    창(attempted_at 有·result 無)을 confirm_draft 가 `unknown` 으로 구분해 자동
+    재실행(중복 쓰기 위험)을 막는다.
     """
 
     draft: dict
     outcome: str
     result: str
     cancelled: bool
+    attempted_at: str
 
 
-async def _hitl_node(state: HitlState) -> HitlState:
-    """단일 노드: interrupt 로 승인 대기 → resume 시 코드 실행.
+async def _gate_node(state: HitlState) -> HitlState:
+    """1/2 노드: interrupt 로 승인 대기 → resume 시 "시도했음"만 커밋(이슈 #621 커밋①).
 
     interrupt() 이전 구간은 노드 재실행(resume) 시 다시 돌므로 부수효과를 두지
     않는다. resume 값 자체는 쓰지 않는다 — confirm 판정·신원/TTL/멱등 검사는
     confirm_draft(코드)가 resume 이전에 끝낸다.
+
+    이 노드의 반환값(attempted_at)이 LangGraph super-step 커밋 단위라 다음 노드
+    (execute)의 쓰기보다 먼저 checkpoint 에 영속화된다 — 그 사이 절단되면 confirm_draft
+    가 `unknown` 을 반환해 "실행됐는지 모르는 채로 재실행"을 막는다.
     """
     record = DraftRecord.model_validate(state["draft"])
     interrupt({"draftId": record.draft_id, "op": record.op})
+    return {"attempted_at": datetime.now(UTC).isoformat()}
+
+
+async def _execute_node(state: HitlState) -> HitlState:
+    """2/2 노드: gate 커밋 뒤에만 실행(이슈 #621 커밋②) — LLM 0회, draft 그대로 매핑.
+
+    mark_recommendation_applied 호출을 이 노드의 반환값 계산 안에 둔다(이슈 #621 ④) —
+    쓰기(_execute_draft)와 같은 super-step 커밋에 포함시켜, 쓰기는 끝났는데 마킹만
+    유실되는 창을 없앤다. 마킹 자체의 실패는 여전히 부가 데이터 degrade 원칙을 따른다
+    (실행을 되돌리거나 막지 않는다 — save_history 와 동일).
+    """
+    record = DraftRecord.model_validate(state["draft"])
     with trace_span("seller.worker.hitl_write", "chain"):
         outcome, text = await _execute_draft(record)
-    # [이슈 #590] 추천 적용 경로(rec_id 有) 실행 성공 시 저장 계층에 상태를 되돌려 쓴다.
-    # 실행(가격/재고 변경)은 이미 끝난 뒤이므로, 이 갱신이 실패해도 실행 자체를 되돌리거나
-    # 막지 않는다 — 추천 추적은 부가 데이터(save_history 와 동일한 degrade 원칙).
     if outcome == "executed" and record.rec_id:
         try:
             await analysis_store.mark_recommendation_applied(
@@ -880,14 +899,21 @@ def _confirm_lock(draft_id: str) -> asyncio.Lock:
 
 
 async def _get_graph():
-    """HITL 그래프 싱글턴 — 공용 checkpointer(checkpoint.py) 준비 후 1회 컴파일."""
+    """HITL 그래프 싱글턴 — 공용 checkpointer(checkpoint.py) 준비 후 1회 컴파일.
+
+    [이슈 #621] gate → execute 2노드 — 승인 대기(interrupt)와 실행(Spring 쓰기)을
+    별도 super-step(별도 커밋)으로 분리해, "시도했음"이 실행 결과보다 먼저 영속화되게
+    한다(모듈 docstring §1 안전장치 ①의 구현).
+    """
     global _graph
     if _graph is None:
         checkpointer = await seller_checkpoint.get_checkpointer()
         builder = StateGraph(HitlState)
-        builder.add_node("hitl", _hitl_node)
-        builder.add_edge(START, "hitl")
-        builder.add_edge("hitl", END)
+        builder.add_node("gate", _gate_node)
+        builder.add_node("execute", _execute_node)
+        builder.add_edge(START, "gate")
+        builder.add_edge("gate", "execute")
+        builder.add_edge("execute", END)
         _graph = builder.compile(checkpointer=checkpointer)
     return _graph
 
@@ -935,9 +961,15 @@ async def invalidate_draft(draft_id: str) -> None:
 
 @dataclass(frozen=True)
 class ConfirmOutcome:
-    """confirm 처리 결과 — text 는 그대로 사용자 token 이 된다."""
+    """confirm 처리 결과 — text 는 그대로 사용자 token 이 된다.
 
-    status: Literal["executed", "stale", "already_done", "not_found", "expired"]
+    unknown [이슈 #621] — gate 커밋(attempted_at)은 있는데 execute 커밋(result)이
+    없는 상태. 절단·크래시로 실제 실행 여부를 알 수 없어 자동 재실행하지 않는다.
+    Notion S-4 confirm 어휘엔 없는 상태값이라 `done.panel` 은 기존 계약대로 `keep`
+    으로 낸다(신규 계약 값 추가 없음, 사용자 결정 2026-08-11).
+    """
+
+    status: Literal["executed", "stale", "already_done", "not_found", "expired", "unknown"]
     text: str
 
 
@@ -986,6 +1018,17 @@ async def confirm_draft(draft_id: str, *, seller_id: int, brand_id: int) -> Conf
                 f"이미 처리된 승인 요청입니다 — 중복 실행하지 않았습니다. 이전 결과: {values['result']}",
             )
 
+        if values.get("attempted_at"):
+            # [이슈 #621 ①] gate 커밋(attempted_at)은 있는데 execute 커밋(result)이
+            # 없다 — 절단·워커 크래시로 실행이 "시도됐지만 결과를 알 수 없는" 창이다.
+            # 자동 재실행하면 실제로는 이미 실행됐을 경우 중복 쓰기가 나므로, fail-closed
+            # 로 멈추고 판매자가 상품 목록에서 직접 확인하게 한다.
+            return ConfirmOutcome(
+                "unknown",
+                "이전 승인 처리 결과를 확인하지 못했습니다. 상품 목록에서 반영 여부를 "
+                "확인해 주신 뒤, 반영되지 않았다면 다시 말씀해 주세요.",
+            )
+
         settings = get_settings()
         created = datetime.fromisoformat(record.created_at)
         # 경계 포함(>=) — draft_session(#346)과 같은 판정: ttl=0 은
@@ -997,5 +1040,25 @@ async def confirm_draft(draft_id: str, *, seller_id: int, brand_id: int) -> Conf
                 "변경 내용을 다시 말씀해 주시면 새 초안을 만들어 드리겠습니다.",
             )
 
-        result = await graph.ainvoke(Command(resume=True), config=config)
-    return ConfirmOutcome(result.get("outcome", "executed"), result.get("result", ""))
+        # [이슈 #621 ①] shield — 클라이언트 절단·90s 캡 절단으로 이 await 을 감싼 바깥
+        # 태스크가 취소돼도, resume 실행(gate 커밋 뒤 execute 의 Spring 쓰기 + result
+        # 커밋)은 asyncio.wait_for 상한(seller_confirm_execute_timeout_s) 안에서 계속
+        # 돈다. shield 가 없으면 Spring 쓰기가 이미 나간 뒤 취소되는 경우 checkpoint 가
+        # 미기록으로 남아, 다음 confirm 이 재실행되는(중복 등록) 창이 생긴다.
+        result = await asyncio.shield(
+            asyncio.wait_for(
+                graph.ainvoke(Command(resume=True), config=config),
+                timeout=settings.seller_confirm_execute_timeout_s,
+            )
+        )
+    outcome_status = result.get("outcome")
+    if outcome_status is None:
+        # [이슈 #621 ⑤] outcome 누락은 그래프 상태 이상 — 이전엔 `"executed"` 로
+        # fail-open 했다(실행 안 됐는데 성공 안내). 사용자 결정(2026-08-11): 별도 예외
+        # 대신 기존 stale 응답 경로(token+done keep)를 재사용해 fail-closed 로 바꾼다 —
+        # 반영 여부가 불확실하므로 성공 안내를 내지 않는다.
+        return ConfirmOutcome(
+            "stale",
+            f"승인 처리 결과를 확인하지 못해 반영 여부가 불확실합니다. {_STALE_RETRY_GUIDE}",
+        )
+    return ConfirmOutcome(outcome_status, result.get("result", ""))

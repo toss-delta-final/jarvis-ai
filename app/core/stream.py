@@ -121,11 +121,23 @@ def registry_key(identity: Identity, thread_id: str) -> str:
     return f"{owner}:{thread_id}"
 
 
-def _done_stop_frame() -> str:
-    """전체 상한 초과 시의 정상 절단 done 프레임 (finishReason stop)."""
+def _done_stop_frame(role: Literal["buyer", "seller"] | None = None) -> str:
+    """전체 상한 초과 시의 정상 절단 done 프레임 (finishReason stop).
+
+    [이슈 #621 ③] role=="seller" 는 판매자 전용 페이로드({"finishReason":"stop",
+    "panel":"keep"})를 직접 구성한다 — 구매자 DoneData 스키마(app/schemas/chat.py)는
+    panel 필드가 없어 건드리지 않는다(app/api/seller.py::_done() 과 같은 방식). 절단
+    전에는 이미 `_confirm_stream` 등이 `panel` 을 실은 done 을 내지만, 총 상한 절단은
+    이 함수가 단독으로 만들어 role 을 몰랐다 — confirm 이 절단되면 FE 의
+    invalidateQueries(["seller"]) 가 안 걸려 쓰기가 반영된 뒤에도 우측 목록이 옛 값으로
+    남는 문제(#621 문제③)를 여기서 고친다. role 미지정·"buyer" 는 기존 동작 그대로다.
+    """
     import json
 
-    payload = {"type": "done", "data": DoneData(finish_reason="stop").model_dump(by_alias=True)}
+    if role == "seller":
+        payload = {"type": "done", "data": {"finishReason": "stop", "panel": "keep"}}
+    else:
+        payload = {"type": "done", "data": DoneData(finish_reason="stop").model_dump(by_alias=True)}
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
@@ -666,7 +678,7 @@ async def open_stream(
                         "stream total cap reached streamFp=%s", identifier_fingerprint(stream_key)
                     )
                     terminal_reason = "total_timeout_stop"
-                    done_frame = _done_stop_frame()
+                    done_frame = _done_stop_frame(role=role)
                     if observer is not None:
                         observer.record_frame(done_frame, loop.time())
                     yield done_frame
