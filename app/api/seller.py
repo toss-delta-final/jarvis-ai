@@ -24,9 +24,10 @@ MVP 범위(api-spec v0.14.0 §3.2, 결정 20 개정): 통계 Q&A + 상세 수정
   ②.5 차트 요청 선판정(wants_chart_keyword, LLM 0회, #531) → _analysis_stream 직행:
      차트 좌표는 analysis 레인의 report 이벤트에만 실린다(경로 B).
   ③ supervisor 라우팅(route_question — 장애 시 general 폴백은 함수 내부).
-분기: analysis → run_analysis_pipeline(emit 큐 중계, 예외 2경우만 사과+error) /
-product → draft 검증(validate_draft)·checkpoint 저장(start_draft)·draft emit /
-general → 기존 astream 스트림.
+분기: [#591] analysis·general → **search 레인**(_general_stream, 조회 도구 12종 +
+get_latest_report) — meta.lane 만 갈린다 /
+product → draft 검증(validate_draft)·checkpoint 저장(start_draft)·draft emit.
+run_analysis_pipeline(5단 분석)은 게이트 ②.5 차트 경로(_analysis_stream)에만 남는다.
 스트림 수명주기(409·취소·타임아웃 §2.9 공통)는 팀 공통 래퍼 open_stream 소관 —
 chat.py 와 동일하게 registry_key(identity, threadId) 로 방당 1스트림을 강제한다.
 """
@@ -309,8 +310,18 @@ async def _general_stream(
     context: SellerContext,
     *,
     request_id: str | None = None,
+    lane: Lane = "general",
 ) -> AsyncIterator[str]:
-    """general_agent astream → token/done (3-7 — SPEC §7 수명주기·degrade).
+    """search 레인 — general_agent astream → token/done (3-7 — SPEC §7 수명주기·degrade).
+
+    [#591] supervisor 의 `general`(조회)과 `analysis`(저장된 보고서를 찾는 의도)가 **같은
+    이 함수**를 쓴다. `analysis` 가 5단 분석 파이프라인을 부르던 자리를 여기로 옮긴 것이라
+    (`_analysis_stream` 은 게이트 ②.5 차트 경로 전용으로 남는다), 실행 경로만 바뀌고
+    `decision.category` 3분기 구조와 `Lane` 6종 값은 그대로다(S-4 무개정).
+
+    `lane` 은 meta 첫 프레임·트레이스·로그에만 쓴다 — 도구 목록도 프롬프트도 기간 처리도
+    두 레인이 동일하다. 값을 나눠두는 이유는 FE 가 `meta.lane` 으로 우측 패널을 준비하고
+    (계약 §3.3), 로그의 레인 분포가 supervisor 판정과 1:1로 맞아야 하기 때문이다.
 
     - C1(REVIEW-SELLER-STAGE2): build_general_agent 는 **요청마다 재빌드** —
       빌드 시점 today 박제가 장기 실행 서버에서 stale 해지는 것을 방지한다.
@@ -329,9 +340,9 @@ async def _general_stream(
       checkpointer 에 있어 스레드는 이어진다.
     """
     request_id = _resolve_request_id(request_id)
-    _set_trace_lane("general")
-    # general 은 항상 대화(우측 패널 유지) — 첫 프레임에 레인을 알린다.
-    yield _meta("general")
+    _set_trace_lane(lane)
+    # search 레인은 항상 대화(우측 패널 유지) — 첫 프레임에 레인을 알린다.
+    yield _meta(lane)
     refusal = check_scope(request.message)
     if refusal:
         yield _token(refusal)
@@ -437,7 +448,7 @@ async def _general_stream(
         yield _done("keep")
     except LLMNotConfigured:
         yield _llm_unavailable(
-            lane="general",
+            lane=lane,
             thread_id=request.thread_id,
             request_id=request_id,
             context=context,
@@ -454,7 +465,7 @@ async def _general_stream(
             "seller_checkpointer_unavailable",
             context=context,
             thread_id=request.thread_id,
-            action="general",
+            action=lane,
             error_code="INTERNAL",
             status="FAILED",
         )
@@ -475,7 +486,7 @@ async def _general_stream(
                 "seller_stream_timeout",
                 context=context,
                 thread_id=request.thread_id,
-                action="general",
+                action=lane,
                 error_code="LLM_TIMEOUT",
                 status="FAILED",
             )
@@ -491,7 +502,7 @@ async def _general_stream(
             "seller_stream_failed",
             context=context,
             thread_id=request.thread_id,
-            action="general",
+            action=lane,
             error_code="INTERNAL",
             status="FAILED",
         )
@@ -1566,12 +1577,11 @@ async def _seller_stream(
     )
 
     if decision.category == "analysis":
-        async for line in _analysis_stream(
-            request,
-            context,
-            recent_turns,
-            request_id=request_id,
-        ):
+        # [#591] `analysis` = "저장된 보고서를 찾는 의도"로 재정의됐다 — 5단 분석
+        # 파이프라인이 아니라 search 레인(조회 도구 + get_latest_report)이 답한다.
+        # 그 파이프라인은 채팅 밖 상주형으로 옮겨가고, 채팅에서 _analysis_stream 을
+        # 부르는 곳은 이제 게이트 ②.5(차트)뿐이다. meta.lane 은 "analysis" 그대로다.
+        async for line in _general_stream(request, context, request_id=request_id, lane="analysis"):
             yield line
     elif decision.category == "product":
         # [리뷰 M-1b] 게이트 판정 실패 낙하로 온 경우에도 pending 을 전달한다 —
