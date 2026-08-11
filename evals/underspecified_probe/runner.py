@@ -95,6 +95,7 @@ def _clone_decision(decision: RouteDecision) -> RouteDecision:
         category_legs=list(decision.category_legs),
         repurchase_products=list(decision.repurchase_products),
         revert_categories=list(decision.revert_categories),
+        attr_conditions_suppressed_axes=list(decision.attr_conditions_suppressed_axes),
     )
 
 
@@ -219,6 +220,10 @@ class Sample:
     dedicated_ambiguous: bool = False
     before_verdict: bool | None = None
     postprocess_verdict: bool | None = None
+    # [#464] 후처리 뒤 `filters.attr_conditions` 에 남은 축 — samples.csv 재집계용 원문.
+    attr_condition_axes: list[str] = field(default_factory=list)
+    # [#464] attrConditions 에서 결정론 후처리로 제거한 축 — samples.csv 재집계용 진단 원문.
+    attr_conditions_suppressed_axes: list[str] = field(default_factory=list)
 
     @property
     def intent(self) -> str:
@@ -282,6 +287,8 @@ class Sample:
             dedicated_ambiguous=dedicated_ambiguous,
             before_verdict=before_verdict,
             postprocess_verdict=postprocess_verdict,
+            attr_condition_axes=list((decision.filters.attr_conditions or {}).keys()),
+            attr_conditions_suppressed_axes=list(decision.attr_conditions_suppressed_axes),
         )
 
 
@@ -326,6 +333,8 @@ async def run_cell(
     leg_head_suppression: bool = False,
     leg_generic_heads: frozenset[str] = frozenset(),
     leg_condition_terms: frozenset[str] = frozenset(),
+    attr_axis_suppression: bool = False,
+    attr_constraint_axes: frozenset[str] = frozenset(),
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     union_enabled: bool = False,
     union_llm: Any | None = None,
@@ -365,6 +374,8 @@ async def run_cell(
                 leg_head_suppression=leg_head_suppression,
                 leg_generic_heads=leg_generic_heads,
                 leg_condition_terms=leg_condition_terms,
+                attr_axis_suppression=attr_axis_suppression,
+                attr_constraint_axes=attr_constraint_axes,
             )
         except BudgetExceeded as exc:
             result.failures.append(
@@ -467,6 +478,8 @@ async def run_probe(
     leg_head_suppression: bool = False,
     leg_generic_heads: frozenset[str] = frozenset(),
     leg_condition_terms: frozenset[str] = frozenset(),
+    attr_axis_suppression: bool = False,
+    attr_constraint_axes: frozenset[str] = frozenset(),
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     on_cell_done: Callable[[CellResult], None] | None = None,
     union_enabled: bool = False,
@@ -493,6 +506,8 @@ async def run_probe(
                 leg_head_suppression=leg_head_suppression,
                 leg_generic_heads=leg_generic_heads,
                 leg_condition_terms=leg_condition_terms,
+                attr_axis_suppression=attr_axis_suppression,
+                attr_constraint_axes=attr_constraint_axes,
                 sleep=sleep,
                 union_enabled=union_enabled,
                 union_llm=union_llm,

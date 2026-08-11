@@ -9,11 +9,54 @@ import hashlib
 import json
 from pathlib import Path
 
-from evals.underspecified_probe.cli import main
+from app.core.config import Settings
+from evals.underspecified_probe.cli import _parser, _resolve_attr_axis_suppression, main
 from evals.underspecified_probe.loader import FIXTURE_DIR
 
 EXIT_OK = 0
 EXIT_REJECTED = 2
+
+
+def test_attr_axis_suppression_switch_is_independent_and_follows_settings() -> None:
+    """#464 스위치는 arm 과 독립이고 생략 시 Settings 값을 따른다."""
+    parser = _parser()
+    assert parser.parse_args([]).attr_axis_suppression is None
+    assert parser.parse_args(["--no-attr-axis-suppression"]).attr_axis_suppression is False
+    assert parser.parse_args(["--attr-axis-suppression"]).attr_axis_suppression is True
+    assert parser.parse_args(["--arm", "postprocess"]).attr_axis_suppression is None
+
+    settings_off = Settings(_env_file=None).model_copy(
+        update={"attr_condition_axis_suppression_enabled": False}
+    )
+    assert _resolve_attr_axis_suppression(None, settings_off) is False
+    assert _resolve_attr_axis_suppression(True, settings_off) is True
+    assert _resolve_attr_axis_suppression(False, settings_off) is False
+
+
+def test_dry_run_manifest_records_attr_axis_suppression_and_constraint_axes(
+    tmp_path: Path,
+) -> None:
+    """#464 측정 조건인 스위치와 제약 축 어휘를 run_manifest 에 남긴다."""
+    settings = Settings(_env_file=None)
+    runs = {
+        "default": [],
+        "disabled": ["--no-attr-axis-suppression"],
+        "enabled": ["--attr-axis-suppression"],
+    }
+
+    manifests: dict[str, dict[str, object]] = {}
+    for name, extra in runs.items():
+        out = tmp_path / name
+        assert main(["--out", str(out), "--dry-run", "--n", "1", *extra]) == EXIT_OK
+        manifest = json.loads((out / "run_manifest.json").read_text(encoding="utf-8"))
+        manifests[name] = manifest["underspecifiedProbe"]
+
+    assert manifests["default"]["attrAxisSuppression"] is True
+    assert manifests["disabled"]["attrAxisSuppression"] is False
+    assert manifests["enabled"]["attrAxisSuppression"] is True
+    assert manifests["default"]["attrConditionConstraintAxes"] == (
+        settings.attr_condition_constraint_axes
+    )
 
 
 def test_existing_out_dir_is_refused(tmp_path: Path) -> None:

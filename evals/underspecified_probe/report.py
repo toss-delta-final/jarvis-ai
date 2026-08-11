@@ -465,8 +465,8 @@ def write_artifacts(
 ) -> None:
     """산출물 6종을 결정론적으로 쓴다.
 
-    [#432] `union_enabled=False`(기본)면 `samples.csv` 에 union 컬럼이 **아예 없다** — 기존
-    산출물 형상이 그대로 얼어 있어야 #433 이 굳힌 6판과 계속 비교 가능하다."""
+    [#432] `union_enabled=False`(기본)면 `samples.csv` 에 union 컬럼이 **아예 없다** — #464
+    진단 컬럼을 제외한 기존 union 산출물 형상은 그대로라 #433 이 굳힌 6판과 계속 비교 가능하다."""
     out.mkdir(parents=True, exist_ok=True)
     _write_json(out / "results.json", results)
     _write_json(out / "run_manifest.json", manifest)
@@ -484,6 +484,8 @@ def write_artifacts(
         "outcome",
         "causeAxes",
         "blockingAxes",
+        "attrConditionAxes",
+        "attrConditionsSuppressedAxes",
         "expansionReason",
         "latencyMs",
     ]
@@ -504,6 +506,8 @@ def write_artifacts(
             "outcome": row["outcome"],
             "causeAxes": ";".join(row["causeAxes"]),
             "blockingAxes": ";".join(row["blockingAxes"]),
+            "attrConditionAxes": "|".join(row["attrConditionAxes"]),
+            "attrConditionsSuppressedAxes": "|".join(row["attrConditionsSuppressedAxes"]),
             "expansionReason": row["expansionReason"] or "",
             "latencyMs": row["latencyMs"],
         }

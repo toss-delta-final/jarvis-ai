@@ -11,6 +11,18 @@
 - 관련: 파일/§/커밋
 ```
 
+## [2026-08-11] LLM이 내는 축 이름은 한국어만이 아니다
+- 증상: 한국어 어휘 8개로 억제를 넣었는데 480표본에서 억제가 **2번만** 발동했다. miss는 줄어 보였지만 억제 0발동 런에서도 줄어 그 개선분은 노이즈였다.
+- 원인: `gpt-5-nano`가 축 이름을 `price`·`Price`·`priceMax`처럼 영어·대문자·camelCase로도 냈다. 어휘를 세 번(`price` → `Price` → `priceMax`) 메운 뒤에야 원인이 0이 됐다.
+- 규칙: LLM 산출 키 이름에 어휘 매칭을 걸 때는 한국어/영어·대소문자·camelCase/snake_case를 처음부터 함께 덮고, 스키마 필드명 변형은 드리프트 가드 테스트로 못박는다. 어휘 목록만 늘리면 두더지잡기가 된다.
+- 관련: #464 `app/core/config.py`·`app/agents/buyer/recommendation/attr_axis.py`·`tests/unit/test_attr_axis.py`
+
+## [2026-08-11] 억제/보강 스위치는 발동 건수를 산출물에 남겨야 한다
+- 증상: 전후 비교표만 보면 3·5 → 1·1로 좋아 보였지만, 실제로는 억제가 거의 발동하지 않았고 개선분 대부분이 런간 노이즈였다.
+- 원인: 산출물에 효과(미탐 수)만 있고 발동 여부가 없어 둘을 가를 수 없었다.
+- 규칙: 결정론 후처리를 넣을 때는 발동 건수와 처리 후 남은 값을 모두 산출물 컬럼으로 남긴다(이번엔 `attrConditionsSuppressedAxes`·`attrConditionAxes`). 그래야 효과가 노이즈인지 런 재실행 없이 가를 수 있고, 어휘 구멍도 산출물만으로 특정된다.
+- 관련: #464 `evals/underspecified_probe/runner.py`·`metrics.py`·`report.py`
+
 ---
 
 ## [2026-08-10] 함수 시그니처 변경은 `grep -rn`으로 전체 저장소를 훑어야 한다 — `app/`·`tests/`만으로는 부족

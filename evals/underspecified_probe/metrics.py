@@ -524,6 +524,8 @@ def sample_rows(
                 "outcome": outcome,
                 "causeAxes": cause_axes,
                 "blockingAxes": blocking_axes,
+                "attrConditionAxes": sample.attr_condition_axes,
+                "attrConditionsSuppressedAxes": sample.attr_conditions_suppressed_axes,
                 "expansionReason": sample.expansion_reason,
                 "latencyMs": sample.latency_ms,
                 "dedicatedCalled": sample.dedicated_called,

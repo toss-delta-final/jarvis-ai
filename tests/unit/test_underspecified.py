@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.agents.buyer.recommendation.attr_axis import strip_constraint_axes
 from app.agents.buyer.recommendation.decompose import _FILTER_AXES
 from app.agents.buyer.recommendation.no_condition import is_no_condition_turn
 from app.agents.buyer.recommendation.state import CategoryQuery, RouteDecision
@@ -80,6 +81,16 @@ def test_price_max_alone_triggers() -> None:
 
 def test_price_min_alone_triggers() -> None:
     decision = _decision(price_min=10000)
+    assert is_underspecified_turn(decision, prior=None, settings=_settings()) is True
+
+
+def test_price_attr_axis_after_postprocess_triggers_reask() -> None:
+    """가격 제약이 attrConditions 에서 제거되면 무엇을 찾는지 되물을 수 있다."""
+    conditions, suppressed = strip_constraint_axes(
+        {"가격": "5만원 이하"}, enabled=True, constraint_axes=frozenset({"가격"})
+    )
+    decision = _decision(attr_conditions=conditions)
+    decision.attr_conditions_suppressed_axes = suppressed
     assert is_underspecified_turn(decision, prior=None, settings=_settings()) is True
 
 
@@ -224,6 +235,7 @@ def test_route_decision_axes_are_all_classified() -> None:
         "category_legs_restored",
         "scoped_to_previous",
         "category_leg_injected",
+        "attr_conditions_suppressed_axes",
     }
 
     assert {f.name for f in fields(RouteDecision)} == (
