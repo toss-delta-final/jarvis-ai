@@ -666,6 +666,10 @@ class Settings(BaseSettings):
     # image_url 길이 2차 방어(FE 서버 라우트가 1차) — DB VARCHAR(500) 계약과 동일값.
     # presigned URL(서명 쿼리스트링)은 보통 1,000자를 넘어 여기서 걸린다.
     seller_image_url_max_len: int = 500
+    # 상품명 길이 2차 방어(#620) — BE SellerProductCreateRequest/SellerProductUpdateRequest
+    # 의 @Size(max=200)과 동일값. 초과분은 BE 400 VALIDATION_ERROR → 미매핑 "일시적 오류"로
+    # 새던 것을 draft 단계에서 되묻기로 선차단한다.
+    seller_name_max_len: int = 200
     # vision 분석(이미지 첨부 턴 1회) 상한 — 워커 예산(seller_worker_timeout_s)과
     # 분리한다: 분석은 product 워커 진입 전 입구에서 별도 수행된다.
     seller_vision_timeout_s: float = 20.0

@@ -421,6 +421,17 @@ class SpringUnavailableError(Exception):
     """Spring 서버 도달 불가/오류 응답. 상위에서 SEARCH_FAILED 등으로 매핑한다."""
 
 
+class SpringRejected(SpringUnavailableError):
+    """#620 — `error_code_map` 에 없는 4xx 응답(BE 가 거부, 재시도해도 같은 결과).
+
+    `_request` 의 공통 폴백은 매핑 안 된 오류를 전부 `SpringUnavailableError` 로 냈는데,
+    그러면 5xx/타임아웃(진짜 일시 장애)과 4xx(영구 거부)가 같은 예외·같은 "재시도
+    가능" 안내로 뭉개진다. `SpringUnavailableError` 의 하위로 두어 기존
+    `except SpringUnavailableError` catch-all 은 그대로 잡되(하위 호환), 4xx 를
+    구분해서 다뤄야 하는 호출부(`_confirm_stream` 등)는 이 예외를 먼저 잡아
+    `retryable=False` 로 낼 수 있게 한다."""
+
+
 class OrderStatusUnavailableError(SpringUnavailableError):
     """I-4 안전한 실패 분류. 원 예외·경로·응답 데이터는 보존하지 않는다."""
 
@@ -566,6 +577,19 @@ class ProductFieldMissing(Exception):
     말한 "등록은 시끄럽게 실패한다"의 그 지점). 종전엔 매핑이 없어 이 시끄러운 실패가
     `SpringUnavailableError` → "일시적인 오류(재시도 가능)" 로 **조용해졌다**.
     설정·배포를 고쳐야 풀리는 문제라 재시도 안내를 하면 안 된다."""
+
+
+class InvalidPrice(Exception):
+    """I-10/I-11 422 INVALID_PRICE(#620) — `price > originalPrice`(BE `validatePriceRange`,
+    저장된 값 기준 교차 검증 — PATCH 에서 한쪽만 보내도 생략분은 DB 현재값으로 채워
+    비교한다).
+
+    AI 는 update 를 **row-aware 로 선차단**한다(`hitl.validate_draft` 의 `row` 인자) —
+    confirm 직전 재조회한 현재값과 초안의 변경분을 합성해 미리 비교한다. 그래도 여기
+    도달하는 건 draft 표시와 confirm 사이 다른 채널(웹 UI 등)에서 가격이 바뀐 **레이스**
+    뿐이다. `InvalidStock`·`ProductCategoryInvalid` 와 같은 이유로 `SpringUnavailableError`
+    하위가 아니다 — 재시도해도 같은 결과라 catch-all 로 뭉개면 판매자가 무한 재confirm
+    에 갇힌다."""
 
 
 # ── I-30 발송 처리 예외 (이슈 #297, §4.19 — 🔶 초안, BE 협의 전) ──────────────────
@@ -1617,8 +1641,10 @@ class SpringClient:
 
         error_code_map 이 주어지면 4xx/5xx 응답 본문의 `error.code`(§2.5 봉투)를
         `_parse_error_code` 로 뽑아, 매핑된 코드는 전용 예외로 낸다(I-30 등 코드 구분이
-        계약인 쓰기용) — 매핑에 없는 코드·본문 없는 오류는 종전대로
-        SpringUnavailableError 다(추가 전용, 기존 호출 경로 불변)."""
+        계약인 쓰기용) — 매핑에 없는 코드·본문 없는 오류는 상태코드로 갈린다(#620):
+        4xx 는 `SpringRejected`(영구 거부, 재시도 무의미), 5xx·그 외는 종전대로
+        `SpringUnavailableError`(진짜 일시 장애) — `SpringRejected` 가 그 하위라 기존
+        `except SpringUnavailableError` 호출부는 손대지 않아도 그대로 잡힌다."""
         headers = {"X-Internal-Token": self._internal_token} if self._internal_token else {}
         try:
             with _spring_span(operation, method) as span:
@@ -1651,8 +1677,10 @@ class SpringClient:
                 mapped = error_code_map.get(code) if code else None
                 if mapped is not None:
                     raise mapped(f"{code}: {method} {path}") from exc
-            raise SpringUnavailableError(
-                f"Spring 콜백 오류 응답({exc.response.status_code}): {method} {path}"
+            status = exc.response.status_code
+            exc_cls = SpringRejected if 400 <= status < 500 else SpringUnavailableError
+            raise exc_cls(
+                f"Spring 콜백 오류 응답({status}): {method} {path}"
             ) from exc
         except httpx.HTTPError as exc:
             raise SpringUnavailableError(f"Spring 콜백 실패: {method} {path} ({exc})") from exc
@@ -1958,6 +1986,7 @@ class SpringClient:
                 "INVALID_STOCK": InvalidStock,
                 "PRODUCT_CATEGORY_INVALID": ProductCategoryInvalid,
                 "MISSING_FIELD": ProductFieldMissing,
+                "INVALID_PRICE": InvalidPrice,
             },
         )
         return self._validate(ProductCreateResult, data)
@@ -1972,6 +2001,10 @@ class SpringClient:
 
         [#524] 422 `INVALID_STOCK` 도 전용 예외다 — hitl 이 선차단하므로 정상 경로에서는
         나지 않고, 초안과 실행 사이 옵션 변경 레이스만 여기로 온다(InvalidStock docstring).
+
+        [#620] 422 `INVALID_PRICE` 도 전용 예외다 — hitl 이 row-aware 로 선차단하므로
+        정상 경로에서는 나지 않고, draft 표시와 confirm 사이 가격이 바뀐 레이스만
+        여기로 온다(InvalidPrice docstring).
         """
         data = await self._request(
             "PATCH",
@@ -1981,6 +2014,7 @@ class SpringClient:
             error_code_map={
                 "PRODUCT_DELETED": ProductDeletedNotEditable,
                 "INVALID_STOCK": InvalidStock,
+                "INVALID_PRICE": InvalidPrice,
             },
         )
         return self._validate(ProductUpdateResult, data)

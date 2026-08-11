@@ -52,6 +52,7 @@ from app.agents.seller.analysis_store import note_seller_seen
 from app.agents.seller.checkpoint import get_checkpointer
 from app.agents.seller.context import SellerContext
 from app.agents.seller.history import apply_recommendation
+from app.agents.seller import hitl
 from app.agents.seller.hitl import (
     DraftRecord,
     confirm_draft,
@@ -99,7 +100,7 @@ from app.core.tracing import current_request_trace, start_request_trace_safely, 
 from app.core.text import _strip_unsafe, _strip_unsafe_multiline
 from app.schemas.chat import ErrorData, TokenData
 from app.schemas.seller import SellerChatRequest
-from app.services.spring_client import SpringUnavailableError
+from app.services.spring_client import SpringRejected, SpringUnavailableError
 
 logger = logging.getLogger(__name__)
 
@@ -866,9 +867,26 @@ async def _product_stream(
         proposal, message=request.message, analysis=analysis, pending=pending
     )
 
+    # [#620] update 초안이 price/original_price 를 건드리면 미리 I-9 재조회해 row 를
+    # 넘긴다 — validate_draft 가 BE validatePriceRange 와 같은 규칙(price ≤
+    # originalPrice, 생략 필드는 저장된 값)으로 카드 표시 전에 되물을 수 있게 한다.
+    # 그 외 op·필드는 이 추가 Spring 왕복이 필요 없다(row=None 이면 이 검사만 건너뛴다).
+    # Spring 장애는 이 선택적 2차 검증 때문에 초안 생성 전체를 막지 않는다 — 실패하면
+    # row=None 으로 건너뛰고 confirm 시점 BE 422(InvalidPrice)에 맡긴다(안전망 유지).
+    row = None
+    if proposal.op == "update" and proposal.product_id is not None:
+        touches_price = any(
+            c.field in ("price", "original_price") for c in proposal.changes
+        )
+        if touches_price:
+            try:
+                row = await hitl._find_product(context.brand_id, proposal.product_id)
+            except SpringUnavailableError:
+                row = None
+
     # 코드 선검증(4-2) — 실행 불가능한 draft 는 FE 에 보여주기 전에 되묻는다.
     record, problem = validate_draft(
-        proposal, seller_id=context.seller_id, brand_id=context.brand_id
+        proposal, seller_id=context.seller_id, brand_id=context.brand_id, row=row
     )
     if record is None:
         text = problem or "초안을 만들지 못했습니다. 다시 요청해 주세요."
@@ -1340,6 +1358,23 @@ async def _confirm_stream(
             outcome = await confirm_draft(
                 draft_id, seller_id=context.seller_id, brand_id=context.brand_id
             )
+    except SpringRejected:
+        # [#620] 매핑 안 된 4xx — 서버가 요청 자체를 거부한 것이라 재시도해도 결과가
+        # 같다. `SpringUnavailableError` 하위라 이 except 를 두지 않아도 아래 catch-all
+        # 이 잡지만, 그러면 "일시적 오류·재시도 가능"으로 잘못 안내된다(이 이슈의
+        # 핵심 증상) — 먼저 잡아 retryable=False 로 구분한다. draft 는 checkpoint 에
+        # 남지만 재confirm 을 권하지 않는다(같은 4xx 가 반복될 뿐이다).
+        yield _token(
+            "죄송합니다. 서버가 이 요청을 거부해 반영하지 못했습니다. "
+            "내용을 다시 확인해 새로 요청해 주세요."
+        )
+        yield _error(
+            "INTERNAL",
+            "요청이 거부되었습니다.",
+            request_id=request_id,
+            retryable=False,
+        )
+        return
     except SpringUnavailableError:
         _mark_seller_degraded("spring_write_failed")
         yield _token(_CONFIRM_SPRING_DOWN_TOKEN)
