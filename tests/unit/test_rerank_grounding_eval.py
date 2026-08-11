@@ -7,6 +7,8 @@ from pathlib import Path
 import pytest
 
 from app.agents.buyer.recommendation.rerank_grounding import CandidateGroundingFacts
+from app.core.llm import LLMError
+from evals.rerank_grounding.fakes import ScriptedGroundingLLM
 from evals.rerank_grounding.metrics import (
     MetricItem,
     MetricSample,
@@ -18,6 +20,8 @@ from evals.rerank_grounding.schema import (
     fixture_sha256,
     load_fixture,
 )
+from evals.rerank_grounding.report import write_artifacts
+from evals.rerank_grounding.runner import run_probe
 
 
 def test_fixture_loads_unique_case_ids_and_declared_test_types() -> None:
@@ -207,3 +211,141 @@ def test_hard_gates_and_valid_rank_coverage_are_aggregated() -> None:
     assert metrics.out_of_candidate_id_count == 1
     assert metrics.duplicate_id_count == 2
     assert metrics.valid_rank_coverage == 0.5
+
+
+def _one_case_fixture():
+    fixture = load_fixture(DEFAULT_FIXTURE_PATH)
+    return type(fixture)(
+        fixture_version=fixture.fixture_version,
+        schema_version=fixture.schema_version,
+        cases=(fixture.cases[0],),
+    )
+
+
+def _multi_need_fixture():
+    fixture = load_fixture(DEFAULT_FIXTURE_PATH)
+    case = next(case for case in fixture.cases if case.case_id == "multi_need_balance")
+    return type(fixture)(
+        fixture_version=fixture.fixture_version,
+        schema_version=fixture.schema_version,
+        cases=(case,),
+    )
+
+
+class _FailOnceThenScripted:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.delegate = ScriptedGroundingLLM()
+
+    async def complete(self, **kwargs) -> str:
+        self.calls += 1
+        if self.calls == 1:
+            raise LLMError("temporary")
+        return await self.delegate.complete(**kwargs)
+
+
+async def test_runner_fills_successful_n_and_keeps_failures_separate() -> None:
+    run = await run_probe(
+        llm=_FailOnceThenScripted(),
+        fixture=_one_case_fixture(),
+        arms=("current",),
+        repeats=2,
+        attempt_multiplier=3,
+        expose_max=3,
+    )
+
+    cell = run.cells[0]
+    assert len(cell.samples) == 2
+    assert len(cell.failures) == 1
+    assert cell.attempts == 3
+    assert cell.filled is True
+
+
+async def test_runner_passes_arm_and_case_need_boundaries_to_rerank() -> None:
+    run = await run_probe(
+        llm=ScriptedGroundingLLM(),
+        fixture=_multi_need_fixture(),
+        arms=("validated",),
+        repeats=1,
+        attempt_multiplier=1,
+        expose_max=4,
+    )
+
+    sample = run.cells[0].samples[0]
+    assert sample.arm == "validated"
+    assert sample.ranked_product_ids
+    assert len(sample.ranked_product_ids) == 4
+
+
+async def test_invalid_evidence_is_successful_validated_sample_with_downgrade() -> None:
+    run = await run_probe(
+        llm=ScriptedGroundingLLM(invalid_evidence=True),
+        fixture=_one_case_fixture(),
+        arms=("validated",),
+        repeats=1,
+        attempt_multiplier=1,
+        expose_max=3,
+    )
+
+    sample = run.cells[0].samples[0]
+    assert sample.validator_downgrade_count == 1
+    assert sample.failure_type is None
+    assert sample.displayed_rationales[0] == "요청과의 관련도를 기준으로 추천했어요"
+
+
+def _manifest() -> dict[str, object]:
+    return {
+        "gitCommit": "abc123",
+        "dirty": False,
+        "command": "dry-run",
+        "dryRun": True,
+        "datasetVersion": "rerank-grounding-v1",
+        "datasetHash": "d" * 64,
+        "promptHashes": {"current": "a" * 64, "structured": "b" * 64},
+        "validatorVersion": "rerank-grounding-v1",
+        "modelConfig": {"provider": "dry-run", "model": "scripted", "tier": "smart"},
+        "repeats": 1,
+        "budget": {"costUsd": 0.0},
+    }
+
+
+async def test_artifacts_are_regenerable_from_raw_samples(tmp_path: Path) -> None:
+    run = await run_probe(
+        llm=ScriptedGroundingLLM(invalid_evidence=True),
+        fixture=_one_case_fixture(),
+        arms=("current", "prompt_only", "validated"),
+        repeats=1,
+        attempt_multiplier=1,
+        expose_max=2,
+    )
+
+    write_artifacts(tmp_path, run=run, manifest=_manifest())
+
+    assert {path.name for path in tmp_path.iterdir()} == {
+        "results.json",
+        "run_manifest.json",
+        "samples.csv",
+        "failures.csv",
+        "report.md",
+    }
+    results = json.loads((tmp_path / "results.json").read_text(encoding="utf-8"))
+    assert results["metrics"]["validated"]["unsupportedEvidence"]["numerator"] == 0
+    assert "분자" in (tmp_path / "report.md").read_text(encoding="utf-8")
+
+
+async def test_manifest_records_all_prompt_and_dataset_hashes(tmp_path: Path) -> None:
+    run = await run_probe(
+        llm=ScriptedGroundingLLM(),
+        fixture=_one_case_fixture(),
+        arms=("current",),
+        repeats=1,
+        attempt_multiplier=1,
+        expose_max=2,
+    )
+
+    write_artifacts(tmp_path, run=run, manifest=_manifest())
+    manifest = json.loads((tmp_path / "run_manifest.json").read_text(encoding="utf-8"))
+
+    assert set(manifest["promptHashes"]) == {"current", "structured"}
+    assert len(manifest["datasetHash"]) == 64
+    assert manifest["validatorVersion"] == "rerank-grounding-v1"
