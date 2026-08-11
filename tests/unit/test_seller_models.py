@@ -44,6 +44,10 @@ def test_role_tier_matches_provider_neutral_spec() -> None:
     # graph(5단계, 같은 이슈)도 smart — 이슈 원안 그대로 전 역할 정책과 일치.
     # [#506] vision(이미지 분석)·draft_gate(초안 대기 발화 분류)도 전 역할 smart 정책 —
     # vision 은 초안 전체의 원천 품질, draft_gate 는 오분류가 곧 UX 사고라 강등하지 않는다.
+    # [#598] 상주(무인) 분석 파이프라인 역할 3종도 전 역할 smart 정책을 그대로 따른다 —
+    # resident_report/resident_recommend 는 채팅 레인 report/recommend 와 무접촉으로
+    # 분리한 역할이고, interpret 은 워커 4종 공통 zero-tool interpret 스텝이다. 무인
+    # 실행이라 품질 저하를 사람이 즉시 교정할 기회가 없어 강등하지 않는다.
     assert ROLE_TIER == {
         "supervisor": "smart",
         "planner": "smart",
@@ -59,6 +63,9 @@ def test_role_tier_matches_provider_neutral_spec() -> None:
         # [#506 후속] category — 카테고리 오배정은 등록 후 되돌릴 수 없다(BE I-11 에
         # category 필드가 없다). 폴백 1회 호출이라 비용도 작아 강등 이유가 없다.
         "category": "smart",
+        "resident_report": "smart",
+        "resident_recommend": "smart",
+        "interpret": "smart",
     }
 
 
