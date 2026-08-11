@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.agents.buyer.cart import graph as cart_graph
 from app.agents.buyer.cart.graph import (
     _options_prompt,
     _options_text,
@@ -220,7 +221,12 @@ async def test_cart_option_reask_strips_seller_text() -> None:
     token = next(e for e in events if e["type"] == "token")["data"]["text"]
     # 이슈 #570 — 옵션 줄은 이제 "\n" 으로 정당하게 나뉘므로, 옵션명에 실려온 원시 "\n"(레\n드)이
     # 별도 줄을 만들지 않고 한 줄로 접혔는지(= "레 드")까지 리터럴로 확인한다.
-    assert token == "옵션을 선택해 주세요:\n블[31m루\n레 드\n어떤 걸로 담을까요?"
+    assert token == (
+        "옵션을 선택해 주세요:\n"
+        "1. **블[31m루**\n"
+        "2. **레 드**\n"
+        "어떤 걸로 담을까요?"
+    )
     assert all(ch not in token for ch in ("\x1b", "\u200b", "\u202e"))
 
 
@@ -3529,8 +3535,27 @@ async def test_cart_add_synonym_load_failure_degrades_without_crashing(
 # `_options_text` 의 "\n".join 을 " | ".join 으로 바꾸면 이 리터럴 테스트들이 모두 빨개져야 한다.
 
 
+def test_numbered_option_rows_bolds_complete_labels_in_order() -> None:
+    labels = ["블랙 / M", "화이트 / L(+1,000원)"]
+
+    assert cart_graph._numbered_option_rows(labels) == (
+        "1. **블랙 / M**\n"
+        "2. **화이트 / L(+1,000원)**"
+    )
+
+
+def test_options_text_numbers_only_sanitized_displayable_labels_contiguously() -> None:
+    options = [
+        CartOption(option_id=1, name="블\x1b[31m랙\u200b"),
+        CartOption(option_id=2, name="\u200b\u202e"),
+        CartOption(option_id=3, name="화\n이트"),
+    ]
+
+    assert _options_text(options) == "1. **블[31m랙**\n2. **화 이트**"
+
+
 async def test_cart_option_narrow_reask_literal_matches_issue_570() -> None:
-    """(1) #455 조건 좁힘 — 옵션 두 개가 줄바꿈으로 나열되고 마침표가 옵션 줄에 붙지 않는다."""
+    """(1) #582 조건 좁힘 — 옵션 두 개가 번호·굵은 글씨로 나열된다."""
     store = CartStateStore()
     options = [
         CartOption(option_id=1, name="블랙 / M"),
@@ -3552,8 +3577,8 @@ async def test_cart_option_narrow_reask_literal_matches_issue_570() -> None:
     token = next(e for e in events if e["type"] == "token")["data"]["text"]
     assert token == (
         "말씀하신 조건에 맞는 옵션이에요:\n"
-        "블랙 / M\n"
-        "화이트 / M\n"
+        "1. **블랙 / M**\n"
+        "2. **화이트 / M**\n"
         "이 중에서 고르시거나 다른 옵션을 말씀해 주세요."
     )
 
@@ -3561,7 +3586,7 @@ async def test_cart_option_narrow_reask_literal_matches_issue_570() -> None:
 async def test_cart_option_color_unmet_reask_literal_matches_issue_570(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """(2) #454 색상 미충족 고지 — 첫 줄은 종전처럼 두 문장이 한 줄이고, 옵션은 줄바꿈 나열된다."""
+    """(2) #582 색상 미충족 고지 — 첫 줄은 종전처럼 두 문장이 한 줄이고, 옵션은 번호·굵은 글씨로 나열된다."""
     mapping = {"빨강": ["빨강", "레드"], "블랙": ["블랙", "검정"], "화이트": ["화이트", "흰색"]}
     monkeypatch.setattr(
         "app.services.spring_client._load_color_synonym_map", _mock_synonym_map(mapping)
@@ -3583,14 +3608,14 @@ async def test_cart_option_color_unmet_reask_literal_matches_issue_570(
     token = next(e for e in events if e["type"] == "token")["data"]["text"]
     assert token == (
         "'빨강' 조건에 맞는 옵션은 찾지 못했어요. 고를 수 있는 옵션은 이거예요:\n"
-        "블랙 / M\n"
-        "화이트 / M\n"
+        "1. **블랙 / M**\n"
+        "2. **화이트 / M**\n"
         "이 중에서 고르시거나 다른 상품을 말씀해 주세요."
     )
 
 
 async def test_cart_option_default_reask_literal_matches_issue_570() -> None:
-    """(3) 기본 되물음 — 옵션 두 개가 줄바꿈으로 나열된다."""
+    """(3) #582 기본 되물음 — 옵션 두 개가 번호·굵은 글씨로 나열된다."""
     store = CartStateStore()
     options = [CartOption(option_id=1, name="블랙 / M"), CartOption(option_id=2, name="화이트 / M")]
 
@@ -3600,11 +3625,16 @@ async def test_cart_option_default_reask_literal_matches_issue_570() -> None:
     events = await _run_add(store, CartIntent(product_id=1, quantity=1), add_fn)
 
     token = next(e for e in events if e["type"] == "token")["data"]["text"]
-    assert token == "옵션을 선택해 주세요:\n블랙 / M\n화이트 / M\n어떤 걸로 담을까요?"
+    assert token == (
+        "옵션을 선택해 주세요:\n"
+        "1. **블랙 / M**\n"
+        "2. **화이트 / M**\n"
+        "어떤 걸로 담을까요?"
+    )
 
 
 async def test_cart_option_invalid_reask_literal_matches_issue_570() -> None:
-    """(4) CART_OPTION_INVALID 재질문 — 마무리 줄 없이 옵션만 줄바꿈으로 나열된다(종전에도 없었다)."""
+    """(4) #582 CART_OPTION_INVALID 재질문 — 마무리 줄 없이 번호·굵은 글씨 옵션만 나열된다."""
     store = CartStateStore()
     await store.set_pending(
         "m:t",
@@ -3629,11 +3659,15 @@ async def test_cart_option_invalid_reask_literal_matches_issue_570() -> None:
         )
     )
     token = next(e for e in events if e["type"] == "token")["data"]["text"]
-    assert token == "그 옵션을 찾지 못했어요. 다시 골라 주세요:\n블랙 / M\n화이트 / M"
+    assert token == (
+        "그 옵션을 찾지 못했어요. 다시 골라 주세요:\n"
+        "1. **블랙 / M**\n"
+        "2. **화이트 / M**"
+    )
 
 
 async def test_cart_option_hint_fallback_literal_matches_issue_570() -> None:
-    """(hint) I-1 힌트 이름 폴백 — '외 N개' 는 독립된 줄이고 마지막 이름에 붙지 않는다(패킷 §1 A-4)."""
+    """(hint) #582 I-1 힌트 이름 폴백 — '외 N개' 는 독립된 줄이고 마지막 이름에 붙지 않는다(패킷 §1 A-4)."""
     store = CartStateStore()
 
     async def add_fn(req):
@@ -3648,7 +3682,14 @@ async def test_cart_option_hint_fallback_literal_matches_issue_570() -> None:
     events = await _run_add(store, CartIntent(product_id=1, quantity=1), add_fn)
 
     token = next(e for e in events if e["type"] == "token")["data"]["text"]
-    assert token == "옵션을 선택해 주세요:\n블랙\n화이트\n레드\n외 2개\n어떤 걸로 담을까요?"
+    assert token == (
+        "옵션을 선택해 주세요:\n"
+        "1. **블랙**\n"
+        "2. **화이트**\n"
+        "3. **레드**\n"
+        "외 2개\n"
+        "어떤 걸로 담을까요?"
+    )
 
 
 async def test_cart_option_hint_fallback_without_total_has_no_extra_line() -> None:
@@ -3667,7 +3708,12 @@ async def test_cart_option_hint_fallback_without_total_has_no_extra_line() -> No
     events = await _run_add(store, CartIntent(product_id=1, quantity=1), add_fn)
 
     token = next(e for e in events if e["type"] == "token")["data"]["text"]
-    assert token == "옵션을 선택해 주세요:\n블랙\n화이트\n어떤 걸로 담을까요?"
+    assert token == (
+        "옵션을 선택해 주세요:\n"
+        "1. **블랙**\n"
+        "2. **화이트**\n"
+        "어떤 걸로 담을까요?"
+    )
 
 
 async def test_cart_option_reask_reproduces_issue_570_symptom() -> None:
@@ -3684,7 +3730,7 @@ async def test_cart_option_reask_reproduces_issue_570_symptom() -> None:
     token = next(e for e in events if e["type"] == "token")["data"]["text"]
     lines = token.split("\n")
     option_lines = lines[1:-1]  # 안내 줄·마무리 줄 제외
-    assert option_lines == ["블랙 / M", "화이트 / M"]
+    assert option_lines == ["1. **블랙 / M**", "2. **화이트 / M**"]
     assert all(not line.endswith(".") for line in option_lines)
 
 
@@ -3702,7 +3748,12 @@ async def test_cart_add_reask_surcharge_option_on_own_line() -> None:
     events = await _run_add(store, CartIntent(product_id=1, quantity=1), add_fn)
 
     token = next(e for e in events if e["type"] == "token")["data"]["text"]
-    assert token == "옵션을 선택해 주세요:\n블루\n레드(+1,000원)\n어떤 걸로 담을까요?"
+    assert token == (
+        "옵션을 선택해 주세요:\n"
+        "1. **블루**\n"
+        "2. **레드(+1,000원)**\n"
+        "어떤 걸로 담을까요?"
+    )
 
 
 def test_options_text_empty_list_falls_back_to_default_label() -> None:
@@ -3728,7 +3779,7 @@ async def test_cart_option_numeric_prefix_name_not_escaped() -> None:
 
     token = next(e for e in events if e["type"] == "token")["data"]["text"]
     assert "\\" not in token  # 이스케이프하지 않는다
-    assert "4. 얼큰한맛 92g x 30개" in token.split("\n")
+    assert "1. **4. 얼큰한맛 92g x 30개**" in token.split("\n")
 
 
 async def test_cart_state_store_option_hint_round_trip_and_pruning(
