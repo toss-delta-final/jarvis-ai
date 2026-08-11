@@ -23,6 +23,11 @@ from app.agents.buyer.recommendation.decompose import (
     resolve_category_action,
 )
 from app.agents.buyer.recommendation.state import RouteDecision
+from app.agents.buyer.recommendation.underspecified_classifier import (
+    apply_underspecified_classification,
+    classify_underspecified,
+    could_be_underspecified_message,
+)
 from app.agents.buyer.screen_reference import resolve_screen_reference
 from app.core.config import get_settings
 from app.core.llm import LLMClient
@@ -124,6 +129,7 @@ class Sample:
             screen_resolver_fired=screen_resolver_fired,
             screen_resolution_reason=screen_resolution_reason,
         )
+
     # [#443] 모델 산출과 구분한 사전 보강 발동 여부 — condition_only 하드 불변식을 samples.csv
     # 재집계만으로 판정할 수 있어야 한다. **기본값을 둔다** — 이 필드가 없던 시절에 쓰인 생성자
     # 호출(테스트 픽스처 다수)이 전부 깨지고, 진단 필드라 "발동 안 함"이 안전한 기본값이다.
@@ -272,6 +278,7 @@ async def run_cell(
     repurchase_max: int = 5,
     settings: Any = None,
     classifier_enabled: bool = True,
+    underspecified_classifier_enabled: bool = True,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
 ) -> CellResult:
     """성공 표본 N개를 채울 때까지 재시도한다. 예산 초과만 밖으로 던진다."""
@@ -293,6 +300,25 @@ async def run_cell(
     # 이 플래그로 다시 만들어진다.
     prior_category = (getattr(prior_filters, "category", None) or "") if classifier_enabled else ""
     echo_tokens = _prior_echo_tokens(anchors) if prior_category else frozenset()
+    underspecified_call_gate = (
+        underspecified_classifier_enabled
+        and prior_filters is None
+        and context_kwargs.get("pending_cart") is None
+        and not context_kwargs.get("last_recommendations")
+        and context_kwargs.get("screen") is None
+        and bool(cell.utterance.text.strip())
+        and could_be_underspecified_message(cell.utterance.text)
+    )
+    dedicated_prompt = (
+        underspecified_classifier_enabled
+        and context_kwargs.get("pending_cart") is None
+        and (
+            prior_filters is not None
+            or bool(context_kwargs.get("last_recommendations"))
+            or context_kwargs.get("screen") is not None
+            or underspecified_call_gate
+        )
+    )
     max_attempts = n * attempt_multiplier
     while len(result.samples) < n and result.attempts < max_attempts:
         result.attempts += 1
@@ -310,6 +336,7 @@ async def run_cell(
                 category_leg_injection_min_length=settings.category_leg_injection_min_length,
                 attr_axis_suppression=settings.attr_condition_axis_suppression_enabled,
                 attr_constraint_axes=frozenset(settings.attr_condition_constraint_axes),
+                dedicated_underspecified_classifier=dedicated_prompt,
                 **context_kwargs,
             )
         except BudgetExceeded:
@@ -336,6 +363,16 @@ async def run_cell(
                 prior_category=prior_category,
                 settings=settings,
             )
+        # #463 배포 게이트와 같은 첫 무맥락 조건이다. 러너는 결과만 재므로 호출을 decompose와
+        # 병렬화할 필요는 없지만, 분류 결과를 적용하는 순서와 상태 변형은 graph.py와 공유한다.
+        underspecified = None
+        if underspecified_call_gate:
+            underspecified = await classify_underspecified(
+                llm, message=cell.utterance.text, settings=settings
+            )
+        apply_underspecified_classification(
+            decision, message=cell.utterance.text, verdict=underspecified
+        )
         # [#300, D-1/§4.3] screen 지시어는 러너가 해소한다 — decompose 다음 `graph.py` cart_add
         # 분기와 같은 조건·같은 인자로 `resolve_screen_reference` 를 부른다.
         resolved_product_id, screen_resolver_fired, screen_resolution_reason = _resolve_screen(
@@ -375,6 +412,7 @@ async def run_probe(
     repurchase_max: int = 5,
     settings: Any = None,
     classifier_enabled: bool = True,
+    underspecified_classifier_enabled: bool = True,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     on_cell_done: Callable[[CellResult], None] | None = None,
 ) -> list[CellResult]:
@@ -394,6 +432,7 @@ async def run_probe(
                 repurchase_max=repurchase_max,
                 settings=settings,
                 classifier_enabled=classifier_enabled,
+                underspecified_classifier_enabled=underspecified_classifier_enabled,
                 sleep=sleep,
             )
         if on_cell_done is not None:
