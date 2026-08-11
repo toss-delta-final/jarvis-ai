@@ -846,6 +846,8 @@ async def list_recommendations_by_report(
 
     `brand_id` 필수 — report_id 만으로 조회하면 남의 브랜드 데이터가 열린다(IDOR,
     다른 조회 API와 동일 규약). 07 결정 49 — `apply_recommendation`이 "N번"을 풀 때 쓴다.
+    [#591] `get_latest_report` 도구도 같은 함수를 쓴다 — 채팅에서 본 번호와 "N번 적용해줘"가
+    푸는 번호가 갈리면 안 되므로 조회 경로를 하나로 둔다.
     """
     pool = await _get_pool()
     if pool is None:

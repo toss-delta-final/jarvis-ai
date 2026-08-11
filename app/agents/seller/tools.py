@@ -24,7 +24,7 @@ from typing import Any
 from langchain.tools import ToolRuntime
 from langchain_core.tools import BaseTool, tool
 
-from app.agents.seller import calc, period
+from app.agents.seller import analysis_store, calc, period
 from app.agents.seller.analysis import outliers, proportions, segmentation, timeseries
 from app.agents.seller.context import SellerContext
 from app.agents.seller.stock_options import stock_lines_text
@@ -1829,6 +1829,44 @@ async def calculate(expression: str) -> str:
 
 
 @tool
+@_traced_tool("tool.get_latest_report")
+async def get_latest_report(runtime: ToolRuntime[SellerContext]) -> str:
+    """저장된 최신 분석 보고서 1건을 요약해 반환한다(딸린 추천 목록 포함).
+
+    보고서는 판매자 발화와 무관하게 상주 파이프라인이 주기적으로 만들어 저장한 것이라
+    **판매자가 말한 기간과 다를 수 있다** — 응답에 담긴 분석 기간을 그대로 인용한다.
+    보고서 조회 도구는 이것 하나뿐이다 — 목록 브라우징·과거 보고서 열람은 보고서
+    페이지 소관이라 채팅에서는 최신 1건만 본다.
+
+    보고서가 아직 없는 것은 실패가 아니다 — 조회 실패("Error:")와 구분해 정상 문구로
+    돌려준다. 둘을 섞으면 "한 번도 분석된 적 없음"이 장애로 안내된다.
+    """
+    brand_id = runtime.context.brand_id
+    try:
+        reports = await analysis_store.list_reports(brand_id, limit=1)
+        if not reports:
+            return "저장된 분석 보고서가 아직 없습니다."
+        report = reports[0]
+        recommendations = await analysis_store.list_recommendations_by_report(
+            report.id, brand_id=brand_id
+        )
+    except Exception as exc:  # degrade 규약(§3.4) — 조회 장애는 문자열로 알린다
+        _log.warning("get_latest_report 조회 실패", exc_info=True)
+        return f"Error: 보고서 조회에 실패했습니다({type(exc).__name__})."
+
+    lines = [
+        f"최신 분석 보고서: {report.title}",
+        f"분석 기간: {report.period_from.isoformat()}~{report.period_to.isoformat()}"
+        f" (작성 {report.created_at.date().isoformat()})",
+        f"요약: {report.summary}",
+    ]
+    if recommendations:
+        lines.append("추천 조치(번호=rank):")
+        lines.extend(f"  {rec.rank}. {rec.title} [{rec.action_type}]" for rec in recommendations)
+    return "\n".join(lines)
+
+
+@tool
 @_traced_tool("tool.search_analysis_guide")
 async def search_analysis_guide(query: str) -> str:
     """판매자 분석 기준서(용어·산식 정의)를 검색한다.
@@ -2019,6 +2057,7 @@ READ_TOOLS: list[BaseTool] = [
     list_my_products,
     calculate,
     search_analysis_guide,
+    get_latest_report,
 ]
 
 # product_agent 전용(list_my_products=쓰기 전 before 확보 + 쓰기 3종, HITL 승인 후 호출).

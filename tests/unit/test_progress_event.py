@@ -866,7 +866,7 @@ def test_seller_analysis_progress_unaffected_by_buyer_progress_flag(
     try:
         identity = Identity(user_id=None, is_guest=False, seller_id="7", brand_id="3")
         request = SellerChatRequest(
-            session_id="s-289-seller", thread_id="t-289-seller", message="지난달 매출 분석해줘"
+            session_id="s-289-seller", thread_id="t-289-seller", message="지난달 매출 그래프 보여줘"
         )
 
         async def _route_stub(question, context, recent_turns=(), screen=None):
