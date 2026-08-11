@@ -3249,6 +3249,27 @@ async def test_cart_add_empty_options_without_hint_degrades_to_stock_message() -
     assert token == "지금은 고를 수 있는 옵션이 없어요. 품절된 것 같아요. 다른 상품을 보여드릴까요?"
 
 
+async def test_cart_add_empty_options_with_sanitized_empty_hint_degrades_to_stock_message() -> None:
+    """I-1 힌트가 있어도 모든 이름이 정제 뒤 비면 품절 안내로 degrade한다."""
+    store = CartStateStore()
+
+    async def add_fn(req):
+        raise CartOptionRequired([])
+
+    await store.set_last_reco(
+        "m:t",
+        [(1, "상품")],
+        option_hints={1: OptionHint(names=("\x1b", "\u200b", "\u202e"), total=3)},
+    )
+
+    events = await _run_add(store, CartIntent(product_id=1, quantity=1), add_fn)
+
+    assert "action" not in _types(events)
+    token = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert token == "지금은 고를 수 있는 옵션이 없어요. 품절된 것 같아요. 다른 상품을 보여드릴까요?"
+    assert all(marker not in token for marker in ("1.", "2.", "3.", "**"))
+
+
 # ─────────── 색상 동의어 등가·조건 미충족 고지 (이슈 #454) ───────────
 #
 # 사전 적재는 `_cart_option_required_text` 호출 전에 `spring_client._load_color_synonym_map` 을
