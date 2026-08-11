@@ -40,6 +40,7 @@ from pydantic import BaseModel, Field
 
 from app.agents.seller import category_catalog
 from app.agents.seller import checkpoint as seller_checkpoint
+from app.agents.seller import analysis_store
 from app.agents.seller.schemas import DraftChange, DraftProposal
 from app.agents.seller.stock_options import resolve_stock_option
 from app.core.config import get_settings
@@ -116,6 +117,10 @@ class DraftRecord(BaseModel):
     seller_id: int  # JWT sub — 숫자 계약(api-spec §2.6), SellerContext 와 동일 타입
     brand_id: int  # JWT brandId 클레임 — 숫자 계약, SellerContext 와 동일 타입
     created_at: str  # ISO8601(UTC) — TTL(안전장치 ⑤) 판정 기준
+    # [이슈 #590] DraftProposal.rec_id 그대로 승계 — hitl._hitl_node 가 실행 성공 시
+    # analysis_store.mark_recommendation_applied 로 되돌려 쓴다. 일반 채팅 draft(추천
+    # 경로가 아닌)는 None.
+    rec_id: str | None = None
 
 
 def _parse_int(raw: str) -> int:
@@ -177,6 +182,7 @@ def validate_draft(
             seller_id=seller_id,
             brand_id=brand_id,
             created_at=datetime.now(UTC).isoformat(),
+            rec_id=proposal.rec_id,
         )
         return record, None
 
@@ -274,6 +280,7 @@ def validate_draft(
         seller_id=seller_id,
         brand_id=brand_id,
         created_at=datetime.now(UTC).isoformat(),
+        rec_id=proposal.rec_id,
     )
     return record, None
 
@@ -680,6 +687,21 @@ async def _hitl_node(state: HitlState) -> HitlState:
     interrupt({"draftId": record.draft_id, "op": record.op})
     with trace_span("seller.worker.hitl_write", "chain"):
         outcome, text = await _execute_draft(record)
+    # [이슈 #590] 추천 적용 경로(rec_id 有) 실행 성공 시 저장 계층에 상태를 되돌려 쓴다.
+    # 실행(가격/재고 변경)은 이미 끝난 뒤이므로, 이 갱신이 실패해도 실행 자체를 되돌리거나
+    # 막지 않는다 — 추천 추적은 부가 데이터(save_history 와 동일한 degrade 원칙).
+    if outcome == "executed" and record.rec_id:
+        try:
+            await analysis_store.mark_recommendation_applied(
+                uuid.UUID(record.rec_id), brand_id=record.brand_id, draft_id=record.draft_id
+            )
+        except Exception:
+            logger.warning(
+                "seller_recommendation_apply_mark_failed rec_id=%s draft_id=%s",
+                record.rec_id,
+                record.draft_id,
+                exc_info=True,
+            )
     return {"outcome": outcome, "result": text}
 
 

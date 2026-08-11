@@ -12,7 +12,11 @@ import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.store.memory import InMemoryStore
 
-from app.agents.seller import history, hitl
+from datetime import date
+from uuid import uuid4
+
+from app.agents.seller import analysis_store, history, hitl
+from app.agents.seller.analysis_records import RecommendationRecord, ReportRecord
 from app.agents.seller.context import SellerContext
 from app.agents.seller.pipeline import parse_apply_message
 from app.agents.seller.schemas import (
@@ -39,11 +43,39 @@ class _FailingStoreContext:
         raise RuntimeError("history close failed")
 
 
+# [이슈 #590] apply_recommendation 참조처가 Store -> analysis_store(DB, 이슈 #585)로
+# 바뀌어, 이 테스트 파일의 "N번 적용" 계열 테스트는 analysis_store 를 가짜(in-memory)로
+# 대체해야 한다 — 실 PG 연결 없이 _save() 가 심어둔 보고서/추천을 그대로 돌려준다.
+_fake_reports: list[ReportRecord] = []
+_fake_recs: dict = {}
+
+
+async def _fake_list_reports(brand_id, *, limit, before=None):
+    return [r for r in _fake_reports if r.brand_id == brand_id][:limit]
+
+
+async def _fake_list_recommendations_by_report(report_id, *, brand_id):
+    return [r for r in _fake_recs.get(report_id, []) if r.brand_id == brand_id]
+
+
+async def _fake_mark_recommendation_applied(rec_id, *, brand_id, draft_id):
+    return None
+
+
 @pytest.fixture(autouse=True)
-def _fresh_backends():
+def _fresh_backends(monkeypatch: pytest.MonkeyPatch):
     """테스트마다 격리된 InMemory store/checkpointer — PG 연결 시도 차단."""
     history.set_store(InMemoryStore())
     hitl.set_checkpointer(InMemorySaver())
+    _fake_reports.clear()
+    _fake_recs.clear()
+    monkeypatch.setattr(analysis_store, "list_reports", _fake_list_reports)
+    monkeypatch.setattr(
+        analysis_store, "list_recommendations_by_report", _fake_list_recommendations_by_report
+    )
+    monkeypatch.setattr(
+        analysis_store, "mark_recommendation_applied", _fake_mark_recommendation_applied
+    )
     yield
     history.set_store(None)
     hitl.set_checkpointer(None)
@@ -101,6 +133,7 @@ def test_close_store_propagates_context_close_failure(caplog) -> None:
 
 
 async def _save(question: str = "지난달 매출 분석", recs: RecommendationSet | None = None):
+    resolved_recs = recs if recs is not None else _rec_set(_rec())
     await history.save_history(
         7,
         question=question,
@@ -108,8 +141,38 @@ async def _save(question: str = "지난달 매출 분석", recs: RecommendationS
         date_from="2026-06-01",
         date_to="2026-06-30",
         report="6월 매출 보고서 본문",
-        recommendations=recs if recs is not None else _rec_set(_rec()),
+        recommendations=resolved_recs,
     )
+    # [이슈 #590] apply_recommendation 이 이제 analysis_store 를 읽으므로, Store 저장과
+    # 함께 가짜 analysis_store 에도 같은 보고서를 심는다(_fresh_backends 가 monkeypatch).
+    report = ReportRecord(
+        id=uuid4(),
+        brand_id=_CTX.brand_id,
+        trigger_type="manual",
+        period_from=date(2026, 6, 1),
+        period_to=date(2026, 6, 30),
+        title=f"{question} 보고서",
+        summary="6월 매출 보고서 본문",
+        report_md="6월 매출 보고서 본문",
+        verified=True,
+        attempts=1,
+    )
+    _fake_reports.insert(0, report)
+    _fake_recs[report.id] = [
+        RecommendationRecord(
+            id=uuid4(),
+            report_id=report.id,
+            brand_id=_CTX.brand_id,
+            rank=i + 1,
+            action_type=rec.action_type,
+            product_ids=[rec.product_id],
+            title=rec.title,
+            rationale=rec.rationale,
+            expected_effect=rec.expected_effect,
+            changes=[c.model_dump() for c in rec.changes],
+        )
+        for i, rec in enumerate(resolved_recs.recommendations)
+    ]
 
 
 _ROW = SellerProductRow(productId=101, name="감귤청", price=15000, stockQuantity=100)
@@ -286,7 +349,9 @@ def test_apply_converts_recommendation_to_draft_with_current_before() -> None:
     assert record.changes[0].field == "price"
     assert record.changes[0].before == "15000"  # I-9 조회 시점 현재값
     assert record.changes[0].after == "13500"
-    assert record.summary == "감귤청 가격 10% 인하"
+    # [결정 61] summary 에 출처 보고서를 명시한다 — 판매자가 다른 날짜의 보고서를 보고
+    # 있었다면 문구가 달라 승인 전에 알아챌 수 있다("최신 보고서 기준"의 함정 방어).
+    assert record.summary == "지난달 매출 분석 보고서 · 1번 — 감귤청 가격 10% 인하"
     assert record.brand_id == 3  # confirm 소유 검증 재료
 
 

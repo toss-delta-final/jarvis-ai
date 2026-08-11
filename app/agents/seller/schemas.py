@@ -343,6 +343,14 @@ class DraftProposal(BaseModel):
         default="",
         description="대상 모호·제약 위반·추천 적용 발화 시 되물을 질문 — 비어있지 않으면 draft 불성립",
     )
+    # [이슈 #590] 추천 적용 경로 전용 연결 키 — LLM 은 채우지 않는다(코드 전용, draftId 와
+    # 같은 '계약값은 코드' 원칙). history.apply_recommendation 이 DB 에서 읽은
+    # RecommendationRecord.id 를 여기 채워 hitl._execute_draft 성공 시
+    # analysis_store.mark_recommendation_applied 로 되돌려 쓴다(07 결정 49).
+    rec_id: str | None = Field(
+        default=None,
+        description="추천 적용 경로 전용 연결 키 — LLM 은 채우지 않는다(코드 전용)",
+    )
 
 
 # ── [#506] 등록 초안 대기 게이트 (입구 ①.8 — draft_session 대기 중 발화 3분류) ──
