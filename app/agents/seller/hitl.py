@@ -54,6 +54,7 @@ from app.schemas.spring import (
     StockEntry,
 )
 from app.services.spring_client import (
+    InvalidPrice,
     InvalidStock,
     OrderAlreadyShipped,
     OrderInvalidTransition,
@@ -87,12 +88,18 @@ _CREATE_FORBIDDEN_FIELDS = frozenset({"status"})
 # 없이 보내면 422(MISSING_FIELD)로 되돌아오는데, 그때는 이미 판매자가 승인 버튼을
 # 누른 뒤라 "등록 중 오류"로만 보인다. 초안 단계에서 막아야 되묻기가 가능하다.
 _CREATE_REQUIRED_FIELDS = frozenset({"name", "price", "stock_quantity", "category"})
-# 되묻기 문구는 필드마다 다르다 — "category" 를 그대로 노출하면 판매자가 못 알아본다.
-_CREATE_FIELD_LABELS = {
+# 되묻기·안내 문구는 필드마다 다르다 — 영문 필드명을 그대로 노출하면 판매자가 못
+# 알아본다. [#620] create 되묻기 전용이던 것을 stale 불일치 안내(find_stale_changes)
+# 등 update 경로에서도 쓰도록 ProductField 8종 전체로 넓혔다.
+_FIELD_LABELS = {
     "name": "상품명",
     "price": "가격",
+    "original_price": "정가",
     "stock_quantity": "재고 수량",
     "category": "카테고리",
+    "description": "상품 설명",
+    "image_url": "상품 이미지",
+    "status": "판매 상태",
 }
 # [#297] I-30 MVP 허용 전이는 ORDERED→SHIPPING 하나뿐(§4.19) — toStatus 를 코드가
 # 고정한다(LLM 산물 아님). 전이 어휘가 늘면 여기와 validate_draft 만 확장한다.
@@ -154,14 +161,24 @@ def _typed_after(change: DraftChange, *, op: str = "update") -> int | str:
 
 
 def validate_draft(
-    proposal: DraftProposal, *, seller_id: int, brand_id: int
+    proposal: DraftProposal,
+    *,
+    seller_id: int,
+    brand_id: int,
+    row: SellerProductRow | None = None,
 ) -> tuple[DraftRecord | None, str | None]:
     """DraftProposal(LLM) → DraftRecord(실행 정본). 불성립은 (None, 되묻기 문구).
 
     emit 전에 검증하는 이유: 실행 불가능한 draft 를 FE diff 카드로 보여주고 confirm
     받은 뒤에야 실패하는 것보다, 스트림 1에서 되묻는 쪽이 계약(보여준 것==실행)에
     부합한다. 여기서 통과한 draft 는 confirm 시점에 캐스팅이 실패하지 않는다.
-    """
+
+    `row`(#620, 선택) — op="update" 에서 price/original_price 를 건드릴 때만 호출부가
+    미리 조회해 넘긴다(추가 Spring 왕복, `api.seller`·`history.apply_recommendation`
+    경유). 있으면 BE `validatePriceRange` 와 같은 규칙(price ≤ originalPrice, 생략
+    필드는 저장된 값)을 여기서 미리 계산해 **카드를 보여주기 전에** 되묻는다 —
+    없으면(레거시 호출부·다른 필드만 바꾸는 update) 이 검사는 건너뛰고 confirm 시점
+    BE 422(`InvalidPrice`)에 맡긴다(레이스만 남는 안전망, `_execute_draft` 참조)."""
     # [#297] ship(I-30 발송): 대상은 orderItemId 하나뿐이고 전이는 코드 고정
     # (ORDERED→SHIPPING)이라 상품 필드 검증·changes 캐스팅이 적용되지 않는다.
     # changes 는 LLM 산물을 버리고 빈 목록으로 정규화한다 — 카드 표시는 summary 가,
@@ -209,7 +226,33 @@ def validate_draft(
         )
         for change in proposal.changes
     ]
+
+    # [#620 Q2] delete 초안은 status(DELETED) 한 건 외에는 카드에 실을 게 없다 — LLM 이
+    # PRODUCT_PROMPT 지시대로 status 변경을 실었으면 그대로 두고(정상 경로, 승인 카드에
+    # before→DELETED 표시), 없으면 ship 과 같은 방식으로 changes 를 통째로 비운다.
+    # I-9 재조회로 placeholder 를 합성하는 대신 단순 정규화를 택했다(선택지 검토 결과).
+    if proposal.op == "delete":
+        changes = [c for c in changes if c.field == "status"]
+
     fields = {c.field for c in changes}
+
+    # [#620] 같은 필드가 changes 에 두 번 실리면 어느 값이 정본인지 판단할 수 없다 —
+    # 나중 것이 조용히 이기게 두지 않고 여기서 되묻는다. stock_quantity 는 제외한다 —
+    # option_name 이 다른 표기(예: "블랙" vs "블랙/M")로 같은 옵션을 가리킬 수 있어
+    # 문자열 비교로는 판단할 수 없고, resolve_stock_option 으로 실제 옵션을 특정한
+    # **뒤에**(`_build_update_patch`, confirm 시점) 중복을 걸러야 정확하다 — 그 경로가
+    # 이미 옵션명을 밝힌 되묻기 메시지를 낸다.
+    seen_fields: set[str] = set()
+    for change in changes:
+        if change.field == "stock_quantity":
+            continue
+        if change.field in seen_fields:
+            label = _FIELD_LABELS.get(change.field, change.field)
+            return None, (
+                f"'{label}' 변경이 초안에 중복으로 실려 있어 어느 값을 반영할지 "
+                "판단하지 못했습니다. 바꿀 내용을 다시 한 번 말씀해 주세요."
+            )
+        seen_fields.add(change.field)
 
     if proposal.op in ("update", "delete") and proposal.product_id is None:
         return None, (
@@ -217,6 +260,53 @@ def validate_draft(
         )
     if proposal.op == "update" and not changes:
         return None, "무엇을 어떻게 바꿀지 파악하지 못했습니다. 변경할 내용을 알려주세요."
+    if proposal.op == "update" and "category" in fields:
+        # [#620] ProductUpdate 스키마에 애초에 category 필드가 없다(BE DTO 에도 없음,
+        # 2026-08-09 실측) — 여기서 막지 않으면 카드에는 "카테고리 변경"이 보이는데
+        # confirm 해도 조용히 무시되는(보여준 것≠실행하는 것) 상황이 된다.
+        return None, (
+            "카테고리는 상품 수정으로 바꿀 수 없습니다 — 등록 시에만 정할 수 있는 "
+            "값입니다. 카테고리를 바꾸려면 상품을 새로 등록해 주세요."
+        )
+    name_change = next((c for c in changes if c.field == "name"), None)
+    if name_change is not None:
+        name_max_len = get_settings().seller_name_max_len
+        if len(name_change.after) > name_max_len:
+            # [#620] BE SellerProductCreateRequest/UpdateRequest 의 @Size(max=200) 2차
+            # 방어 — 초과분은 BE 400 VALIDATION_ERROR(미매핑 → "일시적 오류")로 새던 것을
+            # 여기서 선차단한다.
+            return None, (
+                f"상품명이 {name_max_len}자를 초과해 저장할 수 없습니다. "
+                "짧게 줄여 다시 말씀해 주세요."
+            )
+    if proposal.op == "update" and row is not None:
+        price_change = next((c for c in changes if c.field == "price"), None)
+        original_price_change = next((c for c in changes if c.field == "original_price"), None)
+        if price_change is not None or original_price_change is not None:
+            try:
+                effective_price = (
+                    _parse_int(price_change.after) if price_change is not None else row.price
+                )
+                effective_original_price = (
+                    _parse_int(original_price_change.after)
+                    if original_price_change is not None
+                    else row.original_price
+                )
+            except ValueError:
+                # 캐스팅 실패는 아래 공용 _typed_after 루프가 되묻는다 — 여기선 건너뛴다.
+                effective_price = effective_original_price = None
+            if (
+                effective_price is not None
+                and effective_original_price is not None
+                and effective_price > effective_original_price
+            ):
+                # [#620] BE validatePriceRange 와 동일 규칙(price ≤ originalPrice, 생략
+                # 필드는 저장된 값)을 카드 표시 전에 미리 계산 — confirm 후 422 로 처음
+                # 알리는 대신 여기서 되묻는다("선차단").
+                return None, (
+                    f"판매가({effective_price:,}원)가 정가({effective_original_price:,}원)를 "
+                    "넘어 저장할 수 없습니다. 가격을 다시 확인해 말씀해 주세요."
+                )
     if proposal.op == "create":
         forbidden = fields & _CREATE_FORBIDDEN_FIELDS
         if forbidden:
@@ -227,7 +317,7 @@ def validate_draft(
             )
         missing = _CREATE_REQUIRED_FIELDS - fields
         if missing:
-            labels = [_CREATE_FIELD_LABELS.get(field, field) for field in sorted(missing)]
+            labels = [_FIELD_LABELS.get(field, field) for field in sorted(missing)]
             if missing == {"category"}:
                 # 카테고리만 비었으면 판매자가 다시 적을 것은 카테고리뿐이다 —
                 # 상품명·가격까지 되물으면 이미 말한 값을 또 입력하게 된다.
@@ -240,6 +330,29 @@ def validate_draft(
                 "상품 등록에는 상품명·가격·재고 수량·카테고리가 필요합니다. "
                 f"누락된 항목({', '.join(labels)})을 알려주세요."
             )
+        # [#620] BE 는 originalPrice 생략 시 price 로 채운 뒤(동일값 → 무할인) 비교하므로
+        # (SellerProductService.create), 여기서 명시된 값끼리만 비교해도 규칙이 같다 —
+        # update 와 달리 create 는 partial 이 아니라 이 draft 의 changes 가 전체 값이라
+        # row 조회 없이 판단 가능하다.
+        create_price_change = next((c for c in changes if c.field == "price"), None)
+        create_original_price_change = next(
+            (c for c in changes if c.field == "original_price"), None
+        )
+        if create_price_change is not None and create_original_price_change is not None:
+            try:
+                create_price = _parse_int(create_price_change.after)
+                create_original_price = _parse_int(create_original_price_change.after)
+            except ValueError:
+                create_price = create_original_price = None
+            if (
+                create_price is not None
+                and create_original_price is not None
+                and create_price > create_original_price
+            ):
+                return None, (
+                    f"판매가({create_price:,}원)가 정가({create_original_price:,}원)를 "
+                    "넘어 등록할 수 없습니다. 가격을 다시 확인해 말씀해 주세요."
+                )
         # [#506] image_url 값 검증 — 2차 방어(1차는 요청 스키마·FE 서버 라우트).
         # presigned URL 이 저장되면 만료 시점에 상품 이미지가 조용히 죽는다(FE 계약 §2.3).
         image_url = next((c.after for c in changes if c.field == "image_url"), None)
@@ -254,8 +367,8 @@ def validate_draft(
                 )
         # [#506] category 는 카테고리 스냅샷의 id 여야 한다 — LLM 은 주입된 후보 중에서만
         # 고르지만(프롬프트), 목록 밖 값·자유 문자열은 여기서 되묻기로 전환한다(이중 방어).
-        # update 의 category 는 기존 계약(자유 문자열) 그대로 둔다 — 스냅샷 강제 확대는
-        # 별도 이슈로 다룬다(기존 수정 흐름 파손 방지).
+        # update 의 category 는 위(공통 검증부)에서 이미 통째로 차단되므로 여기 도달하지
+        # 않는다 — 이 검증은 create 전용이다(#620).
         category_id = next((c.after for c in changes if c.field == "category"), None)
         if category_id is not None and category_catalog.get(category_id) is None:
             return None, (
@@ -402,31 +515,45 @@ def find_stale_changes(
     return mismatches
 
 
-async def _find_product(brand_id: int, product_id: int) -> SellerProductRow | None:
+async def _find_product(brand_id: int, product_id: int) -> tuple[SellerProductRow | None, bool]:
     """I-9 목록에서 대상 상품 행을 찾는다 — productId 필터가 없어 페이지 순회.
 
-    페이지 크기·상한은 Settings 주입(seller_list_default_limit·
-    seller_draft_lookup_max_pages). 상한 내 미발견은 None(삭제/미귀속 가능성) —
-    호출부가 stale 로 처리한다. Spring 장애는 SpringUnavailableError 전파(재시도 가능).
+    페이지 크기·상한은 Settings 주입(seller_draft_lookup_page_size·
+    seller_draft_lookup_max_pages, #622 — 200×10=2,000건 커버). 반환은
+    ``(row, exhausted)`` 3상태다: ``(row, False)`` 발견, ``(None, False)`` 짧은
+    페이지(목록의 진짜 끝)까지 다 돌았는데 없음 — 삭제/미귀속으로 본다,
+    ``(None, True)`` 상한을 다 쓰도록 짧은 페이지를 못 만남 — 더 있을 수 있다.
+    호출부(hitl._execute_draft·history.apply_recommendation)가 이 둘을 다른 문구로
+    안내한다. Spring 장애는 SpringUnavailableError 전파(재시도 가능).
     """
     settings = get_settings()
-    page_size = settings.seller_list_default_limit
+    page_size = settings.seller_draft_lookup_page_size
     offset = 0
     for _ in range(settings.seller_draft_lookup_max_pages):
         result = await get_spring_client().list_products(brand_id, None, None, page_size, offset)
         for row in result.rows:
             if row.product_id == product_id:
-                return row
+                return row, False
         if len(result.rows) < page_size:
-            return None
+            return None, False
         offset += page_size
-    return None
+    return None, True
 
 
 # ── 실행 (confirm resume 후 — LLM 0회, draft 그대로 I-10/11/12 매핑) ────────────
 
 _STALE_RETRY_GUIDE = (
     "변경을 원하시면 다시 요청해 주세요. 최신 값으로 새 초안을 만들어 드리겠습니다."
+)
+
+# [#622] _find_product 가 exhausted=True(페이지 상한 소진, 더 있을 수 있음)를 돌려줄 때의
+# 안내 — hitl._execute_draft·history.apply_recommendation 두 호출부가 함께 쓴다. 상품이
+# 정말 없을 때(exhausted=False)의 문구는 각 호출부 문맥(대상 상품 vs 추천 대상 상품)에
+# 맞춰 따로 적되, "이미 삭제되었거나 다른 브랜드로 옮겨진 것 같습니다"라는 같은 판단으로
+# 통일한다 — #590 전에는 두 곳이 서로 다른(한쪽은 더 부정확한) 오보 문구를 달고 있었다.
+PRODUCT_LOOKUP_EXHAUSTED_TEXT = (
+    "등록 상품이 많아 대상 상품을 확인하지 못했습니다. "
+    "상품명을 함께 말씀해 주시면 다시 찾아보겠습니다."
 )
 
 
@@ -526,6 +653,15 @@ async def _execute_draft(record: DraftRecord) -> tuple[str, str]:
                 "재고 수량이 서버에서 거부되어 등록을 중단했습니다. "
                 f"재고를 다시 확인해 말씀해 주세요. {_STALE_RETRY_GUIDE}",
             )
+        except InvalidPrice:
+            # [#620] validate_draft 가 price/originalPrice 를 이미 선차단하므로 정상
+            # 경로에선 안 온다 — InvalidPrice 는 SpringUnavailableError 하위가 아니라
+            # 잡지 않으면 그대로 새어나가므로(§ 예외 계약) 안전망으로 둔다.
+            return (
+                "stale",
+                "판매가가 정가를 넘어 서버에서 거부되어 등록을 중단했습니다. "
+                "가격을 다시 확인해 말씀해 주세요.",
+            )
         except ProductCategoryInvalid:
             # [#541] 위 spring_category_id 선검증은 **스냅샷 기준**이라 스냅샷이 정본 DB
             # 보다 낡으면 통과한 id 가 서버에서 거부된다. 안내를 위 stale 분기와 같은
@@ -561,8 +697,12 @@ async def _execute_draft(record: DraftRecord) -> tuple[str, str]:
         )
 
     assert record.product_id is not None  # validate_draft 가 보장
-    row = await _find_product(record.brand_id, record.product_id)
+    row, exhausted = await _find_product(record.brand_id, record.product_id)
     if row is None:
+        if exhausted:
+            # [#622] 페이지 상한(2,000건) 안에서 목록의 진짜 끝(짧은 페이지)을 못 만났다 —
+            # 삭제로 단정하면 상품 수가 많은 판매자에게 거짓 안내가 된다.
+            return ("stale", f"{PRODUCT_LOOKUP_EXHAUSTED_TEXT} {_STALE_RETRY_GUIDE}")
         return (
             "stale",
             f"대상 상품(productId={record.product_id})을 상품 목록에서 찾을 수 없어 "
@@ -573,7 +713,7 @@ async def _execute_draft(record: DraftRecord) -> tuple[str, str]:
     mismatches = find_stale_changes(row, record.changes, op=record.op)
     if mismatches:
         lines = [
-            f"- {field}: 초안 기준 '{before}' → 현재 '{current}'"
+            f"- {_FIELD_LABELS.get(field, field)}: 초안 기준 '{before}' → 현재 '{current}'"
             for field, before, current in mismatches
         ]
         return (
@@ -653,6 +793,25 @@ async def _execute_draft(record: DraftRecord) -> tuple[str, str]:
             "재고를 반영하는 사이에 상품 옵션이 변경되어 반영을 중단했습니다. "
             f"{_STALE_RETRY_GUIDE}",
         )
+    except InvalidPrice:
+        # [#620] validate_draft 가 row 를 받았으면 price/originalPrice 를 이미
+        # 선차단하므로, 여기 오는 건 draft 표시와 confirm 사이 다른 경로(웹 UI 등)에서
+        # 가격이 바뀐 레이스뿐이다(row 없이 confirm 된 구 draft 포함). 같은 초안을
+        # 다시 보내도 결과가 같으므로 재조회 후 새 초안을 권한다.
+        return (
+            "stale",
+            "판매가가 정가를 넘어 서버에서 거부되어 반영을 중단했습니다. "
+            f"초안 표시 이후 가격이 바뀐 것 같습니다. {_STALE_RETRY_GUIDE}",
+        )
+    if not updated.changes:
+        # [#620] BE 는 실제로 바뀐 값이 없으면 changes 를 빈 배열로 응답한다(요청 자체는
+        # 성공, SellerProductUpdateResponse). "반영했습니다"라고 하면 판매자가 뭔가
+        # 바뀐 줄 알므로 already_done 으로 갈음한다 — 패널도 자연히 keep 이 된다
+        # (_confirm_stream 의 panel 분기는 status=="executed" 만 refresh).
+        return (
+            "already_done",
+            f"이미 요청하신 값으로 되어 있어 바뀐 내용이 없습니다 (productId={updated.product_id}).",
+        )
     summary_part = f" {record.summary}" if record.summary else ""
     return (
         "executed",
@@ -668,28 +827,53 @@ class HitlState(TypedDict, total=False):
 
     cancelled 는 [#506] 무효화 마킹 — 수정 턴이 새 draft 를 발급하면 이전 draft 에
     True 를 기록해, 브라우저에 남은 옛 카드의 confirm(수정 전 값 등록 사고)을 차단한다.
+
+    attempted_at 은 [이슈 #621] gate 노드 전용 마커 — "실행을 시도했음"을 실제 실행
+    (execute 노드, result)보다 먼저 커밋한다(test_gate_commits_attempted_at_before_
+    execute_commits_result 로 커밋 순서를 증명). gate 는 interrupt 가 한 번 풀리면
+    이후 재시도에서 다시 실행되지 않으므로(LangGraph 가 execute 만 재스케줄) 이
+    필드만으로 "SpringUnavailableError 등으로 명확히 실패해 재confirm 이 안전한
+    상태"와 "우리 쪽 wait_for 상한이 끊겨 실행 여부를 알 수 없는 상태"를 구분할 수
+    없다 — `unknown` 판정은 confirm_draft 가 이번 호출 자신의 resume 시도에서
+    wait_for 상한에 걸렸을 때만 내린다(confirm_draft 본문 주석 참고).
     """
 
     draft: dict
     outcome: str
     result: str
     cancelled: bool
+    attempted_at: str
 
 
-async def _hitl_node(state: HitlState) -> HitlState:
-    """단일 노드: interrupt 로 승인 대기 → resume 시 코드 실행.
+async def _gate_node(state: HitlState) -> HitlState:
+    """1/2 노드: interrupt 로 승인 대기 → resume 시 "시도했음"만 커밋(이슈 #621 커밋①).
 
     interrupt() 이전 구간은 노드 재실행(resume) 시 다시 돌므로 부수효과를 두지
     않는다. resume 값 자체는 쓰지 않는다 — confirm 판정·신원/TTL/멱등 검사는
     confirm_draft(코드)가 resume 이전에 끝낸다.
+
+    이 노드의 반환값(attempted_at)이 LangGraph super-step 커밋 단위라 다음 노드
+    (execute)의 쓰기보다 먼저 checkpoint 에 영속화된다 — confirm_draft 자신의
+    resume 시도가 그 직후(execute 실행 도중) wait_for 상한에 걸리면 `unknown` 을
+    반환해 "실행됐는지 모르는 채로 재실행"을 막는다(과거 시도의 잔여 attempted_at
+    만으로는 판단하지 않는다 — confirm_draft 본문 주석 참고).
     """
     record = DraftRecord.model_validate(state["draft"])
     interrupt({"draftId": record.draft_id, "op": record.op})
+    return {"attempted_at": datetime.now(UTC).isoformat()}
+
+
+async def _execute_node(state: HitlState) -> HitlState:
+    """2/2 노드: gate 커밋 뒤에만 실행(이슈 #621 커밋②) — LLM 0회, draft 그대로 매핑.
+
+    mark_recommendation_applied 호출을 이 노드의 반환값 계산 안에 둔다(이슈 #621 ④) —
+    쓰기(_execute_draft)와 같은 super-step 커밋에 포함시켜, 쓰기는 끝났는데 마킹만
+    유실되는 창을 없앤다. 마킹 자체의 실패는 여전히 부가 데이터 degrade 원칙을 따른다
+    (실행을 되돌리거나 막지 않는다 — save_history 와 동일).
+    """
+    record = DraftRecord.model_validate(state["draft"])
     with trace_span("seller.worker.hitl_write", "chain"):
         outcome, text = await _execute_draft(record)
-    # [이슈 #590] 추천 적용 경로(rec_id 有) 실행 성공 시 저장 계층에 상태를 되돌려 쓴다.
-    # 실행(가격/재고 변경)은 이미 끝난 뒤이므로, 이 갱신이 실패해도 실행 자체를 되돌리거나
-    # 막지 않는다 — 추천 추적은 부가 데이터(save_history 와 동일한 degrade 원칙).
     if outcome == "executed" and record.rec_id:
         try:
             await analysis_store.mark_recommendation_applied(
@@ -739,14 +923,21 @@ def _confirm_lock(draft_id: str) -> asyncio.Lock:
 
 
 async def _get_graph():
-    """HITL 그래프 싱글턴 — 공용 checkpointer(checkpoint.py) 준비 후 1회 컴파일."""
+    """HITL 그래프 싱글턴 — 공용 checkpointer(checkpoint.py) 준비 후 1회 컴파일.
+
+    [이슈 #621] gate → execute 2노드 — 승인 대기(interrupt)와 실행(Spring 쓰기)을
+    별도 super-step(별도 커밋)으로 분리해, "시도했음"이 실행 결과보다 먼저 영속화되게
+    한다(모듈 docstring §1 안전장치 ①의 구현).
+    """
     global _graph
     if _graph is None:
         checkpointer = await seller_checkpoint.get_checkpointer()
         builder = StateGraph(HitlState)
-        builder.add_node("hitl", _hitl_node)
-        builder.add_edge(START, "hitl")
-        builder.add_edge("hitl", END)
+        builder.add_node("gate", _gate_node)
+        builder.add_node("execute", _execute_node)
+        builder.add_edge(START, "gate")
+        builder.add_edge("gate", "execute")
+        builder.add_edge("execute", END)
         _graph = builder.compile(checkpointer=checkpointer)
     return _graph
 
@@ -785,7 +976,11 @@ async def invalidate_draft(draft_id: str) -> None:
     try:
         graph = await _get_graph()
         async with _confirm_lock(draft_id):
-            await graph.aupdate_state(_thread_config(draft_id), {"cancelled": True}, as_node="hitl")
+            # [이슈 #621] 그래프가 gate/execute 2노드로 갈리며 대기 중인 노드 이름이
+            # "hitl" → "gate" 로 바뀌었다 — 존재하지 않는 노드명을 주면 aupdate_state 가
+            # InvalidUpdateError 로 실패해(경고 후 계속) cancelled 가 조용히 반영되지
+            # 않는다. 무효화는 항상 interrupt 대기 중인 gate 노드를 대상으로 한다.
+            await graph.aupdate_state(_thread_config(draft_id), {"cancelled": True}, as_node="gate")
     except Exception:
         logger.warning(
             "draft 무효화 실패 — TTL 만료가 최종 방어 (draftId=%s)", draft_id, exc_info=True
@@ -794,9 +989,19 @@ async def invalidate_draft(draft_id: str) -> None:
 
 @dataclass(frozen=True)
 class ConfirmOutcome:
-    """confirm 처리 결과 — text 는 그대로 사용자 token 이 된다."""
+    """confirm 처리 결과 — text 는 그대로 사용자 token 이 된다.
 
-    status: Literal["executed", "stale", "already_done", "not_found", "expired"]
+    unknown [이슈 #621] — confirm_draft 자신의 resume 시도가 execute 실행 도중
+    wait_for 상한(seller_confirm_execute_timeout_s)에 걸려, Spring 요청이 실제로
+    반영됐는지 우리 쪽에서 알 수 없는 상태. 자동 재실행하지 않는다(중복 쓰기 위험).
+    SpringUnavailableError 등 명확한 예외 전파는 여기 해당하지 않는다 — 그 경우는
+    checkpoint 가 execute 대기 상태로 남아 다음 confirm 이 정상적으로 재시도한다
+    (`_execute_draft` 기존 계약 유지). Notion S-4 confirm 어휘엔 없는 상태값이라
+    `done.panel` 은 기존 계약대로 `keep` 으로 낸다(신규 계약 값 추가 없음, 사용자
+    결정 2026-08-11).
+    """
+
+    status: Literal["executed", "stale", "already_done", "not_found", "expired", "unknown"]
     text: str
 
 
@@ -845,6 +1050,18 @@ async def confirm_draft(draft_id: str, *, seller_id: int, brand_id: int) -> Conf
                 f"이미 처리된 승인 요청입니다 — 중복 실행하지 않았습니다. 이전 결과: {values['result']}",
             )
 
+        # [이슈 #621, 실측 정정] 애초 설계는 "attempted_at 有·result 無"를 여기서
+        # (resume 시도 전에) 곧바로 unknown 으로 막는 것이었다 — 하지만 gate 는
+        # interrupt 가 한 번 풀리고 나면 이후 재시도에서 다시 실행되지 않고
+        # (LangGraph 는 그 다음부터 execute 만 재스케줄한다), execute 가 예외로
+        # 실패해도 "attempted_at 有·result 無" 는 그대로 남는다. 즉 이 값만으로는
+        # "방금 SpringUnavailableError 로 명확히 실패해 재confirm 이 안전한 상태"와
+        # "우리 쪽 대기 상한이 끊겨 실행 여부를 알 수 없는 상태"를 구분할 수 없다
+        # (LangGraph 1.2.9 대상 실측 재현으로 확인). 앞의 경우를 여기서 막으면
+        # `_execute_draft` 의 기존 계약("500·타임아웃은 예외 전파 — 재confirm 가능")
+        # 이 깨진다. 그래서 unknown 판정은 resume 을 실제로 시도해 **이번 호출
+        # 자신의** wait_for 상한에 걸렸을 때만 내린다(아래).
+
         settings = get_settings()
         created = datetime.fromisoformat(record.created_at)
         # 경계 포함(>=) — draft_session(#346)과 같은 판정: ttl=0 은
@@ -856,5 +1073,38 @@ async def confirm_draft(draft_id: str, *, seller_id: int, brand_id: int) -> Conf
                 "변경 내용을 다시 말씀해 주시면 새 초안을 만들어 드리겠습니다.",
             )
 
-        result = await graph.ainvoke(Command(resume=True), config=config)
-    return ConfirmOutcome(result.get("outcome", "executed"), result.get("result", ""))
+        # [이슈 #621 ①] shield — 클라이언트 절단·90s 캡 절단으로 이 await 을 감싼 바깥
+        # 태스크가 취소돼도, resume 실행(gate 커밋 뒤 execute 의 Spring 쓰기 + result
+        # 커밋)은 asyncio.wait_for 상한(seller_confirm_execute_timeout_s) 안에서 계속
+        # 돈다. shield 가 없으면 Spring 쓰기가 이미 나간 뒤 취소되는 경우 checkpoint 가
+        # 미기록으로 남아, 다음 confirm 이 재실행되는(중복 등록) 창이 생긴다.
+        #
+        # 이 wait_for 자체의 상한(우리 쪽 판단으로 포기하는 시점)이 execute 도중에
+        # 발동하면 — Spring 요청이 이미 나갔을 수도 있는 채로 우리가 기다리기를
+        # 그만둔 것이라, 반영 여부를 우리 쪽에서 알 방법이 없다. 이때만 unknown 으로
+        # fail-closed 하고 자동 재실행하지 않는다(judgement 는 이번 호출 자신의 결과
+        # 로만 내린다 — 위 주석 참고, 과거 시도의 잔여 상태로는 내리지 않는다).
+        try:
+            result = await asyncio.shield(
+                asyncio.wait_for(
+                    graph.ainvoke(Command(resume=True), config=config),
+                    timeout=settings.seller_confirm_execute_timeout_s,
+                )
+            )
+        except TimeoutError:
+            return ConfirmOutcome(
+                "unknown",
+                "이전 승인 처리 결과를 확인하지 못했습니다. 상품 목록에서 반영 여부를 "
+                "확인해 주신 뒤, 반영되지 않았다면 다시 말씀해 주세요.",
+            )
+    outcome_status = result.get("outcome")
+    if outcome_status is None:
+        # [이슈 #621 ⑤] outcome 누락은 그래프 상태 이상 — 이전엔 `"executed"` 로
+        # fail-open 했다(실행 안 됐는데 성공 안내). 사용자 결정(2026-08-11): 별도 예외
+        # 대신 기존 stale 응답 경로(token+done keep)를 재사용해 fail-closed 로 바꾼다 —
+        # 반영 여부가 불확실하므로 성공 안내를 내지 않는다.
+        return ConfirmOutcome(
+            "stale",
+            f"승인 처리 결과를 확인하지 못해 반영 여부가 불확실합니다. {_STALE_RETRY_GUIDE}",
+        )
+    return ConfirmOutcome(outcome_status, result.get("result", ""))

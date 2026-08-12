@@ -88,6 +88,31 @@ async def test_remove_all_marker_deletes_every_item() -> None:
     assert _types(events)[-1] == "done"
 
 
+async def test_remove_with_chat_session_keeps_legacy_delete_test_double_compatible() -> None:
+    """새 chatSessionId 배선이 기존 delete_fn 주입 시그니처를 깨지 않는다."""
+    store = CartStateStore()
+    deleted: list[int] = []
+
+    async def legacy_delete_fn(cart_item_id, *, user_id=None, guest_id=None):
+        deleted.append(cart_item_id)
+
+    events = await _collect(
+        stream_cart_remove(
+            identity=_member(),
+            message="이어폰 빼줘",
+            cart_store=store,
+            thread_key="m:t-legacy-delete",
+            settings=get_settings(),
+            get_cart_fn=_cart(_item(1, 10, "이어폰")),
+            delete_fn=legacy_delete_fn,
+            chat_session_id="chat-session-1",
+        )
+    )
+
+    assert deleted == [1]
+    assert _actions(events)[0]["type"] == "CART_REMOVED"
+
+
 @pytest.mark.parametrize("message", ["전부 빼줘", "다 빼줘", "모두 빼줘"])
 async def test_remove_all_marker_variants_still_delete_every_item(message: str) -> None:
     """ "전부"·"다"·"모두" 를 동작 구로 좁힌 뒤에도(라운드 3 리뷰 F-1) 기존 전체 삭제 표지는

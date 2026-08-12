@@ -78,20 +78,19 @@ MVP 목표: **데모 시나리오 최소셋 동작** — 단일 검색+필터 �
 - 이벤트는 `token`/`draft`/`done`/`error`만. `finishReason`=`stop` 단일. role=seller 없으면 403.
 - 주의: **발화 ≠ 동의**(confirm은 구조화 신호만) · 차트 전달은 계약 미정으로 보류 🔴 · I-8(account-events) admin 소유 협의 🔴 · 90s는 목표치(비동기·병렬로 단축, 상세 SPEC §7).
 
-## 5. 프로필 파이프라인 (+ /profile/me)
+## 5. 프로필 파이프라인
 
 | 항목 | 내용 |
 |---|---|
 | 목표 | 대화·구매 이력에서 취향 신호 축적 → 추천 개인화 |
 | 접근 | 그래프 진입 시 요약만 read, write는 명시적 종료 또는 10분 비활동 후 sleep-time 병합 |
-| 관련 파일 | `app/agents/profile/{reader,builder,gate}`, `app/api/{profile,events}.py`, `app/pipelines/scheduler.py` |
-| 계약 | §3.4 `/profile/me` · §3.5 Spring session-end + AI 내부 inactivity timeout |
+| 관련 파일 | `app/agents/profile/{reader,builder,gate}`, `app/api/events.py`, `app/pipelines/scheduler.py` |
+| 계약 | §3.5 Spring session-end + AI 내부 inactivity timeout |
 
 - **read**: 그래프 진입 시 `index.md` 압축 요약만 로드(전체 번들 금지).
 - **승격 게이트(결정 4-A)**: 반복성·현저성·명시성 3조건 통과 시에만 write 후보. "기억해"는 즉시 기록, 일시적 요청("이번엔 비싸도")은 session_context에만.
 - **write**: 턴 중 금지 → 세션 종료 델타 생성 → sleep-time 배치 병합(LLM consolidation). 소스 = 대화 + 구매 이력(§4.7).
 - **종료 트리거(MVP)**: Spring은 `logout`·`newConversation`만 I-20으로 전달한다. AI는 회원 발화 저장 시 pg-profile의 `last_activity_at`을 갱신하고 기본 60초 sweep으로 10분 비활성 세션을 bounded batch 처리한다. 두 경로는 같은 finalizer·고정키 claim으로 직렬화하되 idle은 재개 가능한 checkpoint로 처리하고, 탭 닫기 전용 신호/API는 만들지 않는다(이슈 #79).
-- **/profile/me**: 마이페이지 자연어 노출. 게스트·미보유는 `{exists:false, markdown:null}` 정상 200.
 - 저장 포맷: OKF 스타일 자연어 위키 + 경량 frontmatter. 저장소 = PostgresStore(별도 DB).
 
 ## 6. AI 생성물 배치 (I-8)

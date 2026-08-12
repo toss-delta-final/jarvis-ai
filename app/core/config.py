@@ -666,6 +666,10 @@ class Settings(BaseSettings):
     # image_url 길이 2차 방어(FE 서버 라우트가 1차) — DB VARCHAR(500) 계약과 동일값.
     # presigned URL(서명 쿼리스트링)은 보통 1,000자를 넘어 여기서 걸린다.
     seller_image_url_max_len: int = 500
+    # 상품명 길이 2차 방어(#620) — BE SellerProductCreateRequest/SellerProductUpdateRequest
+    # 의 @Size(max=200)과 동일값. 초과분은 BE 400 VALIDATION_ERROR → 미매핑 "일시적 오류"로
+    # 새던 것을 draft 단계에서 되묻기로 선차단한다.
+    seller_name_max_len: int = 200
     # vision 분석(이미지 첨부 턴 1회) 상한 — 워커 예산(seller_worker_timeout_s)과
     # 분리한다: 분석은 product 워커 진입 전 입구에서 별도 수행된다.
     seller_vision_timeout_s: float = 20.0
@@ -680,7 +684,9 @@ class Settings(BaseSettings):
     # 폴백(LLM 택1) 때 후보를 몇 배로 넓힐지 — 같은 폭으로 다시 물으면 의미가 없다.
     seller_category_fallback_k_factor: int = 3
     # 카테고리 LLM 택1 상한 — 에이전트가 카테고리를 못 고른 턴에만 1회 추가된다.
-    seller_category_resolve_timeout_s: float = 12.0
+    # [이슈 #621] 12.0 → 10.0 — management 레인(product 에이전트 진입 경로) 직렬 예산이
+    # 90s 캡에 여유를 두도록 하향(§ 검증식 _require_management_lane_within_stream_cap).
+    seller_category_resolve_timeout_s: float = 10.0
     # NOTE: 구 `seller_category_write_mode`(leaf|path|id)는 폐기했다(2026-08-09).
     # BE `SellerProductCreateRequest.categoryId` 는 **Long 필수**라 이름·경로 문자열을
     # 받는 필드가 없다 — 고를 여지가 애초에 없었고, 기본값 leaf 가 등록 실패의 원인이었다.
@@ -698,10 +704,22 @@ class Settings(BaseSettings):
     # 초안 대기 게이트(수정/승인안내/취소/딴주제 분류) LLM 상한 — 실패 시 일반 흐름 폴백.
     seller_pending_gate_timeout_s: float = 8.0
     # 4-2 HITL 실행(hitl.py): confirm 시점 I-9 재조회(stale 검증)의 페이지 순회 상한 —
-    # I-9 에 productId 필터가 없어 목록을 넘겨가며 찾는다(페이지 크기 = seller_list_default_limit).
+    # I-9 에 productId 필터가 없어 목록을 넘겨가며 찾는다.
     seller_draft_lookup_max_pages: int = 10
+    # [이슈 #622] _find_product 전용 페이지 크기 — seller_list_default_limit(20)과
+    # 의도적으로 분리한다. 그 설정은 list_my_products 챗봇 도구의 기본 응답 건수도
+    # 겸하므로(컨텍스트 폭주 방지, 594행 주석), 여기서 200으로 올리면 LLM 에게 매
+    # 조회마다 상품 200건이 텍스트로 실린다. BE I-9 의 limit 상한이 200
+    # (@Min(1) @Max(200), InternalSellerController) 이라 그 값을 그대로 쓴다 —
+    # seller_draft_lookup_max_pages(10)와 곱하면 2,000건까지 커버한다.
+    seller_draft_lookup_page_size: int = 200
     # PostgresSaver(pg-profile) 초기 연결 대기 상한 — 초과 시 dev 는 InMemory 폴백.
     seller_checkpoint_connect_timeout_s: float = 5.0
+    # [이슈 #621] confirm resume(hitl.confirm_draft, gate 커밋 뒤 execute 실행) 상한 —
+    # asyncio.shield(asyncio.wait_for(...)) 로 감싼다. 클라이언트 절단·90s 캡 절단에도
+    # Spring 쓰기 + result 커밋이 이 상한 안에서 계속 돌아 checkpoint 미기록(중복 등록
+    # 위험)을 막는다. P3(별도 이슈)와 무관 — 먼저 머지되는 쪽이 이 설정을 추가한다.
+    seller_confirm_execute_timeout_s: float = 45.0
     seller_history_recent_n: int = 5  # planner 최근 분석 이력 주입 건수
     # 4-3 분석 이력(history.py): 판매자당 보관 상한(초과분 오래된 것부터 폐기)과
     # 이력에 남길 보고서 요약 길이(전문 보존은 4-4 캐시 소관 — SPEC §9.1 "report 요약").
@@ -709,6 +727,11 @@ class Settings(BaseSettings):
     seller_history_report_max_chars: int = 500
     seller_tool_call_limit: int = 8  # ToolCallLimit 전역 한도(선택)
     seller_worker_timeout_s: float = 60.0  # 분석 워커 1종 실행 상한(3-3 팬아웃, §7 90s 목표 내)
+    # [이슈 #621] product 에이전트(2-7, draft 생성) 전용 상한 — 그동안 분석 워커 6종과
+    # `seller_worker_timeout_s`(60s)를 공유했으나, 그 값은 6종 팬아웃 기준이라 product
+    # 단독 호출에는 느슨하다. 40.0 으로 분리해 management 레인 직렬 예산(§ 검증식
+    # _require_management_lane_within_stream_cap)이 90s 캡 안에 들어오게 한다.
+    seller_product_agent_timeout_s: float = 40.0
 
     # ── SOP 스텝 타임아웃 (이슈 #589, `OPS-RUNTIME.md` T-3 / `01-ARCHITECTURE.md` §4.4) ──
     # 상주 analysis 파이프라인(채팅 밖)의 스텝별 상한. 대화형 예산(90s)과 무관한 배치
@@ -721,6 +744,10 @@ class Settings(BaseSettings):
     seller_sop_compute_timeout_s: float = Field(default=30.0, gt=0)
     seller_sop_feedback_timeout_s: float = Field(default=3.0, gt=0)
     seller_sop_interpret_timeout_s: float = Field(default=30.0, gt=0)
+    # [#598] verify 스텝 — F1~F3(결정론, LLM 0회) + analysis_judge 1회. judge 호출 자체는
+    # `seller_analysis_judge_timeout_s`(20s)로 개별 감싸므로, 이 값은 그 위에 F검사
+    # 오버헤드만큼 여유를 둔 상한이다.
+    seller_sop_verify_timeout_s: float = Field(default=25.0, gt=0)
 
     # ── 원인 후보 · 추천 후보 · rule cards (이슈 #597, `06-REPORT.md` §2~3 · `12-EVAL` §2.2) ──
     # 원인 후보는 "지표 변화보다 앞선 이벤트"만 센다. 창을 넓히면 무관한 사건이 원인처럼
@@ -873,6 +900,21 @@ class Settings(BaseSettings):
                 return default_factory()
             return json.loads(value)
         return value
+
+    # ── 판매자 상주 분석 파이프라인 (이슈 #598, `06-REPORT.md` §4.0) ──────────────────
+    # V2 C2(`check_cause_hedged`) — 이 목록의 인과 단정 어휘가 원인 후보 없이(또는
+    # `strength="temporal_only"`인 후보만으로) 쓰이면 재작성을 태운다. 상관(correlated)
+    # 조차 과장하지 않는 것이 목표라 완화어(hedge)와 짝을 이룬다.
+    seller_report_causal_terms: list[str] = Field(
+        default_factory=lambda: ["때문에", "원인은", "그래서", "유발", "야기"]
+    )
+    # 완화어 — causal_terms 가 있어도 같은 문장에 이 목록 중 하나가 있으면 통과시킨다
+    # ("추정된다"·"가능성" 류로 이미 스스로 단정을 낮췄다는 뜻).
+    seller_report_hedge_terms: list[str] = Field(
+        default_factory=lambda: ["추정", "가능성", "것으로 보임", "일부"]
+    )
+    # report_md 길이 상한(자) — 상주 보고서 L2(3000자 이내) 완료 조건의 코드 측 근거.
+    seller_report_max_chars: int = Field(default=3000, gt=0)
 
     # ── 판매자 대화 스레드 (thread.py — checkpointer 기반 멀티턴 누적) ──
     # supervisor/planner 입력 주입 상한: 최근 턴(user+assistant 쌍) 수와 메시지당 절단.
@@ -3000,6 +3042,93 @@ class Settings(BaseSettings):
                 f"(got {budget} >= {self.stream_total_timeout_s}): "
                 "the SSE total cap would cut the general lane before its own timeout fires, "
                 "degrading a mapped LLM_TIMEOUT into a silent done(stop)"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _require_management_lane_within_stream_cap(self) -> "Settings":
+        """판매자 product(management) 레인 직렬 예산이 스트림 전체 상한을 넘으면 기동
+        실패 (#621 ②).
+
+        product 레인(초안 생성, `app/api/seller.py::_product_stream`)은 진입 경로가
+        둘이다 — 이미지 첨부 턴(vision 분석 경유, #506)과 텍스트 수정 턴(대기 게이트·
+        라우팅 경유) — 그리고 둘 다 `seller_product_agent_timeout_s`·
+        `seller_category_resolve_timeout_s`·하류 DB 왕복(state_store_query_timeout_s)을
+        공유한다. 한쪽만 검증하면 다른 경로가 조용히 캡을 넘을 수 있어 `max(두 경로)`
+        로 함께 가둔다 — `_require_general_lane_within_stream_cap` 과 같은 원칙.
+
+        절단(캡 초과)되면 ① `draft` 이벤트가 나가지 못하고 ② `start_draft` 통과 후라면
+        checkpoint 에 고아 draft 가 `seller_draft_ttl_minutes` 만큼 남으며 ③ 관측에는
+        `COMPLETED` 로 기록돼 실패가 안 보인다(#621 문제②) — general 레인과 동일한
+        증상이라 같은 방식으로 기동 시점에 막는다.
+
+        **이미지 첨부 경로**: `state_store_query_timeout_s`(load_pending) + 분석
+        (`seller_vision_timeout_s`) + product 에이전트 + 카테고리 해소 + 하류 DB 왕복
+        3회(create 초안의 invalidate·save_pending·record_turn — `state_store_query_timeout_s`
+        로 근사).
+
+        **텍스트 수정 경로**: 위에 `seller_pending_gate_timeout_s`(대기 분류 LLM)와
+        `seller_route_timeout_s`(supervisor 라우팅)가 더 붙는다 — 이미지 첨부 턴은
+        라우팅·대기 게이트를 건너뛰고 product 레인으로 직행하므로(#506) 이 두 항이 없다.
+
+        하류 DB 왕복 3회는 각 호출이 정확히 무엇인지보다 "실행 뒤 DB 왕복 세 번이
+        직렬로 남는다"는 구조가 예산식의 요지라 근사값(`state_store_query_timeout_s`)
+        으로 묶는다 — 실제 호출 지점은 구현에 따라 이동할 수 있다.
+
+        `>=` 로 거절하는 이유는 이웃 검증기와 같다 — 동률이면 어느 시계가 먼저
+        터지는지가 지터로 갈려 같은 원인(정상 draft 미발신 vs 조용한 절단)이 두 갈래로
+        기록된다.
+        """
+        downstream_writes = 3 * self.state_store_query_timeout_s
+        image_path = (
+            self.state_store_query_timeout_s
+            + self.seller_vision_timeout_s
+            + self.seller_product_agent_timeout_s
+            + self.seller_category_resolve_timeout_s
+            + downstream_writes
+        )
+        text_edit_path = (
+            self.state_store_query_timeout_s
+            + self.seller_pending_gate_timeout_s
+            + self.state_store_query_timeout_s
+            + self.seller_route_timeout_s
+            + self.seller_product_agent_timeout_s
+            + self.seller_category_resolve_timeout_s
+            + downstream_writes
+        )
+        budget = max(image_path, text_edit_path)
+        if budget >= self.stream_total_timeout_s:
+            worse = "image_attach" if image_path >= text_edit_path else "text_edit"
+            raise ValueError(
+                "the management (product) lane serial budget must be < "
+                f"STREAM_TOTAL_TIMEOUT_S (got {budget} >= {self.stream_total_timeout_s}, "
+                f"worse path={worse}): the SSE total cap would cut the product lane "
+                "before a draft or error is emitted, leaving an orphaned draft recorded "
+                "as COMPLETED"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _require_confirm_lane_within_stream_cap(self) -> "Settings":
+        """판매자 confirm 레인 직렬 예산이 스트림 전체 상한을 넘으면 기동 실패 (#621 ②).
+
+        `seller_confirm_execute_timeout_s` 는 `hitl.confirm_draft` 의 resume 실행
+        (`asyncio.shield(asyncio.wait_for(...))`) 상한이다 — 이 값이 스트림 총 상한에
+        근접·초과하면 shield 로 뒤에서 계속 도는 실행이 SSE 계층의 절단(`_done_stop_frame`,
+        #621 ③)과 경합해, 판매자 절단 done 이 이미 나간 뒤에도 실행이 안 끝나는 창이
+        길게 남는다. checkpoint 스냅샷 조회(gate 판정 전)와 결과 기록(대화 스레드) 각
+        1회를 `state_store_query_timeout_s` 로 앞뒤에 더한다.
+        """
+        budget = (
+            self.state_store_query_timeout_s
+            + self.seller_confirm_execute_timeout_s
+            + self.state_store_query_timeout_s
+        )
+        if budget >= self.stream_total_timeout_s:
+            raise ValueError(
+                "2 * STATE_STORE_QUERY_TIMEOUT_S + SELLER_CONFIRM_EXECUTE_TIMEOUT_S must "
+                f"be < STREAM_TOTAL_TIMEOUT_S (got {budget} >= {self.stream_total_timeout_s}): "
+                "the SSE total cap would cut a confirm resume before its own timeout fires"
             )
         return self
 

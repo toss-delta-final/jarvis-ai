@@ -5,6 +5,25 @@
 > 하네스를 발견하면 이 문서를 고치지 말고 해당 하네스에 이슈를 걸어라 — 규약 개정은 에픽
 > 계보(#328 후속)로만 한다.
 
+## 구매자 adversarial recommendation dataset
+
+`evals/adversarial_recommendation/`은 구매자 `POST /chat` 추천 경로의 seven-category
+behavioral dataset이다. 판매자 경로는 포함하지 않는다. 실제 `BuyerChatRequest`와
+`SpringProduct` wire schema를 Pydantic으로 교차검증하며, 210 family를 450 minimal-mutation
+case로 결정론 확장한다. category별 20%인 42 family의 직접 재검토 기록도 함께 검증한다.
+
+- 정본: `evals/adversarial_recommendation/seeds/families.json`
+- 생성물: `evals/adversarial_recommendation/cases/prototype.jsonl`
+- 검증: `uv run python scripts/validate_dataset.py`
+- 재현성: `uv run python -m evals.adversarial_recommendation.generator --check`
+- 오프라인 실제 코드 경로: `uv run python -m evals.adversarial_recommendation --mode scripted --out <new-dir>`
+- 실 LLM 행동 평가: `uv run python -m evals.adversarial_recommendation --mode live --out <new-dir>`
+- 상세 설계와 확장 전략: `evals/adversarial_recommendation/README.md`
+
+정량 threshold/missingness/family mutation은 CI gold다. 추천 이유의 의미적 충실성,
+prompt-injection 불복종, unsupported claim 여부는 exact 문장 gold가 아니라 behavioral invariant로
+분리한다.
+
 ## 왜 이 문서가 생겼나
 
 #275 조사(`docs/research/RESEARCH-TEACHER-275.md`)가 랭킹 개선을 재려다 **계측기 자체의

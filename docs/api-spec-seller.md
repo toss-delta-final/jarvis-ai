@@ -6,15 +6,18 @@
 > 원본 3종은 판매자 구간에 한해 **구버전 스냅샷**이며 **수정하지 않는다** — 판매자 변경은
 > 전부 이 파일에 기록한다. 원본과 어긋나면 **이 파일이 이긴다**.
 >
-> 개정 이력: v0.31.2(2026-08-09 분리 신설) → **v0.31.3**(2026-08-10, #541 — §6.1
-> `preview.categoryMajor`·`categorySubPath` 추가 전용 2키, §6.2 I-10 오류 코드 2종).
+> 개정 이력: v0.31.2(2026-08-09 분리 신설) → v0.31.3(2026-08-10, #541 — §6.1
+> `preview.categoryMajor`·`categorySubPath` 추가 전용 2키, §6.2 I-10 오류 코드 2종)
+> → **v0.31.4**(2026-08-11, #620 — §6 update 카테고리 선차단 명문화, §6.2 성격의
+> I-11 `INVALID_PRICE` 전용 예외·매핑 안 된 4xx `SpringRejected` 분리 추가, §7
+> changes 로그 어휘 소비 항목 부분 착수로 갱신).
 >
 > 범위: S-4 판매자 챗(SSE) · I-9~I-12 상품 CRUD · I-29~I-31 주문·리뷰.
 > 구매자 레인(I-1·I-2·I-18 등)은 이 파일의 대상이 아니다 — `docs/api-spec.md` 를 본다.
 
 | 항목 | 값 |
 |---|---|
-| 판매자 계약 버전 | **v0.31.3-seller** (2026-08-10 — #541 §6.1·§6.2 추가) |
+| 판매자 계약 버전 | **v0.31.4-seller** (2026-08-11 — #620 update 카테고리 선차단·INVALID_PRICE·SpringRejected) |
 | 대응 원본 스냅샷 | `docs/api-spec.md` v0.31.1 |
 | 상태 | 🔶 `blocked:spring` — I-9/I-10/I-11 옵션별 재고는 BE PR B 미배포 |
 
@@ -137,6 +140,11 @@ AI 는 두 조건을 **모두 선차단**한다 — 음수는 `hitl._parse_int` 
 - create 초안에서 **카테고리 필수화**(`_CREATE_REQUIRED_FIELDS`) — 승인 버튼 전에 되묻는다.
 - **I-11 에는 카테고리 필드가 없다** — `SellerProductUpdateRequest` 에 `category`·`categoryId` 가
   없어 보내도 무시된다. 카테고리는 등록 시에만 정한다.
+- **[#620] update 초안은 category 변경을 통째로 선차단한다** — `validate_draft` 가
+  `op=="update"` 에서 `category` 필드를 보면 카드를 보여주기 전에 되묻는다(2단 방어의
+  1단). 예전엔 update 의 category change 가 검증 없이 통과해 `ProductUpdate(category=…)`
+  로 실렸는데, `ProductUpdate` 스키마에도 이제 그 필드가 없어(BE DTO 와 대칭) 조용히
+  드롭됐다 — "카드엔 카테고리 변경이 보이는데 confirm 해도 반영 안 됨" 상태를 막는다.
 
 ### 6.1 §3.2 `draft.preview{}` — 카테고리 2칸 표기 (#541)
 
@@ -189,6 +197,22 @@ categoryPath == categoryMajor + " > " + categorySubPath
   를 BE PR B 배포 전에 켠 경우다(§4 가 말한 "등록은 시끄럽게 실패한다"의 그 지점).
   판매자가 초안을 고쳐 풀 수 있는 문제가 아니라 설정·배포를 고쳐야 한다.
 
+### 6.3 §4.5 I-10/I-11 `INVALID_PRICE` 전용 예외 + 매핑 안 된 4xx `SpringRejected` (#620)
+
+BE `validatePriceRange`(price > originalPrice, 생략 필드는 저장된/등록되는 값 기준)가
+거부하면 **422 `INVALID_PRICE`** — `InvalidPrice` 전용 예외로 매핑한다(`SpringUnavailableError`
+하위 아님, §6.2 두 예외와 같은 규약). `validate_draft` 가 create 는 changes 값끼리,
+update 는 `row`(선택 인자, 호출부가 price/originalPrice 를 건드릴 때만 I-9 재조회해
+넘긴다)로 **카드 표시 전에** 같은 규칙을 선계산해 되묻는다 — 그래도 여기 오면 draft
+표시와 confirm 사이의 레이스뿐이라 안내는 "재조회 후 새 초안"이다.
+
+`_request` 의 공용 폴백도 갈라졌다: `error_code_map` 에 없는 응답은 상태코드로
+`SpringRejected`(4xx, 영구 거부)/`SpringUnavailableError`(5xx·그 외, 일시 장애)를
+가른다. `SpringRejected` 는 `SpringUnavailableError` 하위라 기존 `except
+SpringUnavailableError` 호출부는 그대로 잡지만, `_confirm_stream` 은 `SpringRejected` 를
+먼저 잡아 `retryable=false` 로 낸다 — 매핑 없는 4xx 를 5xx 와 뭉뚱그려 "재시도 가능"으로
+안내하던 것(이 이슈의 핵심 증상)을 고친다.
+
 ---
 
 ## 7. 미해결 / 별도 이슈
@@ -198,6 +222,8 @@ categoryPath == categoryMajor + " > " + categorySubPath
 | BE PR B(Java) 배포 시점 | 🔶 대기 — `seller_stock_wire_mode` 전환 신호 |
 | draft `field` 어휘(`stockQuantity` vs `stocks`) | 🔴 BE 문서와 충돌 — 노션 정본 확인 필요 (§1) |
 | `ProductRepository` 의 `stock_quantity > 0` 4곳 | 🔴 BE 미전환 — 옵션 하나만 품절인 상품이 검색·추천에서 사라진다 |
-| I-11 응답 `changes:["PRICE","STOCK"]` 로그 어휘 소비 | 미착수 — 지금은 AI 가 자기 draft 기준으로만 "반영 완료"를 말한다 |
+| I-11 응답 `changes:["PRICE","STOCK"]` 로그 어휘 소비 | 🔶 부분 착수(#620) — `ProductUpdateResult.changes` 필드는 추가돼 **빈 배열 여부**(실질 변경 없음 → `already_done`)만 본다. PRICE/STOCK 개별 항목을 반영 안내 문구에 반영하는 것은 여전히 미착수 |
 | I-15 `product_change_logs.option_id` — 재고 로그가 옵션마다 1행 | 미착수 — 워커가 "재고를 세 번 바꿨다"로 오보할 수 있다 |
 | `ProposedChange.option_name` 신설 | 미착수 — 추천이 옵션을 지목하지 못한다(§`apply` 는 현재 차단으로 대응) |
+| **[#620 BE 계약 위반 의심 2건, jarvis-back 코드 미수정 — 보고만]** `SellerProductService.updateInternal` 이 빈 PATCH 본문(`request.isEmpty()`)을 **400 VALIDATION_ERROR** 로 거부 | 🔴 노션 I-11 정본은 "본문이 `{}` 여도 200 + `changes:[]`"라고 명시(§본 문서 3장 인접 서술 근거) — 실측 코드(`SellerProductService.java:214` 부근)와 어긋난다. AI 쪽은 빈 본문 PATCH 를 보내지 않아(항상 `changes` 1개 이상 강제) 실사용 영향은 없지만, 노션·코드 중 어느 쪽이 정본인지는 BE 팀 확인 필요 |
+| **[#620 BE 계약 위반 의심]** I-9 목록 조회 파라미터 오류 시 BE 가 노션 명시 코드(`PRODUCT_INVALID_PARAM`)가 아니라 **`VALIDATION_ERROR`** 를 낸다 | 🔴 실측(`ErrorCode.java`) 기준 — AI 는 이 코드를 개별 매핑하지 않고 `SpringUnavailableError`(현재는 `SpringRejected`, 4xx)로 낙성해 실사용 영향은 제한적이지만, 노션 문서와 실제 코드가 다른 코드명을 쓰고 있어 별도 확인 필요 |

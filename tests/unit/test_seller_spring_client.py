@@ -15,11 +15,13 @@ from app.core.config import get_settings
 from app.schemas.spring import ChurnMember, ProductCreate, ProductUpdate
 from app.services.spring_client import (
     ProductAlreadyDeleted,
+    InvalidPrice,
     InvalidStock,
     ProductCategoryInvalid,
     ProductDeletedNotEditable,
     ProductFieldMissing,
     SpringClient,
+    SpringRejected,
     SpringUnavailableError,
 )
 
@@ -546,7 +548,13 @@ async def test_timeout_maps_to_spring_unavailable() -> None:
 
 
 async def test_4xx_maps_to_spring_unavailable() -> None:
-    """404/500 등 오류 응답 → SpringUnavailableError."""
+    """404/500 등 오류 응답 → SpringUnavailableError.
+
+    [#620] 404 는 실제로는 그 하위 `SpringRejected` 로 온다(4xx 세분화) — 이 assert 는
+    isinstance 기반이라 하위 클래스도 통과한다(하위 호환). 4xx/5xx 구분 자체는
+    test_unmapped_4xx_raises_spring_rejected / test_unmapped_5xx_raises_bare_spring_unavailable_not_rejected
+    가 별도로 검증한다.
+    """
 
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(404, json={"code": "NOT_FOUND"})
@@ -1406,3 +1414,68 @@ def test_create_category_errors_are_not_spring_unavailable() -> None:
     """둘 다 catch-all 밖이다 — 재시도해도 결과가 같아 "일시적 장애" 안내가 거짓이 된다."""
     assert not issubclass(ProductCategoryInvalid, SpringUnavailableError)
     assert not issubclass(ProductFieldMissing, SpringUnavailableError)
+
+
+# ── [#620] I-10/I-11 422 INVALID_PRICE + 매핑 안 된 4xx SpringRejected ────────────
+
+
+async def test_update_product_maps_invalid_price() -> None:
+    """422 INVALID_PRICE → 전용 예외. hitl 이 row-aware 로 선차단하므로 정상 경로에선
+    안 오지만, draft 표시와 confirm 사이 가격이 바뀐 레이스는 여기로 온다."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(422, json={"success": False, "error": {"code": "INVALID_PRICE"}})
+
+    client = _client(handler)
+    with pytest.raises(InvalidPrice):
+        await client.update_product("brand-1", 101, ProductUpdate(price=99000))
+
+
+async def test_create_product_maps_invalid_price() -> None:
+    """등록도 같은 코드를 쓴다 — I-10/I-11 대칭(BE validatePriceRange 는 둘 다 호출)."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(422, json={"success": False, "error": {"code": "INVALID_PRICE"}})
+
+    client = _client(handler)
+    with pytest.raises(InvalidPrice):
+        await client.create_product(
+            "brand-1",
+            ProductCreate(name="파우치", price=99000, original_price=10000, stock_quantity=5),
+        )
+
+
+def test_invalid_price_is_not_spring_unavailable() -> None:
+    """catch-all 에 삼켜지지 않는다 — InvalidStock·ProductCategoryInvalid 와 같은 규약."""
+    assert not issubclass(InvalidPrice, SpringUnavailableError)
+
+
+async def test_unmapped_4xx_raises_spring_rejected() -> None:
+    """error_code_map 에 없는 4xx(예: 알려지지 않은 코드)는 SpringRejected — 5xx 취급으로
+    뭉개져 "재시도 가능"이라는 거짓 안내가 나가던 것(이 이슈의 핵심 증상)을 고친다."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"success": False, "error": {"code": "SOME_NEW_CODE"}})
+
+    client = _client(handler)
+    with pytest.raises(SpringRejected):
+        await client.get_sales("brand-1", "2026-07-01", "2026-07-14")
+
+
+async def test_unmapped_5xx_raises_bare_spring_unavailable_not_rejected() -> None:
+    """5xx(진짜 일시 장애)는 SpringRejected 가 아니다 — 영구 거부와 섞이면 안 된다."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, json={"success": False, "error": {"code": "DOWN"}})
+
+    client = _client(handler)
+    with pytest.raises(SpringUnavailableError) as exc_info:
+        await client.get_sales("brand-1", "2026-07-01", "2026-07-14")
+    assert not isinstance(exc_info.value, SpringRejected)
+
+
+def test_spring_rejected_is_spring_unavailable_subclass() -> None:
+    """기존 `except SpringUnavailableError` catch-all 호출부가 SpringRejected 도 계속
+    잡도록(하위 호환) 상속 관계를 고정한다 — 이 관계가 깨지면 배선 안 된 호출부가
+    새 예외를 놓치는 회귀가 난다."""
+    assert issubclass(SpringRejected, SpringUnavailableError)

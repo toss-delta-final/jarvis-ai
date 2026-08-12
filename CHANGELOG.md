@@ -16,6 +16,12 @@
   현행 자유문장, 구조화 prompt-only, 구조화+결정적 validator를 같은 hashed MFT/INV/DIR fixture에서
   비교하고 raw response·분자/분모·hard gate·prompt/model/dataset hash·비용/지연을 보존한다.
   사람 평가는 제외하며 live evidence가 gate를 통과하기 전까지 production 기본 arm은 `current`다.
+- **#637 — 구매자 추천 adversarial/behavioral 평가 데이터셋**을 추가했다. 실제
+  `BuyerChatRequest`와 Spring I-1 `SpringProduct` wire schema를 사용하는 7개 failure mode별
+  30 family(총 210 family, 450 minimal-mutation case)를 결정론적으로 생성한다. 숫자 oracle,
+  family 불변식, unintended mutation, 경계 contrast를 validator가 검사하며, 고정 seed로
+  category별 20%를 층화 추출한 42 family 직접 재검토 기록도 함께 검증한다. 판매자 경로와
+  임의 schema는 포함하지 않는다.
 - **#585 — 판매자 분석 저장 계층: DDL 5테이블 + 리포지토리 + targets 자동 등록 훅**을 추가했다
   (OPS-RUNTIME.md §1.3~§1.7, 결정 71·72·80·110~112). `db/profile/init/05_seller_analysis.sql`에
   `seller_analysis_targets`·`snapshots`·`reports`·`recommendations`·`outcomes` 5테이블을 신설하고,
@@ -41,6 +47,12 @@
   재현 가능한 artifact 분석을 제공한다. evaluator별 blind presentation 분리, pair-input/
   preregistration hash provenance, constrained A/B balance와 엄격한 3-of-3 coverage gate를
   포함한다. 실제 human response는 포함하지 않으며 결과는 exploratory로만 해석한다.
+
+### Fixed
+- **#635 — 챗봇 장바구니 담기·삭제에 현재 `chatSessionId`를 전달하고, 추천 카드에서 해소한 담기에는 `recommendationContext{recommendationRequestId,listId}`를 함께 보낸다** (api-spec §4.1·§4.12, v0.33.1). Spring이 `chat:{sessionId}` sentinel로 행동 이벤트를 서버 측 적재하고 추천→담기 귀속을 검증할 수 있게 한다. 신원 0개/2개 `400 VALIDATION_ERROR`와 동시 경합 `409 RESOURCE_CONFLICT`도 계약 사본에 현행화했다.
+
+### Removed
+- **#635 — 구 `GET /profile/me` HTTP 조회 표면을 제거했다.** 라우터·응답 스키마·OpenAPI·회귀 테스트와 공개 문서를 함께 정리했으며, 프로필 요약 reader는 추천 경로 내부 소비로 유지한다.
 
 ### Changed
 - **#581 — 취향 밴드(`priceBand`·`ratingBand`)에 한쪽 경계만 있는 표현을 담을 수 있게 하고,

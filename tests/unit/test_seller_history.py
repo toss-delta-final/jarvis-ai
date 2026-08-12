@@ -383,6 +383,7 @@ def test_apply_changeless_recommendation_is_refused() -> None:
 
 
 def test_apply_missing_product_is_refused() -> None:
+    """짧은 페이지까지 다 돌았는데 없음(exhausted=False) — "찾을 수 없습니다" 문구."""
     set_spring_client(_StubSpring(rows=[]))
 
     async def run():
@@ -391,6 +392,53 @@ def test_apply_missing_product_is_refused() -> None:
 
     record, problem = asyncio.run(run())
     assert record is None and "찾을 수 없습니다" in problem
+    assert hitl.PRODUCT_LOOKUP_EXHAUSTED_TEXT not in problem
+
+
+def test_apply_product_lookup_exhausted_uses_distinct_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    """[#622] 조회 상한 소진(exhausted=True) — "찾을 수 없습니다" 대신 "확인 못 했다" 문구.
+
+    `hitl._find_product`가 페이지 상한을 소진하도록 page_size/max_pages 를 작게 줄여서
+    재현한다(`test_seller_hitl.py::_lookup_page_size`와 같은 패턴).
+    """
+    real = hitl.get_settings()
+    monkeypatch.setattr(
+        hitl,
+        "get_settings",
+        lambda: real.model_copy(
+            update={"seller_draft_lookup_page_size": 20, "seller_draft_lookup_max_pages": 2}
+        ),
+    )
+    filler = [_ROW.model_copy(update={"product_id": i, "name": f"상품{i}"}) for i in range(1, 41)]
+    set_spring_client(_StubSpring(rows=filler))  # target(101) 없음 + 매 페이지가 꽉 참(20×2)
+
+    async def run():
+        await _save()  # 추천 대상 product_id=101 — filler 는 1..40, 101 은 없음
+        return await history.apply_recommendation(1, _CTX)
+
+    record, problem = asyncio.run(run())
+    assert record is None
+    assert problem == hitl.PRODUCT_LOOKUP_EXHAUSTED_TEXT
+
+
+def test_apply_recommendation_is_brand_scoped_not_seller_scoped() -> None:
+    """[#622 결정 — 이슈 ⑥] 보고서는 브랜드 자산이다 — 같은 브랜드의 다른 판매자 계정도
+    적용할 수 있다(현행 유지, 좁히지 않기로 명시적으로 결정). apply_recommendation 독스트링
+    참조. `_save()`는 seller_id=7 로 저장하지만, 조회는 brand_id 만 쓰므로 seller_id=99인
+    다른 계정(같은 brand_id=3)도 동일하게 성공해야 한다."""
+    set_spring_client(_StubSpring())
+    other_seller_same_brand = SellerContext(seller_id=99, brand_id=3)
+
+    async def run():
+        await _save()
+        return await history.apply_recommendation(1, other_seller_same_brand)
+
+    record, problem = asyncio.run(run())
+
+    assert problem is None and record is not None
+    assert record.op == "update" and record.product_id == 101
+    assert record.brand_id == 3
+    assert record.seller_id == 99  # confirm 은 이 draft 를 만든 신원 기준으로 저장된다
 
 
 def test_applied_draft_flows_into_confirm(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -404,7 +452,9 @@ def test_applied_draft_flows_into_confirm(monkeypatch: pytest.MonkeyPatch) -> No
 
         async def update_product(self, brand_id, product_id, patch):
             self.patches.append((brand_id, product_id, patch))
-            return ProductUpdateResult(productId=product_id)
+            # [#620] changes 가 비면 already_done 으로 갈음된다 — 이 테스트는 실제
+            # 반영(executed)을 검증하므로 비어있지 않은 값을 준다.
+            return ProductUpdateResult(productId=product_id, changes=["PRICE"])
 
     spring = _WritableSpring()
     set_spring_client(spring)

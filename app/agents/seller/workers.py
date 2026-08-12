@@ -32,8 +32,11 @@ from app.agents.seller.models import SellerRole, init_seller_model, seller_trace
 from app.agents.seller.prompts import (
     ABUSE_PROMPT,
     ANALYSIS_JUDGE_PROMPT,
+    BEHAVIOR_INTERPRET_PROMPT,
     BEHAVIOR_PROMPT,
+    CHURN_INTERPRET_PROMPT,
     CHURN_PROMPT,
+    CONVERSION_INTERPRET_PROMPT,
     CONVERSION_PROMPT,
     GENERAL_PROMPT_TEMPLATE,
     GRAPH_PROMPT,
@@ -42,7 +45,10 @@ from app.agents.seller.prompts import (
     PRODUCT_PROMPT,
     RECOMMEND_PROMPT,
     REPORT_PROMPT,
+    RESIDENT_RECOMMEND_PROMPT,
+    RESIDENT_REPORT_PROMPT,
     REVIEW_PROMPT,
+    SALES_ANOMALY_INTERPRET_PROMPT,
     SALES_ANOMALY_PROMPT,
     SUPERVISOR_PROMPT,
 )
@@ -50,6 +56,7 @@ from app.agents.seller.schemas import (
     AnalysisFinding,
     AnalysisPlan,
     AnalysisScore,
+    BehaviorFinding,
     ChartPlanSet,
     DraftProposal,
     RecommendationSet,
@@ -226,15 +233,16 @@ def build_general_agent(
 # ── product_agent (2-7) — draft 생성까지, 쓰기는 4단계 confirm-resume 코드 경로 ──
 
 # A안(2026-07-18 확정): 조회만 바인딩 — LLM 이 쓰기 도구를 볼 수 없어 HITL
-# (발화 ≠ 동의 [HARD])이 프롬프트가 아니라 구조로 보장된다. 배정표(§3)의
-# PRODUCT_TOOLS(쓰기 3종 포함)는 4단계 실행 레인용으로 유지된다.
+# (발화 ≠ 동의 [HARD])이 프롬프트가 아니라 구조로 보장된다. 실행(4단계)은 LLM
+# 도구 호출이 아니라 코드가 담당한다 — hitl._execute_draft 가 승인된 draft 를
+# SpringClient 로 직접 매핑한다(#620, 배정표 §3 개정 — 쓰기 도구는 존재하지 않는다).
 # calculate 는 2-9 리뷰 반영(2026-07-18 사용자 확정) — 재고 증감 환산 암산 방지.
-# 배정표 §3 개정 필요(REVIEW-SELLER-STAGE2 기록).
 PRODUCT_DRAFT_TOOLS = [
     seller_tools.list_my_products,
     seller_tools.calculate,
     # [#297] 발송 draft(op=ship)의 대상 orderItemId·현재 상태 확인용(I-29, 조회 전용).
-    # 쓰기(update_order_status)는 여기 바인딩하지 않는다 — HITL 구조 보장 유지.
+    # 발송 실행도 hitl._execute_draft 가 코드로 담당한다 — 쓰기 도구는 여기 바인딩하지
+    # 않는다(HITL 구조 보장 유지).
     seller_tools.get_orders,
 ]
 
@@ -402,4 +410,77 @@ def build_recommend_agent() -> CompiledStateGraph:
             tool_call_limit_middleware(),
             ToolCallObservationMiddleware(),
         ],  # 읽기 2종 호출 상한 + 실제 호출 관측
+    )
+
+
+# ── 상주(무인) 분석 파이프라인 (이슈 #598) ──────────────────────────────────────
+# 채팅 레인(위 report/recommend/워커 5종)과 완전히 분리한다 — 무접촉 보장이 설계
+# 결정이다(design-598 §3-5 안 B). 전부 zero-tool: 입력은 ctx 표/finding/보고서
+# 문자열뿐이고, 조회는 SOP `load`/`compare` 스텝(코드)이 이미 끝냈다.
+
+
+def _build_interpret_worker(
+    system_prompt: str, response_schema: type[AnalysisFinding]
+) -> CompiledStateGraph:
+    """워커 4종 상주 interpret 공통 조립 — smart tier · 도구 없음."""
+    return create_agent(
+        model=init_seller_model("interpret"),
+        tools=[],
+        system_prompt=system_prompt,
+        response_format=ToolStrategy(response_schema),
+        context_schema=SellerContext,
+        middleware=[_model_usage_middleware("interpret")],
+    )
+
+
+def build_behavior_interpret_agent() -> CompiledStateGraph:
+    """고객 행동 상주 interpret (세그먼트별 별칭·설명 — `BehaviorFinding` 출력)."""
+    return _build_interpret_worker(BEHAVIOR_INTERPRET_PROMPT, BehaviorFinding)
+
+
+def build_churn_interpret_agent() -> CompiledStateGraph:
+    """고객 이탈 상주 interpret."""
+    return _build_interpret_worker(CHURN_INTERPRET_PROMPT, AnalysisFinding)
+
+
+def build_conversion_interpret_agent() -> CompiledStateGraph:
+    """구매전환 상주 interpret."""
+    return _build_interpret_worker(CONVERSION_INTERPRET_PROMPT, AnalysisFinding)
+
+
+def build_sales_anomaly_interpret_agent() -> CompiledStateGraph:
+    """매출 이상 상주 interpret."""
+    return _build_interpret_worker(SALES_ANOMALY_INTERPRET_PROMPT, AnalysisFinding)
+
+
+def build_resident_report_agent() -> CompiledStateGraph:
+    """상주 보고서 작성 에이전트 (smart tier · 도구 없음 · 자유 텍스트).
+
+    채팅 레인 `build_report_agent`/`REPORT_PROMPT` 와 완전히 분리된 별도 상수를 쓴다
+    (설계 결정 3 — 채팅 레인 무접촉 보장). 검증(V1 D1~D3 + V2 C1~C3/V2-d + judge)·
+    재작성 루프 배선은 `resident.py` 소관 — 여기는 빌더만.
+    """
+    return create_agent(
+        model=init_seller_model("resident_report"),
+        tools=[],
+        system_prompt=RESIDENT_REPORT_PROMPT,
+        context_schema=SellerContext,
+        middleware=[_model_usage_middleware("resident_report")],
+    )
+
+
+def build_resident_recommend_agent() -> CompiledStateGraph:
+    """상주 행동 추천 에이전트 (smart tier · 도구 없음 · `ctx.candidate_actions` 입력).
+
+    채팅 레인 `build_recommend_agent`(도구 2개)와 달리 도구가 없다 — 실존·중복 확인은
+    후보 생성기(후속 이슈)가 후보를 만드는 시점에 이미 보장한다는 전제다(design-598
+    §3-4). 출력 스키마는 채팅 레인과 동일한 `RecommendationSet`을 공유한다.
+    """
+    return create_agent(
+        model=init_seller_model("resident_recommend"),
+        tools=[],
+        system_prompt=RESIDENT_RECOMMEND_PROMPT,
+        response_format=ToolStrategy(RecommendationSet),
+        context_schema=SellerContext,
+        middleware=[_model_usage_middleware("resident_recommend")],
     )

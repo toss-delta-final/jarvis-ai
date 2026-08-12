@@ -25,6 +25,7 @@ from app.schemas.spring import (
     SellerStockRow,
 )
 from app.services.spring_client import (
+    InvalidPrice,
     InvalidStock,
     OrderAlreadyShipped,
     OrderInvalidTransition,
@@ -85,12 +86,17 @@ class _StubSpring:
     # [#511] I-11/I-12 409 전용 예외 주입 — "안 되는 일"이 장애로 뭉개지지 않는지 검증한다.
     update_error: Exception | None = None
     delete_error: Exception | None = None
+    # [#620] I-11 응답 changes — 기본은 "뭔가 바뀌었다"(비어있지 않음, 실행 완료
+    # 판정을 유지)로 두고, 빈 배열(실질 변경 없음 → already_done) 검증용 테스트만
+    # None 이 아닌 [] 로 덮어쓴다.
+    update_result_changes: list[str] | None = None
 
     async def update_product(self, brand_id, product_id, patch):
         self.calls.append(("update", brand_id, product_id, patch))
         if self.update_error is not None:
             raise self.update_error
-        return ProductUpdateResult(productId=product_id)
+        changes = self.update_result_changes if self.update_result_changes is not None else ["PRICE"]
+        return ProductUpdateResult(productId=product_id, changes=changes)
 
     async def delete_product(self, brand_id, product_id):
         self.calls.append(("delete", brand_id, product_id))
@@ -529,7 +535,11 @@ def test_confirm_stock_drift_executes_with_note() -> None:
 
 
 def test_confirm_missing_product_is_stale() -> None:
-    """I-9 재조회에서 상품 미발견(삭제 등) — 실행 중단 + 되묻기."""
+    """I-9 재조회에서 상품 미발견(삭제 등, 짧은 페이지까지 다 돌았음) — 실행 중단 + 되묻기.
+
+    [#622] `_find_product`가 (None, False) — 목록의 진짜 끝까지 다 돌았다 — 를 반환하는
+    경로다. 안내 문구는 "대상 상품(...)을 상품 목록에서 찾을 수 없어"(exhausted=False 전용).
+    """
     spring = _StubSpring(rows=[])
     set_spring_client(spring)
     record = _record()
@@ -541,6 +551,32 @@ def test_confirm_missing_product_is_stale() -> None:
     outcome = asyncio.run(run())
 
     assert outcome.status == "stale"
+    assert "상품 목록에서 찾을 수 없" in outcome.text
+    assert hitl.PRODUCT_LOOKUP_EXHAUSTED_TEXT not in outcome.text
+    assert spring.write_calls() == []
+
+
+def test_confirm_product_lookup_exhausted_is_stale_with_distinct_text(monkeypatch) -> None:
+    """[#622] 조회 상한 소진(exhausted=True) — "없다"가 아니라 "확인 못 했다" 문구를 쓴다.
+
+    상품이 실제로 존재할 수도 있는데 짧은 페이지를 못 만나 순회를 못 끝낸 경우다 —
+    삭제/이관 단정(`test_confirm_missing_product_is_stale`)과는 원인이 달라 문구를
+    분리했다(hitl.PRODUCT_LOOKUP_EXHAUSTED_TEXT, _find_product 독스트링).
+    """
+    _lookup_page_size(monkeypatch, page_size=20, max_pages=2)
+    filler = [_ROW.model_copy(update={"product_id": i, "name": f"상품{i}"}) for i in range(1, 41)]
+    spring = _StubSpring(rows=filler)  # target(101) 은 filler 에 없다 + 매 페이지가 꽉 참
+    set_spring_client(spring)
+    record = _record()  # product_id=101 — filler 는 1..40, 101 은 없음
+
+    async def run():
+        await hitl.start_draft(record)
+        return await hitl.confirm_draft(record.draft_id, seller_id=7, brand_id=3)
+
+    outcome = asyncio.run(run())
+
+    assert outcome.status == "stale"
+    assert hitl.PRODUCT_LOOKUP_EXHAUSTED_TEXT in outcome.text
     assert spring.write_calls() == []
 
 
@@ -751,16 +787,62 @@ def test_confirm_spring_down_keeps_draft_retryable() -> None:
     assert len(spring.write_calls()) == 1
 
 
-def test_find_product_paginates_until_found() -> None:
-    """I-9 productId 필터 부재 — 페이지 순회로 대상 행을 찾는다."""
+def _lookup_page_size(monkeypatch, page_size: int, max_pages: int | None = None) -> None:
+    """[#622] `_find_product` 전용 page_size/max_pages 만 바꾼다 — 나머지 설정은 실값 그대로.
+
+    운영 기본값(200×10)은 테스트 데이터가 비대해지므로, 페이지 순회 자체를 검증하는
+    테스트는 작은 값으로 재설정한다(`_stock_mode`와 동일 패턴).
+    """
+    real = hitl.get_settings()
+    update = {"seller_draft_lookup_page_size": page_size}
+    if max_pages is not None:
+        update["seller_draft_lookup_max_pages"] = max_pages
+    monkeypatch.setattr(hitl, "get_settings", lambda: real.model_copy(update=update))
+
+
+def test_find_product_paginates_until_found(monkeypatch) -> None:
+    """I-9 productId 필터 부재 — 페이지 순회로 대상 행을 찾는다. (row, False) 반환."""
+    _lookup_page_size(monkeypatch, page_size=20)
     filler = [_ROW.model_copy(update={"product_id": i, "name": f"상품{i}"}) for i in range(1, 41)]
     spring = _StubSpring(rows=[*filler, _ROW.model_copy(update={"product_id": 500})])
     set_spring_client(spring)
 
-    row = asyncio.run(hitl._find_product(3, 500))
+    row, exhausted = asyncio.run(hitl._find_product(3, 500))
 
     assert row is not None and row.product_id == 500
+    assert exhausted is False
     assert len([c for c in spring.calls if c[0] == "list"]) == 3  # 20건 × 3페이지
+
+
+def test_find_product_short_page_end_is_not_exhausted(monkeypatch) -> None:
+    """목록의 진짜 끝(짧은 페이지)까지 다 돌았는데 없음 — (None, False), 상한 소진이 아니다."""
+    _lookup_page_size(monkeypatch, page_size=20)
+    filler = [_ROW.model_copy(update={"product_id": i, "name": f"상품{i}"}) for i in range(1, 11)]
+    spring = _StubSpring(rows=filler)  # 10건 < page_size(20) → 첫 페이지가 곧 짧은 페이지
+    set_spring_client(spring)
+
+    row, exhausted = asyncio.run(hitl._find_product(3, 999))
+
+    assert row is None
+    assert exhausted is False
+    assert len([c for c in spring.calls if c[0] == "list"]) == 1
+
+
+def test_find_product_exhausts_page_cap_without_short_page(monkeypatch) -> None:
+    """상한(max_pages)을 다 쓰도록 매 페이지가 꽉 차서 진짜 끝을 못 만남 — (None, True).
+
+    #622 — 조회 실패(더 있을 수 있음)와 정상 없음(진짜 끝)을 구분하는 핵심 분기.
+    """
+    _lookup_page_size(monkeypatch, page_size=20, max_pages=2)
+    filler = [_ROW.model_copy(update={"product_id": i, "name": f"상품{i}"}) for i in range(1, 41)]
+    spring = _StubSpring(rows=filler)  # 정확히 20×2건 — 매 페이지가 꽉 차 짧은 페이지가 없다
+    set_spring_client(spring)
+
+    row, exhausted = asyncio.run(hitl._find_product(3, 999))
+
+    assert row is None
+    assert exhausted is True
+    assert len([c for c in spring.calls if c[0] == "list"]) == 2
 
 
 # ── [#297] op="ship" — I-30 발송 처리 HITL (§4.19) ───────────────────────────────
@@ -1260,4 +1342,346 @@ def test_create_missing_field_does_not_promise_retry() -> None:
     outcome = _run_confirm(record)
     assert outcome.status == "stale"
     assert "등록했습니다" not in outcome.text
-    assert hitl._STALE_RETRY_GUIDE not in outcome.text
+
+
+# ── [#620] update 카테고리 선차단 · INVALID_PRICE 선차단 · 상품명 길이 · 중복 필드 ──
+
+
+def test_validate_draft_update_rejects_category_change() -> None:
+    """update 초안에 category 가 실리면 카드를 보여주기 전에 되묻는다.
+
+    ProductUpdate 스키마에도 이제 category 필드가 없다(BE DTO 와 대칭) — 여기서 막지
+    않으면 카드엔 "카테고리 변경"이 보이는데 confirm 해도 조용히 무시된다.
+    """
+    record, problem = hitl.validate_draft(
+        _proposal(changes=[DraftChange(field="category", before="", after=_category_id())]),
+        seller_id=7,
+        brand_id=3,
+    )
+    assert record is None
+    assert "카테고리" in problem and "수정" in problem
+
+
+def test_validate_draft_update_price_over_original_price_blocked_with_row() -> None:
+    """row 가 주어지면 BE validatePriceRange 와 같은 규칙을 카드 표시 전에 선계산한다.
+
+    _ROW.original_price=18000 — 20000 원으로 바꾸면 정가를 넘는다.
+    """
+    record, problem = hitl.validate_draft(
+        _proposal(changes=[DraftChange(field="price", before="15000", after="20000")]),
+        seller_id=7,
+        brand_id=3,
+        row=_ROW,
+    )
+    assert record is None
+    assert "정가" in problem and "20,000" in problem and "18,000" in problem
+
+
+def test_validate_draft_update_price_change_without_row_is_not_prechecked() -> None:
+    """row 를 안 넘긴 호출부(레거시)는 이 선차단을 건너뛴다 — confirm 시점 BE 422 에 맡긴다."""
+    record = _record(changes=[DraftChange(field="price", before="15000", after="20000")])
+    assert record is not None
+
+
+def test_validate_draft_update_price_within_original_price_with_row_passes() -> None:
+    """정가 이하로 낮추는 정상 변경은 row 가 있어도 막히지 않는다."""
+    record, problem = hitl.validate_draft(
+        _proposal(changes=[DraftChange(field="price", before="15000", after="12900")]),
+        seller_id=7,
+        brand_id=3,
+        row=_ROW,
+    )
+    assert problem is None and record is not None
+
+
+def test_confirm_update_invalid_price_reports_stale() -> None:
+    """422 INVALID_PRICE(선차단을 우회한 레이스) — 재시도 대신 재조회 후 새 초안을 권한다."""
+    spring = _StubSpring()
+    spring.update_error = InvalidPrice("INVALID_PRICE")
+    set_spring_client(spring)
+    record = _record()
+    outcome = _run_confirm(record)
+    assert outcome.status == "stale"
+    assert "정가" in outcome.text
+
+
+def test_confirm_update_empty_changes_reports_already_done() -> None:
+    """[#620] BE changes:[] (실질 변경 없음) — "반영했습니다" 대신 already_done 으로 갈음한다.
+
+    panel 분기(_confirm_stream)는 status=="executed" 만 refresh 이므로, already_done 은
+    자연히 keep 이 된다(추가 배선 없이).
+    """
+    spring = _StubSpring()
+    spring.update_result_changes = []
+    set_spring_client(spring)
+    record = _record()
+    outcome = _run_confirm(record)
+    assert outcome.status == "already_done"
+    assert "바뀐 내용이 없습니다" in outcome.text
+
+
+def test_validate_draft_rejects_duplicate_non_stock_field() -> None:
+    """같은 필드(재고 제외)가 changes 에 두 번 실리면 나중 값이 조용히 이기게 두지 않는다."""
+    record, problem = hitl.validate_draft(
+        _proposal(
+            changes=[
+                DraftChange(field="price", before="15000", after="12900"),
+                DraftChange(field="price", before="15000", after="11000"),
+            ]
+        ),
+        seller_id=7,
+        brand_id=3,
+    )
+    assert record is None and "가격" in problem
+
+
+def test_validate_draft_rejects_name_over_max_length() -> None:
+    """[#620] BE @Size(max=200) 2차 방어 — 초과분은 카드 표시 전에 되묻는다."""
+    from app.core.config import get_settings
+
+    too_long = "가" * (get_settings().seller_name_max_len + 1)
+    record, problem = hitl.validate_draft(
+        _proposal(changes=[DraftChange(field="name", before="감귤청", after=too_long)]),
+        seller_id=7,
+        brand_id=3,
+    )
+    assert record is None and "상품명" in problem
+
+
+def test_validate_draft_delete_normalizes_junk_changes_to_status_only() -> None:
+    """delete 초안에 status 외 필드가 섞여도 카드 changes 는 status 한 건으로만 정규화된다.
+
+    실행(I-12)은 changes 를 보지 않으므로("보여준 것==실행하는 것") 잡음을 카드에도
+    보이지 않게 한다.
+    """
+    record, problem = hitl.validate_draft(
+        _proposal(
+            op="delete",
+            changes=[
+                DraftChange(field="status", before="ON_SALE", after="DELETED"),
+                DraftChange(field="price", before="15000", after="0"),
+            ],
+        ),
+        seller_id=7,
+        brand_id=3,
+    )
+    assert problem is None and record is not None
+    assert [c.field for c in record.changes] == ["status"]
+
+
+def test_validate_draft_delete_without_status_change_normalizes_to_empty() -> None:
+    """delete 초안이 status 변경을 안 실었으면(LLM 이 지시를 안 따른 경우) changes 를 비운다
+    (ship 과 같은 패턴, I-9 재조회로 placeholder 를 합성하지 않는다)."""
+    record, problem = hitl.validate_draft(
+        _proposal(op="delete", changes=[]),
+        seller_id=7,
+        brand_id=3,
+    )
+    assert problem is None and record is not None
+    assert record.changes == []
+
+
+# ── 이슈 #621 — confirm 멱등(gate/execute 2노드 분리) ────────────────────────────
+
+
+def test_gate_commits_attempted_at_before_execute_commits_result() -> None:
+    """[증명, 이 이슈의 첫 커밋] gate 노드의 attempted_at 커밋이 execute 노드의 result
+    커밋보다 먼저 체크포인트 이력에 영속화된다 — LangGraph super-step 커밋 타이밍이라는
+    이 이슈의 전제를 확인한다. 이 전제가 깨지면 graph.aupdate_state 로 attempted_at 을
+    직접 쓰는 대안으로 전환한다(이슈 본문 대안)."""
+    spring = _StubSpring()
+    set_spring_client(spring)
+    record = _record()
+
+    async def run():
+        await hitl.start_draft(record)
+        await hitl.confirm_draft(record.draft_id, seller_id=7, brand_id=3)
+        graph = await hitl._get_graph()
+        history = [
+            state
+            async for state in graph.aget_state_history(hitl._thread_config(record.draft_id))
+        ]
+        return history
+
+    history = asyncio.run(run())
+
+    attempted_only = [
+        s for s in history if s.values.get("attempted_at") and not s.values.get("result")
+    ]
+    has_result = [s for s in history if s.values.get("result")]
+    assert attempted_only, "gate 커밋(attempted_at 단독)이 체크포인트 이력에 없다"
+    assert has_result, "execute 커밋(result)이 체크포인트 이력에 없다"
+    # created_at 타임스탬프로 직접 비교한다(이력 순서 규약에 기대지 않는 독립적 증거) —
+    # attempted_at 단독 체크포인트가 result 있는 체크포인트보다 시간상 앞서야 한다.
+    attempted_at_ts = min(s.created_at for s in attempted_only if s.created_at)
+    result_ts = min(s.created_at for s in has_result if s.created_at)
+    assert attempted_at_ts < result_ts, (
+        "attempted_at 커밋이 result 커밋보다 먼저 영속화되지 않았다 — "
+        "super-step 커밋 전제가 깨졌다"
+    )
+
+
+def test_confirm_unknown_when_own_resume_hits_wait_for_cap(monkeypatch) -> None:
+    """[재현, LangGraph 1.2.9 실측] gate 는 interrupt 가 한 번 풀리면 재시도에서
+    다시 실행되지 않는다(그 다음부턴 execute 만 재스케줄) — 그래서 "attempted_at
+    有·result 無"는 방금 SpringUnavailableError 로 명확히 실패한 상태(재confirm
+    허용, 아래 retryable 테스트들)에서도 그대로 남아, 그 값만으로는 unknown 을 판단할
+    수 없다. unknown 은 confirm_draft **자신의** resume 시도가 execute 도중
+    wait_for 상한에 걸렸을 때만 낸다 — 이 테스트는 그 상황을 실제로 재현한다."""
+    spring = _StubSpring()
+    set_spring_client(spring)
+    record = _record()
+
+    real = hitl.get_settings()
+    monkeypatch.setattr(
+        hitl,
+        "get_settings",
+        lambda: real.model_copy(update={"seller_confirm_execute_timeout_s": 0.05}),
+    )
+
+    original_update = spring.update_product
+
+    async def hanging_update(*args, **kwargs):
+        await asyncio.sleep(1.0)
+        return await original_update(*args, **kwargs)
+
+    spring.update_product = hanging_update
+
+    async def run():
+        await hitl.start_draft(record)
+        outcome = await hitl.confirm_draft(record.draft_id, seller_id=7, brand_id=3)
+        graph = await hitl._get_graph()
+        snapshot = await graph.aget_state(hitl._thread_config(record.draft_id))
+        return outcome, snapshot
+
+    outcome, snapshot = asyncio.run(run())
+
+    assert outcome.status == "unknown"
+    assert spring.write_calls() == []  # Spring 요청이 잘려 실제로 나가지 않았다
+    # gate 커밋(attempted_at)은 남고 execute 는 다음 confirm 이 재시도할 대상으로 대기한다.
+    assert snapshot.values.get("attempted_at")
+    assert not snapshot.values.get("result")
+    assert snapshot.next == ("execute",)
+
+
+def test_confirm_after_unknown_can_still_retry(monkeypatch) -> None:
+    """unknown 은 그 호출 한정 판정이다 — 다음 confirm 은 wait_for 상한 없이 정상
+    재시도해 완주할 수 있다(#621, 사용자에게 "상품 목록에서 확인 후 안 됐으면 다시
+    말씀해달라" 안내만 하고 draft 자체는 죽이지 않는다는 계약의 실측 확인)."""
+    spring = _StubSpring()
+    set_spring_client(spring)
+    record = _record()
+
+    real = hitl.get_settings()
+    monkeypatch.setattr(
+        hitl,
+        "get_settings",
+        lambda: real.model_copy(update={"seller_confirm_execute_timeout_s": 0.05}),
+    )
+
+    original_update = spring.update_product
+    hang = {"on": True}
+
+    async def maybe_hanging_update(*args, **kwargs):
+        if hang["on"]:
+            await asyncio.sleep(1.0)
+        return await original_update(*args, **kwargs)
+
+    spring.update_product = maybe_hanging_update
+
+    async def run():
+        await hitl.start_draft(record)
+        first = await hitl.confirm_draft(record.draft_id, seller_id=7, brand_id=3)
+        hang["on"] = False
+        second = await hitl.confirm_draft(record.draft_id, seller_id=7, brand_id=3)
+        return first, second
+
+    first, second = asyncio.run(run())
+
+    assert first.status == "unknown"
+    assert second.status == "executed"
+    assert len(spring.write_calls()) == 1  # 실제로 나간 쓰기는 재시도 1회뿐
+
+
+def test_confirm_survives_outer_cancellation_via_shield() -> None:
+    """[증명] confirm_draft 를 감싼 바깥 태스크가 취소돼도 asyncio.shield 덕분에 내부
+    resume 실행은 끝까지 돈다 — Spring 쓰기가 나간 뒤 절단되면 checkpoint 미기록으로
+    재confirm 시 중복 등록되는 문제(#621 ①)를 막는다."""
+    spring = _StubSpring()
+    set_spring_client(spring)
+    record = _record()
+
+    original_update = spring.update_product
+
+    async def slow_update(*args, **kwargs):
+        await asyncio.sleep(0.2)
+        return await original_update(*args, **kwargs)
+
+    spring.update_product = slow_update
+
+    async def run():
+        await hitl.start_draft(record)
+        task = asyncio.create_task(hitl.confirm_draft(record.draft_id, seller_id=7, brand_id=3))
+        await asyncio.sleep(0.05)  # inner 가 update_product 지연 중일 시점
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0.3)  # shield 로 보호된 inner 완주 대기
+        graph = await hitl._get_graph()
+        snapshot = await graph.aget_state(hitl._thread_config(record.draft_id))
+        return snapshot.values
+
+    values = asyncio.run(run())
+
+    assert values.get("outcome") == "executed"
+    assert len(spring.write_calls()) == 1  # shield 덕분에 실행은 정확히 1회 완주
+
+
+def test_mark_recommendation_applied_same_commit_as_write(monkeypatch) -> None:
+    """추천 적용 경로(rec_id 有)의 마킹 호출이 execute 노드 반환값 계산 안에 있어, 쓰기
+    (_execute_draft)와 같은 super-step 에 포함된다(#621 ④) — 별도 커밋으로 갈리면 쓰기는
+    끝났는데 마킹만 유실되는 창이 생긴다."""
+    spring = _StubSpring()
+    set_spring_client(spring)
+    calls: list[tuple] = []
+
+    async def _fake_mark(rec_id, *, brand_id, draft_id):
+        calls.append((rec_id, brand_id, draft_id))
+
+    monkeypatch.setattr(hitl.analysis_store, "mark_recommendation_applied", _fake_mark)
+    rec_id = "12345678-1234-5678-1234-567812345678"
+    record = _record(_proposal(rec_id=rec_id))
+
+    async def run():
+        await hitl.start_draft(record)
+        return await hitl.confirm_draft(record.draft_id, seller_id=7, brand_id=3)
+
+    outcome = asyncio.run(run())
+
+    assert outcome.status == "executed"
+    assert len(calls) == 1
+    assert str(calls[0][0]) == rec_id
+    assert calls[0][1:] == (3, record.draft_id)
+
+
+def test_confirm_fail_closed_when_outcome_missing(monkeypatch) -> None:
+    """[안전장치 ⑤] execute 노드가 outcome 없이 반환하는 그래프 상태 이상을 흉내낸다 —
+    resume 결과에 outcome 키가 없으면 이전(fail-open, "executed" 기본값) 대신 fail-closed
+    (stale)로 처리한다(#621, 사용자 결정: stale 문구 재사용)."""
+    spring = _StubSpring()
+    set_spring_client(spring)
+    record = _record()
+
+    async def _broken_execute_node(state):
+        return {}  # outcome/result 둘 다 없음
+
+    monkeypatch.setattr(hitl, "_execute_node", _broken_execute_node)
+
+    async def run():
+        await hitl.start_draft(record)
+        return await hitl.confirm_draft(record.draft_id, seller_id=7, brand_id=3)
+
+    outcome = asyncio.run(run())
+
+    assert outcome.status == "stale"
+    assert spring.write_calls() == []

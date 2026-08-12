@@ -13,6 +13,7 @@ LLM 을 새로 부르지 않는다. 복수 삭제는 항목별 반복 호출이�
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+import inspect
 import logging
 
 from app.agents.buyer._frames import sse
@@ -27,6 +28,23 @@ from app.services import spring_client
 from app.services.spring_client import CartError, CartItemNotFound, SpringUnavailableError
 
 _log = logging.getLogger(__name__)
+
+
+def _accepts_chat_session_id(delete_fn: object) -> bool:
+    """I-24 확장 전 시그니처의 주입 fake도 계속 쓸 수 있게 한다.
+
+    프로덕션 Spring client는 ``chat_session_id``를 받는다. 다만 오래된 단위 테스트/호출자
+    double은 해당 keyword가 없을 수 있다. 시그니처를 확인할 수 없으면 실제 클라이언트를
+    막지 않도록 전달을 택한다.
+    """
+    try:
+        parameters = inspect.signature(delete_fn).parameters.values()
+    except (TypeError, ValueError):
+        return True
+    return any(
+        parameter.name == "chat_session_id" or parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters
+    )
 
 
 def _done() -> str:
@@ -297,6 +315,7 @@ async def stream_cart_remove(
     get_cart_fn=None,
     delete_fn=None,
     observer=None,
+    chat_session_id: str | None = None,
 ) -> AsyncIterator[str]:
     """삭제 서브그래프. 항목마다 `action`(CART_REMOVED/CART_REMOVE_FAILED)을 내고 `done` 1회로 끝난다."""
     get_cart_fn = get_cart_fn or spring_client.get_cart
@@ -350,7 +369,10 @@ async def stream_cart_remove(
     for item in targets:
         name = _display_name(item)
         try:
-            await delete_fn(item.cart_item_id, user_id=user_id, guest_id=guest_id)
+            delete_kwargs = {"user_id": user_id, "guest_id": guest_id}
+            if chat_session_id is not None and _accepts_chat_session_id(delete_fn):
+                delete_kwargs["chat_session_id"] = chat_session_id
+            await delete_fn(item.cart_item_id, **delete_kwargs)
         except CartItemNotFound:
             # [확정 2026-08-05] 404 를 성공 안내로 종료하는 것은 정본 권고안 — 사용자가 보기엔
             # "빼려던 게 이미 빠져 있다"는 실패가 아니라 원하는 상태에 도달한 것이다.
