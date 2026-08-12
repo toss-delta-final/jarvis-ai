@@ -298,6 +298,9 @@ def test_validated_metric_scores_displayed_template_not_model_text() -> None:
         ("가성비가 제일 좋아요", ("VALUE_FOR_MONEY_TOP",)),
         ("요청과의 관련도를 기준으로 추천했어요.", ("NO_VERIFIABLE_OVERALL_CLAIM",)),
         ("조건에 맞춰 상품을 정리했어요", ()),
+        ("후기가 많은 조건에 가장 잘 맞는 상품이에요", ()),
+        ("평점은 높지만 리뷰 정보가 없어요", ()),
+        ("평점과 리뷰 수준은 같고 이 상품이 가장 적합해요", ()),
     ],
 )
 def test_overall_detector_is_bounded_to_registered_korean_families(

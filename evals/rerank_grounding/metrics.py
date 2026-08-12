@@ -12,6 +12,14 @@ from app.agents.buyer.recommendation.rerank_grounding import (
 
 _NUMBER_RE = re.compile(r"\d|[영일이삼사오육칠팔구십백천만]+(?:점|개|원|%)")
 _NEUTRAL_OVERALL_COMMENT = "요청과의 관련도를 기준으로 추천했어요"
+_TOP_REVIEW_RE = re.compile(
+    r"(?:리뷰|후기)(?:\s*수)?(?:가|는|의)?\s*(?:(?:가장|제일)\s*많|최다)"
+    r"|(?:가장|제일)\s*(?:리뷰|후기)(?:\s*수)?(?:가|는|의)?\s*많"
+)
+_ALL_RATING_RE = re.compile(
+    r"(?:모두|전부).{0,16}(?:평점|평가).{0,16}(?:높|좋|우수)"
+    r"|(?:평점|평가).{0,16}(?:높|좋|우수).{0,12}(?:상품|제품|후보|것)(?:들)?만"
+)
 
 _METRIC_DEFINITIONS = {
     "unsupportedEvidence": {
@@ -158,15 +166,9 @@ def detect_overall_claims(comment: str) -> tuple[str, ...]:
 
     collapsed = " ".join(comment.split())
     detected: list[str] = []
-    if any(token in collapsed for token in ("리뷰", "후기")) and any(
-        token in collapsed for token in ("가장", "최다", "제일")
-    ):
+    if _TOP_REVIEW_RE.search(collapsed):
         detected.append("TOP_REVIEW_COUNT")
-    if (
-        any(token in collapsed for token in ("모두", "전부", "만"))
-        and any(token in collapsed for token in ("평점", "평가"))
-        and any(token in collapsed for token in ("높", "좋", "우수"))
-    ):
+    if _ALL_RATING_RE.search(collapsed):
         detected.append("ALL_RATING_HIGH")
     if (
         any(token in collapsed for token in ("모두", "전부", "각 추천 조합", "각 조합"))
