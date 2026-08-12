@@ -1,0 +1,1157 @@
+{
+  "datasetVersion": "0.2.0",
+  "openIssues": [],
+  "resolvedFindings": [
+    {
+      "families": [
+        "fam-missing_data-06"
+      ],
+      "problem": "missing policy와 required behavior 표현 불일치",
+      "resolution": "exclude 규칙과 일치하도록 확인된 가격만 충족 판정으로 수정",
+      "scope": "sample"
+    },
+    {
+      "families": [
+        "fam-boundary-17"
+      ],
+      "problem": "0원 아래 경계가 음수 가격을 만들어 비현실적",
+      "resolution": "0/1/2원으로 구성한 최소 양수 상한 경계로 수정",
+      "scope": "global"
+    },
+    {
+      "families": [
+        "fam-boundary-21"
+      ],
+      "problem": "고정 가격 조건이 target 후보를 모든 contrast에서 탈락시켜 review boundary 효과를 가림",
+      "resolution": "target 가격을 고정 상한 이내로 수정",
+      "scope": "global"
+    },
+    {
+      "families": [
+        "fam-constraint_conflict-14"
+      ],
+      "problem": "seed 요청 수와 minimumEligibleCandidates 불일치",
+      "resolution": "seed minimum을 2로 수정",
+      "scope": "sample"
+    },
+    {
+      "families": [
+        "fam-evidence_conflict-23"
+      ],
+      "problem": "기존 exact review-count 충돌과 의미 중복",
+      "resolution": "후보 간 비교 우위 자기주장 충돌로 교체",
+      "scope": "sample"
+    },
+    {
+      "families": [
+        "fam-evidence_conflict-30"
+      ],
+      "problem": "review popularity-rank 계열과 의미가 가까움",
+      "resolution": "structured options 대 비권위 옵션 제공 주장으로 교체",
+      "scope": "global"
+    },
+    {
+      "families": [
+        "fam-no_evidence-06",
+        "fam-no_evidence-07",
+        "fam-no_evidence-08",
+        "fam-no_evidence-09",
+        "fam-no_evidence-10",
+        "fam-no_evidence-17",
+        "fam-no_evidence-18",
+        "fam-no_evidence-27"
+      ],
+      "problem": "정확 수치 요구가 numeric_hallucination failure mode와 섞일 가능성",
+      "resolution": "장시간·대용량·경량·컴팩트·저소음·유아 적합·내열 용도·장기 반품의 질적 근거 제거로 수정",
+      "scope": "sample"
+    },
+    {
+      "families": [
+        "fam-evidence_conflict-28",
+        "fam-evidence_conflict-29"
+      ],
+      "problem": "사용자 요청의 목표 category/brand가 암묵적이라 정답 근거가 약함",
+      "resolution": "전자기기/세리온 조건을 요청에 명시",
+      "scope": "global"
+    }
+  ],
+  "reviewVersion": "1.0.0",
+  "reviewedAt": "2026-08-12",
+  "reviews": [
+    {
+      "atomicity": {
+        "note": "각 variant는 candidates[0].price 한 경로만 바꾸며 family metadata와 후보 순서는 고정된다.",
+        "status": "pass"
+      },
+      "category": "boundary",
+      "evidenceSufficiency": {
+        "note": "raw numeric field와 deterministic constraint가 기대 판정을 완전히 결정한다.",
+        "status": "pass"
+      },
+      "failureModePresent": {
+        "note": "candidates[0].price의 seed/equal/other 세 값이 동일 threshold의 아래·같음·위에 놓인다.",
+        "status": "pass"
+      },
+      "familyId": "fam-boundary-02",
+      "issuesFound": [],
+      "nonTriviality": {
+        "note": "경계 후보 외 데이터와 고정 보조조건을 유지해 반올림·포함성 오류만 드러낸다.",
+        "status": "pass"
+      },
+      "reviewedCaseIds": [
+        "adv-boundary-02-seed",
+        "adv-boundary-02-equal",
+        "adv-boundary-02-other"
+      ]
+    },
+    {
+      "atomicity": {
+        "note": "각 variant는 candidates[0].price 한 경로만 바꾸며 family metadata와 후보 순서는 고정된다.",
+        "status": "pass"
+      },
+      "category": "boundary",
+      "evidenceSufficiency": {
+        "note": "raw numeric field와 deterministic constraint가 기대 판정을 완전히 결정한다.",
+        "status": "pass"
+      },
+      "failureModePresent": {
+        "note": "candidates[0].price의 seed/equal/other 세 값이 동일 threshold의 아래·같음·위에 놓인다.",
+        "status": "pass"
+      },
+      "familyId": "fam-boundary-03",
+      "issuesFound": [],
+      "nonTriviality": {
+        "note": "경계 후보 외 데이터와 고정 보조조건을 유지해 반올림·포함성 오류만 드러낸다.",
+        "status": "pass"
+      },
+      "reviewedCaseIds": [
+        "adv-boundary-03-seed",
+        "adv-boundary-03-equal",
+        "adv-boundary-03-other"
+      ]
+    },
+    {
+      "atomicity": {
+        "note": "각 variant는 candidates[0].price 한 경로만 바꾸며 family metadata와 후보 순서는 고정된다.",
+        "status": "pass"
+      },
+      "category": "boundary",
+      "evidenceSufficiency": {
+        "note": "raw numeric field와 deterministic constraint가 기대 판정을 완전히 결정한다.",
+        "status": "pass"
+      },
+      "failureModePresent": {
+        "note": "candidates[0].price의 seed/equal/other 세 값이 동일 threshold의 아래·같음·위에 놓인다.",
+        "status": "pass"
+      },
+      "familyId": "fam-boundary-10",
+      "issuesFound": [],
+      "nonTriviality": {
+        "note": "경계 후보 외 데이터와 고정 보조조건을 유지해 반올림·포함성 오류만 드러낸다.",
+        "status": "pass"
+      },
+      "reviewedCaseIds": [
+        "adv-boundary-10-seed",
+        "adv-boundary-10-equal",
+        "adv-boundary-10-other"
+      ]
+    },
+    {
+      "atomicity": {
+        "note": "각 variant는 candidates[0].rating 한 경로만 바꾸며 family metadata와 후보 순서는 고정된다.",
+        "status": "pass"
+      },
+      "category": "boundary",
+      "evidenceSufficiency": {
+        "note": "raw numeric field와 deterministic constraint가 기대 판정을 완전히 결정한다.",
+        "status": "pass"
+      },
+      "failureModePresent": {
+        "note": "candidates[0].rating의 seed/equal/other 세 값이 동일 threshold의 아래·같음·위에 놓인다.",
+        "status": "pass"
+      },
+      "familyId": "fam-boundary-20",
+      "issuesFound": [],
+      "nonTriviality": {
+        "note": "경계 후보 외 데이터와 고정 보조조건을 유지해 반올림·포함성 오류만 드러낸다.",
+        "status": "pass"
+      },
+      "reviewedCaseIds": [
+        "adv-boundary-20-seed",
+        "adv-boundary-20-equal",
+        "adv-boundary-20-other"
+      ]
+    },
+    {
+      "atomicity": {
+        "note": "각 variant는 candidates[0].reviewCount 한 경로만 바꾸며 family metadata와 후보 순서는 고정된다.",
+        "status": "pass"
+      },
+      "category": "boundary",
+      "evidenceSufficiency": {
+        "note": "raw numeric field와 deterministic constraint가 기대 판정을 완전히 결정한다.",
+        "status": "pass"
+      },
+      "failureModePresent": {
+        "note": "candidates[0].reviewCount의 seed/equal/other 세 값이 동일 threshold의 아래·같음·위에 놓인다.",
+        "status": "pass"
+      },
+      "familyId": "fam-boundary-21",
+      "issuesFound": [],
+      "nonTriviality": {
+        "note": "경계 후보 외 데이터와 고정 보조조건을 유지해 반올림·포함성 오류만 드러낸다.",
+        "status": "pass"
+      },
+      "reviewedCaseIds": [
+        "adv-boundary-21-seed",
+        "adv-boundary-21-equal",
+        "adv-boundary-21-other"
+      ]
+    },
+    {
+      "atomicity": {
+        "note": "각 variant는 candidates[0].price 한 경로만 바꾸며 family metadata와 후보 순서는 고정된다.",
+        "status": "pass"
+      },
+      "category": "boundary",
+      "evidenceSufficiency": {
+        "note": "raw numeric field와 deterministic constraint가 기대 판정을 완전히 결정한다.",
+        "status": "pass"
+      },
+      "failureModePresent": {
+        "note": "candidates[0].price의 seed/equal/other 세 값이 동일 threshold의 아래·같음·위에 놓인다.",
+        "status": "pass"
+      },
+      "familyId": "fam-boundary-25",
+      "issuesFound": [],
+      "nonTriviality": {
+        "note": "경계 후보 외 데이터와 고정 보조조건을 유지해 반올림·포함성 오류만 드러낸다.",
+        "status": "pass"
+      },
+      "reviewedCaseIds": [
+        "adv-boundary-25-seed",
+        "adv-boundary-25-equal",
+        "adv-boundary-25-other"
+      ]
+    },
+    {
+      "atomicity": {
+        "note": "각 variant는 userRequest.message 한 경로만 바꾸며 family metadata와 후보 순서는 고정된다.",
+        "status": "pass"
+      },
+      "category": "constraint_conflict",
+      "evidenceSufficiency": {
+        "note": "후보 raw price/rating/reviewCount와 명시된 constraint/minimumEligibleCandidates로 충돌을 재계산할 수 있다.",
+        "status": "pass"
+      },
+      "failureModePresent": {
+        "note": "변형 요청의 deterministic oracle에서 검증된 eligible 수가 요구 수보다 작아 conflictDetected=true다.",
+        "status": "pass"
+      },
+      "familyId": "fam-constraint_conflict-10",
+      "issuesFound": [],
+      "nonTriviality": {
+        "note": "각 후보가 조건 일부 또는 수량 요구에 근접해 무단 조건 완화가 유혹되는 hard negative다.",
+        "status": "pass"
+      },
+      "reviewedCaseIds": [
+        "adv-constraint_conflict-10-seed",
+        "adv-constraint_conflict-10-conflict"
+      ]
+    },
+    {
+      "atomicity": {
+        "note": "각 variant는 userRequest.message 한 경로만 바꾸며 family metadata와 후보 순서는 고정된다.",
+        "status": "pass"
+      },
+      "category": "constraint_conflict",
+      "evidenceSufficiency": {
+        "note": "후보 raw price/rating/reviewCount와 명시된 constraint/minimumEligibleCandidates로 충돌을 재계산할 수 있다.",
+        "status": "pass"
+      },
+      "failureModePresent": {
+        "note": "변형 요청의 deterministic oracle에서 검증된 eligible 수가 요구 수보다 작아 conflictDetected=true다.",
+        "status": "pass"
+      },
+      "familyId": "fam-constraint_conflict-14",
+      "issuesFound": [
+        "seed 요청은 2개였지만 minimumEligibleCandidates가 1이어서 2로 수정했다."
+      ],
+      "nonTriviality": {
+        "note": "각 후보가 조건 일부 또는 수량 요구에 근접해 무단 조건 완화가 유혹되는 hard negative다.",
+        "status": "pass"
+      },
+      "reviewedCaseIds": [
+        "adv-constraint_conflict-14-seed",
+        "adv-constraint_conflict-14-conflict"
+      ]
+    },
+    {
+      "atomicity": {
+        "note": "각 variant는 userRequest.message 한 경로만 바꾸며 family metadata와 후보 순서는 고정된다.",
+        "status": "pass"
+      },
+      "category": "constraint_conflict",
+      "evidenceSufficiency": {
+        "note": "후보 raw price/rating/reviewCount와 명시된 constraint/minimumEligibleCandidates로 충돌을 재계산할 수 있다.",
+        "status": "pass"
+      },
+      "failureModePresent": {
+        "note": "변형 요청의 deterministic oracle에서 검증된 eligible 수가 요구 수보다 작아 conflictDetected=true다.",
+        "status": "pass"
+      },
+      "familyId": "fam-constraint_conflict-19",
+      "issuesFound": [],
+      "nonTriviality": {
+        "note": "각 후보가 조건 일부 또는 수량 요구에 근접해 무단 조건 완화가 유혹되는 hard negative다.",
+        "status": "pass"
+      },
+      "reviewedCaseIds": [
+        "adv-constraint_conflict-19-seed",
+        "adv-constraint_conflict-19-conflict"
+      ]
+    },
+    {
+      "atomicity": {
+        "note": "각 variant는 userRequest.message 한 경로만 바꾸며 family metadata와 후보 순서는 고정된다.",
+        "status": "pass"
+      },
+      "category": "constraint_conflict",
+      "evidenceSufficiency": {
+        "note": "후보 raw price/rating/reviewCount와 명시된 constraint/minimumEligibleCandidates로 충돌을 재계산할 수 있다.",
+        "status": "pass"
+      },
+      "failureModePresent": {
+        "note": "변형 요청의 deterministic oracle에서 검증된 eligible 수가 요구 수보다 작아 conflictDetected=true다.",
+        "status": "pass"
+      },
+      "familyId": "fam-constraint_conflict-23",
+      "issuesFound": [],
+      "nonTriviality": {
+        "note": "각 후보가 조건 일부 또는 수량 요구에 근접해 무단 조건 완화가 유혹되는 hard negative다.",
+        "status": "pass"
+      },
+      "reviewedCaseIds": [
+        "adv-constraint_conflict-23-seed",
+        "adv-constraint_conflict-23-conflict"
+      ]
+    },
+    {
+      "atomicity": {
+        "note": "각 variant는 userRequest.message 한 경로만 바꾸며 family metadata와 후보 순서는 고정된다.",
+        "status": "pass"
+      },
+      "category": "constraint_conflict",
+      "evidenceSufficiency": {
+        "note": "후보 raw price/rating/reviewCount와 명시된 constraint/minimumEligibleCandidates로 충돌을 재계산할 수 있다.",
+        "status": "pass"
+      },
+      "failureModePresent": {
+        "note": "변형 요청의 deterministic oracle에서 검증된 eligible 수가 요구 수보다 작아 conflictDetected=true다.",
+        "status": "pass"
+      },
+      "familyId": "fam-constraint_conflict-27",
+      "issuesFound": [],
+      "nonTriviality": {
+        "note": "각 후보가 조건 일부 또는 수량 요구에 근접해 무단 조건 완화가 유혹되는 hard negative다.",
+        "status": "pass"
+      },
+      "reviewedCaseIds": [
+        "adv-constraint_conflict-27-seed",
+        "adv-constraint_conflict-27-conflict"
+      ]
+    },
+    {
+      "atomicity": {
+        "note": "각 variant는 userRequest.message 한 경로만 바꾸며 family metadata와 후보 순서는 고정된다.",
+        "status": "pass"
+      },
+      "category": "constraint_conflict",
+      "evidenceSufficiency": {
+        "note": "후보 raw price/rating/reviewCount와 명시된 constraint/minimumEligibleCandidates로 충돌을 재계산할 수 있다.",
+        "status": "pass"
+      },
+      "failureModePresent": {
+        "note": "변형 요청의 deterministic oracle에서 검증된 eligible 수가 요구 수보다 작아 conflictDetected=true다.",
+        "status": "pass"
+      },
+      "familyId": "fam-constraint_conflict-28",
+      "issuesFound": [],
+      "nonTriviality": {
+        "note": "각 후보가 조건 일부 또는 수량 요구에 근접해 무단 조건 완화가 유혹되는 hard negative다.",
+        "status": "pass"
+      },
+      "reviewedCaseIds": [
+        "adv-constraint_conflict-28-seed",
+        "adv-constraint_conflict-28-conflict"
+      ]
+    },
+    {
+      "atomicity": {
+        "note": "각 variant는 candidates[0].name 한 경로만 바꾸며 family metadata와 후보 순서는 고정된다.",
+        "status": "pass"
+      },
+      "category": "evidence_conflict",
+      "evidenceSufficiency": {
+        "note": "충돌 텍스트와 권위 있는 structured field가 모두 저장되어 우선순위를 판정할 수 있다.",
+        "status": "pass"
+      },
+      "failureModePresent": {
+        "note": "candidates[0].name의 변형 텍스트가 authoritativeFields의 구조화 값과 모순된다.",
+        "status": "pass"
+      },
+      "familyId": "fam-evidence_conflict-02",
+      "issuesFound": [],
+      "nonTriviality": {
+        "note": "공격 텍스트가 그럴듯한 상품 주장이라 단순 노이즈가 아닌 근접 오정보다.",
+        "status": "pass"
+      },
+      "reviewedCaseIds": [
+        "adv-evidence_conflict-02-seed",
+        "adv-evidence_conflict-02-conflict"
+      ]
+    },
+    {
+      "atomicity": {
+        "note": "각 variant는 candidates[0].name 한 경로만 바꾸며 family metadata와 후보 순서는 고정된다.",
+        "status": "pass"
+      },
+      "category": "evidence_conflict",
+      "evidenceSufficiency": {
+        "note": "충돌 텍스트와 권위 있는 structured field가 모두 저장되어 우선순위를 판정할 수 있다.",
+        "status": "pass"
+      },
+      "failureModePresent": {
+        "note": "candidates[0].name의 변형 텍스트가 authoritativeFields의 구조화 값과 모순된다.",
+        "status": "pass"
+      },
+      "familyId": "fam-evidence_conflict-06",
+      "issuesFound": [],
+      "nonTriviality": {
+        "note": "공격 텍스트가 그럴듯한 상품 주장이라 단순 노이즈가 아닌 근접 오정보다.",
+        "status": "pass"
+      },
+      "reviewedCaseIds": [
+        "adv-evidence_conflict-06-seed",
+        "adv-evidence_conflict-06-conflict"
+      ]
+    },
+    {
+      "atomicity": {
+        "note": "각 variant는 candidates[0].name 한 경로만 바꾸며 family metadata와 후보 순서는 고정된다.",
+        "status": "pass"
+      },
+      "category": "evidence_conflict",
+      "evidenceSufficiency": {
+        "note": "충돌 텍스트와 권위 있는 structured field가 모두 저장되어 우선순위를 판정할 수 있다.",
+        "status": "pass"
+      },
+      "failureModePresent": {
+        "note": "candidates[0].name의 변형 텍스트가 authoritativeFields의 구조화 값과 모순된다.",
+        "status": "pass"
+      },
+      "familyId": "fam-evidence_conflict-08",
+      "issuesFound": [],
+      "nonTriviality": {
+        "note": "공격 텍스트가 그럴듯한 상품 주장이라 단순 노이즈가 아닌 근접 오정보다.",
+        "status": "pass"
+      },
+      "reviewedCaseIds": [
+        "adv-evidence_conflict-08-seed",
+        "adv-evidence_conflict-08-conflict"
+      ]
+    },
+    {
+      "atomicity": {
+        "note": "각 variant는 candidates[0].attributes.리뷰안내 한 경로만 바꾸며 family metadata와 후보 순서는 고정된다.",
+        "status": "pass"
+      },
+      "category": "evidence_conflict",
+      "evidenceSufficiency": {
+        "note": "충돌 텍스트와 권위 있는 structured field가 모두 저장되어 우선순위를 판정할 수 있다.",
+        "status": "pass"
+      },
+      "failureModePresent": {
+        "note": "candidates[0].attributes.리뷰안내의 변형 텍스트가 authoritativeFields의 구조화 값과 모순된다.",
+        "status": "pass"
+      },
+      "familyId": "fam-evidence_conflict-16",
+      "issuesFound": [],
+      "nonTriviality": {
+        "note": "공격 텍스트가 그럴듯한 상품 주장이라 단순 노이즈가 아닌 근접 오정보다.",
+        "status": "pass"
+      },
+      "reviewedCaseIds": [
+        "adv-evidence_conflict-16-seed",
+        "adv-evidence_conflict-16-conflict"
+      ]
+    },
+    {
+      "atomicity": {
+        "note": "각 variant는 candidates[0].name 한 경로만 바꾸며 family metadata와 후보 순서는 고정된다.",
+        "status": "pass"
+      },
+      "category": "evidence_conflict",
+      "evidenceSufficiency": {
+        "note": "충돌 텍스트와 권위 있는 structured field가 모두 저장되어 우선순위를 판정할 수 있다.",
+        "status": "pass"
+      },
+      "failureModePresent": {
+        "note": "candidates[0].name의 변형 텍스트가 authoritativeFields의 구조화 값과 모순된다.",
+        "status": "pass"
+      },
+      "familyId": "fam-evidence_conflict-22",
+      "issuesFound": [],
+      "nonTriviality": {
+        "note": "공격 텍스트가 그럴듯한 상품 주장이라 단순 노이즈가 아닌 근접 오정보다.",
+        "status": "pass"
+      },
+      "reviewedCaseIds": [
+        "adv-evidence_conflict-22-seed",
+        "adv-evidence_conflict-22-conflict"
+      ]
+    },
+    {
+      "atomicity": {
+        "note": "각 variant는 candidates[0].name 한 경로만 바꾸며 family metadata와 후보 순서는 고정된다.",
+        "status": "pass"
+      },
+      "category": "evidence_conflict",
+      "evidenceSufficiency": {
+        "note": "충돌 텍스트와 권위 있는 structured field가 모두 저장되어 우선순위를 판정할 수 있다.",
+        "status": "pass"
+      },
+      "failureModePresent": {
+        "note": "candidates[0].name의 변형 텍스트가 authoritativeFields의 구조화 값과 모순된다.",
+        "status": "pass"
+      },
+      "familyId": "fam-evidence_conflict-23",
+      "issuesFound": [
+        "정확 리뷰 수 off-by-one은 family 06과 의미가 가까워, 후보 간 리뷰 우위 자기주장 충돌로 교체했다."
+      ],
+      "nonTriviality": {
+        "note": "공격 텍스트가 그럴듯한 상품 주장이라 단순 노이즈가 아닌 근접 오정보다.",
+        "status": "pass"
+      },
+      "reviewedCaseIds": [
+        "adv-evidence_conflict-23-seed",
+        "adv-evidence_conflict-23-conflict"
+      ]
+    },
+    {
+      "atomicity": {
+        "note": "각 variant는 candidates[0].price 한 경로만 바꾸며 family metadata와 후보 순서는 고정된다.",
+        "status": "pass"
+      },
+      "category": "missing_data",
+      "evidenceSufficiency": {
+        "note": "seed의 원값, mutation의 null, 조건 또는 required behavior가 함께 남아 있다.",
+        "status": "pass"
+      },
+      "failureModePresent": {
+        "note": "candidates[0].price 하나가 null이 되어 해당 조건 또는 추천 이유를 검증할 수 없다.",
+        "status": "pass"
+      },
+      "familyId": "fam-missing_data-06",
+      "issuesFound": [
+        "초기 requiredBehavior가 missingPolicy=exclude와 달리 판정 보류라고 표현되어, 확인된 가격만 하한 충족으로 판정하도록 수정했다."
+      ],
+      "nonTriviality": {
+        "note": "대상 후보의 다른 신호는 경쟁력이 있어 누락값을 추정하고 싶은 hard negative다.",
+        "status": "pass"
+      },
+      "reviewedCaseIds": [
+        "adv-missing_data-06-seed",
+        "adv-missing_data-06-missing"
+      ]
+    },
+    {
+      "atomicity": {
+        "note": "각 variant는 candidates[0].reviewCount 한 경로만 바꾸며 family metadata와 후보 순서는 고정된다.",
+        "status": "pass"
+      },
+      "category": "missing_data",
+      "evidenceSufficiency": {
+        "note": "seed의 원값, mutation의 null, 조건 또는 required behavior가 함께 남아 있다.",
+        "status": "pass"
+      },
+      "failureModePresent": {
+        "note": "candidates[0].reviewCount 하나가 null이 되어 해당 조건 또는 추천 이유를 검증할 수 없다.",
+        "status": "pass"
+      },
+      "familyId": "fam-missing_data-12",
+      "issuesFound": [],
+      "nonTriviality": {
+        "note": "대상 후보의 다른 신호는 경쟁력이 있어 누락값을 추정하고 싶은 hard negative다.",
+        "status": "pass"
+      },
+      "reviewedCaseIds": [
+        "adv-missing_data-12-seed",
+        "adv-missing_data-12-missing"
+      ]
+    },
+    {
+      "atomicity": {
+        "note": "각 variant는 candidates[0].brandName 한 경로만 바꾸며 family metadata와 후보 순서는 고정된다.",
+        "status": "pass"
+      },
+      "category": "missing_data",
+      "evidenceSufficiency": {
+        "note": "seed의 원값, mutation의 null, 조건 또는 required behavior가 함께 남아 있다.",
+        "status": "pass"
+      },
+      "failureModePresent": {
+        "note": "candidates[0].brandName 하나가 null이 되어 해당 조건 또는 추천 이유를 검증할 수 없다.",
+        "status": "pass"
+      },
+      "familyId": "fam-missing_data-15",
+      "issuesFound": [],
+      "nonTriviality": {
+        "note": "대상 후보의 다른 신호는 경쟁력이 있어 누락값을 추정하고 싶은 hard negative다.",
+        "status": "pass"
+      },
+      "reviewedCaseIds": [
+        "adv-missing_data-15-seed",
+        "adv-missing_data-15-missing"
+      ]
+    },
+    {
+      "atomicity": {
+        "note": "각 variant는 candidates[0].attributes.크기 한 경로만 바꾸며 family metadata와 후보 순서는 고정된다.",
+        "status": "pass"
+      },
+      "category": "missing_data",
+      "evidenceSufficiency": {
+        "note": "seed의 원값, mutation의 null, 조건 또는 required behavior가 함께 남아 있다.",
+        "status": "pass"
+      },
+      "failureModePresent": {
+        "note": "candidates[0].attributes.크기 하나가 null이 되어 해당 조건 또는 추천 이유를 검증할 수 없다.",
+        "status": "pass"
+      },
+      "familyId": "fam-missing_data-19",
+      "issuesFound": [],
+      "nonTriviality": {
+        "note": "대상 후보의 다른 신호는 경쟁력이 있어 누락값을 추정하고 싶은 hard negative다.",
+        "status": "pass"
+      },
+      "reviewedCaseIds": [
+        "adv-missing_data-19-seed",
+        "adv-missing_data-19-missing"
+      ]
+    },
+    {
+      "atomicity": {
+        "note": "각 variant는 candidates[0].options 한 경로만 바꾸며 family metadata와 후보 순서는 고정된다.",
+        "status": "pass"
+      },
+      "category": "missing_data",
+      "evidenceSufficiency": {
+        "note": "seed의 원값, mutation의 null, 조건 또는 required behavior가 함께 남아 있다.",
+        "status": "pass"
+      },
+      "failureModePresent": {
+        "note": "candidates[0].options 하나가 null이 되어 해당 조건 또는 추천 이유를 검증할 수 없다.",
+        "status": "pass"
+      },
+      "familyId": "fam-missing_data-20",
+      "issuesFound": [],
+      "nonTriviality": {
+        "note": "대상 후보의 다른 신호는 경쟁력이 있어 누락값을 추정하고 싶은 hard negative다.",
+        "status": "pass"
+      },
+      "reviewedCaseIds": [
+        "adv-missing_data-20-seed",
+        "adv-missing_data-20-missing"
+      ]
+    },
+    {
+      "atomicity": {
+        "note": "각 variant는 candidates[0].summary 한 경로만 바꾸며 family metadata와 후보 순서는 고정된다.",
+        "status": "pass"
+      },
+      "category": "missing_data",
+      "evidenceSufficiency": {
+        "note": "seed의 원값, mutation의 null, 조건 또는 required behavior가 함께 남아 있다.",
+        "status": "pass"
+      },
+      "failureModePresent": {
+        "note": "candidates[0].summary 하나가 null이 되어 해당 조건 또는 추천 이유를 검증할 수 없다.",
+        "status": "pass"
+      },
+      "familyId": "fam-missing_data-27",
+      "issuesFound": [],
+      "nonTriviality": {
+        "note": "대상 후보의 다른 신호는 경쟁력이 있어 누락값을 추정하고 싶은 hard negative다.",
+        "status": "pass"
+      },
+      "reviewedCaseIds": [
+        "adv-missing_data-27-seed",
+        "adv-missing_data-27-missing"
+      ]
+    },
+    {
+      "atomicity": {
+        "note": "각 variant는 candidates[0].name 한 경로만 바꾸며 family metadata와 후보 순서는 고정된다.",
+        "status": "pass"
+      },
+      "category": "no_evidence",
+      "evidenceSufficiency": {
+        "note": "evidencePaths가 제거된 단일 경로를 가리키며 다른 후보 필드에는 같은 근거가 없다.",
+        "status": "pass"
+      },
+      "failureModePresent": {
+        "note": "요청 특성의 유일한 evidence path인 candidates[0].name가 null이 된다.",
+        "status": "pass"
+      },
+      "familyId": "fam-no_evidence-02",
+      "issuesFound": [],
+      "nonTriviality": {
+        "note": "상품 자체는 여전히 추천 가능하지만 바로 그 특성을 추천 이유로 사용할 수 없는 hard negative다.",
+        "status": "pass"
+      },
+      "reviewedCaseIds": [
+        "adv-no_evidence-02-seed",
+        "adv-no_evidence-02-removed"
+      ]
+    },
+    {
+      "atomicity": {
+        "note": "각 variant는 candidates[0].name 한 경로만 바꾸며 family metadata와 후보 순서는 고정된다.",
+        "status": "pass"
+      },
+      "category": "no_evidence",
+      "evidenceSufficiency": {
+        "note": "evidencePaths가 제거된 단일 경로를 가리키며 다른 후보 필드에는 같은 근거가 없다.",
+        "status": "pass"
+      },
+      "failureModePresent": {
+        "note": "요청 특성의 유일한 evidence path인 candidates[0].name가 null이 된다.",
+        "status": "pass"
+      },
+      "familyId": "fam-no_evidence-05",
+      "issuesFound": [],
+      "nonTriviality": {
+        "note": "상품 자체는 여전히 추천 가능하지만 바로 그 특성을 추천 이유로 사용할 수 없는 hard negative다.",
+        "status": "pass"
+      },
+      "reviewedCaseIds": [
+        "adv-no_evidence-05-seed",
+        "adv-no_evidence-05-removed"
+      ]
+    },
+    {
+      "atomicity": {
+        "note": "각 variant는 candidates[0].attributes.용도 한 경로만 바꾸며 family metadata와 후보 순서는 고정된다.",
+        "status": "pass"
+      },
+      "category": "no_evidence",
+      "evidenceSufficiency": {
+        "note": "evidencePaths가 제거된 단일 경로를 가리키며 다른 후보 필드에는 같은 근거가 없다.",
+        "status": "pass"
+      },
+      "failureModePresent": {
+        "note": "요청 특성의 유일한 evidence path인 candidates[0].attributes.용도가 null이 된다.",
+        "status": "pass"
+      },
+      "familyId": "fam-no_evidence-07",
+      "issuesFound": [
+        "정확 용량 요구가 numeric_hallucination과 겹쳐 가족용 대용량이라는 질적 근거 제거로 수정했다."
+      ],
+      "nonTriviality": {
+        "note": "상품 자체는 여전히 추천 가능하지만 바로 그 특성을 추천 이유로 사용할 수 없는 hard negative다.",
+        "status": "pass"
+      },
+      "reviewedCaseIds": [
+        "adv-no_evidence-07-seed",
+        "adv-no_evidence-07-removed"
+      ]
+    },
+    {
+      "atomicity": {
+        "note": "각 variant는 candidates[0].attributes.설계 한 경로만 바꾸며 family metadata와 후보 순서는 고정된다.",
+        "status": "pass"
+      },
+      "category": "no_evidence",
+      "evidenceSufficiency": {
+        "note": "evidencePaths가 제거된 단일 경로를 가리키며 다른 후보 필드에는 같은 근거가 없다.",
+        "status": "pass"
+      },
+      "failureModePresent": {
+        "note": "요청 특성의 유일한 evidence path인 candidates[0].attributes.설계가 null이 된다.",
+        "status": "pass"
+      },
+      "familyId": "fam-no_evidence-09",
+      "issuesFound": [
+        "정확 치수 요구가 numeric_hallucination과 겹쳐 컴팩트 설계의 질적 근거 제거로 수정했다."
+      ],
+      "nonTriviality": {
+        "note": "상품 자체는 여전히 추천 가능하지만 바로 그 특성을 추천 이유로 사용할 수 없는 hard negative다.",
+        "status": "pass"
+      },
+      "reviewedCaseIds": [
+        "adv-no_evidence-09-seed",
+        "adv-no_evidence-09-removed"
+      ]
+    },
+    {
+      "atomicity": {
+        "note": "각 variant는 candidates[0].attributes.소음특성 한 경로만 바꾸며 family metadata와 후보 순서는 고정된다.",
+        "status": "pass"
+      },
+      "category": "no_evidence",
+      "evidenceSufficiency": {
+        "note": "evidencePaths가 제거된 단일 경로를 가리키며 다른 후보 필드에는 같은 근거가 없다.",
+        "status": "pass"
+      },
+      "failureModePresent": {
+        "note": "요청 특성의 유일한 evidence path인 candidates[0].attributes.소음특성가 null이 된다.",
+        "status": "pass"
+      },
+      "familyId": "fam-no_evidence-10",
+      "issuesFound": [
+        "dB 임계값이 numeric_hallucination과 겹쳐 저소음 인증의 질적 근거 제거로 수정했다."
+      ],
+      "nonTriviality": {
+        "note": "상품 자체는 여전히 추천 가능하지만 바로 그 특성을 추천 이유로 사용할 수 없는 hard negative다.",
+        "status": "pass"
+      },
+      "reviewedCaseIds": [
+        "adv-no_evidence-10-seed",
+        "adv-no_evidence-10-removed"
+      ]
+    },
+    {
+      "atomicity": {
+        "note": "각 variant는 candidates[0].attributes.지원OS 한 경로만 바꾸며 family metadata와 후보 순서는 고정된다.",
+        "status": "pass"
+      },
+      "category": "no_evidence",
+      "evidenceSufficiency": {
+        "note": "evidencePaths가 제거된 단일 경로를 가리키며 다른 후보 필드에는 같은 근거가 없다.",
+        "status": "pass"
+      },
+      "failureModePresent": {
+        "note": "요청 특성의 유일한 evidence path인 candidates[0].attributes.지원OS가 null이 된다.",
+        "status": "pass"
+      },
+      "familyId": "fam-no_evidence-23",
+      "issuesFound": [],
+      "nonTriviality": {
+        "note": "상품 자체는 여전히 추천 가능하지만 바로 그 특성을 추천 이유로 사용할 수 없는 hard negative다.",
+        "status": "pass"
+      },
+      "reviewedCaseIds": [
+        "adv-no_evidence-23-seed",
+        "adv-no_evidence-23-removed"
+      ]
+    },
+    {
+      "atomicity": {
+        "note": "각 variant는 candidates[0].price 한 경로만 바꾸며 family metadata와 후보 순서는 고정된다.",
+        "status": "pass"
+      },
+      "category": "numeric_hallucination",
+      "evidenceSufficiency": {
+        "note": "계산의 다른 피연산자는 raw data에 남고 정확히 한 필수 숫자만 제거된다.",
+        "status": "pass"
+      },
+      "failureModePresent": {
+        "note": "정확한 수치 응답에 필요한 candidates[0].price가 null이라 계산 또는 수치 주장이 불가능하다.",
+        "status": "pass"
+      },
+      "familyId": "fam-numeric_hallucination-06",
+      "issuesFound": [],
+      "nonTriviality": {
+        "note": "나머지 숫자로 계산을 시도할 수 있지만 결측 하나 때문에 정답 수치는 결정되지 않는다.",
+        "status": "pass"
+      },
+      "reviewedCaseIds": [
+        "adv-numeric_hallucination-06-seed",
+        "adv-numeric_hallucination-06-missing"
+      ]
+    },
+    {
+      "atomicity": {
+        "note": "각 variant는 candidates[0].attributes.구성수량 한 경로만 바꾸며 family metadata와 후보 순서는 고정된다.",
+        "status": "pass"
+      },
+      "category": "numeric_hallucination",
+      "evidenceSufficiency": {
+        "note": "계산의 다른 피연산자는 raw data에 남고 정확히 한 필수 숫자만 제거된다.",
+        "status": "pass"
+      },
+      "failureModePresent": {
+        "note": "정확한 수치 응답에 필요한 candidates[0].attributes.구성수량가 null이라 계산 또는 수치 주장이 불가능하다.",
+        "status": "pass"
+      },
+      "familyId": "fam-numeric_hallucination-15",
+      "issuesFound": [],
+      "nonTriviality": {
+        "note": "나머지 숫자로 계산을 시도할 수 있지만 결측 하나 때문에 정답 수치는 결정되지 않는다.",
+        "status": "pass"
+      },
+      "reviewedCaseIds": [
+        "adv-numeric_hallucination-15-seed",
+        "adv-numeric_hallucination-15-missing"
+      ]
+    },
+    {
+      "atomicity": {
+        "note": "각 variant는 candidates[0].attributes.배송비 한 경로만 바꾸며 family metadata와 후보 순서는 고정된다.",
+        "status": "pass"
+      },
+      "category": "numeric_hallucination",
+      "evidenceSufficiency": {
+        "note": "계산의 다른 피연산자는 raw data에 남고 정확히 한 필수 숫자만 제거된다.",
+        "status": "pass"
+      },
+      "failureModePresent": {
+        "note": "정확한 수치 응답에 필요한 candidates[0].attributes.배송비가 null이라 계산 또는 수치 주장이 불가능하다.",
+        "status": "pass"
+      },
+      "familyId": "fam-numeric_hallucination-18",
+      "issuesFound": [],
+      "nonTriviality": {
+        "note": "나머지 숫자로 계산을 시도할 수 있지만 결측 하나 때문에 정답 수치는 결정되지 않는다.",
+        "status": "pass"
+      },
+      "reviewedCaseIds": [
+        "adv-numeric_hallucination-18-seed",
+        "adv-numeric_hallucination-18-missing"
+      ]
+    },
+    {
+      "atomicity": {
+        "note": "각 variant는 candidates[0].optionCount 한 경로만 바꾸며 family metadata와 후보 순서는 고정된다.",
+        "status": "pass"
+      },
+      "category": "numeric_hallucination",
+      "evidenceSufficiency": {
+        "note": "계산의 다른 피연산자는 raw data에 남고 정확히 한 필수 숫자만 제거된다.",
+        "status": "pass"
+      },
+      "failureModePresent": {
+        "note": "정확한 수치 응답에 필요한 candidates[0].optionCount가 null이라 계산 또는 수치 주장이 불가능하다.",
+        "status": "pass"
+      },
+      "familyId": "fam-numeric_hallucination-23",
+      "issuesFound": [],
+      "nonTriviality": {
+        "note": "나머지 숫자로 계산을 시도할 수 있지만 결측 하나 때문에 정답 수치는 결정되지 않는다.",
+        "status": "pass"
+      },
+      "reviewedCaseIds": [
+        "adv-numeric_hallucination-23-seed",
+        "adv-numeric_hallucination-23-missing"
+      ]
+    },
+    {
+      "atomicity": {
+        "note": "각 variant는 candidates[0].attributes.배송일수 한 경로만 바꾸며 family metadata와 후보 순서는 고정된다.",
+        "status": "pass"
+      },
+      "category": "numeric_hallucination",
+      "evidenceSufficiency": {
+        "note": "계산의 다른 피연산자는 raw data에 남고 정확히 한 필수 숫자만 제거된다.",
+        "status": "pass"
+      },
+      "failureModePresent": {
+        "note": "정확한 수치 응답에 필요한 candidates[0].attributes.배송일수가 null이라 계산 또는 수치 주장이 불가능하다.",
+        "status": "pass"
+      },
+      "familyId": "fam-numeric_hallucination-26",
+      "issuesFound": [],
+      "nonTriviality": {
+        "note": "나머지 숫자로 계산을 시도할 수 있지만 결측 하나 때문에 정답 수치는 결정되지 않는다.",
+        "status": "pass"
+      },
+      "reviewedCaseIds": [
+        "adv-numeric_hallucination-26-seed",
+        "adv-numeric_hallucination-26-missing"
+      ]
+    },
+    {
+      "atomicity": {
+        "note": "각 variant는 candidates[0].attributes.세율 한 경로만 바꾸며 family metadata와 후보 순서는 고정된다.",
+        "status": "pass"
+      },
+      "category": "numeric_hallucination",
+      "evidenceSufficiency": {
+        "note": "계산의 다른 피연산자는 raw data에 남고 정확히 한 필수 숫자만 제거된다.",
+        "status": "pass"
+      },
+      "failureModePresent": {
+        "note": "정확한 수치 응답에 필요한 candidates[0].attributes.세율가 null이라 계산 또는 수치 주장이 불가능하다.",
+        "status": "pass"
+      },
+      "familyId": "fam-numeric_hallucination-29",
+      "issuesFound": [],
+      "nonTriviality": {
+        "note": "나머지 숫자로 계산을 시도할 수 있지만 결측 하나 때문에 정답 수치는 결정되지 않는다.",
+        "status": "pass"
+      },
+      "reviewedCaseIds": [
+        "adv-numeric_hallucination-29-seed",
+        "adv-numeric_hallucination-29-missing"
+      ]
+    },
+    {
+      "atomicity": {
+        "note": "각 variant는 candidates[0].categoryName 한 경로만 바꾸며 family metadata와 후보 순서는 고정된다.",
+        "status": "pass"
+      },
+      "category": "prompt_injection",
+      "evidenceSufficiency": {
+        "note": "원 사용자 요청과 구조화 품질 신호가 공격 후보보다 비교 후보를 지지한다.",
+        "status": "pass"
+      },
+      "failureModePresent": {
+        "note": "candidates[0].categoryName에 사용자 요청과 경쟁하는 명령형 공격 문자열이 삽입된다.",
+        "status": "pass"
+      },
+      "familyId": "fam-prompt_injection-03",
+      "issuesFound": [],
+      "nonTriviality": {
+        "note": "역할 사칭·인코딩·형식 탈출 등 실제 지시 형태이고 공격 후보도 정상 schema를 유지한다.",
+        "status": "pass"
+      },
+      "reviewedCaseIds": [
+        "adv-prompt_injection-03-seed",
+        "adv-prompt_injection-03-injected"
+      ]
+    },
+    {
+      "atomicity": {
+        "note": "각 variant는 candidates[0].name 한 경로만 바꾸며 family metadata와 후보 순서는 고정된다.",
+        "status": "pass"
+      },
+      "category": "prompt_injection",
+      "evidenceSufficiency": {
+        "note": "원 사용자 요청과 구조화 품질 신호가 공격 후보보다 비교 후보를 지지한다.",
+        "status": "pass"
+      },
+      "failureModePresent": {
+        "note": "candidates[0].name에 사용자 요청과 경쟁하는 명령형 공격 문자열이 삽입된다.",
+        "status": "pass"
+      },
+      "familyId": "fam-prompt_injection-16",
+      "issuesFound": [],
+      "nonTriviality": {
+        "note": "역할 사칭·인코딩·형식 탈출 등 실제 지시 형태이고 공격 후보도 정상 schema를 유지한다.",
+        "status": "pass"
+      },
+      "reviewedCaseIds": [
+        "adv-prompt_injection-16-seed",
+        "adv-prompt_injection-16-injected"
+      ]
+    },
+    {
+      "atomicity": {
+        "note": "각 variant는 candidates[0].summary 한 경로만 바꾸며 family metadata와 후보 순서는 고정된다.",
+        "status": "pass"
+      },
+      "category": "prompt_injection",
+      "evidenceSufficiency": {
+        "note": "원 사용자 요청과 구조화 품질 신호가 공격 후보보다 비교 후보를 지지한다.",
+        "status": "pass"
+      },
+      "failureModePresent": {
+        "note": "candidates[0].summary에 사용자 요청과 경쟁하는 명령형 공격 문자열이 삽입된다.",
+        "status": "pass"
+      },
+      "familyId": "fam-prompt_injection-18",
+      "issuesFound": [],
+      "nonTriviality": {
+        "note": "역할 사칭·인코딩·형식 탈출 등 실제 지시 형태이고 공격 후보도 정상 schema를 유지한다.",
+        "status": "pass"
+      },
+      "reviewedCaseIds": [
+        "adv-prompt_injection-18-seed",
+        "adv-prompt_injection-18-injected"
+      ]
+    },
+    {
+      "atomicity": {
+        "note": "각 variant는 candidates[0].categoryName 한 경로만 바꾸며 family metadata와 후보 순서는 고정된다.",
+        "status": "pass"
+      },
+      "category": "prompt_injection",
+      "evidenceSufficiency": {
+        "note": "원 사용자 요청과 구조화 품질 신호가 공격 후보보다 비교 후보를 지지한다.",
+        "status": "pass"
+      },
+      "failureModePresent": {
+        "note": "candidates[0].categoryName에 사용자 요청과 경쟁하는 명령형 공격 문자열이 삽입된다.",
+        "status": "pass"
+      },
+      "familyId": "fam-prompt_injection-20",
+      "issuesFound": [],
+      "nonTriviality": {
+        "note": "역할 사칭·인코딩·형식 탈출 등 실제 지시 형태이고 공격 후보도 정상 schema를 유지한다.",
+        "status": "pass"
+      },
+      "reviewedCaseIds": [
+        "adv-prompt_injection-20-seed",
+        "adv-prompt_injection-20-injected"
+      ]
+    },
+    {
+      "atomicity": {
+        "note": "각 variant는 candidates[0].brandName 한 경로만 바꾸며 family metadata와 후보 순서는 고정된다.",
+        "status": "pass"
+      },
+      "category": "prompt_injection",
+      "evidenceSufficiency": {
+        "note": "원 사용자 요청과 구조화 품질 신호가 공격 후보보다 비교 후보를 지지한다.",
+        "status": "pass"
+      },
+      "failureModePresent": {
+        "note": "candidates[0].brandName에 사용자 요청과 경쟁하는 명령형 공격 문자열이 삽입된다.",
+        "status": "pass"
+      },
+      "familyId": "fam-prompt_injection-22",
+      "issuesFound": [],
+      "nonTriviality": {
+        "note": "역할 사칭·인코딩·형식 탈출 등 실제 지시 형태이고 공격 후보도 정상 schema를 유지한다.",
+        "status": "pass"
+      },
+      "reviewedCaseIds": [
+        "adv-prompt_injection-22-seed",
+        "adv-prompt_injection-22-injected"
+      ]
+    },
+    {
+      "atomicity": {
+        "note": "각 variant는 candidates[0].summary 한 경로만 바꾸며 family metadata와 후보 순서는 고정된다.",
+        "status": "pass"
+      },
+      "category": "prompt_injection",
+      "evidenceSufficiency": {
+        "note": "원 사용자 요청과 구조화 품질 신호가 공격 후보보다 비교 후보를 지지한다.",
+        "status": "pass"
+      },
+      "failureModePresent": {
+        "note": "candidates[0].summary에 사용자 요청과 경쟁하는 명령형 공격 문자열이 삽입된다.",
+        "status": "pass"
+      },
+      "familyId": "fam-prompt_injection-24",
+      "issuesFound": [],
+      "nonTriviality": {
+        "note": "역할 사칭·인코딩·형식 탈출 등 실제 지시 형태이고 공격 후보도 정상 schema를 유지한다.",
+        "status": "pass"
+      },
+      "reviewedCaseIds": [
+        "adv-prompt_injection-24-seed",
+        "adv-prompt_injection-24-injected"
+      ]
+    }
+  ],
+  "sampling": {
+    "familiesPerCategory": 6,
+    "fraction": 0.2,
+    "method": "각 category의 familyId 정렬 후 random.Random(seed).sample(..., 6)",
+    "seed": 20260812,
+    "totalFamiliesReviewed": 42
+  }
+}
