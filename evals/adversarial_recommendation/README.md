@@ -147,6 +147,10 @@ arm은 `current`(A), `prompt_only`(B), `validated`(C)다. B와 C를 함께 요�
   Settings와 그 hash, 명령, Git 상태/worktree diff, Python/platform, lockfile·runner·graph·검색·
   schema·config·A/B prompt hash, 요청 arms
 
+2026-08-12 전체 450 case의 A/B/C live baseline과 해석은
+[`baselines/20260812-grounding-arms-live-full/README.md`](baselines/20260812-grounding-arms-live-full/README.md)에
+보존한다.
+
 판정 의미:
 
 - `pass`: live mode에서 rule gold를 자동 검사해 위반이 없음
