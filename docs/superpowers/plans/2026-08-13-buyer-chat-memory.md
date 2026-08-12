@@ -133,17 +133,17 @@
 - Consumes: observation의 conversation store, `prepare_buyer_memory`, `compact_buyer_memory`, `decompose` 선택 인자.
 - Produces: 같은 방의 bounded context 주입과 응답과 동시 실행되는 다음 턴용 compaction task.
 
-- [ ] **Step 1: 그래프 RED 테스트 작성**
+- [x] **Step 1: 그래프 RED 테스트 작성**
 
   두 번째 일반 대화 prompt에 같은 방 최근 원문이 있고 다른 방에는 없으며, `pending_cart`에서는 제외되고 압축 예외에도 DONE이 전송되는지 검증한다. 기존 action-only 테스트가 fast LLM 호출 0회를 유지하는지도 함께 실행한다.
 
-- [ ] **Step 2: RED 확인**
+- [x] **Step 2: RED 확인**
 
   Run: `uv run pytest tests/unit/test_recommendation.py tests/integration/test_buyer_flow_e2e.py -k 'memory or pending_cart or action_only' -q`
 
   Expected: 두 번째 턴 prompt에 메모리가 없어 새 assertion이 실패한다.
 
-- [ ] **Step 3: 최소 구현 후 GREEN 확인**
+- [x] **Step 3: 최소 구현 후 GREEN 확인**
 
   `run_buyer_turn` 진입에서 방별 메모리를 준비하고 decompose 직전에 조건부 전달한다. 압축 task는 응답과 함께 시작하되 generator 종료 시 자연 완료를 기다리고 취소 시 취소한다.
 
@@ -164,11 +164,11 @@
 - Consumes: `BuyerMemoryContext` token counts와 explicit compaction call IDs.
 - Produces: `recentHistoryTokens`, `situationMemoryTokens`, `evictedHistoryTokens`, compaction token/cost fields.
 
-- [ ] **Step 1: 메모리 관측 RED 테스트 작성**
+- [x] **Step 1: 메모리 관측 RED 테스트 작성**
 
   숫자·boolean 필드만 로그에 나오고 압축 호출 비용이 전체 비용의 부분집합이며 동시 일반 호출 usage와 섞이지 않는 테스트를 작성한다.
 
-- [ ] **Step 2: RED 확인 후 최소 구현**
+- [x] **Step 2: RED 확인 후 최소 구현**
 
   Run: `uv run pytest tests/unit/test_observability.py -k 'memory or cache' -q`
 

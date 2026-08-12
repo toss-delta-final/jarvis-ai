@@ -126,7 +126,17 @@ class ObservationSink(Protocol):
         cache_write_tokens: int = 0,
         *,
         usage_reserved: bool = False,
+        purpose: str | None = None,
     ) -> int: ...
+
+    def record_memory_context(
+        self,
+        *,
+        recent_tokens: int,
+        situation_tokens: int,
+        evicted_tokens: int,
+        compaction_triggered: bool,
+    ) -> None: ...
 
     def record_model_usage(
         self,

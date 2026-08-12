@@ -2425,6 +2425,7 @@ class Settings(BaseSettings):
     buyer_memory_recent_token_cap: int = Field(default=1_000, ge=64, le=8_000)
     buyer_memory_situation_token_cap: int = Field(default=400, ge=64, le=2_000)
     buyer_memory_compaction_trigger_tokens: int = Field(default=1_200, ge=1, le=20_000)
+    buyer_memory_compaction_input_token_cap: int = Field(default=4_000, ge=64, le=20_000)
     buyer_memory_compaction_max_tokens: int = Field(default=256, ge=32, le=2_000)
 
     # ── 관측 집계 SLO·degrade 알림 (scripts/aggregate_observability.py 주입, EVAL-OBS §3.3·§5) ──

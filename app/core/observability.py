@@ -111,6 +111,7 @@ class ModelCall:
     cached_input_tokens: int = 0
     cache_write_tokens: int = 0
     usage_reserved: bool = False
+    purpose: str | None = None
 
 
 @dataclass
@@ -150,6 +151,10 @@ class RequestObservation:
     search_candidates_max: int | None = None
     search_total_count_max: int | None = None
     search_elapsed_ms_max: int | None = None
+    recent_history_tokens: int = 0
+    situation_memory_tokens: int = 0
+    evicted_history_tokens: int = 0
+    memory_compaction_triggered: bool = False
     active_streams: int | None = None
     active_streams_peak: int | None = None
     finished: bool = False
@@ -181,6 +186,7 @@ class RequestObservation:
         cache_write_tokens: int = 0,
         *,
         usage_reserved: bool = False,
+        purpose: str | None = None,
     ) -> int:
         """노드별 LLM 호출 기록(model·tokens). 그래프가 호출한다."""
         self.model_calls.append(
@@ -191,6 +197,7 @@ class RequestObservation:
                 cached_input_tokens,
                 cache_write_tokens,
                 usage_reserved,
+                purpose,
             )
         )
         return len(self.model_calls) - 1
@@ -250,11 +257,47 @@ class RequestObservation:
         self.search_total_count_max = max(self.search_total_count_max or total_count, total_count)
         self.search_elapsed_ms_max = max(self.search_elapsed_ms_max or elapsed_ms, elapsed_ms)
 
+    def record_memory_context(
+        self,
+        *,
+        recent_tokens: int,
+        situation_tokens: int,
+        evicted_tokens: int,
+        compaction_triggered: bool,
+    ) -> None:
+        """원문 없이 메모리 계층별 추정 토큰과 압축 판정만 기록한다."""
+        self.recent_history_tokens = max(recent_tokens, 0)
+        self.situation_memory_tokens = max(situation_tokens, 0)
+        self.evicted_history_tokens = max(evicted_tokens, 0)
+        self.memory_compaction_triggered = compaction_triggered
+
     def note_active_streams(self, count: int) -> None:
         """실제 열린 스트림 수를 기록한다. 최초 표본은 도착 부하, peak는 턴 중 최악 부하다."""
         if self.active_streams is None:
             self.active_streams = count
         self.active_streams_peak = max(self.active_streams_peak or count, count)
+
+    @staticmethod
+    def _call_cost_usd(call: ModelCall, settings) -> float | None:  # noqa: ANN001
+        input_price = settings.model_price_in_per_1k.get(call.model)
+        output_price = settings.model_price_out_per_1k.get(call.model)
+        if input_price is None or output_price is None:
+            return None
+        cached_price = getattr(settings, "model_price_cached_in_per_1k", {}).get(
+            call.model, input_price
+        )
+        cache_write_price = getattr(settings, "model_price_cache_write_per_1k", {}).get(
+            call.model, input_price
+        )
+        cached = min(max(call.cached_input_tokens, 0), call.prompt_tokens)
+        cache_write = min(max(call.cache_write_tokens, 0), max(call.prompt_tokens - cached, 0))
+        uncached = max(call.prompt_tokens - cached - cache_write, 0)
+        return (
+            uncached / 1_000 * (input_price or 0.0)
+            + cached / 1_000 * (cached_price or 0.0)
+            + cache_write / 1_000 * (cache_write_price or 0.0)
+            + call.completion_tokens / 1_000 * (output_price or 0.0)
+        )
 
     def _cost_usd(self) -> float:
         """Settings 단가표로 모델 호출 비용을 계산한다(미등록 모델은 0 + 경고)."""
@@ -262,9 +305,8 @@ class RequestObservation:
         total = 0.0
         warned: set[str] = set()
         for call in self.model_calls:
-            input_price = settings.model_price_in_per_1k.get(call.model)
-            output_price = settings.model_price_out_per_1k.get(call.model)
-            if input_price is None or output_price is None:
+            call_cost = self._call_cost_usd(call, settings)
+            if call_cost is None:
                 if call.model not in warned:
                     logger.warning(
                         "모델 단가 미등록 model=%s code=MODEL_PRICE_MISSING",
@@ -272,19 +314,7 @@ class RequestObservation:
                     )
                     warned.add(call.model)
                 continue
-            cached_price = getattr(settings, "model_price_cached_in_per_1k", {}).get(
-                call.model, input_price
-            )
-            cache_write_price = getattr(settings, "model_price_cache_write_per_1k", {}).get(
-                call.model, input_price
-            )
-            cached = min(max(call.cached_input_tokens, 0), call.prompt_tokens)
-            cache_write = min(max(call.cache_write_tokens, 0), max(call.prompt_tokens - cached, 0))
-            uncached = max(call.prompt_tokens - cached - cache_write, 0)
-            total += uncached / 1_000 * (input_price or 0.0)
-            total += cached / 1_000 * (cached_price or 0.0)
-            total += cache_write / 1_000 * (cache_write_price or 0.0)
-            total += call.completion_tokens / 1_000 * (output_price or 0.0)
+            total += call_cost
         return round(total, 8)
 
     @property
@@ -379,6 +409,14 @@ class RequestObservation:
         except Exception:
             logger.warning("model cost calculation failed code=MODEL_COST_CALCULATION_FAILED")
             cost_usd = 0.0
+        compaction_calls = [
+            call for call in self.model_calls if call.purpose == "memory_compaction"
+        ]
+        settings = get_settings()
+        compaction_cost_usd = round(
+            sum(self._call_cost_usd(call, settings) or 0.0 for call in compaction_calls),
+            8,
+        )
         record = {
             "event": "chat_request",
             "requestId": self.request_id,
@@ -398,6 +436,13 @@ class RequestObservation:
             "completionTokens": sum(m.completion_tokens for m in self.model_calls),
             "cachedInputTokens": sum(m.cached_input_tokens for m in self.model_calls),
             "cacheWriteTokens": sum(m.cache_write_tokens for m in self.model_calls),
+            "recentHistoryTokens": self.recent_history_tokens,
+            "situationMemoryTokens": self.situation_memory_tokens,
+            "evictedHistoryTokens": self.evicted_history_tokens,
+            "memoryCompactionTriggered": self.memory_compaction_triggered,
+            "memoryCompactionPromptTokens": sum(m.prompt_tokens for m in compaction_calls),
+            "memoryCompactionCompletionTokens": sum(m.completion_tokens for m in compaction_calls),
+            "memoryCompactionCostUsd": compaction_cost_usd,
             "lane": self.lane,
             "degraded": self.degraded,
             "degradeReason": self.degrade_reason,

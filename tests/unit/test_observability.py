@@ -951,6 +951,62 @@ async def test_bound_model_call_receives_usage_without_touching_same_model_place
     assert observation.model_calls[ordinary_id].completion_tokens == 0
 
 
+async def test_memory_context_and_compaction_cost_are_logged_without_content(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """메모리 로그는 숫자·boolean만 담고 예약 압축 호출 비용을 정확히 분리한다."""
+    monkeypatch.setattr(
+        observability,
+        "get_settings",
+        lambda: types.SimpleNamespace(
+            pii_hash_pepper="test-pepper",
+            model_price_in_per_1k={"fast-model": 0.01},
+            model_price_cached_in_per_1k={"fast-model": 0.001},
+            model_price_cache_write_per_1k={"fast-model": 0.0125},
+            model_price_out_per_1k={"fast-model": 0.02},
+        ),
+    )
+    observation = await _obs("memory-metrics")
+    observation.record_memory_context(
+        recent_tokens=120,
+        situation_tokens=80,
+        evicted_tokens=1_300,
+        compaction_triggered=True,
+    )
+    call_id = observation.record_model_call(
+        "fast-model",
+        usage_reserved=True,
+        purpose="memory_compaction",
+    )
+    observation.record_model_usage(
+        "fast-model",
+        prompt_tokens=1_000,
+        completion_tokens=100,
+        call_id=call_id,
+        cached_input_tokens=400,
+        cache_write_tokens=100,
+    )
+
+    with caplog.at_level(logging.INFO, logger="observability"):
+        await observation.finish(1.0, TurnStatus.COMPLETED)
+
+    record = next(
+        json.loads(item.getMessage())
+        for item in caplog.records
+        if item.name == "observability" and item.getMessage().startswith("{")
+    )
+    assert record["recentHistoryTokens"] == 120
+    assert record["situationMemoryTokens"] == 80
+    assert record["evictedHistoryTokens"] == 1_300
+    assert record["memoryCompactionTriggered"] is True
+    assert record["memoryCompactionPromptTokens"] == 1_000
+    assert record["memoryCompactionCompletionTokens"] == 100
+    assert record["memoryCompactionCostUsd"] == pytest.approx(0.00865)
+    assert record["costUsd"] == record["memoryCompactionCostUsd"]
+    assert "memory-metrics" not in json.dumps(record, ensure_ascii=False)
+
+
 async def test_unregistered_model_costs_zero_and_warns(
     caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,

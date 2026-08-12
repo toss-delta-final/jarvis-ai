@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import logging
 import math
 import re
@@ -18,6 +18,7 @@ from app.core.llm import LLMClient
 from app.core.pg_resilience import mutation_lock, run_with_query_timeout
 from app.core.pii import redact
 from app.core.text import _strip_unsafe
+from app.core.tracing import ObservationSink, bind_model_call_usage
 
 logger = logging.getLogger(__name__)
 
@@ -297,6 +298,31 @@ def _is_high_value(turn: Turn) -> bool:
     return not any(pattern in combined for pattern in _ACTION_ONLY_PATTERNS)
 
 
+def _bounded_compaction_turns(turns: list[Turn], token_cap: int) -> tuple[Turn, ...]:
+    retained: list[Turn] = []
+    remaining = max(token_cap, 0)
+    for turn in turns:
+        if remaining <= 0:
+            break
+        pair_tokens = _pair_tokens(turn)
+        if pair_tokens <= remaining:
+            retained.append(turn)
+            remaining -= pair_tokens
+            continue
+        if not retained:
+            clipped = _clip_pair(turn, remaining)
+            if clipped.user_text or clipped.assistant_text:
+                retained.append(
+                    replace(
+                        turn,
+                        user_text=clipped.user_text,
+                        assistant_text=clipped.assistant_text,
+                    )
+                )
+        break
+    return tuple(retained)
+
+
 async def prepare_buyer_memory(
     turns: list[Turn],
     *,
@@ -307,6 +333,7 @@ async def prepare_buyer_memory(
     recent_token_cap: int,
     situation_token_cap: int,
     compaction_trigger_tokens: int,
+    compaction_input_token_cap: int,
 ) -> BuyerMemoryContext:
     situation, compacted_through, _ = await _load_situation(store, thread_key, situation_token_cap)
     eligible = [
@@ -335,15 +362,18 @@ async def prepare_buyer_memory(
         candidates.append(turn)
     evicted_tokens = sum(_pair_tokens(turn) for turn in candidates)
     triggered = bool(candidates) and evicted_tokens >= compaction_trigger_tokens
+    compaction_turns = (
+        _bounded_compaction_turns(candidates, compaction_input_token_cap) if triggered else ()
+    )
     return BuyerMemoryContext(
         situation=situation,
         recent_turns=recent,
-        compaction_turns=tuple(candidates) if triggered else (),
+        compaction_turns=compaction_turns,
         compacted_through_turn_id=compacted_through,
         recent_tokens=sum(_pair_tokens(turn) for turn in recent),
         situation_tokens=_situation_tokens(situation),
         evicted_tokens=evicted_tokens,
-        compaction_triggered=triggered,
+        compaction_triggered=bool(compaction_turns),
     )
 
 
@@ -375,6 +405,8 @@ async def compact_buyer_memory(
     llm: LLMClient,
     situation_token_cap: int,
     max_tokens: int,
+    observer: ObservationSink | None = None,
+    model_id: str | None = None,
 ) -> bool:
     if not context.compaction_triggered or not context.compaction_turns:
         return False
@@ -389,12 +421,20 @@ async def compact_buyer_memory(
                 return False
             if latest_cursor != context.compacted_through_turn_id:
                 return False
-            raw = await llm.complete(
-                system=_COMPACTION_SYSTEM,
-                user=_compaction_user(context),
-                tier="fast",
-                max_tokens=max_tokens,
+            call_id = (
+                observer.record_model_call(
+                    model_id, usage_reserved=True, purpose="memory_compaction"
+                )
+                if observer is not None and model_id is not None
+                else None
             )
+            with bind_model_call_usage(call_id):
+                raw = await llm.complete(
+                    system=_COMPACTION_SYSTEM,
+                    user=_compaction_user(context),
+                    tier="fast",
+                    max_tokens=max_tokens,
+                )
             parsed = _parse_situation(extract_json(raw), situation_token_cap)
             if parsed is None:
                 return False

@@ -44,6 +44,7 @@ async def _prepare(
     recent_token_cap: int = 1_000,
     situation_token_cap: int = 400,
     compaction_trigger_tokens: int = 1_200,
+    compaction_input_token_cap: int = 4_000,
 ):
     return await prepare_buyer_memory(
         turns,
@@ -54,6 +55,7 @@ async def _prepare(
         recent_token_cap=recent_token_cap,
         situation_token_cap=situation_token_cap,
         compaction_trigger_tokens=compaction_trigger_tokens,
+        compaction_input_token_cap=compaction_input_token_cap,
     )
 
 
@@ -128,6 +130,31 @@ async def test_high_value_evicted_turns_trigger_only_after_batch_threshold() -> 
     assert [turn.turn_id for turn in reached.compaction_turns] == ["turn-1", "turn-2"]
 
 
+async def test_compaction_batch_is_bounded_and_keeps_oldest_cursor_order() -> None:
+    context = await _prepare(
+        [
+            _turn(
+                number,
+                user=chr(0xAC00 + number) * 40,
+                assistant=chr(0xB098 + number) * 40,
+            )
+            for number in range(1, 7)
+        ],
+        recent_turn_limit=1,
+        compaction_trigger_tokens=1,
+        compaction_input_token_cap=160,
+    )
+
+    assert (
+        sum(
+            estimate_tokens(turn.user_text) + estimate_tokens(turn.assistant_text)
+            for turn in context.compaction_turns
+        )
+        <= 160
+    )
+    assert [turn.turn_id for turn in context.compaction_turns] == ["turn-1", "turn-2"]
+
+
 async def test_invalid_stored_situation_fails_open() -> None:
     store = InMemoryStore()
     await store.aput(
@@ -152,6 +179,22 @@ class _FakeLLM:
         if isinstance(self.response, Exception):
             raise self.response
         return self.response
+
+
+class _UsageObserver:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, bool]] = []
+
+    def record_model_call(
+        self,
+        model: str,
+        *,
+        usage_reserved: bool = False,
+        purpose: str | None = None,
+    ) -> int:
+        self.calls.append((model, usage_reserved))
+        assert purpose == "memory_compaction"
+        return 7
 
 
 async def test_compaction_redacts_pii_caps_summary_and_advances_cursor() -> None:
@@ -196,6 +239,34 @@ async def test_compaction_redacts_pii_caps_summary_and_advances_cursor() -> None
     assert "010-1234-5678" not in rendered
     assert "user@example.com" not in rendered
     assert "[전화번호]" in rendered
+
+
+async def test_compaction_reserves_explicit_usage_call_id() -> None:
+    store = InMemoryStore()
+    context = await _prepare(
+        [
+            _turn(1, user="가" * 30, assistant="나" * 30),
+            _turn(2, user="현재", assistant="응답"),
+        ],
+        store=store,
+        recent_turn_limit=1,
+        compaction_trigger_tokens=1,
+    )
+    observer = _UsageObserver()
+
+    changed = await compact_buyer_memory(
+        context,
+        store=store,
+        thread_key="context:room-a",
+        llm=_FakeLLM('{"topic":"새 주제"}'),
+        situation_token_cap=400,
+        max_tokens=256,
+        observer=observer,
+        model_id="fast-model",
+    )
+
+    assert changed is True
+    assert observer.calls == [("fast-model", True)]
 
 
 async def test_compaction_failure_keeps_previous_situation_and_cursor() -> None:

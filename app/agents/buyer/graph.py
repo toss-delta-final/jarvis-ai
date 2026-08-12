@@ -41,6 +41,11 @@ from app.agents.buyer.cart.wishlist import (
     stream_wishlist_view,
 )
 from app.agents.buyer.fallback import stream_fallback
+from app.agents.buyer.memory import (
+    BuyerMemoryContext,
+    compact_buyer_memory,
+    prepare_buyer_memory,
+)
 from app.agents.buyer.order_status import stream_order_status
 from app.agents.buyer.recommendation.category_mapping import CategoryMapping, dedup_truncate
 from app.agents.buyer.recommendation.category_scope import classify_category_scope
@@ -98,6 +103,14 @@ _FILTERS_KEY = "filters"
 # 추가하지 않는다 — 그 모델은 decompose 가 PRIOR_FILTERS 프롬프트에 통째로 싣는 대상이라 새
 # 필드가 모든 프롬프트에 샌다(프롬프트 드리프트). 같은 네임스페이스에 별도 키로 둔다.
 _CHIP_CATEGORIES_KEY = "chip_categories"
+
+
+@dataclass(slots=True)
+class _BuyerMemoryRuntime:
+    context: BuyerMemoryContext
+    thread_key: str
+    store: BaseStore
+    compaction_task: asyncio.Task[bool] | None = None
 
 
 class ThreadFilterStore:
@@ -748,7 +761,7 @@ async def _prepare_recommendation(
     out.reverted = frozenset(reverted)
 
 
-async def run_buyer_turn(
+async def _run_buyer_turn_impl(
     request,
     identity,
     *,
@@ -762,6 +775,7 @@ async def run_buyer_turn(
     observer=None,
     request_id: str | None = None,
     turn_started_at: float | None = None,
+    memory_runtime: _BuyerMemoryRuntime | None = None,
 ) -> AsyncIterator[str]:
     """구매자 1턴을 SSE 프레임으로 스트리밍한다(open_stream 이 감싸는 inner).
 
@@ -1005,6 +1019,25 @@ async def run_buyer_turn(
             "productId": pending.product_id,
             "options": [{"optionId": o.option_id, "name": o.name} for o in pending.options],
         }
+    memory_context = memory_runtime.context if memory_runtime is not None else None
+    if (
+        pending_dict is None
+        and memory_context is not None
+        and memory_context.compaction_triggered
+        and memory_runtime.compaction_task is None
+    ):
+        memory_runtime.compaction_task = asyncio.create_task(
+            compact_buyer_memory(
+                memory_context,
+                store=memory_runtime.store,
+                thread_key=memory_runtime.thread_key,
+                llm=llm,
+                situation_token_cap=settings.buyer_memory_situation_token_cap,
+                max_tokens=settings.buyer_memory_compaction_max_tokens,
+                observer=observer,
+                model_id=resolve_model_id(settings, "fast"),
+            )
+        )
     # [#118] **옵션 되물음 중에는 화면 맥락을 통째로 끈다.** 이 한 플래그를 아래 세 지점이 함께
     # 쓴다 — ① decompose 프롬프트 주입(`prompt_screen`) ② 담기 허용 목록(`allowed`)
     # ③ 코드 해소기(`resolve_screen_reference`). 셋 중 하나만 열려 있어도 구멍이 된다.
@@ -1180,6 +1213,24 @@ async def run_buyer_turn(
                             # 관대 무시로 사라졌으면(또는 되물음 턴이면, 위 prompt_screen 주석 참조)
                             # None 이라 프롬프트가 오늘과 바이트 동일하다.
                             screen=prompt_screen,
+                            recent_conversation=(
+                                [
+                                    {
+                                        "user": turn.user_text,
+                                        "assistant": turn.assistant_text,
+                                    }
+                                    for turn in memory_context.recent_turns
+                                ]
+                                if memory_context is not None and pending_dict is None
+                                else None
+                            ),
+                            situation_memory=(
+                                memory_context.situation.to_prompt()
+                                if memory_context is not None
+                                and pending_dict is None
+                                and not memory_context.situation.is_empty
+                                else None
+                            ),
                             category_fanout_max=settings.category_fanout_max,
                             repurchase_max=settings.dedup_repurchase_max,
                             leg_head_suppression=settings.category_leg_head_suppression_enabled,
@@ -1420,6 +1471,7 @@ async def run_buyer_turn(
             request_id=resolved_request_id,
         ):
             yield frame
+
         return
 
     if decision.intent == "general":
@@ -1899,3 +1951,107 @@ async def run_buyer_turn(
             turn_started_at=turn_started_at,
         ):
             yield frame
+
+
+async def _prepare_memory_runtime(
+    request,
+    observer,
+    settings,
+) -> _BuyerMemoryRuntime | None:  # noqa: ANN001
+    """관측 저장소에서 같은 방의 bounded 메모리를 준비한다. 모든 장애는 무기억으로 강등한다."""
+    if not settings.buyer_memory_enabled:
+        return None
+    condition_actions = getattr(request, "condition_actions", None) or []
+    if condition_actions and not request.message.strip():
+        return None
+    conversation_store = getattr(observer, "store", None)
+    conversation_key_value = getattr(observer, "pending_key", None)
+    context_id = getattr(observer, "context_id", None)
+    if (
+        conversation_store is None
+        or not isinstance(conversation_key_value, str)
+        or not isinstance(context_id, str)
+        or not context_id
+    ):
+        return None
+    thread_key = context_thread_key(context_id, request.thread_id)
+    try:
+        turns = await conversation_store.turns_for(conversation_key_value)
+        state_store = await pg_store.get_store()
+        context = await prepare_buyer_memory(
+            turns,
+            thread_id=request.thread_id,
+            thread_key=thread_key,
+            store=state_store,
+            recent_turn_limit=settings.buyer_memory_recent_turns,
+            recent_token_cap=settings.buyer_memory_recent_token_cap,
+            situation_token_cap=settings.buyer_memory_situation_token_cap,
+            compaction_trigger_tokens=settings.buyer_memory_compaction_trigger_tokens,
+            compaction_input_token_cap=settings.buyer_memory_compaction_input_token_cap,
+        )
+        if observer is not None and hasattr(observer, "record_memory_context"):
+            observer.record_memory_context(
+                recent_tokens=context.recent_tokens,
+                situation_tokens=context.situation_tokens,
+                evicted_tokens=context.evicted_tokens,
+                compaction_triggered=context.compaction_triggered,
+            )
+        return _BuyerMemoryRuntime(context, thread_key, state_store)
+    except Exception:
+        logger.warning("buyer memory preparation failed code=BUYER_MEMORY_PREPARE_FAILED")
+        return None
+
+
+async def run_buyer_turn(
+    request,
+    identity,
+    *,
+    llm=None,
+    search=None,
+    push_fn=None,
+    map_categories=None,
+    order_status_fn=None,
+    expand_needs=None,
+    popular_fn=None,
+    observer=None,
+    request_id: str | None = None,
+    turn_started_at: float | None = None,
+) -> AsyncIterator[str]:
+    """메모리 준비·다음 턴용 압축을 기존 구매자 스트림과 겹쳐 실행하는 공개 진입점."""
+    settings = get_settings()
+    memory_runtime = await _prepare_memory_runtime(request, observer, settings)
+    try:
+        async for frame in _run_buyer_turn_impl(
+            request,
+            identity,
+            llm=llm,
+            search=search,
+            push_fn=push_fn,
+            map_categories=map_categories,
+            order_status_fn=order_status_fn,
+            expand_needs=expand_needs,
+            popular_fn=popular_fn,
+            observer=observer,
+            request_id=request_id,
+            turn_started_at=turn_started_at,
+            memory_runtime=memory_runtime,
+        ):
+            yield frame
+    except asyncio.CancelledError:
+        compaction_task = memory_runtime.compaction_task if memory_runtime is not None else None
+        if compaction_task is not None:
+            compaction_task.cancel()
+            try:
+                await compaction_task
+            except asyncio.CancelledError:
+                pass
+        raise
+    finally:
+        compaction_task = memory_runtime.compaction_task if memory_runtime is not None else None
+        if compaction_task is not None and not compaction_task.cancelled():
+            try:
+                await compaction_task
+            except Exception:
+                logger.warning(
+                    "buyer memory compaction task failed code=BUYER_MEMORY_COMPACTION_TASK_FAILED"
+                )
