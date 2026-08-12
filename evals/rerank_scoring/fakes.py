@@ -48,6 +48,7 @@ class ScriptedScoringLLM:
 
     def __init__(self, *, mode: FaultMode = "valid") -> None:
         self.mode = mode
+        self.model_config = {"provider": "ScriptedScoringLLM", "mode": mode}
         self.current_calls = 0
         self.scored_calls = 0
         self.candidate_orders: list[tuple[int, ...]] = []

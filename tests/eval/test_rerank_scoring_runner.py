@@ -1,15 +1,29 @@
 from __future__ import annotations
 
+import json
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
 from app.schemas.spring import SpringProduct
+from evals.goldenset.loader import load_cases
 from evals.goldenset.schema import DATASET_VERSION, SCHEMA_VERSION, GoldenCase
 from evals.metrics.runner import EvaluationFixtures
 from evals.rerank_scoring.fakes import ScriptedScoringLLM
+from evals.rerank_scoring.cli import EXIT_REJECTED, main
+from evals.rerank_scoring.metrics import score_run
+from evals.rerank_scoring.report import (
+    load_run_from_artifacts,
+    score_artifacts,
+    write_artifacts,
+)
 from evals.rerank_scoring.runner import build_case_input, run_case_arms, run_probe
-from evals.rerank_scoring.schema import RankingCaseInput
+from evals.rerank_scoring.schema import (
+    RankingCaseInput,
+    RankingProbeRun,
+    RankingSample,
+)
 
 
 def _case(
@@ -280,6 +294,7 @@ async def test_all_invalid_scores_are_failures_not_zero_quality_samples() -> Non
     assert result["structured"].sample is None
     assert result["structured"].failure is not None
     assert result["structured"].failure.error_type == "LLMError"
+    assert result["structured"].failure.full_fallback is True
 
 
 class _FailOnceScoredLLM(ScriptedScoringLLM):
@@ -333,3 +348,245 @@ async def test_probe_stops_after_attempt_budget_is_exhausted() -> None:
     assert run.samples == ()
     assert len(run.failures) == 4
     assert {failure.attempt for failure in run.failures} == {1, 2}
+
+
+def _sample(
+    case_id: str,
+    arm: str,
+    *,
+    ranking: tuple[int, ...] = (101, 102, 103),
+    ndcg: float | None = None,
+    order_seed: int = 11,
+    repeat: int = 0,
+    partial_fallback: bool = False,
+    full_fallback: bool = False,
+    hard_constraint_violation_count: int = 0,
+) -> RankingSample:
+    return RankingSample(
+        case_id=case_id,
+        arm=arm,
+        order_seed=order_seed,
+        repeat=repeat,
+        attempt=1,
+        candidate_order=(101, 102, 103),
+        ranked_product_ids=ranking,
+        top3_product_ids=ranking[:3],
+        top1_product_id=ranking[0] if ranking else None,
+        latency_ms=10,
+        raw_response_sha256=f"raw-{case_id}-{arm}-{order_seed}-{repeat}",
+        provider_called=True,
+        ranking_decisions=(),
+        grounding_decisions=(),
+        relevance_grades={101: 3, 102: 2, 103: 1},
+        hard_constraints={},
+        must_exclude_product_ids=(),
+        slices=("search", "guest", "single_need"),
+        partial_fallback=partial_fallback,
+        full_fallback=full_fallback,
+        hard_constraint_violation_count=hard_constraint_violation_count,
+        input_tokens=100,
+        output_tokens=50,
+        cost_usd=0.01,
+        usage_unknown_reason=None,
+        ndcg_at_10=ndcg,
+        dataset_hash="dataset-sha",
+        prompt_hash=f"{arm}-prompt",
+        model_config_json='{"model":"scripted"}',
+    )
+
+
+def _run(*samples: RankingSample) -> RankingProbeRun:
+    arms = tuple(dict.fromkeys(sample.arm for sample in samples))
+    return RankingProbeRun(
+        samples=tuple(samples),
+        failures=(),
+        arms=arms,
+        repeats=1,
+        order_seeds=tuple(sorted({sample.order_seed for sample in samples})),
+        dataset_version=DATASET_VERSION,
+        dataset_hash="dataset-sha",
+        grounding_arm="validated",
+        alpha=0.65,
+        k=60,
+    )
+
+
+def test_paired_ndcg_delta_uses_only_shared_valid_case_ids() -> None:
+    run = _run(
+        _sample("a", "current", ndcg=0.5),
+        _sample("b", "current", ndcg=0.2),
+        _sample("a", "hybrid", ndcg=0.7),
+    )
+
+    comparison = score_run(run)["comparisons"]["currentToHybrid"]
+
+    assert comparison["pairedCaseIds"] == ["a"]
+    assert comparison["pairedCount"] == 1
+    assert comparison["meanDelta"] == pytest.approx(0.2)
+
+
+def test_ci_crossing_zero_is_inconclusive() -> None:
+    run = _run(
+        _sample("a", "current", ndcg=0.6),
+        _sample("b", "current", ndcg=0.6),
+        _sample("a", "hybrid", ndcg=0.7),
+        _sample("b", "hybrid", ndcg=0.5),
+    )
+
+    assert score_run(run)["comparisons"]["currentToHybrid"]["verdict"] == "inconclusive"
+
+
+def test_hard_constraint_violation_forces_regressed_verdict() -> None:
+    run = _run(
+        _sample("a", "current", ndcg=0.5),
+        _sample("b", "current", ndcg=0.5),
+        _sample("a", "hybrid", ndcg=0.8, hard_constraint_violation_count=1),
+        _sample("b", "hybrid", ndcg=0.8),
+    )
+
+    assert score_run(run)["comparisons"]["currentToHybrid"]["verdict"] == "regressed"
+
+
+def test_top3_jaccard_top1_agreement_and_spearman_are_grouped_by_case_arm() -> None:
+    run = _run(
+        _sample("a", "hybrid", ranking=(101, 102, 103), order_seed=11),
+        _sample("a", "hybrid", ranking=(101, 103, 102), order_seed=29),
+    )
+
+    stability = score_run(run)["stability"]["hybrid"]
+
+    assert stability["top3Jaccard"] == 1.0
+    assert stability["top1Agreement"] == 1.0
+    assert stability["spearman"] == pytest.approx(0.5)
+
+
+def test_invalid_partial_and_full_fallback_rates_have_explicit_denominators() -> None:
+    run = _run(
+        _sample("a", "hybrid", partial_fallback=True),
+        _sample("b", "hybrid", full_fallback=True),
+        _sample("c", "hybrid"),
+        _sample("d", "hybrid"),
+    )
+
+    integrity = score_run(run)["integrity"]["hybrid"]
+
+    assert integrity["partialFallback"] == {"numerator": 1, "denominator": 4, "rate": 0.25}
+    assert integrity["fullFallback"] == {"numerator": 1, "denominator": 4, "rate": 0.25}
+
+
+@pytest.mark.parametrize("field", ["dataset_hash", "prompt_hash", "model_config_json"])
+def test_mixed_run_provenance_is_rejected_before_comparison(field: str) -> None:
+    first = _sample("a", "hybrid", ndcg=0.5)
+    second = replace(_sample("b", "hybrid", ndcg=0.6), **{field: "different"})
+
+    with pytest.raises(ValueError, match="mixed|dataset"):
+        score_run(_run(first, second))
+
+
+def _manifest(*, dry_run: bool = False) -> dict[str, object]:
+    return {
+        "gitCommit": "abc123",
+        "dirty": False,
+        "command": "test command",
+        "datasetVersion": DATASET_VERSION,
+        "datasetHash": "dataset-sha",
+        "promptHashes": {"current": "current-prompt", "hybrid": "hybrid-prompt"},
+        "modelConfig": {"model": "scripted"},
+        "repeats": 1,
+        "orderSeeds": [11],
+        "alpha": 0.65,
+        "k": 60,
+        "componentWeights": {"intentFit": 4, "needFit": 2, "profileFit": 1},
+        "groundingArm": "validated",
+        "budget": {"calls": 2},
+        "dryRun": dry_run,
+    }
+
+
+def test_artifacts_are_exact_and_results_reconstruct_from_raw_csv(tmp_path: Path) -> None:
+    run = _run(
+        _sample("a", "current", ndcg=0.5),
+        _sample("a", "hybrid", ndcg=0.7),
+    )
+    out = tmp_path / "artifacts"
+
+    write_artifacts(out, run=run, manifest=_manifest())
+
+    assert {path.name for path in out.iterdir()} == {
+        "samples.csv",
+        "failures.csv",
+        "results.json",
+        "run_manifest.json",
+        "report.md",
+    }
+    loaded = load_run_from_artifacts(
+        out / "samples.csv",
+        out / "failures.csv",
+        json.loads((out / "run_manifest.json").read_text()),
+    )
+    assert score_artifacts(loaded, _manifest()) == json.loads((out / "results.json").read_text())
+
+    with pytest.raises(FileExistsError):
+        write_artifacts(out, run=run, manifest=_manifest())
+
+
+def test_dry_run_artifact_status_is_not_tested(tmp_path: Path) -> None:
+    out = tmp_path / "dry"
+    run = _run(_sample("a", "current", ndcg=0.5), _sample("a", "hybrid", ndcg=0.9))
+
+    write_artifacts(out, run=run, manifest=_manifest(dry_run=True))
+
+    results = json.loads((out / "results.json").read_text())
+    assert results["status"] == "not-tested"
+    assert results["comparisons"]["currentToHybrid"]["verdict"] == "not-tested"
+    loaded = load_run_from_artifacts(
+        out / "samples.csv",
+        out / "failures.csv",
+        json.loads((out / "run_manifest.json").read_text()),
+    )
+    assert score_artifacts(loaded, _manifest(dry_run=True)) == results
+
+
+def test_cli_dry_run_writes_five_artifacts(tmp_path: Path) -> None:
+    case_id = load_cases("dev")[0].case_id
+    out = tmp_path / "cli"
+
+    exit_code = main(
+        [
+            "--arms",
+            "all",
+            "--split",
+            "dev",
+            "--case-ids",
+            case_id,
+            "--repeats",
+            "1",
+            "--attempt-multiplier",
+            "1",
+            "--order-seeds",
+            "11,29",
+            "--dry-run",
+            "--out",
+            str(out),
+        ]
+    )
+
+    assert exit_code == 0
+    assert len(list(out.iterdir())) == 5
+    assert json.loads((out / "results.json").read_text())["status"] == "not-tested"
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--arms", "hybrid", "--alpha", "1.1"],
+        ["--arms", "hybrid", "--k", "0"],
+        ["--arms", "hybrid", "--max-calls", "0"],
+        ["--arms", "unknown"],
+        ["--arms", "hybrid", "--order-seeds", ""],
+    ],
+)
+def test_cli_rejects_invalid_arguments(tmp_path: Path, args: list[str]) -> None:
+    exit_code = main([*args, "--dry-run", "--out", str(tmp_path / "out")])
+
+    assert exit_code == EXIT_REJECTED

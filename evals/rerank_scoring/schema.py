@@ -35,6 +35,7 @@ class RankingFailure:
     attempt: int
     error_type: str
     message: str
+    full_fallback: bool = False
 
 
 @dataclass(frozen=True)
@@ -68,6 +69,10 @@ class RankingSample:
     output_tokens: int | None = None
     cost_usd: float | None = None
     usage_unknown_reason: str | None = "provider usage unavailable"
+    ndcg_at_10: float | None = None
+    dataset_hash: str = ""
+    prompt_hash: str = ""
+    model_config_json: str = ""
 
 
 @dataclass(frozen=True)

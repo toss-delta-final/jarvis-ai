@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import random
 import re
 from collections import Counter
@@ -10,14 +11,19 @@ from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from time import perf_counter
 
-from app.agents.buyer.recommendation.rerank import rerank
+from app.agents.buyer.recommendation.rerank import (
+    _SYSTEM,
+    _SYSTEM_STRUCTURED_GROUNDING,
+    _SYSTEM_STRUCTURED_SCORING,
+    rerank,
+)
 from app.agents.buyer.recommendation.rerank_grounding import GroundingArm
 from app.agents.buyer.recommendation.rerank_scoring import RankingArm
 from app.agents.buyer.recommendation.state import extract_json
-from app.core.llm import LLMClient
+from app.core.llm import LLMClient, LLMError
 from app.schemas.spring import SpringProduct
 from evals.goldenset.schema import GoldenCase
-from evals.metrics.metrics import hard_constraint_violations
+from evals.metrics.metrics import hard_constraint_violations, ndcg_at_k
 from evals.metrics.runner import EvaluationFixtures
 from evals.metrics.settings import EvaluationSettings
 from evals.model_eval.budget import BudgetExceeded
@@ -86,7 +92,11 @@ def build_case_input(case: GoldenCase, fixtures: EvaluationFixtures) -> RankingC
         candidates=candidates,
         search_rank_by_id={product.product_id: rank for rank, product in enumerate(candidates, 1)},
         profile_summary=_profile_summary(case, fixtures),
-        relevance_grades=dict(case.relevance_grades),
+        relevance_grades=(
+            dict(case.relevance_grades)
+            if case.test_type == "MFT" and case.case_id not in fixtures.non_discriminative_case_ids
+            else {}
+        ),
         hard_constraints=hard.model_dump(by_alias=True),
         must_exclude_product_ids=tuple(case.must_exclude_product_ids),
         slices=tuple(case.slices),
@@ -157,6 +167,7 @@ def _failure(
         attempt=attempt,
         error_type=type(exc).__name__,
         message=_scrub_message(str(exc)),
+        full_fallback=bool(raw_response) and isinstance(exc, LLMError),
     )
     return CaseArmResult(
         arm=arm,
@@ -252,6 +263,7 @@ async def _execute_arm(
         ),
         partial_fallback=bool(invalid and valid),
         hard_constraint_violation_count=_hard_violation_count(case_input, ranked_ids),
+        ndcg_at_10=ndcg_at_k(ranked_ids, case_input.relevance_grades, 10),
     )
     return (
         CaseArmResult(
@@ -429,11 +441,33 @@ async def run_probe(
                 for arm in active:
                     arm_result = arm_results[arm]
                     if arm_result.sample is not None:
+                        prompt = (
+                            _SYSTEM_STRUCTURED_SCORING
+                            if arm != "current"
+                            else (
+                                _SYSTEM
+                                if grounding_arm == "current"
+                                else _SYSTEM_STRUCTURED_GROUNDING
+                            )
+                        )
+                        model_config = getattr(
+                            llm,
+                            "model_config",
+                            {"provider": type(llm).__name__},
+                        )
                         samples.append(
                             replace(
                                 arm_result.sample,
                                 repeat=got[arm],
                                 attempt=attempts[arm],
+                                dataset_hash=str(fixtures.manifest.get("datasetHash") or "unknown"),
+                                prompt_hash=hashlib.sha256(prompt.encode()).hexdigest(),
+                                model_config_json=json.dumps(
+                                    model_config,
+                                    ensure_ascii=False,
+                                    sort_keys=True,
+                                    separators=(",", ":"),
+                                ),
                             )
                         )
                         got[arm] += 1
