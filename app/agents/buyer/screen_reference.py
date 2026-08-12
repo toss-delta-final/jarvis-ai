@@ -65,6 +65,7 @@
     | F-18 | `"3번째 거 담아줘"`(다목록 턴, 또는 승계분까지 포함해 세면 순번이 밀림) | 추천 표면의 순번을 누적 `last_reco` 전체나 dedup 된 `ranked_ids` 로 세면 승계분·BUY_ALL 중복 붕괴로 화면과 다른 카드가 확정 | `turn_count` 경계로 배열을 자르고, `ordinal_span`(표시 순서=저장 순서 증명)이 없으면 순번을 되물음으로 강제 |
     | F-19 | `"무선 블루투스 이어폰 담아줘"`(카드 이름이 발화에 통째로 있음, 추천 카드 표면) | 추천 표면에서 (B) 를 그대로 두면 이름 지목이 영원히 LLM 산출에만 맡겨짐 | 배열=이름 출처인 표면에서만 좁은 이름 확정 규칙(N) 신설 — 부정·다건·빈 이름이면 종전대로 (B) 양보 |
     | F-20 | `"3번째 거 담아줘"`(이전 턴 추천 카드 3건, 이번 턴 `screen`은 왔지만 `screen.products == []`) | `graph.py` 의 표면 계산이 "screen 자체가 없음"과 "screen 은 왔는데 정제 후 0건"을 똑같이 falsy `[]` 로 뭉개 `elif reco_cards:` 로 새 버려, 사용자가 보고 있는(비어 있는) 화면과 무관한 이전 턴 카드가 확정 → **오담기**(PR #573 Claude 리뷰) | 폴백 조건을 `elif screen is None and reco_cards:` 로 좁힘 — 화면이 왔는데 비었으면 `surface=[]`(해소기 미호출, LLM 산출 존중) |
+    | F-21 | `"Septwolves 지갑 담아줘"`(추천 카드 이름 일부의 유일 토큰) | 전체 상품명만 코드가 확정해, LLM이 같은 허용 목록 안의 다른 상품을 골라도 멤버십 가드가 통과 → **오담기** | NFKC·casefold 정확 토큰이 표면에서 유일하고 한 상품만 가리킬 때만 확정 — 공통·숫자·명령·부분 문자열·다중 상품·부정은 양보 |
 
     **전제와 잔여 위험(F-17~F-19 공통)**: 위 세 규칙은 "`last_reco` 순서 = I-21 push 순서 =
     사용자가 본 순서"를 전제한다. 그 전제의 근거는 두 갈래다 — (1) 정본 §4.2 규약이 명시하는
@@ -84,6 +85,8 @@
 from __future__ import annotations
 
 import re
+import unicodedata
+from collections import Counter
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
@@ -192,6 +195,12 @@ _CART_VERBS = r"(?:담아|담기|담을|넣어|넣기|넣을|추가)"
 _BARE_NUMBER = re.compile(
     rf"(?<![0-9A-Za-z가-힣])(\d{{2,}})(?:번(?!째))?(?=\s*(?:{_CART_VERBS}|$))"
 )
+# [#639] 상품명 일부 지목은 부분 문자열이 아니라 정확한 유니코드 영숫자 토큰으로만 비교한다.
+_NAME_TOKEN = re.compile(r"[^\W_]+", re.UNICODE)
+# 상품명에 지시문처럼 보이는 단어가 있어도 담기 동사 자체가 이름 선택 근거가 되면 안 된다.
+# 새 동사 사전을 만들지 않고 위 `_CART_VERBS`가 소유한 어간과 같은 닫힌 어휘를 토큰에 적용한다.
+_CART_ACTION_TOKEN_PREFIXES = ("담아", "담기", "담을", "넣어", "넣기", "넣을", "추가")
+_CART_CONTEXT_TOKENS = frozenset({"장바구니", "장바구니에", "장바구니로"})
 
 
 def mentions_screen_reference(message: str, settings) -> bool:
@@ -239,6 +248,51 @@ def _mentions_a_product_name(message: str, names: Iterable[str]) -> bool:
     """발화가 화면 상품 **이름**을 지목했는지. 이름 매칭은 LLM 이 8/8 로 잘한다 — 건드리지 않는다."""
     # 2자 미만 이름은 우연 일치가 잦아 신호로 쓰지 않는다.
     return any(len(name) >= 2 and name in message for name in names)
+
+
+def _name_tokens(value: str) -> set[str]:
+    """표기 차이만 접은 정확 이름 토큰. 숫자 전용·1글자는 자동 선택 근거에서 제외한다."""
+    normalized = unicodedata.normalize("NFKC", value).casefold()
+    return {
+        token
+        for token in _NAME_TOKEN.findall(normalized)
+        if len(token) >= 2 and any(character.isalpha() for character in token)
+    }
+
+
+def _message_name_tokens(message: str) -> set[str]:
+    """발화의 상품명 후보 토큰 — 담기 명령 자체는 상품 라벨로 재해석하지 않는다."""
+    return {
+        token
+        for token in _name_tokens(message)
+        if token not in _CART_CONTEXT_TOKENS and not token.startswith(_CART_ACTION_TOKEN_PREFIXES)
+    }
+
+
+def _unique_product_name_token_match(
+    message: str, products: Sequence[tuple[int, str]]
+) -> int | None:
+    """발화와 공유한 토큰이 추천 표면에서 유일한 **한 상품**을 가리킬 때만 그 ID를 돌려준다.
+
+    같은 productId가 표면에 중복돼도 한 상품으로 센다. 공통 토큰만 있거나 서로 다른 상품의
+    유일 토큰이 함께 언급되면 ``None``으로 양보해 임의 확정을 막는다.
+    """
+    tokens_by_product: dict[int, set[str]] = {}
+    for product_id, name in products:
+        tokens_by_product.setdefault(product_id, set()).update(_name_tokens(name))
+
+    frequency = Counter(
+        token for product_tokens in tokens_by_product.values() for token in product_tokens
+    )
+    unique_message_tokens = {
+        token for token in _message_name_tokens(message) if frequency[token] == 1
+    }
+    matches = {
+        product_id
+        for product_id, product_tokens in tokens_by_product.items()
+        if product_tokens & unique_message_tokens
+    }
+    return next(iter(matches)) if len(matches) == 1 else None
 
 
 def resolve_screen_reference(
@@ -299,17 +353,26 @@ def resolve_screen_reference(
     # (N) [#571] 이름 확정 — **추천 카드 표면에서만**. 배열이 곧 이름 출처라 확정이 배열 밖으로
     #     나가지 않는다(화면 표면에서 이 규칙을 켜면 F-8 이 되살아난다 — 그쪽은 이름이
     #     last_recommendation_products 출신일 수 있고, 그 상품은 화면 배열에 없다).
-    #     좁게 건다: 부정·대조 표지가 발화 전체에 없고, 비어 있지 않은 이름(2자 이상)이 발화에
-    #     통째로 포함되는 카드가 **정확히 1건**일 때만 확정한다. 그 외(0건·2건 이상·부정 표지
-    #     있음)는 아무것도 하지 않고 아래 (B)로 내려간다 — (B)는 이름이 있으면 순번·좌표·id
-    #     규칙을 막기만 할 뿐 스스로 확정하지 않으므로, 여기서 확정하지 못한 이름 지목은 결국
-    #     종전대로 LLM 산출(decompose 의 LAST_RECOMMENDATIONS 해석)로 남는다.
+    #     좁게 건다: 부정·대조 표지가 발화 전체에 없고, 먼저 비어 있지 않은 이름(2자 이상)이
+    #     발화에 통째로 포함되는 카드가 **정확히 1건**일 때 확정한다. [#639] 전체 이름이 0건이면
+    #     정확 토큰으로 한 번 더 좁히되, 표면에서 유일한 토큰들이 한 상품만 가리킬 때만 확정한다.
+    #     전체 이름 다건·공통 토큰·다중 상품 토큰·부정 표지는 아무것도 하지 않고 아래 (B)로
+    #     내려간다 — (B)는 이름이 있으면 순번·좌표·id 규칙을 막기만 할 뿐 스스로 확정하지
+    #     않으므로, 여기서 확정하지 못한 이름 지목은 종전대로 LLM 산출(decompose 의
+    #     LAST_RECOMMENDATIONS 해석)로 남는다.
     if name_confirmation_enabled and not has_any_negation(
         message, list(negation_markers), list(prefix_negation_markers)
     ):
         matches = {pid for pid, name in products if len(name) >= 2 and name in message}
         if len(matches) == 1:
             return ScreenResolution(next(iter(matches)), "screen_name_match")
+        # [#639] 전체 이름이 하나도 매칭되지 않은 경우에만 유일 토큰으로 좁힌다. 전체 이름이
+        # 2건 이상 걸린 기존 모호성은 그대로 LLM에 양보한다(#571-8 무회귀).
+        if (
+            not matches
+            and (product_id := _unique_product_name_token_match(message, products)) is not None
+        ):
+            return ScreenResolution(product_id, "screen_unique_name_token_match")
 
     # (B) [양보] 발화가 화면 상품 **이름**을 지목했으면 순번·좌표·id 규칙을 적용하지 않는다.
     #     `"무선 이어폰 2번째 옵션으로 담아줘"` 에서 `"2번째"` 는 **옵션**을 수식하는데 화면
