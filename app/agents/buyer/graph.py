@@ -1701,6 +1701,7 @@ async def run_buyer_turn(
                 condition_terms=cart_condition_terms(prior, decision.filters),
                 has_last_reco=has_last_reco,
                 has_push_failed=has_push_failed,
+                chat_session_id=request.session_id,
                 observer=observer,
             ):
                 yield frame
@@ -1753,6 +1754,7 @@ async def run_buyer_turn(
                 cart_store=cart_store,
                 thread_key=thread_key,
                 settings=settings,
+                chat_session_id=request.session_id,
                 observer=observer,
             ):
                 yield frame
@@ -1811,6 +1813,7 @@ async def run_buyer_turn(
                     cart_store=cart_store,
                     thread_key=thread_key,
                     settings=settings,
+                    chat_session_id=request.session_id,
                     observer=observer,
                 ):
                     yield frame

@@ -418,6 +418,7 @@ async def stream_cart_add(
     condition_terms: Sequence[str] = (),
     has_last_reco: bool = False,
     has_push_failed: bool = False,
+    chat_session_id: str | None = None,
     add_fn=None,
     get_cart_fn=None,
     delete_fn=None,
@@ -518,6 +519,7 @@ async def stream_cart_add(
             cart_store=cart_store,
             thread_key=thread_key,
             settings=settings,
+            chat_session_id=chat_session_id,
             get_cart_fn=get_cart_fn,
             delete_fn=delete_fn,
             observer=observer,
@@ -623,6 +625,13 @@ async def stream_cart_add(
     # I-1 옵션 힌트 조회(이슈 #455) — product_id 확정 뒤·I-2 호출 전, 인메모리 1회. 미스는 예외
     # 없이 None(재시작·다중 인스턴스 degrade, 오늘 경로와 동일).
     hint = await cart_store.get_option_hint(thread_key, product_id)
+    try:
+        recommendation_context = (
+            await cart_store.get_last_reco_state(thread_key)
+        ).recommendation_contexts.get(product_id)
+    except Exception as exc:  # noqa: BLE001 - attribution state failure must not block a cart mutation
+        _log.warning("cart_recommendation_context_unavailable", extra={"reason": str(exc)})
+        recommendation_context = None
 
     try:
         req = AddToCartRequest(
@@ -631,6 +640,8 @@ async def stream_cart_add(
             product_id=product_id,
             option_id=option_id,
             quantity=quantity,
+            chat_session_id=chat_session_id,
+            recommendation_context=recommendation_context,
         )
         result, auto_option = await _add_with_single_option(
             add_fn,

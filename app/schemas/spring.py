@@ -343,6 +343,17 @@ class OrderStatusSummary(CamelModel):
 # ── 4. 장바구니 담기 (I-2, §4.1) — BE 문서 채택, 단건 ──
 
 
+class RecommendationContext(CamelModel):
+    """추천 카드에서 전환된 담기의 출처(I-2, 선택).
+
+    Spring은 ``list_id``를 권위로 다시 검증하므로, 이 값이 없거나 낡았어도 담기 자체는
+    실패하지 않는다. AI는 직전 추천을 실제로 노출한 경우에만 이 문맥을 보낸다.
+    """
+
+    recommendation_request_id: str = Field(max_length=36)
+    list_id: str = Field(max_length=64)
+
+
 class AddToCartRequest(CamelModel):
     """I-2 POST /internal/cart/items 요청 본문 (api-spec §4.1, BE 문서 채택).
 
@@ -356,6 +367,10 @@ class AddToCartRequest(CamelModel):
     product_id: int  # 숫자(BIGINT, product.id)
     option_id: int | None = None  # 숫자(BIGINT, product_option.id)
     quantity: int = Field(1, ge=1, le=99)
+    # Spring은 "chat:{chatSessionId}" sentinel로 챗봇 전환 이벤트를 적재한다. 누락 시
+    # 담기는 성공하지만 분석 이벤트만 빠지므로, 챗봇 경로는 항상 sessionId를 배선한다.
+    chat_session_id: str | None = None
+    recommendation_context: RecommendationContext | None = None
 
 
 class AddToCartResult(CamelModel):
