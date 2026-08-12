@@ -1,6 +1,18 @@
 from app.core.config import Settings
 
 
+def test_rerank_grounding_defaults_to_validated_with_current_rollback(monkeypatch) -> None:
+    import pytest
+    from pydantic import ValidationError
+
+    assert Settings(_env_file=None).rerank_grounding_arm == "validated"
+    assert Settings(_env_file=None).rerank_prompt_version == "rerank-grounding-v1"
+    monkeypatch.setenv("RERANK_GROUNDING_ARM", "current")
+    assert Settings(_env_file=None).rerank_grounding_arm == "current"
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, rerank_grounding_arm="unknown")
+
+
 def test_embedding_provenance_defaults():
     s = Settings(_env_file=None)
     assert s.embedding_task_document == "RETRIEVAL_DOCUMENT"

@@ -171,7 +171,7 @@ async def test_happy_path_rank_source_is_rerank_and_expose_min_fill(
     assert record["degraded"] is False
     assert record["degradeReason"] is None
     assert record["rankerModel"] == resolve_model_id(get_settings(), "smart")
-    assert record["promptVersion"] == get_settings().rerank_prompt_version
+    assert record["promptVersion"] == "rerank-grounding-v1"
     source_by_id = {
         item["productId"]: item["rankSource"] for lst in record["lists"] for item in lst["items"]
     }
@@ -180,11 +180,34 @@ async def test_happy_path_rank_source_is_rerank_and_expose_min_fill(
     assert source_by_id[103] == "expose_min_fill"
 
 
+async def test_current_grounding_rollback_restores_legacy_prompt_version(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setattr(get_settings(), "rerank_grounding_arm", "current")
+    push = _RecordingPush()
+    with caplog.at_level(logging.INFO, logger=_GRAPH_LOGGER):
+        await _collect(
+            run_buyer_turn(
+                _req(),
+                _member(),
+                llm=FakeLLM(),
+                search=_make_search(DEFAULT_PRODUCTS),
+                push_fn=push,
+            )
+        )
+
+    assert _only_provenance(caplog)["promptVersion"] == "rerank-v1"
+
+
 async def test_rerank_ranked_item_without_rationale_is_still_rank_source_rerank(
+    monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """[핵심 회귀] `reason_by_id` 로 rankSource 를 판정하면 빈 rationale 항목이
     `expose_min_fill` 로 오분류된다(§2) — rerank 가 골랐다는 사실(멤버십)만으로 판정해야 한다."""
+    # 빈 모델 rationale 자체를 관찰하는 테스트라 C의 중립 템플릿 생성 전에 A rollback으로 고정한다.
+    monkeypatch.setattr(get_settings(), "rerank_grounding_arm", "current")
     llm = FakeLLM(
         rerank={
             "ranked": [

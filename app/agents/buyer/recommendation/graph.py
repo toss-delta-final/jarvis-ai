@@ -2121,6 +2121,10 @@ async def stream_recommendation(
                     # [#132] 사용자가 평점을 명시했는지 — 무평점 후보의 근거문 고지 지시를 켠다.
                     # 완화가 적용됐으면 `effective_filters` 가 그 결과라 표시-실제가 어긋나지 않는다.
                     rating_min_requested=effective_filters.rating_min is not None,
+                    # 450-case A/B/C 실측으로 선택한 production arm. rerank()의 직접 호출 기본값과
+                    # 평가 CLI 기본 A는 유지하고 graph 경계에서만 C를 활성화한다. 운영 롤백은
+                    # RERANK_GROUNDING_ARM=current로 코드 변경 없이 수행한다.
+                    grounding_arm=settings.rerank_grounding_arm,
                 )
             ranked_ids = [pid for pid, _ in rr.ranked]
             # [이슈 #140] provenance rankSource 판정용 스냅샷 — pin 을 얹기 **전**의 rerank
@@ -2694,7 +2698,15 @@ async def stream_recommendation(
             recommendation_request_id=recommendation_request_id,
             surface="chat",
             pipeline="search_rerank",
-            prompt_version=None if rerank_degraded else settings.rerank_prompt_version,
+            prompt_version=(
+                None
+                if rerank_degraded
+                else (
+                    "rerank-v1"
+                    if settings.rerank_grounding_arm == "current"
+                    else settings.rerank_prompt_version
+                )
+            ),
             ranker_model=None if rerank_degraded else resolve_model_id(settings, "smart"),
             personalized=bool(profile),
             deterministic=True,

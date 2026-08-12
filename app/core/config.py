@@ -875,9 +875,7 @@ class Settings(BaseSettings):
     # 2026-08-06: I-13 counts 4종 → 5종(removeFromCart 편입, 02-DATA-SOURCES §E4).
     # ⚠️ 어느 지표가 영향받는지는 튜너블이 아니라 계약 사실이라 코드 상수다
     # (sop/validate.BOUNDARY_AFFECTED_PREFIXES) — 여기는 날짜 목록만 둔다.
-    seller_comparison_boundary_dates: list[date] = Field(
-        default_factory=lambda: [date(2026, 8, 6)]
-    )
+    seller_comparison_boundary_dates: list[date] = Field(default_factory=lambda: [date(2026, 8, 6)])
     # 고객 피처 스냅샷 신선도 상한(시간). 초과분은 Hold 로 드러낼 뿐 재계산하지 않는다 —
     # 재계산은 I-38 재조회 + K-Means 재학습이라 load 스텝 소관이고, 검증 함수가 I/O 경계를
     # 넘으면 단위 테스트가 Spring/DB 스텁을 요구하게 된다(sop/compute 규약 승계).
@@ -1014,6 +1012,11 @@ class Settings(BaseSettings):
     # "니즈별 근거 있는 추천"이 정작 니즈가 여러 개일 때 더 자주 깨지는 셈이다.
     # 기본값은 단일 목록 경로(expose_max=9)에서 종전 실효값 1500 과 정확히 같도록 잡았다
     # (960 + 60×9 = 1500) — 흔한 경로의 동작을 바꾸지 않으면서 다중 니즈만 넉넉해진다.
+    # [2026-08-12] 450-case A/B/C live 평가에서 등록된 unsupported reason이
+    # current 10.87% → validated 0%였고 추천 집합은 447/447 보존됐다. production graph는 C를
+    # 기본으로 쓰되 사고 시 RERANK_GROUNDING_ARM=current 한 줄로 A에 롤백한다. 평가 CLI의
+    # arm 기본값은 비교 기준 보존을 위해 이 설정과 별개로 current다.
+    rerank_grounding_arm: Literal["current", "prompt_only", "validated"] = "validated"
     rerank_max_tokens_base: int = Field(default=960, ge=0)  # overallComment·JSON 골격 몫
     rerank_max_tokens_per_item: int = Field(default=60, ge=1)  # {productId, rationale} 1건 몫
     llm_call_limit: int = 2
@@ -1028,7 +1031,9 @@ class Settings(BaseSettings):
     # rerank 프롬프트 버전 — LLM 순위가 실제로 관여한 경로(메인 rerank 성공)에서만
     # provenance `promptVersion` 에 실린다. degrade·프로필 벡터·홈 경로는 LLM 순위가 아니라
     # `null`.
-    rerank_prompt_version: str = "rerank-v1"
+    # 구조화 grounding prompt의 provenance 버전. current 롤백은 graph가 legacy `rerank-v1`을
+    # 기록해 RERANK_GROUNDING_ARM 한 줄만 바꿔도 실제 prompt와 관측값이 함께 되돌아간다.
+    rerank_prompt_version: str = "rerank-grounding-v1"
     # provenance 로그 한 줄의 방어 상한 — 자연 상한은 계약 MAX_LISTS(10) × LIST_MAX_PRODUCTS(9)
     # = 90 이지만, 별도 방어선을 둬 초과분은 조용히 버리지 않고 `itemsTruncated=true` 로
     # 표시한다(silent cap 금지, 저장소 관례).
