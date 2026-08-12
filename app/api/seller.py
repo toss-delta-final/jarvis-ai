@@ -106,15 +106,11 @@ from app.core.tracing import current_request_trace, start_request_trace_safely, 
 from app.core.text import _strip_unsafe, _strip_unsafe_multiline
 from app.schemas.chat import ErrorData, TokenData
 from app.schemas.seller import SellerChatRequest
-<<<<<<< HEAD
 from app.schemas.seller_report import (
     SellerReportListItem,
     SellerReportListResponse,
 )
-from app.services.spring_client import SpringUnavailableError
-=======
 from app.services.spring_client import SpringRejected, SpringUnavailableError
->>>>>>> origin/dev
 
 logger = logging.getLogger(__name__)
 
