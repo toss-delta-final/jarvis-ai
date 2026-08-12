@@ -2815,7 +2815,15 @@ async def test_cart_state_store_all_operations_have_query_deadline(
 
 
 async def _run_add(
-    store, cart, add_fn, *, get_cart_fn=None, thread_key="m:t", message="", condition_terms=()
+    store,
+    cart,
+    add_fn,
+    *,
+    get_cart_fn=None,
+    thread_key="m:t",
+    message="",
+    condition_terms=(),
+    product_names=None,
 ):
     """자동 선택 테스트 공용 구동 — 담기 스트림 이벤트 목록을 돌려준다."""
     return await _collect(
@@ -2829,6 +2837,7 @@ async def _run_add(
             get_cart_fn=get_cart_fn or _empty_cart(),
             message=message,
             condition_terms=condition_terms,
+            product_names=product_names,
         )
     )
 
@@ -3658,6 +3667,186 @@ async def test_cart_add_synonym_load_failure_degrades_without_crashing(
 # 아래는 패킷 §1 A-3/A-4 의 정본 출력 문자열을 그대로 리터럴로 박아 둔다 — 피검사 함수
 # (_options_text/_options_prompt)를 기대값 계산에 다시 쓰지 않는다(공허성 방지, 패킷 §4-D-1).
 # `_options_text` 의 "\n".join 을 " | ".join 으로 바꾸면 이 리터럴 테스트들이 모두 빨개져야 한다.
+
+
+def test_option_product_heading_sanitizes_and_truncates() -> None:
+    assert cart_graph._option_product_heading("짧은 상품") == "**상품:** 짧은 상품"
+    assert cart_graph._option_product_heading("가" * 40) == f"**상품:** {'가' * 40}"
+    assert cart_graph._option_product_heading("나" * 41) == f"**상품:** {'나' * 40}…"
+    assert cart_graph._option_product_heading("시\n계\u200b\u202e") == "**상품:** 시 계"
+    assert cart_graph._option_product_heading("\u200b\u202e") == ""
+    assert cart_graph._option_product_heading(None) == ""
+
+
+async def test_option_product_default_reask_names_and_truncates_target() -> None:
+    store = CartStateStore()
+    options = [CartOption(option_id=1, name="블랙"), CartOption(option_id=2, name="화이트")]
+
+    async def add_fn(req):
+        raise CartOptionRequired(options)
+
+    events = await _run_add(
+        store,
+        CartIntent(product_id=1, quantity=1),
+        add_fn,
+        product_names={1: "시" * 41},
+    )
+
+    token = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert token == (
+        f"**상품:** {'시' * 40}…\n\n"
+        "옵션을 선택해 주세요:\n"
+        "1. **블랙**\n"
+        "2. **화이트**\n"
+        "어떤 걸로 담을까요?"
+    )
+
+
+async def test_option_product_missing_target_name_keeps_default_reask_literal() -> None:
+    store = CartStateStore()
+    options = [CartOption(option_id=1, name="블랙"), CartOption(option_id=2, name="화이트")]
+
+    async def add_fn(req):
+        raise CartOptionRequired(options)
+
+    events = await _run_add(
+        store,
+        CartIntent(product_id=1, quantity=1),
+        add_fn,
+        product_names={999: "다른 상품"},
+    )
+
+    token = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert token == ("옵션을 선택해 주세요:\n1. **블랙**\n2. **화이트**\n어떤 걸로 담을까요?")
+
+
+async def test_option_product_narrow_reask_names_target() -> None:
+    store = CartStateStore()
+    options = [
+        CartOption(option_id=1, name="블랙 / M"),
+        CartOption(option_id=2, name="화이트 / M"),
+        CartOption(option_id=3, name="레드 / L"),
+    ]
+
+    async def add_fn(req):
+        raise CartOptionRequired(options)
+
+    events = await _run_add(
+        store,
+        CartIntent(product_id=1, quantity=1),
+        add_fn,
+        message="블랙이나 화이트로 담아줘",
+        condition_terms=("블랙", "화이트"),
+        product_names={1: "조건 상품"},
+    )
+
+    token = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert token == (
+        "**상품:** 조건 상품\n\n"
+        "말씀하신 조건에 맞는 옵션이에요:\n"
+        "1. **블랙 / M**\n"
+        "2. **화이트 / M**\n"
+        "이 중에서 고르시거나 다른 옵션을 말씀해 주세요."
+    )
+
+
+async def test_option_product_color_unmet_reask_names_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mapping = {"빨강": ["빨강", "레드"], "블랙": ["블랙", "검정"], "화이트": ["화이트", "흰색"]}
+    monkeypatch.setattr(
+        "app.services.spring_client._load_color_synonym_map", _mock_synonym_map(mapping)
+    )
+    store = CartStateStore()
+    options = [CartOption(option_id=1, name="블랙 / M"), CartOption(option_id=2, name="화이트 / M")]
+
+    async def add_fn(req):
+        raise CartOptionRequired(options)
+
+    events = await _run_add(
+        store,
+        CartIntent(product_id=1, quantity=1),
+        add_fn,
+        message="빨강 담아줘",
+        condition_terms=("빨강",),
+        product_names={1: "색상 상품"},
+    )
+
+    token = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert token == (
+        "**상품:** 색상 상품\n\n"
+        "'빨강' 조건에 맞는 옵션은 찾지 못했어요. 고를 수 있는 옵션은 이거예요:\n"
+        "1. **블랙 / M**\n"
+        "2. **화이트 / M**\n"
+        "이 중에서 고르시거나 다른 상품을 말씀해 주세요."
+    )
+
+
+async def test_option_product_hint_fallback_names_target() -> None:
+    store = CartStateStore()
+    await store.set_last_reco(
+        "m:t",
+        [(1, "힌트 상품")],
+        option_hints={1: OptionHint(names=("블랙", "화이트"), total=3)},
+    )
+
+    async def add_fn(req):
+        raise CartOptionRequired([])
+
+    events = await _run_add(
+        store,
+        CartIntent(product_id=1, quantity=1),
+        add_fn,
+        product_names={1: "힌트 상품"},
+    )
+
+    token = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert token == (
+        "**상품:** 힌트 상품\n\n"
+        "옵션을 선택해 주세요:\n"
+        "1. **블랙**\n"
+        "2. **화이트**\n"
+        "외 1개\n"
+        "어떤 걸로 담을까요?"
+    )
+
+
+async def test_option_product_invalid_reask_uses_pending_target_name() -> None:
+    store = CartStateStore()
+    await store.set_pending(
+        "m:t",
+        PendingAdd(
+            product_id=1,
+            quantity=1,
+            options=[CartOption(option_id=3, name="블루")],
+            attempts=0,
+        ),
+    )
+    options = [CartOption(option_id=1, name="블랙"), CartOption(option_id=2, name="화이트")]
+
+    async def add_fn(req):
+        raise CartOptionInvalid(options)
+
+    events = await _collect(
+        stream_cart_add(
+            identity=_member(),
+            cart=CartIntent(product_id=None, option_id=9, quantity=1),
+            cart_store=store,
+            thread_key="m:t",
+            settings=get_settings(),
+            add_fn=add_fn,
+            get_cart_fn=_empty_cart(),
+            product_names={1: "대기 상품"},
+        )
+    )
+
+    token = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert token == (
+        "**상품:** 대기 상품\n\n"
+        "그 옵션을 찾지 못했어요. 다시 골라 주세요:\n"
+        "1. **블랙**\n"
+        "2. **화이트**"
+    )
 
 
 def test_numbered_option_rows_bolds_complete_labels_in_order() -> None:
