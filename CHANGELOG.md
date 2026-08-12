@@ -74,6 +74,11 @@
 - **#635 — 구 `GET /profile/me` HTTP 조회 표면을 제거했다.** 라우터·응답 스키마·OpenAPI·회귀 테스트와 공개 문서를 함께 정리했으며, 프로필 요약 reader는 추천 경로 내부 소비로 유지한다.
 
 ### Changed
+- **#650 — 판매자 general 레인에 경량 해석 허용 범위를 추가했다.** 단일 지표 증감·순위·
+  임계값 비교(예: "지난주보다 늘었다", "가장 많이 이탈한 단계")까지는 general 이 직접
+  답한다 — 원인 가설·복수 지표 교차·행동 추천은 여전히 금지이며, 필요하면 기존과 동일하게
+  "보고서 페이지에서 확인" 안내로 돌린다. `GENERAL_PROMPT_TEMPLATE`(prompts.py)과
+  `build_general_agent` 독스트링(workers.py)만 바꿨다 — 도구·스키마·SSE·API 계약 변경 없음.
 - **구매자 rerank 근거 표시 기본을 C(`validated`)로 승격했다.** PR #638의 450-case live A/B/C
   결과에서 등록 detector 기준 unsupported reason은 A 10.87% → C 0%였고, A/B 추천 집합은
   비교 가능한 447/447에서 보존됐으며 B/C 순위도 450/450 동일했다. 운영 동등 추정 비용은 A보다
