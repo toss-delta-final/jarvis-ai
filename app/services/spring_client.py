@@ -30,7 +30,7 @@ AI 는 커머스 DB 에 직접 write 하지 않는다. 와이어 포맷은 camel
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterator
+from collections.abc import Awaitable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -415,6 +415,49 @@ def _is_retryable(exc: BaseException) -> bool:
         code = exc.response.status_code
         return code >= 500 or code in _RETRYABLE_4XX
     return False
+
+
+_BatchT = TypeVar("_BatchT")
+
+
+async def _fetch_with_batch_retries(
+    factory: Callable[[], Awaitable[_BatchT]],
+    *,
+    operation: str,
+    brand_id: int,
+    retries: int,
+) -> _BatchT:
+    """무인 배치 전용 재시도 래퍼(#601) — `get_customer_features`(#592)와 같은 패턴을 공유한다.
+
+    대화형 호출은 개별 GET 메서드를 `retries=0`(기본값)으로 그대로 부르므로 이 래퍼를
+    거쳐도 조회 1회·무재시도 동작은 바뀌지 않는다. 배치 호출부(무인 스캔·스냅샷 배선,
+    OPS-RUNTIME 결정 R-1)만 `retries>=1`을 넘긴다. 재시도 판정·backoff는
+    `get_customer_features`와 동일 상수(`seller_customer_features_retry_backoff_s`)를
+    재사용한다 — 무인 배치 전용 상수를 또 만들면 튜닝 지점이 흩어진다.
+    """
+    settings = get_settings()
+    attempts = retries + 1
+    for attempt in range(1, attempts + 1):
+        try:
+            return await factory()
+        except SpringUnavailableError as exc:
+            cause = exc.__cause__ or exc
+            if attempt >= attempts or not _is_retryable(cause):
+                raise
+            _log.warning(
+                "spring_batch_retry",
+                extra={
+                    "attempt": attempt,
+                    "maxAttempts": attempts,
+                    "operation": operation,
+                    "brandId": brand_id,
+                    "statusClass": _failure_status_class(cause),
+                },
+            )
+            await asyncio.sleep(settings.seller_customer_features_retry_backoff_s * attempt)
+    raise SpringUnavailableError(  # pragma: no cover - 루프가 항상 return/raise 함
+        f"{operation}: retries 소진(brand_id={brand_id})"
+    )
 
 
 class SpringUnavailableError(Exception):
@@ -1712,7 +1755,13 @@ class SpringClient:
     # ── 조회 8종 (전부 GET, api-spec §4.4/§4.5) ──
 
     async def get_sales(
-        self, brand_id: int, from_: str, to: str, granularity: str = "daily"
+        self,
+        brand_id: int,
+        from_: str,
+        to: str,
+        granularity: str = "daily",
+        *,
+        retries: int = 0,
     ) -> SalesResult:
         """I-6 매출 시계열 조회 (§4.4). granularity: daily/weekly/monthly/summary.
 
@@ -1720,24 +1769,44 @@ class SpringClient:
         RETURNED 제외)를 수신한다 — 구현에는 처음부터 있었으나 스키마에 필드가
         없어 파싱되지 않고 버려지던 드리프트 정정(2026-08-06). granularity=summary
         응답에는 수량 필드가 없어 nullable 이다.
-        """
-        data = await self._request(
-            "GET",
-            f"/internal/seller/{brand_id}/sales",
-            operation="get_sales",
-            params={"from": from_, "to": to, "granularity": granularity},
-        )
-        return self._validate(SalesResult, data)
 
-    async def get_funnel(self, brand_id: int, from_: str, to: str) -> FunnelResult:
-        """I-7 구매전환 퍼널 조회 (§4.4). view→cart→checkout→purchase 4단."""
-        data = await self._request(
-            "GET",
-            f"/internal/seller/{brand_id}/funnel",
-            operation="get_funnel",
-            params={"from": from_, "to": to},
+        `retries`: 무인 배치 전용(#601, get_customer_features 와 동일 규약) — 대화형
+        호출은 기본값 0(재시도 없음)을 그대로 쓴다.
+        """
+
+        async def _call() -> SalesResult:
+            data = await self._request(
+                "GET",
+                f"/internal/seller/{brand_id}/sales",
+                operation="get_sales",
+                params={"from": from_, "to": to, "granularity": granularity},
+            )
+            return self._validate(SalesResult, data)
+
+        return await _fetch_with_batch_retries(
+            _call, operation="get_sales", brand_id=brand_id, retries=retries
         )
-        return self._validate(FunnelResult, data)
+
+    async def get_funnel(
+        self, brand_id: int, from_: str, to: str, *, retries: int = 0
+    ) -> FunnelResult:
+        """I-7 구매전환 퍼널 조회 (§4.4). view→cart→checkout→purchase 4단.
+
+        `retries`: 무인 배치 전용(#601) — 대화형 호출은 기본값 0.
+        """
+
+        async def _call() -> FunnelResult:
+            data = await self._request(
+                "GET",
+                f"/internal/seller/{brand_id}/funnel",
+                operation="get_funnel",
+                params={"from": from_, "to": to},
+            )
+            return self._validate(FunnelResult, data)
+
+        return await _fetch_with_batch_retries(
+            _call, operation="get_funnel", brand_id=brand_id, retries=retries
+        )
 
     async def get_events(
         self,
@@ -1747,6 +1816,8 @@ class SpringClient:
         event_type: list[str] | None = None,
         product_id: int | None = None,
         group_by: str | None = None,
+        *,
+        retries: int = 0,
     ) -> BehaviorEventsResult:
         """I-13 행동 이벤트 집계 조회 (§4.4 — 07/17 BE 확정, REALIGN ②-3).
 
@@ -1757,6 +1828,8 @@ class SpringClient:
         귀속 경로가 없어 이 엔드포인트 스코프 밖).
         groupBy 는 product(기본)/eventType/date. 실패 코드:
         INVALID_PERIOD/INVALID_GROUP_BY(400).
+
+        `retries`: 무인 배치 전용(#601) — 대화형 호출은 기본값 0.
         """
         params: dict = {"from": from_, "to": to}
         if event_type:
@@ -1768,13 +1841,19 @@ class SpringClient:
             params["productId"] = product_id
         if group_by:
             params["groupBy"] = group_by
-        data = await self._request(
-            "GET",
-            f"/internal/seller/{brand_id}/events",
-            operation="get_events",
-            params=params,
+
+        async def _call() -> BehaviorEventsResult:
+            data = await self._request(
+                "GET",
+                f"/internal/seller/{brand_id}/events",
+                operation="get_events",
+                params=params,
+            )
+            return self._validate(BehaviorEventsResult, data)
+
+        return await _fetch_with_batch_retries(
+            _call, operation="get_events", brand_id=brand_id, retries=retries
         )
-        return self._validate(BehaviorEventsResult, data)
 
     async def get_order_events(
         self,
@@ -1785,10 +1864,14 @@ class SpringClient:
         actor_type: str | None = None,
         group_by: str | None = None,
         stats: bool | None = None,
+        *,
+        retries: int = 0,
     ) -> OrderEventsResult:
         """I-14 주문 상태 전이/조회 (§4.4). toStatus 는 복수 허용, stats 는 집계 모드 플래그.
 
         [혼동 금지] 구매자 get_recent_purchases(GET /orders/recent, §4.7)와 다른 계약이다.
+
+        `retries`: 무인 배치 전용(#601) — 대화형 호출은 기본값 0.
         """
         params: dict = {"from": from_, "to": to}
         if to_status:
@@ -1799,13 +1882,19 @@ class SpringClient:
             params["groupBy"] = group_by
         if stats is not None:
             params["stats"] = stats
-        data = await self._request(
-            "GET",
-            f"/internal/seller/{brand_id}/order-events",
-            operation="get_order_events",
-            params=params,
+
+        async def _call() -> OrderEventsResult:
+            data = await self._request(
+                "GET",
+                f"/internal/seller/{brand_id}/order-events",
+                operation="get_order_events",
+                params=params,
+            )
+            return self._validate(OrderEventsResult, data)
+
+        return await _fetch_with_batch_retries(
+            _call, operation="get_order_events", brand_id=brand_id, retries=retries
         )
-        return self._validate(OrderEventsResult, data)
 
     async def get_product_changes(
         self,
@@ -1857,6 +1946,8 @@ class SpringClient:
         to: str,
         event_type: str | None = None,
         group_by: str | None = None,
+        *,
+        retries: int = 0,
     ) -> AccountEventsResult:
         """I-8 계정 이벤트 집계 조회 (§4.4) — 자사 코호트 스코프.
 
@@ -1870,19 +1961,27 @@ class SpringClient:
         [#197] from/to 는 필수다(AnalysisPeriod.of — 누락 시 400 INVALID_PERIOD).
         groupBy 는 BE 화이트리스트 eventType(기본)|hour|ip 만 허용 — 그 외 400
         INVALID_GROUP_BY (AccountEventAggregateResponse 실측).
+
+        `retries`: 무인 배치 전용(#601) — 대화형 호출은 기본값 0.
         """
         params: dict = {"from": from_, "to": to}
         if event_type:
             params["eventType"] = event_type
         if group_by:
             params["groupBy"] = group_by
-        data = await self._request(
-            "GET",
-            f"/internal/seller/{brand_id}/account-events",
-            operation="get_account_events",
-            params=params,
+
+        async def _call() -> AccountEventsResult:
+            data = await self._request(
+                "GET",
+                f"/internal/seller/{brand_id}/account-events",
+                operation="get_account_events",
+                params=params,
+            )
+            return self._validate(AccountEventsResult, data)
+
+        return await _fetch_with_batch_retries(
+            _call, operation="get_account_events", brand_id=brand_id, retries=retries
         )
-        return self._validate(AccountEventsResult, data)
 
     async def get_customer_features(
         self,

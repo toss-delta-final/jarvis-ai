@@ -413,6 +413,16 @@ async def _run_ddl(pool: AsyncConnectionPool) -> None:
                     "ON seller_analysis_outcomes (brand_id, action_type, verdict, "
                     "outcome_spec_version)"
                 )
+                # [이슈 #601] 무인 배치 실행 로그 — db/profile/init/06_seller_analysis_run_log.sql
+                # 과 같은 문장이다(그 파일이 정본, 여긴 idempotent 복제 — 05 파일의 §9 규약).
+                await conn.execute(
+                    "ALTER TABLE seller_analysis_targets "
+                    "ADD COLUMN IF NOT EXISTS last_run_at timestamptz"
+                )
+                await conn.execute(
+                    "ALTER TABLE seller_analysis_targets "
+                    "ADD COLUMN IF NOT EXISTS last_skip_reason text"
+                )
 
     await asyncio.wait_for(_run(), timeout=settings.state_store_migration_timeout_s)
 
@@ -501,6 +511,29 @@ def note_seller_seen(context: SellerContext) -> None:
     task = asyncio.create_task(_register_quietly(context))
     _background.add(task)
     task.add_done_callback(_background.discard)
+
+
+async def update_target_run(
+    brand_id: int, *, last_run_at: datetime, last_skip_reason: str | None
+) -> None:
+    """무인 배치 1브랜드 실행 결과를 `seller_analysis_targets`에 기록한다(이슈 #601).
+
+    `last_skip_reason=None`은 "보고서를 만들었다"이지 "아무 일도 안 했다"가 아니다 —
+    실행 자체는 `last_run_at`이 증언한다. 사유가 있으면(`no_baseline_data`·
+    `snapshot_failed`·`no_findings` 등) 그 값을 남겨 R-1 `noReportReason`과 운영 로그
+    양쪽의 원천으로 쓴다(10-TRIGGER.md 결정 98). 대상이 아직 `register_target`으로
+    등록되지 않았으면(브랜드가 그 사이 삭제된 이상 상황) 0행 UPDATE로 조용히 넘어간다 —
+    이 함수가 대상을 새로 만들지는 않는다(대상 등록은 접속 시 훅 소관).
+    """
+
+    async def _run(conn: AsyncConnection) -> None:
+        await conn.execute(
+            "UPDATE seller_analysis_targets "
+            "SET last_run_at = %s, last_skip_reason = %s WHERE brand_id = %s",
+            (last_run_at, last_skip_reason, brand_id),
+        )
+
+    await _write(_run)
 
 
 async def list_active_targets(ttl_days: int | None = None) -> list[int]:
@@ -932,6 +965,36 @@ async def mark_recommendation_applied(rec_id: UUID, *, brand_id: int, draft_id: 
         )
 
     await _write(_run)
+
+
+async def expire_recommendations(older_than_days: int, *, batch_size: int) -> int:
+    """`proposed` 추천 중 `created_at`이 `older_than_days` 지난 것을 `expired`로 전이한다.
+
+    무인 정리 배치 ④단계(08-PERSISTENCE.md §5, 결정 68) — `status`가 이미 `applied`·
+    `superseded`인 행은 건드리지 않는다(둘 다 "이미 처리됨"이라 만료 대상이 아니다).
+    `batch_size`(`seller_cleanup_batch_size`)로 1회 UPDATE 행 수를 제한해 락 보유 시간을
+    억제한다 — 서브쿼리로 대상 id를 먼저 좁혀 `LIMIT`을 적용한다(UPDATE 자체는 LIMIT을
+    지원하지 않는다).
+    """
+
+    async def _run(conn: AsyncConnection) -> int:
+        cur = await conn.execute(
+            """
+            UPDATE seller_analysis_recommendations
+            SET status = 'expired'
+            WHERE id IN (
+                SELECT id FROM seller_analysis_recommendations
+                WHERE status = 'proposed'
+                  AND created_at < now() - make_interval(days => %s)
+                LIMIT %s
+            )
+            """,
+            (older_than_days, batch_size),
+        )
+        return cur.rowcount
+
+    result = await _write(_run)
+    return result if result is not None else 0
 
 
 # ── 성과 측정 ───────────────────────────────────────────────────────────────────
