@@ -58,6 +58,35 @@ class AnalysisFinding(BaseModel):
     )
 
 
+class SegmentNaming(BaseModel):
+    """세그먼트 1건의 LLM 서술 — `behavior` 워커 상주 `interpret` 출력 (이슈 #598).
+
+    `rule_label` 은 `sop.context.Segment.rule_label` 과의 조인 키다(원형, 표시 라벨
+    아님) — `interpret` 스텝이 이 값으로 `ctx.segments[i]` 를 찾아
+    `llm_label`/`llm_desc` 를 되쓴다. 크기·통계는 LLM 이 손대지 않는다(`context.py`
+    불변 규약 — LLM 이 채우는 필드는 `llm_label`·`llm_desc` 둘뿐).
+    """
+
+    rule_label: str = Field(description="세그먼트 원형 라벨 — ctx.segments 조인 키")
+    llm_label: str = Field(description="판매자가 이해할 짧은 별칭(예: '단골 큰손')")
+    llm_desc: str = Field(description="이 세그먼트의 특징 서술 1~2문장 — 표의 수치만 근거로")
+
+
+class BehaviorFinding(AnalysisFinding):
+    """`behavior` 워커 상주 `interpret` 출력 — `AnalysisFinding` 에 세그먼트별 서술을 얹는다.
+
+    다른 3워커(`churn`·`conversion`·`sales_anomaly`)는 `AnalysisFinding` 을 그대로 쓴다.
+    `behavior` 만 별도 스키마가 필요한 이유: 세그먼트마다 이름·설명을 받아야 하는데
+    그 결과를 실을 자리가 기존 스키마에 없다(`analysis_type` 은 항상 `"behavior"`).
+    """
+
+    segment_namings: list[SegmentNaming] = Field(
+        default_factory=list,
+        description="세그먼트별 별칭·설명 — ctx.segments 전건에 대응할 필요는 없다"
+        "(서술할 것이 없는 세그먼트는 생략 가능)",
+    )
+
+
 # ── 3-1: AnalysisPlan (analysis_planner 구조화 출력 — 파이프라인 입력 계약) ────
 
 
