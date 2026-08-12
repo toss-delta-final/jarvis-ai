@@ -33,6 +33,7 @@ EXIT_REJECTED = 2
 EXIT_BUDGET = 3
 EXIT_UNFILLED = 4
 VALIDATOR_VERSION = "rerank-grounding-v1"
+OVERALL_VALIDATOR_VERSION = "overall-comment-grounding-v1"
 ALL_ARMS: tuple[GroundingArm, ...] = ("current", "prompt_only", "validated")
 
 
@@ -134,6 +135,7 @@ def _manifest(
             "structured": _prompt_hash(_SYSTEM_STRUCTURED_GROUNDING),
         },
         "validatorVersion": VALIDATOR_VERSION,
+        "overallValidatorVersion": OVERALL_VALIDATOR_VERSION,
         "modelConfig": model_config,
         "repeats": repeats,
         "attemptMultiplier": attempt_multiplier,
