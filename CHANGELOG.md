@@ -38,6 +38,12 @@
   preregistration hash provenance, constrained A/B balance와 엄격한 3-of-3 coverage gate를
   포함한다. 실제 human response는 포함하지 않으며 결과는 exploratory로만 해석한다.
 
+### Fixed
+- **#635 — 챗봇 장바구니 담기·삭제에 현재 `chatSessionId`를 전달하고, 추천 카드에서 해소한 담기에는 `recommendationContext{recommendationRequestId,listId}`를 함께 보낸다** (api-spec §4.1·§4.12, v0.33.1). Spring이 `chat:{sessionId}` sentinel로 행동 이벤트를 서버 측 적재하고 추천→담기 귀속을 검증할 수 있게 한다. 신원 0개/2개 `400 VALIDATION_ERROR`와 동시 경합 `409 RESOURCE_CONFLICT`도 계약 사본에 현행화했다.
+
+### Removed
+- **#635 — 구 `GET /profile/me` HTTP 조회 표면을 제거했다.** 라우터·응답 스키마·OpenAPI·회귀 테스트와 공개 문서를 함께 정리했으며, 프로필 요약 reader는 추천 경로 내부 소비로 유지한다.
+
 ### Changed
 - **#581 — 취향 밴드(`priceBand`·`ratingBand`)에 한쪽 경계만 있는 표현을 담을 수 있게 하고,
   조회 응답의 라벨을 사람이 읽는 문장으로 바꿨다** (api-spec §3.8·§3.9.1, v0.33.0).

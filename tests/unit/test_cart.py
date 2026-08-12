@@ -796,8 +796,9 @@ async def test_route_cart_remove(monkeypatch: pytest.MonkeyPatch) -> None:
             items=[CartViewItem(cart_item_id=1, product_id=1, product_name="키보드", quantity=1)]
         )
 
-    async def fake_delete(cart_item_id, *, user_id=None, guest_id=None):
+    async def fake_delete(cart_item_id, *, user_id=None, guest_id=None, chat_session_id=None):
         assert cart_item_id == 1
+        assert chat_session_id == "s1"
         return None
 
     monkeypatch.setattr(sc, "get_cart", fake_get)
@@ -1048,6 +1049,47 @@ async def test_add_to_cart_success_parses(monkeypatch: pytest.MonkeyPatch) -> No
     )
     res = await sc.add_to_cart(AddToCartRequest(user_id=1, product_id=1, quantity=1))
     assert res.success and res.cart_item_id == 55
+
+
+async def test_add_to_cart_serializes_chat_and_recommendation_attribution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """I-2는 챗 sentinel과 추천→담기 귀속을 같은 요청에 전달한다."""
+    import app.services.spring_client as sc
+    from app.schemas.spring import AddToCartRequest, RecommendationContext
+
+    client = _CartClient(_CartResp(200, {"success": True, "data": {"cartItemId": 55}}))
+    monkeypatch.setattr(sc, "_client", lambda: client)
+
+    await sc.add_to_cart(
+        AddToCartRequest(
+            user_id=1,
+            product_id=7,
+            chat_session_id="chat-session-1",
+            recommendation_context=RecommendationContext(
+                recommendation_request_id="request-1", list_id="list-1"
+            ),
+        )
+    )
+
+    assert client.calls == [
+        (
+            "POST",
+            "/internal/cart/items",
+            {
+                "userId": 1,
+                "guestId": None,
+                "productId": 7,
+                "optionId": None,
+                "quantity": 1,
+                "chatSessionId": "chat-session-1",
+                "recommendationContext": {
+                    "recommendationRequestId": "request-1",
+                    "listId": "list-1",
+                },
+            },
+        )
+    ]
 
 
 async def test_add_to_cart_option_required_raises_with_options(
@@ -1379,6 +1421,23 @@ async def test_delete_cart_item_200_missing_success_key_is_not_failure(
     monkeypatch.setattr(sc, "_client", lambda: _CartClient(_CartResp(200, {"data": None})))
     result = await sc.delete_cart_item(55, user_id=1)
     assert result is None
+
+
+async def test_delete_cart_item_serializes_chat_session_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    import app.services.spring_client as sc
+
+    client = _CartClient(_CartResp(200, {"success": True, "data": None}))
+    monkeypatch.setattr(sc, "_client", lambda: client)
+
+    await sc.delete_cart_item(55, user_id=1, chat_session_id="chat-session-1")
+
+    assert client.calls == [
+        (
+            "DELETE",
+            "/internal/cart/items/55",
+            {"userId": 1, "chatSessionId": "chat-session-1"},
+        )
+    ]
 
 
 async def test_delete_cart_item_not_found_raises(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2130,6 +2189,56 @@ async def test_cart_add_discourse_interjection_before_number_option_still_adds()
     }
     assert _types(events) == ["action", "done"]
     assert await store.get_pending("m:t") is None
+
+
+async def test_route_cart_add_forwards_saved_recommendation_context() -> None:
+    """추천 카드에서 해소한 담기는 현재 세션과 그 카드의 귀속 키를 함께 보낸다."""
+    from tests._fakes import FakeLLM
+    import app.services.spring_client as sc
+    from app.agents.buyer.cart.state import get_cart_store
+    from app.schemas.spring import RecommendationContext
+
+    captured = []
+
+    async def fake_add(request):
+        captured.append(request)
+        return AddToCartResult(success=True, cart_item_id=42)
+
+    async def fake_get(*, user_id=None, guest_id=None):
+        return CartView(items=[])
+
+    request = _req(thread_id="attribution")
+    request.session_id = "chat-session-1"
+    store = await get_cart_store()
+    key = await _thread_key(request, _member())
+    await store.set_last_reco(
+        key,
+        [(101, "이어폰")],
+        recommendation_contexts={
+            101: RecommendationContext(recommendation_request_id="request-1", list_id="list-1")
+        },
+    )
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(sc, "add_to_cart", fake_add)
+    monkeypatch.setattr(sc, "get_cart", fake_get)
+    try:
+        events = await _collect(
+            run_buyer_turn(
+                request,
+                _member(),
+                llm=FakeLLM(decompose={"intent": "cart_add", "cart": {"productId": 101}}),
+            )
+        )
+    finally:
+        monkeypatch.undo()
+
+    assert (
+        next(event for event in events if event["type"] == "action")["data"]["type"] == "CART_ADDED"
+    )
+    assert captured[0].chat_session_id == "chat-session-1"
+    assert captured[0].recommendation_context == RecommendationContext(
+        recommendation_request_id="request-1", list_id="list-1"
+    )
 
 
 @pytest.mark.parametrize(

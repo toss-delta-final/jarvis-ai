@@ -43,7 +43,7 @@
 - 추천 서브그래프 4단계: `decompose`(Haiku, 조건 분해) → `search`(**1차** Spring 위임 후보 조회+구매이력 dedup, **2차** AI가 catalog DB로 attribute 매칭·임베딩 유사도 압축) → `rerank`(Sonnet, 프로필 반영 재랭킹 + 근거 생성) → `respond`(SSE 응답).
 - Case 1(상품 검색)/2(구조화 필터)/3(상황 기반 다중 니즈) 분기, 0건 완화, 멀티턴 병합(add/replace/reset), 총액 예산 처리.
 - 프로필 파이프라인 3요소: `reader`(요청 경로, 동기 조회) / `builder`(요청 경로 밖, 델타 생성 + sleep-time consolidation) / `gate`(승격 판정).
-- `GET /profile/me`(마이페이지 조회), `POST /events/session-end` 수신(프로필 조기 트리거).
+- `POST /events/session-end` 수신(프로필 조기 트리거). 프로필 reader는 추천 경로 내부 전용이다.
 - 장바구니 서브그래프: "담아줘" 의도 추출(상품·옵션·수량) → Spring 담기(I-2)·조회(I-18) 위임 → SSE `action` 응답. 옵션 되물음 멀티턴, 게스트 담기 허용.
 - **추천 검색의 2차 압축**: Spring이 1차 필터 후보 + attribute를 반환하면, AI가 그 attribute를 decompose의 유연 조건과 매칭하고 catalog DB의 임베딩으로 유사도 정렬해 rerank 입력을 만드는 로직(§3.1/§6 참조) — catalog DB를 **소비**하는 이 로직만 본 PRD 범위이며, catalog DB를 만드는 쪽은 별도 담당.
 - 위 세 에이전트가 소비/생산하는 데이터 모델·상태 스키마·SSE 페이로드 스키마.
@@ -93,7 +93,6 @@
 | gate — 3조건 승격 | 반복성(EMA confidence 누적) · 현저성(salience) · 명시성(explicitness) 3조건으로 승격 판정. "기억해"는 즉시 기록되는 hot-path 예외. 구매 신호는 명시성 없이 반복성·현저성만으로 승격 가능 | REQ-PROF-040~046 |
 | transient 격리 | "이번엔 비싸도 돼", "친구 선물로" 같은 일시적/타인 지칭 발화는 session_context에만 남고 장기 프로필 후보에서 배제, 세션 종료 시 폐기 | REQ-PROF-042 |
 | 트리거 | 정합성의 원천은 **저장된 회원 세션 버퍼**. Spring I-20(`logout`·`newConversation`)과 AI 내부 10분 inactivity sweep이 같은 finalizer·고정키 claim으로 직렬화됨. idle은 재개 가능한 checkpoint이며 탭 닫기 신호는 사용하지 않음 | REQ-PROF-050~059 |
-| GET /profile/me | 마이페이지용 사람이 읽는 마크다운 passthrough. 게스트·미보유는 `exists:false, markdown:null`을 **정상 200**으로. **PUT 없음**(MVP) | api-spec §3.4, REQ-PROF-080~082 |
 | 저장 안전성 | fact는 삭제 대신 `supersededBy`로 이력 보존(supersede), 최신성 충돌은 항상 코드 결정론적 recency-wins — LLM에 최신성 판단 위임 금지 | REQ-PROF-033/034 |
 
 ### 3.3 장바구니
@@ -127,7 +126,6 @@
 | UC-7 | 총액 예산 준수 | "5만원 내로 유럽여행 준비물" | Case 3 + total_budget | 코드가 인덱스 가격으로 합산 검증, 예산 초과 시 저가 대안 자동 교체(상한 내), 필수 아이템 초과 시 조용히 누락하지 않고 안내 |
 | UC-8 | 게스트 이용 | 비로그인 | 임의 추천 질의 | `profile_summary = None`이라 개인화는 스킵되지만 추천 자체는 정상 성립, 예외 없음 |
 | UC-9 | 최근 구매 재추천 방지 | 최근 소금을 구매한 회원 | "장보기 리스트 추천해줘" | 소금 니즈는 억제되되 나머지는 정상 추천 + "소금은 최근 구매 — 다시 추천받기" 되돌리기 칩 |
-| UC-10 | 마이페이지 프로필 확인 | 확정 프로필 보유 사용자 | 마이페이지 접속(`GET /profile/me`) | 사람이 읽는 프로필 마크다운 표시, 편집 불가(GET only) |
 | UC-11 | 민감 정보 일반화 | "당뇨가 있어서" 발화 | 세션 종료 델타 생성 | 원인(질병)은 버리고 파생 취향(무설탕 선호)만 태그로 승격 후보화 |
 | UC-12 | 담기 해피패스 | 옵션 없는 상품 | "이거 담아줘" | I-2 단건 호출 → 성공 → SSE `action: CART_ADDED{cartItemId}` |
 | UC-13 | 옵션 되물음 | 옵션 필수 상품 | "이 이어폰 담아줘"(옵션 미지정) | `CART_OPTION_REQUIRED` → 실패 action 없이 "어떤 색상으로 담을까요?" 재질문 → 사용자가 "블랙"이라고 답하면 `optionId` 해석 후 재담기 성공 |
@@ -271,7 +269,6 @@ repo-local 정본 api-spec.md v0.15.19를 상위 외부 계약으로 참조한�
 
 **`action`** 이벤트(장바구니 전용): `{ type: "CART_ADDED", cartItemId }` 또는 `{ type: "CART_ADD_FAILED", reason }`(`reason` ∈ `PRODUCT_NOT_FOUND`/`CART_ERROR`, `OUT_OF_STOCK`은 v0.15.5로 폐기). 옵션 되물음은 `action` 실패가 아니라 `token` 텍스트 재질문으로 처리되고, 장바구니 조회 응답도 별도 이벤트 없이 `token`으로 온다 — api-spec §3.1 (4)
 
-**`GET /profile/me`** — 경로 파라미터 없음(IDOR 방지, 결정 19). 응답 `{userId, exists, markdown, generatedAt}`. 게스트/미보유는 `exists:false`가 정상 200. — api-spec §3.4
 
 **`POST /events/session-end`** — Spring → AI, best-effort·멱등. `{sessionId, userId(number BIGINT), reason?}`이며 알려진 Spring 사유는 `logout`·`newConversation`이다. 신규/중복 모두 202(`accepted`/`duplicate`), 멱등키=`session-end:{userId}:{sessionId}`. `inactivityTimeout`은 AI 내부 스케줄러가 같은 finalizer·고정키 claim으로 직렬화하되 재개 가능한 checkpoint로 처리하고, 탭 닫기 신호는 두지 않는다. — api-spec §3.5
 
@@ -378,7 +375,7 @@ Notion "📡 API 명세서" DB(팀 결정 원장, 2026-07-16 확인)를 기준�
 
 ### (A) 계약 미동기화
 
-- **SPEC-PROFILE-001 §5.4/§6.9 불일치**: `GET /profile/{user_id}` → `GET /profile/me`(IDOR 방지), camelCase, 구매 소스가 "주문 미러 스캔"에서 "질의 시점 `GET /orders/recent` 조회"로 개정 필요(api-spec §7.2).
+- **SPEC-PROFILE-001 정합**: 폐기된 HTTP 프로필 조회 계약은 제거하고, 구매 소스만 "질의 시점 `GET /orders/recent` 조회"로 유지한다.
 - **후보 검색 소유 전환**: SPEC-RECOMMEND-001 §5.2/§6.3이 여전히 "AI 자체 pgvector 카탈로그 검색 tool" 서술로 남아 있는데, 실제 계약(v0.5.0)은 Spring 위임이다. 이 부분은 문구 재작성이 아니라 **아키텍처 전제 자체가 바뀐 것**이라 영향 범위가 크다(api-spec §8 항목 4).
 - **[2026-07-17 해소] AI 임베딩 ↔ Spring 검색 결합 방식**: 방식2(Spring 검색 우선 → AI가 attribute 매칭 + 임베딩 유사도로 2차 압축)로 **확정**(§6.2). 다만 이 확정이 아직 `SPEC-RECOMMEND-001`(§5.2/§6.3, "카탈로그 검색 tool + pgvector 단일 SQL" 서술)에는 반영 안 된 채로 남아 있다.
 - **`productId` 조인 신선도**: Spring의 1차 후보와 catalog DB의 임베딩을 `productId`로 조인하는데, catalog DB 갱신은 pull 배치(I-17, 별도 담당) 주기라 Spring 원본과 시차가 생길 수 있다 — 배치 주기 사이 신규 상품은 Spring 후보엔 있어도 catalog DB엔 임베딩이 없을 수 있다(조인 실패 시 처리 정책 미정, §9 성공지표 "2차 압축 조인 성공률" 참조).
