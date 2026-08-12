@@ -46,6 +46,7 @@ from app.schemas.recommendations import LIMIT_MAX as HOME_RECO_LIMIT_MAX
 from app.schemas.spring import LIST_MAX_PRODUCTS, MAX_LISTS
 
 LLMProvider = Literal["openai", "anthropic", "scripted"]
+ScriptedLLMMode = Literal["instant", "delayed"]
 # 검색 백엔드 선택(#101) — spring: Spring 위임만(방식1 이전 MVP, 운영 롤백), embedding_rerank:
 # Spring 전량 → pgvector 의미 재정렬(방식2, MVP 기본), vector: 방식1 오프라인 비교 전용
 # (운영 사용 금지, #32 미채택, C-17 기각).
@@ -276,6 +277,10 @@ class Settings(BaseSettings):
     # 부하 테스트를 비용 없이 돌린다. local/test 환경에서만 허용 — 아래 _forbid_scripted_outside_local
     # 이 그 밖의 환경에서 기동을 막는다.
     llm_provider: LLMProvider = "openai"
+    # scripted 부하 테스트 프로파일. instant 는 내부 처리량 상한, delayed 는 요청당 한 번의 비동기
+    # 대기로 오래 열린 SSE 연결을 재현한다. 사용자 실측 평균에 맞춰 기본 지연은 5초다.
+    scripted_llm_mode: ScriptedLLMMode = "instant"
+    scripted_llm_delay_s: float = Field(default=5.0, ge=0.0, le=60.0)
 
     # ── Anthropic 2-tier LLM (fast=haiku / smart=sonnet) ──
     anthropic_api_key: str = ""
@@ -875,9 +880,7 @@ class Settings(BaseSettings):
     # 2026-08-06: I-13 counts 4종 → 5종(removeFromCart 편입, 02-DATA-SOURCES §E4).
     # ⚠️ 어느 지표가 영향받는지는 튜너블이 아니라 계약 사실이라 코드 상수다
     # (sop/validate.BOUNDARY_AFFECTED_PREFIXES) — 여기는 날짜 목록만 둔다.
-    seller_comparison_boundary_dates: list[date] = Field(
-        default_factory=lambda: [date(2026, 8, 6)]
-    )
+    seller_comparison_boundary_dates: list[date] = Field(default_factory=lambda: [date(2026, 8, 6)])
     # 고객 피처 스냅샷 신선도 상한(시간). 초과분은 Hold 로 드러낼 뿐 재계산하지 않는다 —
     # 재계산은 I-38 재조회 + K-Means 재학습이라 load 스텝 소관이고, 검증 함수가 I/O 경계를
     # 넘으면 단위 테스트가 Spring/DB 스텁을 요구하게 된다(sop/compute 규약 승계).
@@ -2364,8 +2367,8 @@ class Settings(BaseSettings):
     degrade_alert_min_samples: int = Field(default=50, ge=0)
 
     # ── 레이트 리밋 (api-spec §2.8, 토큰 sub 스코프, 인메모리·단일 인스턴스 전제) ──
-    rate_limit_per_min: int = 10
-    rate_limit_per_hour: int = 100
+    rate_limit_per_min: int = Field(default=10, gt=0)
+    rate_limit_per_hour: int = Field(default=100, gt=0)
     # IP 백스톱 배수 — 토큰 sub 스코프를 회전 우회해도 클라이언트 IP 상한으로 남용 차단.
     # NAT 뒤 다수 정상 사용자 오탐을 줄이려 sub 상한보다 관대하게 둔다.
     rate_limit_host_multiplier: int = 5

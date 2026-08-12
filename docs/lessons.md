@@ -11,6 +11,19 @@
 - 관련: 파일/§/커밋
 ```
 
+## [2026-08-12] 같은 서버의 provider만 스텁으로 바꿔도 백그라운드 배치는 실 DB를 오염시킬 수 있다
+- 증상: 실제 EC2의 요청 처리 용량을 재려고 `APP_ENVIRONMENT=test`와
+  `LLM_PROVIDER=scripted`만 전환하려 했지만, 요청 트래픽과 무관한 I-17 스케줄러는 계속 돌아
+  결정론 가짜 enrichment를 실 카탈로그에 저장하고 cursor까지 전진시킬 수 있었다.
+- 원인: 부하 테스트 경계를 HTTP/SSE 요청 경로로만 보아 같은 프로세스의 scheduler·consumer처럼
+  독립적으로 외부 상태를 쓰는 백그라운드 경로를 함께 점검하지 않았다. provider 원복은 이미 쓴
+  데이터와 전진한 cursor를 되돌리지 못한다.
+- 규칙: 실제 인프라에서 fake provider를 켤 때는 진입 트래픽 차단만 확인하지 말고, 해당 provider를
+  공유하는 scheduler·queue consumer·batch·startup migration의 외부 쓰기를 전부 검색한다. fake
+  결과가 영속화될 경로는 테스트 모드에서 명시적으로 skip하거나 격리 DB를 사용하고, 원복은 설정
+  재배포뿐 아니라 배너 부재와 실제 model ID smoke까지 확인한다.
+- 관련: #641 `app/pipelines/scheduler.py::start_scheduler` · `DEPLOY.md`
+
 ## [2026-08-12] 허용 목록 검사는 대상의 **소속**만 증명하고 사용자의 **지목**은 증명하지 않는다
 - 증상: `Septwolves 지갑 담아줘`에서 정답 5644와 오답 5695가 모두 `LAST_RECOMMENDATIONS`에
   있어, LLM이 5695를 내도 기존 허용 ID 가드가 통과시켜 다른 상품이 실제 장바구니에 담겼다.

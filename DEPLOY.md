@@ -42,9 +42,30 @@ docker run -p 8000:8000 --env-file deploy.env jarvis-ai:dev
 
 **LLM provider 토글**: `LLM_PROVIDER=openai`(기본) → `OPENAI_API_KEY`. `anthropic` 으로 바꾸면 → `ANTHROPIC_API_KEY`. 모델 id(`OPENAI_*_MODEL_ID`·`HAIKU/SONNET_MODEL_ID`)는 각 대시보드 실값으로.
 
+**부하 테스트 전용 scripted 모드**: 실제 사용자 트래픽을 차단한 EC2에서만
+`APP_ENVIRONMENT=test`, `LLM_PROVIDER=scripted`를 함께 사용한다. 내부 처리량 상한은
+`SCRIPTED_LLM_MODE=instant`, 5초의 추가 비동기 대기를 포함한 SSE 동시 연결 측정은
+`SCRIPTED_LLM_MODE=delayed`, `SCRIPTED_LLM_DELAY_S=5.0`을 사용한다. GitHub Variables에서
+`RATE_LIMIT_PER_MIN`·`RATE_LIMIT_PER_HOUR`를 양의 정수로 일시 상향할 수 있다. scripted 모드에서는
+세션 lifecycle sweep은 유지하되 I-17 카탈로그 enrichment 배치를 등록하지 않아 가짜 생성물이 실
+카탈로그와 cursor를 오염시키지 않게 한다. 미등록/빈 값이면 네 설정 모두 env 파일에서 빠져 코드
+기본값을 쓴다.
+
+scripted 부하 테스트는 아래 순서를 체크리스트로 사용한다.
+
+1. 변경 전 `APP_ENVIRONMENT`, `LLM_PROVIDER`, `SCRIPTED_LLM_*`, `RATE_LIMIT_*` 값을 기록한다.
+2. ALB/보안 그룹 등에서 실제 사용자 트래픽을 차단하고 위 scripted 설정으로 재배포한다.
+3. 기동 로그의 `STUB LLM MODE`, 선택한 프로파일·지연값, `I-17 job만 비활성화`를 확인한다.
+4. k6/benchmark 실행 후 모든 GitHub Variables를 1번의 운영값으로 원복하고 다시 배포한다.
+5. 원복 컨테이너에서 `STUB LLM MODE` 배너가 없음을 확인하고, smoke 요청 1건의
+   `chat_request.model_ids`가 `scripted-stub-*`가 아닌 실제 provider 모델인지 확인한 뒤 트래픽을 연다.
+
+provider·환경값은 rate limit과 함께 반드시 원복한다. `APP_ENVIRONMENT=test`와
+`LLM_PROVIDER=scripted`가 남은 컨테이너를 실제 사용자에게 열면 가짜 추천이 정상 200으로 응답된다.
+
 **선택 (기본값 있음):** 상태저장 타임아웃/풀(`STATE_STORE_*`), 배치 주기(`CATALOG_BATCH_INTERVAL_S`=300), 검색·추천 튜너블(`TOP_K`·`EXPOSE_*`·`LLM_CALL_LIMIT` 등), 프로필 튜너블(`PROFILE_*`).
 
-**조건부 주입 손잡이 4종 (이슈 #437/#532)** — `deploy.yml` 이 이 네 키를 다른 19+개 키와
+**조건부 주입 손잡이** — `deploy.yml` 이 이 키들을 다른 19+개 키와
 **똑같이 quoted heredoc(`cat << 'ENVEOF'`) 안에 데이터로만** 써서 `ENV_FILE` 을 만든 뒤,
 heredoc 뒤에서 값이 비었거나 공백뿐인 줄만 `sed` 로 지운다(`.github/workflows/deploy.yml`
 3b 단계) — **Variable 을 등록하지 않았거나 빈/공백뿐인 값을 등록하면 그 줄 자체가 env 파일에
