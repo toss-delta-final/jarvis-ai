@@ -11,7 +11,79 @@
 - 관련: 파일/§/커밋
 ```
 
+## [2026-08-12] 같은 서버의 provider만 스텁으로 바꿔도 백그라운드 배치는 실 DB를 오염시킬 수 있다
+- 증상: 실제 EC2의 요청 처리 용량을 재려고 `APP_ENVIRONMENT=test`와
+  `LLM_PROVIDER=scripted`만 전환하려 했지만, 요청 트래픽과 무관한 I-17 스케줄러는 계속 돌아
+  결정론 가짜 enrichment를 실 카탈로그에 저장하고 cursor까지 전진시킬 수 있었다.
+- 원인: 부하 테스트 경계를 HTTP/SSE 요청 경로로만 보아 같은 프로세스의 scheduler·consumer처럼
+  독립적으로 외부 상태를 쓰는 백그라운드 경로를 함께 점검하지 않았다. provider 원복은 이미 쓴
+  데이터와 전진한 cursor를 되돌리지 못한다.
+- 규칙: 실제 인프라에서 fake provider를 켤 때는 진입 트래픽 차단만 확인하지 말고, 해당 provider를
+  공유하는 scheduler·queue consumer·batch·startup migration의 외부 쓰기를 전부 검색한다. fake
+  결과가 영속화될 경로는 테스트 모드에서 명시적으로 skip하거나 격리 DB를 사용하고, 원복은 설정
+  재배포뿐 아니라 배너 부재와 실제 model ID smoke까지 확인한다.
+- 관련: #641 `app/pipelines/scheduler.py::start_scheduler` · `DEPLOY.md`
+
+## [2026-08-12] 허용 목록 검사는 대상의 **소속**만 증명하고 사용자의 **지목**은 증명하지 않는다
+- 증상: `Septwolves 지갑 담아줘`에서 정답 5644와 오답 5695가 모두 `LAST_RECOMMENDATIONS`에
+  있어, LLM이 5695를 내도 기존 허용 ID 가드가 통과시켜 다른 상품이 실제 장바구니에 담겼다.
+- 원인: 목록 밖 ID를 차단하는 보안 경계와 목록 안에서 사용자가 어느 상품을 지목했는지 확인하는
+  귀속 경계를 같은 것으로 보았다. 전체 상품명 포함 규칙만 있어 브랜드·모델 같은 이름 일부는
+  확률적 선택에 남았고, 멤버십 검사는 그 오선택을 교정할 정보가 없었다.
+- 규칙: 사용자 지목에 따른 변경 작업은 `허용 집합 포함 여부`와 `발화가 그 항목을 유일하게
+  가리키는 근거`를 별도로 검증한다. 후자는 정확 토큰·표면 내 유일성·단일 대상·부정 없음이 모두
+  증명될 때만 결정론적으로 교정하고, 공통어·부분 문자열·다중 대상은 자동 선택하지 않는다.
+- 관련: #639 `app/agents/buyer/screen_reference.py::_unique_product_name_token_match` ·
+  `tests/unit/test_screen_context.py::test_reco_card_unique_name_token_overrides_wrong_llm_product`
+
+## [2026-08-11] `date.today()`·naive `datetime.now()` 는 컨테이너 TZ 를 따른다 — 도메인 기준 시각에 쓰지 말 것
+- 증상: 판매자가 00~09 KST 사이에 "어제 매출" 을 물으면 **이틀 전** 데이터가 나갔다. 같은 응답의 `report.generatedAt` 은 KST 로 정상이라 로그만 보면 어긋난 곳을 짚기 어려웠다.
+- 원인: `generatedAt` 만 `_KST` 로 명시하고(#296), 기간 해석의 "오늘" 은 `date.today()` 로 남겨 뒀다. 운영 컨테이너 TZ 가 UTC 라 09시 이전에는 기준일이 KST 기준 하루 전이 되고, 거기서 "어제" 를 또 빼 이틀이 밀렸다. jarvis-back 은 `BackendApplication` 에서 JVM·DB 세션 TZ 를 `Asia/Seoul` 로 고정해 두어 **AI 만** 어긋나 있었다.
+- 규칙: 도메인 기준 시각(오늘/어제/기간)은 `app/core/clock.py` 의 `today_kst()`·`now_kst()` 만 쓴다. `date.today()`·인자 없는 `datetime.now()`·`.astimezone()`·`datetime.fromtimestamp()` 는 프로세스 TZ 를 타므로 금지하고, 저장·비교용 절대 시각은 `datetime.now(UTC)` 로 명시한다. **배포에 `TZ` 를 박는 것으로 대신하지 않는다** — 코드가 TZ 독립이어야 로컬(UTC WSL)·CI·운영이 같은 값을 낸다. 시각을 다루는 필드를 하나만 명시 TZ 로 고칠 때는 같은 흐름의 나머지 시각 소스도 함께 훑을 것.
+- 관련: #583 `app/core/clock.py`·`app/api/seller.py`·`app/main.py`·`Dockerfile`·`docker-compose.yml`, jarvis-back `BackendApplication.java`
+
+## [2026-08-11] LLM이 내는 축 이름은 한국어만이 아니다
+- 증상: 한국어 어휘 8개로 억제를 넣었는데 480표본에서 억제가 **2번만** 발동했다. miss는 줄어 보였지만 억제 0발동 런에서도 줄어 그 개선분은 노이즈였다.
+- 원인: `gpt-5-nano`가 축 이름을 `price`·`Price`·`priceMax`처럼 영어·대문자·camelCase로도 냈다. 어휘를 세 번(`price` → `Price` → `priceMax`) 메운 뒤에야 원인이 0이 됐다.
+- 규칙: LLM 산출 키 이름에 어휘 매칭을 걸 때는 한국어/영어·대소문자·camelCase/snake_case를 처음부터 함께 덮고, 스키마 필드명 변형은 드리프트 가드 테스트로 못박는다. 어휘 목록만 늘리면 두더지잡기가 된다.
+- 관련: #464 `app/core/config.py`·`app/agents/buyer/recommendation/attr_axis.py`·`tests/unit/test_attr_axis.py`
+
+## [2026-08-11] LLM 평가 arm은 production gate와 동형이어야 한다
+- 증상: #463의 첫 after는 후보 decompose 프롬프트와 보조 호출을 무맥락 첫 턴 전체에 적용했지만, production은 저정보량 후보에만 비용을 내도록 수정됐다. 따라서 옛 after는 같은 hash여도 배포 arm이 아니었다.
+- 원인: prompt hash만 같다고 호출 게이트·부수 호출 예산까지 같아지는 것은 아니다. confirmatory 분모도 `intent==recommend` 뒤에 생기므로 `nonRecommendIntentCount`를 동반해야 한다.
+- 규칙: 코드가 gate를 바꾸면 after는 독립 반복으로 재측정하고, legacy before는 prompt·fixture·N·arm semantics가 불변임을 manifest로 증명한 경우에만 재사용한다. #463 gate-after는 N=8 두 번 모두 miss `0/112`, false alarm `0/104`, unfilled·non-recommend 0이었다. 보조 LLM 실패는 fail-open인지 retry failure인지 별도 기록한다.
+- 관련: #463 `evals/underspecified_probe/*463-*`·`app/agents/buyer/recommendation/underspecified_classifier.py`
+
+## [2026-08-11] 억제/보강 스위치는 발동 건수를 산출물에 남겨야 한다
+- 증상: 전후 비교표만 보면 3·5 → 1·1로 좋아 보였지만, 실제로는 억제가 거의 발동하지 않았고 개선분 대부분이 런간 노이즈였다.
+- 원인: 산출물에 효과(미탐 수)만 있고 발동 여부가 없어 둘을 가를 수 없었다.
+- 규칙: 결정론 후처리를 넣을 때는 발동 건수와 처리 후 남은 값을 모두 산출물 컬럼으로 남긴다(이번엔 `attrConditionsSuppressedAxes`·`attrConditionAxes`). 그래야 효과가 노이즈인지 런 재실행 없이 가를 수 있고, 어휘 구멍도 산출물만으로 특정된다.
+- 관련: #464 `evals/underspecified_probe/runner.py`·`metrics.py`·`report.py`
+
 ---
+
+## [2026-08-11] 심볼을 **옮기면** 이름을 바꾼 것과 같다 — 옮기기 전에 `grep -rn`으로 전체를 훑는다
+- 증상: #581 에서 `_BAND_RE` 를 `app/agents/profile/resolver.py` 에서 `graph_models.py` 로
+  옮기고(파서와 렌더러가 같은 정규식을 봐야 해서), 표적 테스트
+  (`test_profile_resolver.py`·`test_profile_object_spec.py` 122건)와 "관련 파일"로 고른
+  6개 파일 154건, `ruff check` 까지 전부 통과시킨 뒤 커밋했다. 그런데
+  `tests/unit/test_profile_graph_scripts.py:56` 이 `from app.agents.profile.resolver import
+  _BAND_RE` 로 그 심볼을 함수 안에서 지연 임포트하고 있었고, 전체 스위트에서
+  `ImportError` 로 깨졌다. 커밋을 amend 해야 했다.
+- 원인: **"관련 파일"을 의미로 골랐다.** 프로필 그래프 관련 테스트 파일들을 머리로 추려
+  돌렸는데, 정작 깨진 파일은 이름에 `graph` 가 들어가면서도 내 목록에 없던
+  `test_profile_graph_scripts.py`(시드 스크립트 테스트)였다. 게다가 임포트가 **함수 안에**
+  있어서 파일 상단 임포트만 훑는 감각으로는 안 보였고, private 이름(`_` 접두어)이라
+  "모듈 밖에서 쓸 리 없다"고 무의식적으로 가정했다 — `_` 는 관행일 뿐 강제가 아니다.
+- 규칙: 심볼을 다른 모듈로 옮기거나 이름을 바꾸기 전에 **반드시 `grep -rn "<심볼>"
+  --include='*.py' .` 로 저장소 전체를 먼저 훑고**, 나온 개수만큼 고쳤는지 센다.
+  `_` 로 시작하는 이름도 예외가 아니다(테스트·스크립트가 흔히 가져다 쓴다).
+  지연 임포트(함수 내부 `from ... import`)는 파일 상단 임포트 검색으로는 안 잡히므로
+  심볼 이름 자체로 검색해야 한다. "관련 있어 보이는 테스트 파일"을 골라 돌리는 것은
+  전체 스위트의 대체재가 아니다 — 2026-08-10 「전체 pytest」·「함수 시그니처」 항목과
+  같은 교훈이 **옮기기(move)** 에서 재발한 사례다.
+- 관련: `app/agents/profile/graph_models.py`(BAND_RE 새 위치) ·
+  `tests/unit/test_profile_graph_scripts.py:56` · 커밋 `eac594b`(amend) · 이슈 #581
 
 ## [2026-08-10] 함수 시그니처 변경은 `grep -rn`으로 전체 저장소를 훑어야 한다 — `app/`·`tests/`만으로는 부족
 - 증상: #571 에서 `resolve_screen_reference()`에 기본값 없는 키워드 인자 4개를 추가한 뒤

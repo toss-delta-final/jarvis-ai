@@ -155,8 +155,9 @@ async def run_conversation_retention_sweep() -> None:
 def start_scheduler() -> AsyncIOScheduler:
     """스케줄러를 시작하고 인스턴스를 반환한다 (멱등 — 이미 떠 있으면 그대로 반환).
 
-    lifecycle sweep은 provider 키와 무관하게 항상 등록한다. GOOGLE_API_KEY가 없으면 I-17
-    job만 생략한다. 호출은 FastAPI lifespan 등 실행 중인 event loop 안에서 해야 한다.
+    lifecycle sweep은 provider 키와 무관하게 항상 등록한다. GOOGLE_API_KEY가 없거나 scripted
+    LLM이면 I-17 job만 생략한다. scripted 결과로 실 카탈로그 enrichment와 cursor를 오염시키지
+    않기 위한 안전 경계다. 호출은 FastAPI lifespan 등 실행 중인 event loop 안에서 해야 한다.
     """
     global _scheduler
     if _scheduler is not None:
@@ -180,7 +181,7 @@ def start_scheduler() -> AsyncIOScheduler:
             max_instances=1,
             coalesce=True,
         )
-    if settings.google_api_key:
+    if settings.google_api_key and settings.llm_provider != "scripted":
         scheduler.add_job(
             _run_incremental_batch,
             IntervalTrigger(seconds=settings.catalog_batch_interval_s),
@@ -189,10 +190,15 @@ def start_scheduler() -> AsyncIOScheduler:
             max_instances=1,
             coalesce=True,
         )
-    else:
+    elif not settings.google_api_key:
         _log.warning(
             "GOOGLE_API_KEY 미설정 — I-17 job만 비활성화합니다 "
             "(session lifecycle sweep은 계속 실행됩니다)"
+        )
+    else:
+        _log.warning(
+            "scripted LLM 부하 테스트 모드 — 카탈로그 오염 방지를 위해 I-17 job만 "
+            "비활성화합니다 (session lifecycle sweep은 계속 실행됩니다)"
         )
     scheduler.start()
     _scheduler = scheduler

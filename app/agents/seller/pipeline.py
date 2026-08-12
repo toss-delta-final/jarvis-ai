@@ -17,7 +17,7 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from datetime import date
-from typing import get_args
+from typing import TYPE_CHECKING, get_args
 
 from app.agents.seller import period as seller_period
 from app.agents.seller.schemas import (
@@ -27,6 +27,13 @@ from app.agents.seller.schemas import (
     ChartSet,
     RecommendationSet,
 )
+
+if TYPE_CHECKING:
+    # 지연 임포트 — `sop/__init__.py` → `sop.assembly` → `sop.verify` → 이 모듈
+    # (`format_analysis_judge_input` 를 쓴다) 순환을 피한다(`sop.context` 는 `sop`
+    # 패키지를 거치므로 런타임 임포트 시 위 체인이 되돈다). `from __future__ import
+    # annotations` 라 타입 힌트는 런타임에 평가되지 않는다 — 정적 분석용으로만 필요하다.
+    from app.agents.seller.sop.context import ActionCandidate
 
 
 # 차트 요청 키워드 검사 (이슈 #242 — LLM wants_chart 판정을 코드 키워드 검사로 보강).
@@ -54,10 +61,10 @@ class ResolvedPlan:
     analyses 는 tuple(불변) — AnalysisPlan validator 가 중복을 제거했고
     순서는 팬아웃에서 무의미하지만 진행 token 방출 순서로는 쓰인다.
 
-    [#345] period 3필드는 확인 흐름(DESIGN-SELLER-PERIOD §5)용 확장이다.
-    needs_confirmation 이 True 면 코드가 값을 보충한 해석이라 실행 전에 판매자
-    확인을 받는다 — 확인 대기에 이 ResolvedPlan 을 통째로 저장했다가 승인 시
-    그대로 재개하므로 planner 재호출이 0회가 된다(#269 완료 조건).
+    [#345·#584] period 3필드는 기간 해석 고지(DESIGN-SELLER-PERIOD §7)용 확장이다.
+    period_supplemented 가 True 면 코드가 값을 보충한 해석이라, 실행한 뒤 **무엇으로
+    봤는지를 응답 첫 줄에 밝힌다**(period_disclosure_text). 구 게이트 ①.7 은 같은
+    판정으로 실행 **전에** 확인을 받았으나 #584 로 철거됐다 — 판정은 남고 조치만 바뀐다.
     신규 필드는 전부 default 있는 keyword 로만 추가한다(frozen dataclass —
     기존 생성부·픽스처의 positional 호환 유지, PipelineResult 와 같은 규약).
     """
@@ -66,20 +73,20 @@ class ResolvedPlan:
     date_from: date
     date_to: date
     wants_chart: bool = False
-    needs_confirmation: bool = False
+    period_supplemented: bool = False
     period_expr: str = ""
     period_clipped: bool = False
     # [#346] 비교(기준) 기간 — 판매자가 대조군을 함께 말했을 때만 채워진다.
-    # needs_confirmation 은 **본 기간과 비교 기간의 합집합**이다(어느 쪽이든 코드가 값을
-    # 보충했으면 확인을 받는다) — period.PeriodResolution.any_confirmation_needed 참조.
+    # period_supplemented 는 **본 기간과 비교 기간의 합집합**이다(어느 쪽이든 코드가 값을
+    # 보충했으면 고지한다) — period.PeriodResolution.any_confirmation_needed 참조.
     comparison_expr: str = ""
     compare_from: date | None = None
     compare_to: date | None = None
     # [#504] 차트 전용 기간 — 판매자가 그래프 기간을 분석 기간과 별도로 말했을 때만
     # 채워진다("지난달 보고서 + 최근 7일 매출 그래프"). 비워지면 차트는 본 기간을 따른다.
-    # 차트 기간은 확인(needs_confirmation) 대상이 **아니다** — 차트는 부가 가치이고,
+    # 차트 기간은 고지(period_supplemented) 대상이 **아니다** — 차트는 부가 가치이고,
     # 해석 결과가 report.chartPeriod 뱃지로 그대로 노출되므로 고지로 갈음한다
-    # (DESIGN-SELLER-PERIOD §7.2 확인/고지 비대칭의 고지 측). 해석 실패는 파이프라인을
+    # (DESIGN-SELLER-PERIOD §7.2 — chartPeriod 뱃지가 곧 고지다). 해석 실패는 파이프라인을
     # 죽이지 않고 chart_period_error 에 담아 chartUnavailable(chart_period_unclear)로
     # 강등한다 — 보고서는 살린다.
     chart_period_expr: str = ""
@@ -175,7 +182,7 @@ def resolve_plan(
         date_from=resolution.date_from,
         date_to=resolution.date_to,
         wants_chart=wants_chart,
-        needs_confirmation=resolution.any_confirmation_needed,
+        period_supplemented=resolution.any_confirmation_needed,
         period_expr=resolution.expr,
         period_clipped=resolution.clipped,
         comparison_expr=comparison.expr if comparison else "",
@@ -189,13 +196,14 @@ def resolve_plan(
     )
 
 
-def period_confirmation_text(plan: ResolvedPlan) -> str:
-    """확인 대기 문구 — 문구 생성은 period.py 소관이고 여기는 어댑터다(§4.2).
+def period_disclosure_text(plan: ResolvedPlan) -> str:
+    """기간 해석 고지 문구 — 문구 생성은 period.py 소관이고 여기는 어댑터다(§4.2).
 
-    ResolvedPlan 은 확인 대기 저장·재개의 단위(DESIGN §6)라 PeriodResolution 을
-    따로 들고 다니지 않는다. 대신 필요한 3필드를 되돌려 문구를 만든다.
+    ResolvedPlan 은 실행 단위라 PeriodResolution 을 따로 들고 다니지 않는다. 대신
+    필요한 3필드를 되돌려 문구를 만든다. [#584] general 레인과 **같은 함수**를
+    부른다 — 기간 문구가 레인마다 갈리지 않게 하는 지점이다.
     """
-    return seller_period.confirmation_text(
+    return seller_period.disclosure_text(
         seller_period.PeriodResolution(
             date_from=plan.date_from,
             date_to=plan.date_to,
@@ -210,9 +218,9 @@ def period_confirmation_text(plan: ResolvedPlan) -> str:
 def _plan_comparison(plan: ResolvedPlan) -> seller_period.PeriodResolution | None:
     """ResolvedPlan 의 비교 3필드 → PeriodResolution 되돌리기 (#346).
 
-    확인 문구·워커 입력이 둘 다 필요로 해 한 곳에 둔다. needs_confirmation 을 True 로
-    두는 것은 문구 생성용이다 — 저장·재개 단위인 ResolvedPlan 은 합집합 판정만 들고 있고
-    어느 쪽이 보충됐는지는 구분하지 않는다(문구가 양쪽 날짜를 다 밝히므로 필요 없다).
+    고지 문구·워커 입력이 둘 다 필요로 해 한 곳에 둔다. needs_confirmation 을 True 로
+    두는 것은 문구 생성용이다 — ResolvedPlan 은 합집합 판정만 들고 있고 어느 쪽이
+    보충됐는지는 구분하지 않는다(문구가 양쪽 날짜를 다 밝히므로 필요 없다).
     """
     if plan.compare_from is None or plan.compare_to is None:
         return None
@@ -360,6 +368,49 @@ def format_worker_retry_input(
 def format_recommend_input(findings: list[AnalysisFinding], report: str) -> str:
     """recommend 입력 — (1) 분석 결과 (2) 검증된 보고서 (RECOMMEND_PROMPT 입력 계약)."""
     return f"[분석 결과]\n{format_findings_block(findings)}\n\n[검증된 보고서]\n{report}"
+
+
+def format_resident_recommend_input(candidates: list[ActionCandidate], report: str) -> str:
+    """상주 recommend 입력 — (1) 추천 후보 목록 (2) 검증된 보고서
+    (RESIDENT_RECOMMEND_PROMPT 입력 계약, 이슈 #598).
+
+    채팅 레인 `format_recommend_input` 과 달리 findings 가 아니라
+    `AnalysisContext.candidate_actions`(후보 생성기 산출, `list[ActionCandidate]` —
+    이슈 #597 이 `list[dict]` 에서 정식 스키마로 바꿨다)를 받는다 — 상주 recommend 는
+    도구가 없어(zero-tool) 이 목록 밖의 상품 실존을 스스로 확인할 수 없으므로, 후보
+    목록 자체가 "추천 가능한 전체 집합"이다.
+
+    ⚠️ v1 시점에는 후보 생성기(`sop.compute.candidates.compute_candidates`)가 아직
+    어느 SOP 에도 배선되지 않았다 — `ctx.candidate_actions` 는 항상 빈 목록이고, 이
+    함수는 사실상 "(추천 후보 없음)" 분기만 탄다(design-598 §2 "이슈 12" 참조). 배선은
+    이 이슈 범위 밖이다 — 후보 생성기가 나중에 연결되면 이 포맷터가 그대로 받는다.
+    """
+    if not candidates:
+        block = "(추천 후보 없음)"
+    else:
+        block = "\n".join(
+            f"{i}. {candidate.model_dump()}" for i, candidate in enumerate(candidates, start=1)
+        )
+    return f"[추천 후보]\n{block}\n\n[검증된 보고서]\n{report}"
+
+
+# 상주 보고서 제목의 trigger_type 한글 표기 — `analysis_records.TriggerType` 4종과 1:1.
+_TRIGGER_TYPE_LABELS: dict[str, str] = {
+    "scheduled_daily": "일간",
+    "scheduled_weekly": "주간",
+    "event": "이벤트",
+    "manual": "수동",
+}
+
+
+def build_resident_report_title(trigger_type: str, period_to: date) -> str:
+    """상주 보고서 제목 — `"{trigger_type 한글} 분석 · {period_to}"` (`ReportRecord.title`).
+
+    어휘 밖 `trigger_type` 은 원문 그대로 쓴다(닫힌 Literal 이 아니라 방어적으로만
+    다룬다 — 이 함수는 표기 조립만 할 뿐 값을 검증하지 않는다).
+    """
+    label = _TRIGGER_TYPE_LABELS.get(trigger_type, trigger_type)
+    return f"{label} 분석 · {period_to.isoformat()}"
 
 
 def format_graph_input(findings: list[AnalysisFinding], report: str, question: str) -> str:

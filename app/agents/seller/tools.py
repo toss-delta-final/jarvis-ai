@@ -6,9 +6,12 @@
 싱글턴(get_spring_client), 컨텍스트에는 신원만 담는다(2026-07-18 확정).
 
 조회 도구는 실패 시 raise 하지 않고 `"Error: ..."` 문자열을 반환한다(§3.4 degrade 규약) —
-스트림/파이프라인이 부분 실패로도 계속 진행되도록 한다. 쓰기 도구(create/update/delete)는
-`PRODUCT_TOOLS` 에만 배정해 타입 수준에서 오분류를 차단한다(§3.1) — 분석·일반 에이전트는
-`READ_TOOLS` 만 받는다.
+스트림/파이프라인이 부분 실패로도 계속 진행되도록 한다.
+
+[#620] 상품/주문 쓰기(create/update/delete/ship)에는 LLM 바인딩용 @tool 이 없다 —
+실행 주체는 코드다(hitl._execute_draft 가 승인된 draft 를 그대로 I-10/11/12·I-30 에
+매핑, HITL 모듈 docstring 결정 1). 여기 도구는 전부 조회·계산이며 `READ_TOOLS`/
+`PRODUCT_DRAFT_TOOLS`(workers.py)로 배정된다.
 """
 
 from __future__ import annotations
@@ -24,27 +27,14 @@ from typing import Any
 from langchain.tools import ToolRuntime
 from langchain_core.tools import BaseTool, tool
 
-from app.agents.seller import calc, period
+from app.agents.seller import analysis_store, calc, period
 from app.agents.seller.analysis import outliers, proportions, segmentation, timeseries
 from app.agents.seller.context import SellerContext
 from app.agents.seller.stock_options import stock_lines_text
 from app.core.config import get_settings
 from app.core.tracing import trace_span
-from app.schemas.spring import (
-    BehaviorEventsResult,
-    OrderItemStatusUpdate,
-    ProductCreate,
-    ProductUpdate,
-)
-from app.services.spring_client import (
-    OrderAlreadyShipped,
-    OrderInvalidTransition,
-    OrderItemNotFound,
-    ProductAlreadyDeleted,
-    ProductDeletedNotEditable,
-    SpringUnavailableError,
-    get_spring_client,
-)
+from app.schemas.spring import BehaviorEventsResult
+from app.services.spring_client import SpringUnavailableError, get_spring_client
 
 _log = logging.getLogger(__name__)
 
@@ -1829,6 +1819,44 @@ async def calculate(expression: str) -> str:
 
 
 @tool
+@_traced_tool("tool.get_latest_report")
+async def get_latest_report(runtime: ToolRuntime[SellerContext]) -> str:
+    """저장된 최신 분석 보고서 1건을 요약해 반환한다(딸린 추천 목록 포함).
+
+    보고서는 판매자 발화와 무관하게 상주 파이프라인이 주기적으로 만들어 저장한 것이라
+    **판매자가 말한 기간과 다를 수 있다** — 응답에 담긴 분석 기간을 그대로 인용한다.
+    보고서 조회 도구는 이것 하나뿐이다 — 목록 브라우징·과거 보고서 열람은 보고서
+    페이지 소관이라 채팅에서는 최신 1건만 본다.
+
+    보고서가 아직 없는 것은 실패가 아니다 — 조회 실패("Error:")와 구분해 정상 문구로
+    돌려준다. 둘을 섞으면 "한 번도 분석된 적 없음"이 장애로 안내된다.
+    """
+    brand_id = runtime.context.brand_id
+    try:
+        reports = await analysis_store.list_reports(brand_id, limit=1)
+        if not reports:
+            return "저장된 분석 보고서가 아직 없습니다."
+        report = reports[0]
+        recommendations = await analysis_store.list_recommendations_by_report(
+            report.id, brand_id=brand_id
+        )
+    except Exception as exc:  # degrade 규약(§3.4) — 조회 장애는 문자열로 알린다
+        _log.warning("get_latest_report 조회 실패", exc_info=True)
+        return f"Error: 보고서 조회에 실패했습니다({type(exc).__name__})."
+
+    lines = [
+        f"최신 분석 보고서: {report.title}",
+        f"분석 기간: {report.period_from.isoformat()}~{report.period_to.isoformat()}"
+        f" (작성 {report.created_at.date().isoformat()})",
+        f"요약: {report.summary}",
+    ]
+    if recommendations:
+        lines.append("추천 조치(번호=rank):")
+        lines.extend(f"  {rec.rank}. {rec.title} [{rec.action_type}]" for rec in recommendations)
+    return "\n".join(lines)
+
+
+@tool
 @_traced_tool("tool.search_analysis_guide")
 async def search_analysis_guide(query: str) -> str:
     """판매자 분석 기준서(용어·산식 정의)를 검색한다.
@@ -1846,161 +1874,13 @@ async def search_analysis_guide(query: str) -> str:
         return "Error: 분석 기준서 검색은 아직 준비 중입니다."
 
 
-# ── 쓰기 도구 (product_agent 전용, HITL 승인 후 호출, §3.4 §4.5) ──
-
-
-@tool
-@_traced_tool("tool.create_product")
-async def create_product(
-    runtime: ToolRuntime[SellerContext],
-    name: str,
-    price: int,
-    stock_quantity: int,
-    original_price: int | None = None,
-    category: str | None = None,
-    description: str | None = None,
-) -> str:
-    """신규 상품을 등록한다(I-10, api-spec §4.5). HITL 승인 후에만 호출한다.
-
-    Args:
-        name: 상품명.
-        price: 판매가(originalPrice 이하).
-        stock_quantity: 초기 재고 수량(0 이상).
-        original_price: 정가(선택).
-        category: 카테고리(선택).
-        description: 상세 설명(선택).
-    """
-    brand_id = runtime.context.brand_id
-    try:
-        payload = ProductCreate(
-            name=name,
-            price=price,
-            stock_quantity=stock_quantity,
-            original_price=original_price,
-            category=category,
-            description=description,
-        )
-        result = await get_spring_client().create_product(brand_id, payload)
-    except SpringUnavailableError as exc:
-        return f"Error: 상품 등록에 실패했습니다({exc})."
-    return f"등록됨: productId={result.product_id} (status={result.status})"
-
-
-@tool
-@_traced_tool("tool.update_product")
-async def update_product(
-    runtime: ToolRuntime[SellerContext],
-    product_id: int,
-    name: str | None = None,
-    price: int | None = None,
-    original_price: int | None = None,
-    description: str | None = None,
-    category: str | None = None,
-    image_url: str | None = None,
-    status: str | None = None,
-    stock_quantity: int | None = None,
-) -> str:
-    """기존 상품을 수정한다(I-11, api-spec §4.5). 바꿀 필드만 전달, HITL 승인 후 호출.
-
-    ProductUpdate 스키마 전 필드 노출(2026-07-18 사용자 확정 — CSV 4필드 언급과의 차이는
-    C-14 협의 대상, 미지원 필드 400 은 Error 문자열로 degrade). 재고도 이 도구로 통합
-    처리한다(별도 재고 API 없음, 절대값 인자 — 2단계에서 delta 환산 프롬프트와 정합).
-
-    Args:
-        product_id: 대상 상품 식별자.
-        name: 변경할 상품명(선택).
-        price: 변경할 판매가(선택, originalPrice 이하).
-        original_price: 변경할 정가(선택).
-        description: 변경할 상세 설명(선택).
-        category: 변경할 카테고리(선택).
-        image_url: 변경할 대표 이미지 URL(선택).
-        status: ON_SALE/HIDDEN 중 하나로 변경(선택). DELETED 는 지정할 수 없다
-            — 삭제는 I-12 전용 전이라 BE 가 거부한다(§4.5).
-        stock_quantity: 변경할 재고 수량(절대값, 선택).
-    """
-    brand_id = runtime.context.brand_id
-    try:
-        patch = ProductUpdate(
-            name=name,
-            price=price,
-            original_price=original_price,
-            description=description,
-            category=category,
-            image_url=image_url,
-            status=status,
-            stock_quantity=stock_quantity,
-        )
-        result = await get_spring_client().update_product(brand_id, product_id, patch)
-    except ProductDeletedNotEditable:
-        # 재시도가 무의미한 "안 되는 일" — 장애 문구로 뭉개면 에이전트가 재시도를 권한다.
-        return f"Error: 이미 삭제된 상품이라 수정할 수 없습니다(productId={product_id})."
-    except SpringUnavailableError as exc:
-        return f"Error: 상품 수정에 실패했습니다({exc})."
-    return f"수정됨: productId={result.product_id}"
-
-
-@tool
-@_traced_tool("tool.delete_product")
-async def delete_product(runtime: ToolRuntime[SellerContext], product_id: int) -> str:
-    """상품을 삭제한다(I-12, api-spec §4.5). status=DELETED 전환 — HITL 승인 후 호출.
-
-    물리 삭제는 없지만 숨김(HIDDEN)과 다른 상태다 — 숨김은 판매자 목록에 남아 되돌릴 수
-    있고, 삭제는 목록에서도 빠지며 되돌릴 수 없다. 잠시 내릴 목적이면 I-11 로 HIDDEN 을 쓴다.
-
-    Args:
-        product_id: 대상 상품 식별자.
-    """
-    brand_id = runtime.context.brand_id
-    try:
-        result = await get_spring_client().delete_product(brand_id, product_id)
-    except ProductAlreadyDeleted:
-        # 멱등 200 이 아니다 — "이미 된 일"과 "방금 한 일"을 구분해야 거짓 성공을 막는다.
-        return f"Error: 이미 삭제된 상품입니다(productId={product_id})."
-    except SpringUnavailableError as exc:
-        return f"Error: 상품 삭제에 실패했습니다({exc})."
-    return f"삭제됨: productId={result.product_id} (status={result.status})"
-
-
-@tool
-@_traced_tool("tool.update_order_status")
-async def update_order_status(
-    runtime: ToolRuntime[SellerContext],
-    order_item_id: int,
-    to_status: str = "SHIPPING",
-    reason: str | None = None,
-) -> str:
-    """주문 아이템을 발송 처리한다(I-30, api-spec §4.19). HITL 승인 후에만 호출한다.
-
-    MVP 허용 전이는 ORDERED→SHIPPING 하나뿐 — 발송 이후의 취소·역전이는 불가
-    (구매자 구제는 반품 경로만). 아이템 단위이며 bulk 가 없어 복수 발송은 반복 호출한다.
-
-    Args:
-        order_item_id: 발송 대상 주문 아이템 식별자(get_orders 조회 결과의 orderItemId).
-        to_status: 전이 목표 상태 — MVP 유효값은 SHIPPING 뿐.
-        reason: 전이 사유(선택) — order_status_logs.reason 에 기록.
-    """
-    brand_id = runtime.context.brand_id
-    try:
-        result = await get_spring_client().update_order_item_status(
-            brand_id,
-            order_item_id,
-            OrderItemStatusUpdate(to_status=to_status, reason=reason),
-        )
-    except OrderAlreadyShipped:
-        return f"Error: 이미 발송 처리된 주문 아이템입니다(orderItemId={order_item_id})."
-    except OrderInvalidTransition:
-        return (
-            f"Error: 발송 처리할 수 없는 상태입니다(orderItemId={order_item_id}) — "
-            "이미 배송 단계로 넘어갔거나 취소 요청 등 클레임이 걸려 있습니다."
-        )
-    except OrderItemNotFound:
-        return f"Error: 해당 주문 아이템을 찾을 수 없습니다(orderItemId={order_item_id})."
-    except SpringUnavailableError as exc:
-        return f"Error: 발송 처리에 실패했습니다({exc}). 반영 여부가 확인되지 않았습니다."
-    return (
-        f"발송 처리됨: orderItemId={result.order_item_id} "
-        f"{result.from_status}→{result.to_status} ({result.changed_at})"
-    )
+# [#620] 쓰기 도구 3+1종(create_product/update_product/delete_product/
+# update_order_status) 제거 — 실행 주체는 코드다(hitl._execute_draft 가 draft 를 그대로
+# I-10/11/12·I-30 에 매핑, 모듈 docstring 결정 1). 여기 있던 LLM 바인딩용 wrapper 는
+# 어느 에이전트에도 바인딩되지 않는 죽은 코드였다(PRODUCT_DRAFT_TOOLS 는 조회·계산
+# 도구만 묶는다 — workers.py 참조). `SpringClient.create_product`/`update_product`/
+# `delete_product`(spring_client.py, HTTP 호출 본체)는 그대로 남아 있다 — 이름이 같은
+# 별개 함수이므로 혼동하지 않는다.
 
 
 # ── 도구 배정 상수 (SPEC-SELLER-001 §4 소비 노드 — 에이전트 팩토리가 그대로 사용) ──
@@ -2019,19 +1899,8 @@ READ_TOOLS: list[BaseTool] = [
     list_my_products,
     calculate,
     search_analysis_guide,
+    get_latest_report,
 ]
 
-# product_agent 전용(list_my_products=쓰기 전 before 확보 + 쓰기 3종, HITL 승인 후 호출).
-PRODUCT_TOOLS: list[BaseTool] = [
-    list_my_products,
-    create_product,
-    update_product,
-    delete_product,
-]
-
-# [#297] 주문 쓰기(발송, I-30) — HITL 실행 레인용. 상품 쓰기(PRODUCT_TOOLS)와 분리해
-# 배정 실수를 타입 수준에서 드러낸다. 어떤 draft 생성 에이전트에도 바인딩하지 않는다
-# — 실행은 hitl._execute_draft 코드 경로가 SpringClient 를 직접 호출한다(안전장치 ①).
-ORDER_WRITE_TOOLS: list[BaseTool] = [
-    update_order_status,
-]
+# [#620] PRODUCT_TOOLS/ORDER_WRITE_TOOLS(쓰기 도구 묶음) 제거 — 어떤 에이전트에도
+# 바인딩되지 않는 죽은 상수였다(위 쓰기 도구 4종 제거 사유와 동일, HITL 모듈 결정 1).

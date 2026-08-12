@@ -42,9 +42,30 @@ docker run -p 8000:8000 --env-file deploy.env jarvis-ai:dev
 
 **LLM provider 토글**: `LLM_PROVIDER=openai`(기본) → `OPENAI_API_KEY`. `anthropic` 으로 바꾸면 → `ANTHROPIC_API_KEY`. 모델 id(`OPENAI_*_MODEL_ID`·`HAIKU/SONNET_MODEL_ID`)는 각 대시보드 실값으로.
 
+**부하 테스트 전용 scripted 모드**: 실제 사용자 트래픽을 차단한 EC2에서만
+`APP_ENVIRONMENT=test`, `LLM_PROVIDER=scripted`를 함께 사용한다. 내부 처리량 상한은
+`SCRIPTED_LLM_MODE=instant`, 5초의 추가 비동기 대기를 포함한 SSE 동시 연결 측정은
+`SCRIPTED_LLM_MODE=delayed`, `SCRIPTED_LLM_DELAY_S=5.0`을 사용한다. GitHub Variables에서
+`RATE_LIMIT_PER_MIN`·`RATE_LIMIT_PER_HOUR`를 양의 정수로 일시 상향할 수 있다. scripted 모드에서는
+세션 lifecycle sweep은 유지하되 I-17 카탈로그 enrichment 배치를 등록하지 않아 가짜 생성물이 실
+카탈로그와 cursor를 오염시키지 않게 한다. 미등록/빈 값이면 네 설정 모두 env 파일에서 빠져 코드
+기본값을 쓴다.
+
+scripted 부하 테스트는 아래 순서를 체크리스트로 사용한다.
+
+1. 변경 전 `APP_ENVIRONMENT`, `LLM_PROVIDER`, `SCRIPTED_LLM_*`, `RATE_LIMIT_*` 값을 기록한다.
+2. ALB/보안 그룹 등에서 실제 사용자 트래픽을 차단하고 위 scripted 설정으로 재배포한다.
+3. 기동 로그의 `STUB LLM MODE`, 선택한 프로파일·지연값, `I-17 job만 비활성화`를 확인한다.
+4. k6/benchmark 실행 후 모든 GitHub Variables를 1번의 운영값으로 원복하고 다시 배포한다.
+5. 원복 컨테이너에서 `STUB LLM MODE` 배너가 없음을 확인하고, smoke 요청 1건의
+   `chat_request.model_ids`가 `scripted-stub-*`가 아닌 실제 provider 모델인지 확인한 뒤 트래픽을 연다.
+
+provider·환경값은 rate limit과 함께 반드시 원복한다. `APP_ENVIRONMENT=test`와
+`LLM_PROVIDER=scripted`가 남은 컨테이너를 실제 사용자에게 열면 가짜 추천이 정상 200으로 응답된다.
+
 **선택 (기본값 있음):** 상태저장 타임아웃/풀(`STATE_STORE_*`), 배치 주기(`CATALOG_BATCH_INTERVAL_S`=300), 검색·추천 튜너블(`TOP_K`·`EXPOSE_*`·`LLM_CALL_LIMIT` 등), 프로필 튜너블(`PROFILE_*`).
 
-**조건부 주입 손잡이 4종 (이슈 #437/#532)** — `deploy.yml` 이 이 네 키를 다른 19+개 키와
+**조건부 주입 손잡이** — `deploy.yml` 이 이 키들을 다른 19+개 키와
 **똑같이 quoted heredoc(`cat << 'ENVEOF'`) 안에 데이터로만** 써서 `ENV_FILE` 을 만든 뒤,
 heredoc 뒤에서 값이 비었거나 공백뿐인 줄만 `sed` 로 지운다(`.github/workflows/deploy.yml`
 3b 단계) — **Variable 을 등록하지 않았거나 빈/공백뿐인 값을 등록하면 그 줄 자체가 env 파일에
@@ -89,12 +110,12 @@ repo에는 **키 목록(`.env.example`)만** 있고 실제 시크릿은 없다(�
 
 **A. 컨테이너로 띄우는 경우(권장 — compose와 동일):** `pgvector/pgvector:pg16` 두 개를 각각 띄우고 init 스크립트를 `/docker-entrypoint-initdb.d`로 마운트하면 **빈 볼륨 최초 부팅 시 자동 생성**된다.
 - catalog init: [`db/catalog/init/`](db/catalog/init/) (`00_products.sql` → `02_categories.sql`)
-- profile init: [`db/profile/init/`](db/profile/init/) (`00_processed_events.sql` → `01_conversation_turns.sql` → `02_profile_session_activity.sql` → **`03_chat_session_contexts.sql`**)
+- profile init: [`db/profile/init/`](db/profile/init/) (`00_processed_events.sql` → `01_conversation_turns.sql` → `02_profile_session_activity.sql` → **`03_chat_session_contexts.sql`** → ... → `05_seller_analysis.sql`, 판매자 분석 저장 계층 5테이블, 이슈 #585)
 
 **B. 관리형 PostgreSQL(RDS 등)인 경우:** pgvector 확장 가용 확인 후 위 init SQL을 순서대로 수동 적용. **기존 볼륨 업그레이드**는 [`db/catalog/migrations/`](db/catalog/migrations/)의 마이그레이션도 적용:
 ```bash
 psql "$CATALOG_DB_URL" -f db/catalog/init/00_products.sql   # 이후 02
-psql "$PROFILE_DB_URL" -f db/profile/init/00_processed_events.sql   # 이후 01, 02, 03
+psql "$PROFILE_DB_URL" -f db/profile/init/00_processed_events.sql   # 이후 01, 02, 03 ... 05
 # 기존 볼륨: db/catalog/migrations/*.sql 을 날짜순 적용
 ```
 
@@ -125,7 +146,7 @@ schema 또는 backfill이 실패한 인스턴스는 readiness에 들어가거나
 - [ ] `docker build -t jarvis-ai .`
 - [ ] `deploy.env` 작성 — §2 필수값, `AUTH_MODE=jwks`, `INTERNAL_API_TOKEN`은 백엔드와 동일, `CORS_ORIGINS`에 FE 운영 오리진
 - [ ] `JWT_SCOPE=chat:stream` exact 값 확인(빈 값·다른 값 금지)
-- [ ] PostgreSQL ×2(pgvector) 준비 + profile `03_chat_session_contexts.sql`까지 init/migration 적용(§4)
+- [ ] PostgreSQL ×2(pgvector) 준비 + profile `05_seller_analysis.sql`까지 init/migration 적용(§4)
 - [ ] AI startup 로그에서 schema → bounded backfill 완료 → scheduler 시작 순서를 확인
 - [ ] 컨테이너 실행(`-p 8000:8000`) 후 `GET /health` = `{"status":"ok"}` 확인
 - [ ] Spring(`SPRING_BASE_URL`)·JWKS(`JWKS_URL`) 도달 확인 — 검색·인증 레인 정상

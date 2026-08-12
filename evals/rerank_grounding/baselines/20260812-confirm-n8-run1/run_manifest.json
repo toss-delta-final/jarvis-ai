@@ -1,0 +1,77 @@
+{
+  "arms": [
+    "current",
+    "prompt_only",
+    "validated"
+  ],
+  "attemptMultiplier": 3,
+  "budget": {
+    "budgetExceeded": false,
+    "budgetExceededReason": null,
+    "callCount": 240,
+    "costGateStatus": "passed",
+    "limits": {
+      "maxCalls": 720,
+      "maxCostUsd": 20.0,
+      "maxTotalTokens": 30000000
+    },
+    "tokenGateStatus": "passed",
+    "totalCostUsd": 0.10068279999999992,
+    "totalTokens": 215209,
+    "unknownCostCallCount": 0,
+    "unknownTokenCallCount": 0
+  },
+  "caseIds": [
+    "missing_rating",
+    "missing_review",
+    "missing_price",
+    "rating_boundary",
+    "price_boundary",
+    "name_injection_base",
+    "name_injection_mutated",
+    "profile_conflict_base",
+    "profile_conflict_mutated",
+    "multi_need_balance"
+  ],
+  "command": "uv run python -m evals.rerank_grounding --arms all --repeats 8 --tier smart --out evals/rerank_grounding/baselines/20260812-confirm-n8-run1",
+  "costUnknownReason": null,
+  "datasetHash": "aa86ab23c1d5135d5c6f5b9fed66899c2d7f6f85f3b7489c8ab1af7d6648435a",
+  "datasetName": "rerank_grounding_v1.json",
+  "datasetVersion": "rerank-grounding-v1",
+  "dirty": true,
+  "dryRun": false,
+  "gitCommit": "90b72e6474913649f8a020d2924b3b4ec57c31e0",
+  "modelConfig": {
+    "fastModel": "gpt-5-nano",
+    "fastReasoningEffort": "minimal",
+    "maxRetries": 0,
+    "provider": "openai",
+    "smartModel": "gpt-5.6-luna",
+    "smartReasoningEffort": "medium",
+    "timeoutS": 30.0
+  },
+  "pacer": {
+    "acquireCount": 240,
+    "estimatedTokensPerCall": 3900,
+    "maxRpm": 45,
+    "maxTpm": 200000,
+    "maxWaitS": 0.0,
+    "totalWaitS": 0.0,
+    "waitCount": 0,
+    "windowS": 60.0
+  },
+  "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+  "promptHashes": {
+    "current": "8654b0ce8c3c48acd5e2ce296752021f93c58a041ba5bfe0ff345abbcf976eef",
+    "structured": "a1516c9815f800350983aabbaec59474076e1441a6e306716aa946b3635ed9e0"
+  },
+  "pythonVersion": "3.12.3",
+  "repeats": 8,
+  "run": {
+    "command": "uv run python -m evals.rerank_grounding --arms all --repeats 8 --tier smart --out evals/rerank_grounding/baselines/20260812-confirm-n8-run1",
+    "runId": "5d1de6e8-51e8-4c44-80b8-3af4658cc0d8",
+    "timestamp": "2026-08-11T23:50:04.596955+00:00"
+  },
+  "seed": 20260812,
+  "validatorVersion": "rerank-grounding-v1"
+}

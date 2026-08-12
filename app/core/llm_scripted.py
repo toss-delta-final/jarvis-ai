@@ -19,8 +19,10 @@ JSON 을 낸다(예: rerank 는 CANDIDATES 의 productId 를 그대로 되돌려
 
 from __future__ import annotations
 
+import asyncio
 import json
 
+from app.core.config import ScriptedLLMMode
 from app.core.llm import LLMError, LOADTEST_MODEL_IDS
 from app.core.tracing import current_request_trace
 
@@ -187,6 +189,33 @@ class LoadTestLLM(ScriptedLLM):
     거부로 막는다(#438 D5 — 판매자 스텁은 범위 밖).
     """
 
+    def __init__(
+        self,
+        *,
+        mode: ScriptedLLMMode = "instant",
+        delay_s: float = 5.0,
+    ) -> None:
+        super().__init__()
+        self.mode = mode
+        self.delay_s = delay_s
+        self._delay_task: asyncio.Task[None] | None = None
+
+    async def _apply_delay_once(self) -> None:
+        """delayed 프로파일의 I/O 대기를 인스턴스당 정확히 한 번 적용한다.
+
+        buyer 요청은 같은 인스턴스로 decompose·rerank 등 여러 호출을 하므로 호출마다 지연하면
+        사용자 실측 5초가 호출 수만큼 부풀어 오른다. 동시에 진입한 호출은 같은 sleep task를
+        기다리므로 한 호출만 지연을 건너뛰는 일도 없다. ``asyncio.sleep``이라 이벤트 루프는
+        막지 않는다.
+        """
+        if self.mode != "delayed" or self.delay_s <= 0:
+            return
+        if self._delay_task is None:
+            self._delay_task = asyncio.create_task(asyncio.sleep(self.delay_s))
+        # 같은 요청에서 호출이 겹쳐도 모두 한 대기를 공유한다. 한 waiter의 취소가 공유 sleep을
+        # 취소해 다른 호출이 지연을 건너뛰지 않도록 shield한다.
+        await asyncio.shield(self._delay_task)
+
     @staticmethod
     def _extract_after(user: str, marker: str) -> str | None:
         """``user`` 프롬프트에서 ``marker`` 뒤 첫 줄(개행 전까지, 없으면 끝까지)을 뗀다."""
@@ -304,6 +333,8 @@ class LoadTestLLM(ScriptedLLM):
         reasoning_effort: str | None = None,
     ) -> str:
         kind = self._classify_loadtest(system)
+        if kind is not None:
+            await self._apply_delay_once()
         self.calls.append((kind or "unknown", tier))
         self.complete_kwargs.append((kind or "unknown", max_tokens, reasoning_effort))
         if kind == "enrich":

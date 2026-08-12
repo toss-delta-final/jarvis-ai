@@ -39,7 +39,13 @@ EditablePredicate = Literal["prefers", "likes", "avoids", "interestedIn"]
 class GraphEdgeObjectView(CamelModel):
     """취향의 **대상**. `nodes[]` 배열이 폐지되고 항목 안으로 인라인됐다(v0.32.0).
 
-    요청(I-33)의 `object` 와 모양이 같아 **조회 항목을 그대로 수정 요청에 실을 수 있다**.
+    요청(I-33)의 `object` 와 모양이 같아 **조회한 `nodeId` 를 그대로 수정 요청에 실을 수 있다**.
+
+    **[v0.33.0, #581] `label` 은 되돌려 보내는 값이 아니다** — `priceBand`·`ratingBand` 는
+    저장 canonical(`"30000-50000"`·`"-50000"`)을 사람이 읽는 문장(`"50,000원 이하"`)으로
+    렌더해서 싣는다(`graph_projection._render_label`). 그 문장을 `type`+`label` 형태로
+    되보내면 `400` 이다(api-spec §3.9.1) — 대상 지목은 **`nodeId` 로 한다**. 화면에 그리는
+    용도로는 그대로 쓰면 되고, 파싱하지 않는 것이 규약이다.
     """
 
     node_id: str

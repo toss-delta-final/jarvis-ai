@@ -24,9 +24,10 @@ MVP 범위(api-spec v0.14.0 §3.2, 결정 20 개정): 통계 Q&A + 상세 수정
   ②.5 차트 요청 선판정(wants_chart_keyword, LLM 0회, #531) → _analysis_stream 직행:
      차트 좌표는 analysis 레인의 report 이벤트에만 실린다(경로 B).
   ③ supervisor 라우팅(route_question — 장애 시 general 폴백은 함수 내부).
-분기: analysis → run_analysis_pipeline(emit 큐 중계, 예외 2경우만 사과+error) /
-product → draft 검증(validate_draft)·checkpoint 저장(start_draft)·draft emit /
-general → 기존 astream 스트림.
+분기: [#591] analysis·general → **search 레인**(_general_stream, 조회 도구 12종 +
+get_latest_report) — meta.lane 만 갈린다 /
+product → draft 검증(validate_draft)·checkpoint 저장(start_draft)·draft emit.
+run_analysis_pipeline(5단 분석)은 게이트 ②.5 차트 경로(_analysis_stream)에만 남는다.
 스트림 수명주기(409·취소·타임아웃 §2.9 공통)는 팀 공통 래퍼 open_stream 소관 —
 chat.py 와 동일하게 registry_key(identity, threadId) 로 방당 1스트림을 강제한다.
 """
@@ -37,7 +38,6 @@ import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator
-from datetime import date, datetime, timedelta, timezone
 from time import perf_counter
 from typing import Literal
 
@@ -46,30 +46,33 @@ from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessageChunk, HumanMessage, SystemMessage
 from pydantic.alias_generators import to_camel
 
-from app.agents.seller import category_catalog, category_resolver, draft_session
-from app.agents.seller import period_confirm as seller_period_confirm
+from app.agents.seller import (
+    category_catalog,
+    category_resolver,
+    draft_lifecycle,
+    draft_session,
+    hitl,
+)
 from app.agents.seller import thread as seller_thread
+from app.agents.seller.analysis_store import note_seller_seen
 from app.agents.seller.checkpoint import get_checkpointer
 from app.agents.seller.context import SellerContext
 from app.agents.seller.history import apply_recommendation
-from app.agents.seller.hitl import (
-    DraftRecord,
-    confirm_draft,
-    invalidate_draft,
-    start_draft,
-    validate_draft,
-)
+# [#622] invalidate_draft/start_draft 는 더 이상 여기서 직접 부르지 않는다 — draft
+# 발급(무효화·checkpoint 저장·pending 갱신)은 draft_lifecycle.publish_draft 단일
+# 입구를 통한다(아키텍처 테스트: tests/unit/test_seller_draft_lifecycle.py).
+# `hitl` 모듈 자체는 [#620] 가격 변경 시 사전 재조회(hitl._find_product)에 쓴다.
+from app.agents.seller.hitl import DraftRecord, confirm_draft, validate_draft
 from app.agents.seller.middleware import StreamingOutputGuard, check_scope, mask_output
 from app.agents.seller.models import SellerRole, init_seller_model, seller_trace_model_metadata
-from app.agents.seller.preview import build_create_preview, diff_notes, parse_int_or_none
+from app.agents.seller.preview import build_create_preview, parse_int_or_none
 from app.agents.seller.vision import ProductImageAnalysis, analyze_product_images
 from app.agents.seller.orchestrator import (
     PipelineResult,
     route_question,
     run_analysis_pipeline,
-    run_resolved_pipeline,
 )
-from app.agents.seller.period import disclosure_text, parse_period_approval, resolve_from_message
+from app.agents.seller.period import disclosure_text, resolve_from_message
 from app.agents.seller.pipeline import (
     APPLY_GUIDE,
     format_general_input,
@@ -82,6 +85,7 @@ from app.agents.seller.schemas import DraftChange, DraftProposal, PendingDraftAc
 from app.agents.seller.workers import build_general_agent, build_product_agent
 from app.api.deps import require_seller
 from app.core.auth import Identity
+from app.core.clock import now_kst, today_kst
 from app.core.config import get_settings
 from app.core.conversation import TurnStatus, get_conversation_store
 from app.core.errors import get_request_id, new_request_id
@@ -99,7 +103,7 @@ from app.core.tracing import current_request_trace, start_request_trace_safely, 
 from app.core.text import _strip_unsafe, _strip_unsafe_multiline
 from app.schemas.chat import ErrorData, TokenData
 from app.schemas.seller import SellerChatRequest
-from app.services.spring_client import SpringUnavailableError
+from app.services.spring_client import SpringRejected, SpringUnavailableError
 
 logger = logging.getLogger(__name__)
 
@@ -118,9 +122,6 @@ _ANALYSIS_APOLOGY_TOKEN = (
 
 # 진행 token 큐 종료 신호 — 파이프라인 완료(정상/예외 공통)를 스트림 루프에 알린다.
 _PIPELINE_DONE = object()
-
-# report.generatedAt 타임존 — KST 고정(이슈 #296, api-spec §3.2 v0.24.0 계약).
-_KST = timezone(timedelta(hours=9))
 
 
 def _seller_log(
@@ -313,8 +314,18 @@ async def _general_stream(
     context: SellerContext,
     *,
     request_id: str | None = None,
+    lane: Lane = "general",
 ) -> AsyncIterator[str]:
-    """general_agent astream → token/done (3-7 — SPEC §7 수명주기·degrade).
+    """search 레인 — general_agent astream → token/done (3-7 — SPEC §7 수명주기·degrade).
+
+    [#591] supervisor 의 `general`(조회)과 `analysis`(저장된 보고서를 찾는 의도)가 **같은
+    이 함수**를 쓴다. `analysis` 가 5단 분석 파이프라인을 부르던 자리를 여기로 옮긴 것이라
+    (`_analysis_stream` 은 게이트 ②.5 차트 경로 전용으로 남는다), 실행 경로만 바뀌고
+    `decision.category` 3분기 구조와 `Lane` 6종 값은 그대로다(S-4 무개정).
+
+    `lane` 은 meta 첫 프레임·트레이스·로그에만 쓴다 — 도구 목록도 프롬프트도 기간 처리도
+    두 레인이 동일하다. 값을 나눠두는 이유는 FE 가 `meta.lane` 으로 우측 패널을 준비하고
+    (계약 §3.3), 로그의 레인 분포가 supervisor 판정과 1:1로 맞아야 하기 때문이다.
 
     - C1(REVIEW-SELLER-STAGE2): build_general_agent 는 **요청마다 재빌드** —
       빌드 시점 today 박제가 장기 실행 서버에서 stale 해지는 것을 방지한다.
@@ -333,9 +344,9 @@ async def _general_stream(
       checkpointer 에 있어 스레드는 이어진다.
     """
     request_id = _resolve_request_id(request_id)
-    _set_trace_lane("general")
-    # general 은 항상 대화(우측 패널 유지) — 첫 프레임에 레인을 알린다.
-    yield _meta("general")
+    _set_trace_lane(lane)
+    # search 레인은 항상 대화(우측 패널 유지) — 첫 프레임에 레인을 알린다.
+    yield _meta(lane)
     refusal = check_scope(request.message)
     if refusal:
         yield _token(refusal)
@@ -349,7 +360,7 @@ async def _general_stream(
     try:
         resolution = resolve_from_message(
             request.message,
-            today=date.today(),
+            today=today_kst(),
             recent_default_days=settings.seller_recent_days_default,
             max_days=settings.seller_period_max_days,
         )
@@ -396,7 +407,7 @@ async def _general_stream(
             with trace_span("seller.graph.general", "chain"):
                 # 빌드도 producer 안 — 실패 시 기존 error 이벤트 봉투로 종료한다.
                 agent = build_general_agent(
-                    today=date.today().isoformat(), checkpointer=checkpointer
+                    today=today_kst().isoformat(), checkpointer=checkpointer
                 )
                 output_guard = StreamingOutputGuard()
                 started = perf_counter()
@@ -441,7 +452,7 @@ async def _general_stream(
         yield _done("keep")
     except LLMNotConfigured:
         yield _llm_unavailable(
-            lane="general",
+            lane=lane,
             thread_id=request.thread_id,
             request_id=request_id,
             context=context,
@@ -458,7 +469,7 @@ async def _general_stream(
             "seller_checkpointer_unavailable",
             context=context,
             thread_id=request.thread_id,
-            action="general",
+            action=lane,
             error_code="INTERNAL",
             status="FAILED",
         )
@@ -479,7 +490,7 @@ async def _general_stream(
                 "seller_stream_timeout",
                 context=context,
                 thread_id=request.thread_id,
-                action="general",
+                action=lane,
                 error_code="LLM_TIMEOUT",
                 status="FAILED",
             )
@@ -495,7 +506,7 @@ async def _general_stream(
             "seller_stream_failed",
             context=context,
             thread_id=request.thread_id,
-            action="general",
+            action=lane,
             error_code="INTERNAL",
             status="FAILED",
         )
@@ -517,7 +528,6 @@ async def _analysis_stream(
     recent_turns: list[seller_thread.Turn],
     *,
     request_id: str | None = None,
-    pending: seller_period_confirm.PendingPeriod | None = None,
 ) -> AsyncIterator[str]:
     """분석 레인 (4-1b) — 파이프라인 emit(진행)을 progress 로, 최종 답변을 token 으로 중계.
 
@@ -526,15 +536,14 @@ async def _analysis_stream(
       구조화 `report` 이벤트 1회(우측 패널 재료, 이슈 #296) → 패널 교체 여부는
       kind 로 갈린다(아래 panel).
     - 패널: kind=="report" 만 우측 교체(replace) — 되묻기(clarification)·사과(apology)·
-      거절(refused)·기간 확인(period_confirmation)은 대화이므로 유지(keep).
+      거절(refused)은 대화이므로 유지(keep).
       (FE 요구 2·3 — "화면 바뀔 질문만" 교체.)
     - **예외 2경우**(planner 장애·1차 report 실패)만 여기로 전파 — 사과 token 후
       error 로 종료(REVIEW-STAGE3 §5-2). error 종료는 패널 유지(done 없음).
     - 진행 문구는 파이프라인 내부 상수라 마스킹 불필요, 최종 text 는 mask_output 적용.
 
-    [#345] pending 이 주어지면 **기간 확인 승인 재개**다 — planner 를 건너뛰고 저장된
-    ResolvedPlan 으로 곧바로 실행한다(DESIGN-SELLER-PERIOD §6). 와이어 이벤트 순서와
-    패널 규칙은 신규 질문과 완전히 같다 — FE 는 이 턴이 재개인지 알 필요가 없다.
+    [#584] 기간 확인 승인 재개(구 pending 인자)는 게이트 ①.7 과 함께 사라졌다 —
+    코드가 값을 보충한 기간은 확인 없이 실행되고 해석은 응답 첫 줄에 고지된다.
     """
     request_id = _resolve_request_id(request_id)
     _set_trace_lane("analysis")
@@ -547,16 +556,10 @@ async def _analysis_stream(
     async def run_pipeline():
         """Keep the analysis trace token and all descendants in one task context."""
         with trace_span("seller.graph.analysis", "chain"):
-            if pending is not None:
-                # 원 질문(pending.question)으로 실행한다 — 승인 발화("응")는 질문이 아니라
-                # 워커 입력·이력에 그대로 쓰면 맥락이 사라진다.
-                return await run_resolved_pipeline(
-                    pending.question, pending.plan, context, emit=emit
-                )
             return await run_analysis_pipeline(
                 request.message,
                 context,
-                today=date.today(),
+                today=today_kst(),
                 emit=emit,
                 recent_turns=recent_turns,
                 screen=request.screen,
@@ -609,19 +612,7 @@ async def _analysis_stream(
                 retryable=True,
             )
             return
-        # [#345] 기간 확인 대기 저장 — token 을 내보내기 **전에** 한다. 저장에 실패하면
-        # 후속 "응" 이 신규 질문으로 처리되는데(degrade, DESIGN §5.4), 그 사실을 모른 채
-        # 확인 문구만 나가는 것보다 순서를 맞춰 두는 편이 추적하기 쉽다.
-        if result.kind == "period_confirmation" and result.resolved is not None:
-            await seller_period_confirm.save_pending(
-                context,
-                request.thread_id,
-                question=request.message,
-                plan=result.resolved,
-            )
         # 대화 스레드 기록(best-effort) — 되묻기 포함 최종 문안이 후속 발화의 맥락이 된다.
-        # 승인 재개 턴은 사용자 발화가 "응" 이라 그대로 기록한다 — 무엇에 답했는지는
-        # 직전 턴(확인 문구)이 스레드에 남아 있어 맥락이 이어진다.
         await seller_thread.record_turn(context, request.thread_id, request.message, result.text)
         yield _token(result.text)
         # report 는 kind=="report" 일 때 정확히 1회 — token(산문) 뒤·done 앞
@@ -682,7 +673,7 @@ async def _ensure_draft_category(
     message: str,
     analysis: ProductImageAnalysis | None,
     pending: draft_session.PendingCreate | None,
-) -> DraftProposal:
+) -> tuple[DraftProposal, bool]:
     """[#506 후속] create 초안의 카테고리를 코드가 책임지고 채운다.
 
     BE `categoryId` 는 필수라 카테고리 없는 create 초안은 승인해도 등록되지 않는다.
@@ -696,17 +687,27 @@ async def _ensure_draft_category(
 
     잘못 배정하느니 되묻는다: 카테고리는 등록 후 변경할 수 없다(preview 경고와 동일,
     BE I-11 에는 category 필드 자체가 없다).
+
+    [#622] 반환의 두 번째 값(`revived`)은 ① 경로를 탔는지다 — 이번 발화가 사실은
+    카테고리를 바꾸려는 의도였는데 에이전트가 후보를 애매하게 봐서 카테고리를 빼고
+    반환한 경우에도, ①은 발화 의도를 판별하지 않고 무조건 이전 값을 되살린다. 그
+    발화 의도 판별 로직을 새로 넣는 대신(#622 결정 — 오탐 위험과 구현 범위 고려), 호출부가
+    `revived`를 preview note에 "카테고리는 이전 초안 값을 유지했습니다"로 노출해 판매자가
+    승인 전에 최소한 알아챌 수 있게 한다. `diff_notes`가 이 경우를 note 로 못 잡는 이유는
+    before==after(둘 다 이전 값)라 필드 자체가 diff 되지 않기 때문이다.
     """
     if proposal.op != "create":
-        return proposal
+        return proposal, False
     current = next((c.after for c in proposal.changes if c.field == "category"), None)
     if current is not None and category_catalog.get(current) is not None:
-        return proposal
+        return proposal, False
 
+    revived = False
     resolved: str | None = None
     if pending is not None and (kept := pending.changes.get("category")):
         if category_catalog.get(kept) is not None:
             resolved = kept
+            revived = True
     if resolved is None:
         hint = analysis.category_hint if analysis is not None else None
         entry = await category_resolver.resolve_category(message, hint=hint)
@@ -715,14 +716,17 @@ async def _ensure_draft_category(
         # 목록 밖 값이 남아 있으면 걷어낸다 — validate_draft 의 "누락" 안내가
         # "잘못된 값" 안내보다 판매자에게 할 일을 정확히 알려준다.
         if current is not None:
-            return proposal.model_copy(
-                update={"changes": [c for c in proposal.changes if c.field != "category"]}
+            return (
+                proposal.model_copy(
+                    update={"changes": [c for c in proposal.changes if c.field != "category"]}
+                ),
+                False,
             )
-        return proposal
+        return proposal, False
 
     changes = [c for c in proposal.changes if c.field != "category"]
     changes.append(DraftChange(field="category", before="", after=resolved))
-    return proposal.model_copy(update={"changes": changes})
+    return proposal.model_copy(update={"changes": changes}), revived
 
 
 def _product_agent_input(
@@ -766,6 +770,7 @@ async def _product_stream(
     *,
     request_id: str | None = None,
     pending: draft_session.PendingCreate | None = None,
+    pending_unknown: bool = False,
 ) -> AsyncIterator[str]:
     """product 레인 (4-2 — draft 생성 + checkpoint 저장, 실행은 confirm 스트림).
 
@@ -781,10 +786,19 @@ async def _product_stream(
     주입. pending(수정 턴)은 기존 초안 값을 주입하고 **재분석하지 않는다** — 새 사진을
     첨부한 턴만 예외(재분석 + 대표사진 교체). create draft 성립 시 preview 를 함께
     싣고(draft 이벤트), draft_session 에 대기를 저장하며 이전 draftId 는 무효화한다.
+
+    [#622] `pending_unknown=True`(등록 초안 대기 조회 실패)면 새 draft 를 발급하지 않고
+    막는다 — 이 상태에서 발급하면 실제로 대기 중이던 create draft(조회만 실패했을 뿐
+    존재할 수 있다)가 무효화되지 않은 채 두 번째 draft 와 동시 생존할 수 있다. 이 스트림에
+    닿는 진입점 전부(사진 직행·게이트 낙하·supervisor 라우팅)가 이 가드를 공유한다.
     """
     request_id = _resolve_request_id(request_id)
     _set_trace_lane("product")
     yield _meta("product")
+    if pending_unknown:
+        yield _token(draft_lifecycle.UNKNOWN_STATE_BLOCK_TEXT)
+        yield _done("keep")
+        return
     settings = get_settings()
 
     # ── [#506] vision 분석 (이미지 첨부 턴 1회) / 수정 턴 캐시 복원 ──────────────
@@ -825,7 +839,10 @@ async def _product_stream(
                         {"messages": [HumanMessage(content=agent_input)]},
                         context=context,
                     ),
-                    timeout=settings.seller_worker_timeout_s,
+                    # [이슈 #621] product 단독 호출 전용 상한으로 분리 — 분석 워커 6종과
+                    # 공유하던 seller_worker_timeout_s(60s, 팬아웃 기준)는 management
+                    # 레인엔 느슨했다(§config._require_management_lane_within_stream_cap).
+                    timeout=settings.seller_product_agent_timeout_s,
                 )
         proposal = result.get("structured_response")
         if not isinstance(proposal, DraftProposal):
@@ -875,13 +892,33 @@ async def _product_stream(
     # [#506 후속] 카테고리 복구 — 선검증 **전**에 돈다. validate_draft 는 카테고리
     # 누락을 되묻기로 바꾸므로, 복구 기회를 그 앞에 두지 않으면 판매자가 이미 충분히
     # 말한 상품군인데도 한 번 더 묻게 된다(LLM 호출은 실패한 턴에만 1회 추가).
-    proposal = await _ensure_draft_category(
+    proposal, category_revived = await _ensure_draft_category(
         proposal, message=request.message, analysis=analysis, pending=pending
     )
 
+    # [#620] update 초안이 price/original_price 를 건드리면 미리 I-9 재조회해 row 를
+    # 넘긴다 — validate_draft 가 BE validatePriceRange 와 같은 규칙(price ≤
+    # originalPrice, 생략 필드는 저장된 값)으로 카드 표시 전에 되물을 수 있게 한다.
+    # 그 외 op·필드는 이 추가 Spring 왕복이 필요 없다(row=None 이면 이 검사만 건너뛴다).
+    # Spring 장애는 이 선택적 2차 검증 때문에 초안 생성 전체를 막지 않는다 — 실패하면
+    # row=None 으로 건너뛰고 confirm 시점 BE 422(InvalidPrice)에 맡긴다(안전망 유지).
+    row = None
+    if proposal.op == "update" and proposal.product_id is not None:
+        touches_price = any(
+            c.field in ("price", "original_price") for c in proposal.changes
+        )
+        if touches_price:
+            try:
+                # [#622] _find_product 는 (row, exhausted) 튜플을 반환한다 — 이 사전
+                # 검증은 어차피 best-effort(못 찾으면 검사만 건너뛰고 confirm 시점 BE
+                # 422 에 맡긴다)라 exhausted(상한 소진 vs 진짜 없음)는 구분하지 않는다.
+                row, _exhausted = await hitl._find_product(context.brand_id, proposal.product_id)
+            except SpringUnavailableError:
+                row = None
+
     # 코드 선검증(4-2) — 실행 불가능한 draft 는 FE 에 보여주기 전에 되묻는다.
     record, problem = validate_draft(
-        proposal, seller_id=context.seller_id, brand_id=context.brand_id
+        proposal, seller_id=context.seller_id, brand_id=context.brand_id, row=row
     )
     if record is None:
         text = problem or "초안을 만들지 못했습니다. 다시 요청해 주세요."
@@ -906,7 +943,17 @@ async def _product_stream(
             record = record.model_copy(update={"changes": replaced})
 
     try:
-        await start_draft(record)  # checkpoint 저장 + interrupt 대기(안전장치 ①)
+        # [#622] invalidate·checkpoint 저장·pending 갱신 단일 입구 — 이전엔 invalidate_draft/
+        # save_pending 이 `if record.op == "create":` 안에서만 불려, 수정 턴이 op="update"로
+        # 응답하면 대기 중이던 이전 create draft 가 무효화도 pending 갱신도 안 된 채 남았다.
+        lifecycle_notes = await draft_lifecycle.publish_draft(
+            context,
+            request.thread_id,
+            record,
+            prev=pending,
+            image_urls=image_urls,
+            analysis=analysis,
+        )
     except Exception:
         _seller_log(
             logging.ERROR,
@@ -925,30 +972,21 @@ async def _product_stream(
         )
         return
 
-    # ── [#506] create 초안: 이전 draft 무효화 + 세션 저장 + preview 구성 ─────────
+    # ── [#506] create 초안 preview 구성 ──────────────────────────────────────────
     preview: dict | None = None
     if record.op == "create":
-        notes: list[str] = []
-        if pending is not None:
-            # 수정 턴 — 이전 draftId 무효화(FE 계약 §5.6: 옛 카드 confirm 사고 차단).
-            await invalidate_draft(pending.draft_id)
-            notes = diff_notes(pending.changes, record)
+        notes = list(lifecycle_notes)
+        if category_revived:
+            # [#622] ①(카테고리 되살림, _ensure_draft_category)이 발화 의도와 무관하게
+            # 이전 값을 되살렸을 수 있다 — before==after 라 diff_notes 는 이 경우를
+            # 못 잡으므로 별도로 note 를 붙여 승인 전에 알아챌 수 있게 한다.
+            notes.append("카테고리는 이전 초안 값을 유지했습니다.")
         seller_inputs = _seller_input_summary(record)
         preview = build_create_preview(
             record,
             analysis=analysis,
             seller_inputs=seller_inputs,
             modified_notes=notes or None,
-        )
-        await draft_session.save_pending(
-            context,
-            request.thread_id,
-            draft_session.PendingCreate(
-                draft_id=record.draft_id,
-                image_urls=tuple(image_urls),
-                analysis=analysis.model_dump() if analysis is not None else None,
-                changes={c.field: c.after for c in record.changes},
-            ),
         )
 
     await seller_thread.record_turn(
@@ -1114,7 +1152,8 @@ def _report_event(result: PipelineResult) -> str:
                 else None
             ),
             "chartPeriod": chart_period,
-            "generatedAt": datetime.now(_KST).isoformat(timespec="seconds"),
+            # KST 고정(이슈 #296, api-spec §3.2 v0.24.0 계약) — 기준 시각은 app/core/clock.py.
+            "generatedAt": now_kst().isoformat(timespec="seconds"),
             "summary": mask_output(_strip_unsafe_multiline(split_report_summary(report_text))),
             "body": mask_output(_strip_unsafe_multiline(report_text)),
             "findings": [
@@ -1183,6 +1222,8 @@ async def _apply_stream(
     context: SellerContext,
     *,
     request_id: str | None = None,
+    pending: draft_session.PendingCreate | None = None,
+    pending_unknown: bool = False,
 ) -> AsyncIterator[str]:
     """추천 적용 레인 (4-3 §6.3 — 입구 ①.5 코드 선판정 후 진입, LLM 0회).
 
@@ -1190,10 +1231,21 @@ async def _apply_stream(
     4-2 와 동일하게 checkpoint 저장 후 draft emit — 이후 confirm 흐름 합류.
     불성립(이력 없음·인덱스 불일치·적용 불가 유형·상품 미발견)은 되묻기 token.
     패널: draft 성립 시 diff 카드(replace), 불성립은 대화(keep) — product 레인과 동일.
+
+    [#622] `pending`(등록 초안 대기 게이트 판정 실패 낙하로 여기 온 경우) 이 있으면
+    새 draft 발급 시 이전 create draft 를 무효화한다 — 이전엔 이 함수가 `pending`을
+    받지 않아, 대기 중 "N번 적용해줘"가 게이트를 우회해 두 번째 draft 를 발급해도
+    이전 draft 가 무효화되지 않았다(같은 문제를 supervisor 라우팅 product 분기는
+    리뷰 M-1b 로 이미 고쳐 뒀었다). `pending_unknown`은 `_product_stream`과 동일한
+    가드(모듈독스트링 참조).
     """
     request_id = _resolve_request_id(request_id)
     _set_trace_lane("apply")
     yield _meta("apply")
+    if pending_unknown:
+        yield _token(draft_lifecycle.UNKNOWN_STATE_BLOCK_TEXT)
+        yield _done("keep")
+        return
     try:
         with trace_span("seller.graph.apply", "chain"):
             record, problem = await apply_recommendation(n, context)
@@ -1235,7 +1287,9 @@ async def _apply_stream(
         return
 
     try:
-        await start_draft(record)  # 4-2 재사용 — draftId↔checkpoint 바인딩
+        # [#622] publish_draft — pending 이 있으면(게이트 낙하) 그 이전 create draft 를
+        # 함께 무효화한다. 4-2(product 레인)와 같은 단일 입구.
+        await draft_lifecycle.publish_draft(context, request.thread_id, record, prev=pending)
     except Exception:
         _seller_log(
             logging.ERROR,
@@ -1320,8 +1374,7 @@ async def _cancel_pending_stream(
     del request_id  # 오류 경로 없음 — 시그니처 일관성 유지용
     _set_trace_lane("product")
     yield _meta("product")
-    await invalidate_draft(pending.draft_id)
-    await draft_session.clear_pending(context, request.thread_id)
+    await draft_lifecycle.cancel_pending(context, request.thread_id, pending)
     text = "등록 초안을 취소했습니다. 새로 등록하시려면 사진을 다시 첨부해 주세요."
     await seller_thread.record_turn(context, request.thread_id, request.message, text)
     yield _token(text)
@@ -1352,6 +1405,23 @@ async def _confirm_stream(
             outcome = await confirm_draft(
                 draft_id, seller_id=context.seller_id, brand_id=context.brand_id
             )
+    except SpringRejected:
+        # [#620] 매핑 안 된 4xx — 서버가 요청 자체를 거부한 것이라 재시도해도 결과가
+        # 같다. `SpringUnavailableError` 하위라 이 except 를 두지 않아도 아래 catch-all
+        # 이 잡지만, 그러면 "일시적 오류·재시도 가능"으로 잘못 안내된다(이 이슈의
+        # 핵심 증상) — 먼저 잡아 retryable=False 로 구분한다. draft 는 checkpoint 에
+        # 남지만 재confirm 을 권하지 않는다(같은 4xx 가 반복될 뿐이다).
+        yield _token(
+            "죄송합니다. 서버가 이 요청을 거부해 반영하지 못했습니다. "
+            "내용을 다시 확인해 새로 요청해 주세요."
+        )
+        yield _error(
+            "INTERNAL",
+            "요청이 거부되었습니다.",
+            request_id=request_id,
+            retryable=False,
+        )
+        return
     except SpringUnavailableError:
         _mark_seller_degraded("spring_write_failed")
         yield _token(_CONFIRM_SPRING_DOWN_TOKEN)
@@ -1420,6 +1490,11 @@ async def _seller_stream(
         )
         return
 
+    # 무인 분석 대상 자동 등록(결정 110~112, 이슈 #585) — fire-and-forget, 실패해도 이 스트림에
+    # 영향 없다. 신원 캐스팅 성공 직후 1회만(캐스팅 실패 요청을 대상에 넣지 않기 위해 위쪽이 아닌
+    # 여기다). require_seller 에 넣지 않는 이유는 OPS §1.7 참조(buyer 공용 sync 의존성).
+    note_seller_seen(context)
+
     # ① confirm 필드 선판정 (A-2 최상위 구조화 필드, LLM 0회) → HITL 실행 레인(4-2).
     # action=="confirm" 이면 draftId 는 스키마 validator 가 보장한다(발화 ≠ 동의 [HARD]).
     if request.action == "confirm":
@@ -1433,8 +1508,15 @@ async def _seller_stream(
     # 동시 생존한다 — 대기 중 딴 작업은 게이트가 차단(offtopic 안내)해야 한다.
     # ②(scope)보다 앞인 이유: "취소"·"상품명 짧게" 같은 초안 문맥 발화가 scope 필터에
     # 걸릴 수 있다. 대기가 있을 때만 돌린다 — 대기 없는 발화 오인을 구조적으로 없앤다.
-    pending_create = await draft_session.load_pending(context, request.thread_id)
-    if pending_create is not None:
+    # [#622] 3상태 조회 — "none"(대기 없음)·"found"(대기 있음)·"unknown"(조회 실패,
+    # draft_lifecycle 모듈독스트링 ②). ①.3 게이트는 "found"일 때만 돈다 — "unknown"은
+    # 판정 근거(실제 pending 내용)가 없다. 아래 apply_n·image_urls 직행·③ product 분기는
+    # lookup.state == "unknown"이면 pending_unknown=True 를 넘겨 새 draft 발급을 막는다
+    # (draft_lifecycle.UNKNOWN_STATE_BLOCK_TEXT) — 조회 실패 중 신규 발급하면 실제로
+    # 대기 중이던 draft 가 무효화 안 된 채 두 번째 draft 와 동시 생존할 수 있어서다.
+    lookup = await draft_lifecycle.lookup_pending(context, request.thread_id)
+    if lookup.state == "found":
+        pending_create = lookup.pending
         # 새 사진 첨부는 판정 없이 수정 턴(대표사진 교체 + 재분석)이다 — FE 계약 §3.4.
         if request.image_urls:
             async for line in _product_stream(
@@ -1486,7 +1568,12 @@ async def _seller_stream(
         # 낙하 경로가 product 레인에 닿으면 ③이 pending 을 넘겨 이전 draftId 무효화가
         # 이어진다(리뷰 M-1b — 동시 생존 draft 차단).
 
+    pending_unknown = lookup.state == "unknown"
+
     # ①.5 추천 적용 코드 선판정 ("N번 적용해줘" 정형 발화, LLM 0회) — 4-3 §6.3.
+    # [#622] 게이트 ①.3 판정 실패(None) 낙하로 여기 온 경우 pending 을 넘긴다 — ③(product)
+    # 분기와 동일하게, 새 draft 발급 시 이전 create draft 무효화가 누락되지 않게(_apply_stream
+    # 독스트링 — 리뷰 M-1b 와 같은 문제를 apply 경로에도 적용).
     apply_n = parse_apply_message(request.message)
     if apply_n is not None:
         async for line in _apply_stream(
@@ -1494,38 +1581,18 @@ async def _seller_stream(
             request,
             context,
             request_id=request_id,
+            pending=lookup.pending if lookup.state == "found" else None,
+            pending_unknown=pending_unknown,
         ):
             yield line
         return
 
-    # ①.7 기간 확인 대기 선판정 (코드 판정, LLM 0회) — #345, DESIGN-SELLER-PERIOD §5.5.
-    # ②(scope)보다 **앞**이어야 한다: "응" 은 판매 도메인 어휘가 아니라 scope 필터에
-    # 걸릴 수 있다. ①·①.5 보다는 뒤다 — 그 둘이 더 명시적인 신호(구조화 필드·정형
-    # 발화)라 기간 확인이 가로채면 안 된다.
-    # 대기가 있을 때만 승인 판정을 돌린다 — 대기 없는 상태의 "응" 을 승인으로 오인할
-    # 여지를 구조적으로 없앤다. 승인이 아니면(수정·새 질문 전부) 대기를 폐기하고
-    # 아래 일반 흐름으로 흘린다(3경로 — 수정 전용 파서를 두지 않는 이유는 DESIGN §5.1).
-    pending_period = await seller_period_confirm.load_pending(context, request.thread_id)
-    if pending_period is not None:
-        if parse_period_approval(request.message):
-            # 승인은 1회성이다 — 실행 전에 폐기해 실패하더라도 재승인으로 두 번 돌지 않는다.
-            await seller_period_confirm.clear_pending(context, request.thread_id)
-            recent_turns = await seller_thread.load_recent_turns(context, request.thread_id)
-            async for line in _analysis_stream(
-                request,
-                context,
-                recent_turns,
-                request_id=request_id,
-                pending=pending_period,
-            ):
-                yield line
-            return
-        await seller_period_confirm.clear_pending(context, request.thread_id)
-
     # [#506] 이미지 첨부 턴은 supervisor 를 거치지 않고 product 레인 직행 — 사진을 실은
     # 발화의 목적지는 등록 초안뿐이고, 라우팅 LLM 은 이미지를 볼 수 없어 판정 근거도 없다.
     if request.image_urls:
-        async for line in _product_stream(request, context, request_id=request_id):
+        async for line in _product_stream(
+            request, context, request_id=request_id, pending_unknown=pending_unknown
+        ):
             yield line
         return
 
@@ -1557,8 +1624,6 @@ async def _seller_stream(
     # [위치 근거 — 순서가 이 판정의 전부다]
     # · ①(초안 대기 게이트)보다 뒤: 초안 대기 중 "그래프 보여줘"는 offtopic 분기가 초안을
     #   지켜야 한다(동시 생존 draft 차단).
-    # · ①.7(기간 확인 대기)보다 뒤: 앞에 두면 승인이 아닌 발화의 대기 폐기가 건너뛰어져
-    #   stale pending 이 남는다.
     # · image_urls 직행(#506)보다 뒤: 사진을 실은 발화의 목적지는 등록 초안뿐이다.
     # · ②(scope)보다 뒤: 앞에 두면 "경쟁사 매출 그래프 보여줘" 같은 도메인 밖 요청이
     #   analysis 레인으로 새어 타 판매자 데이터를 조회하려 든다.
@@ -1610,18 +1675,23 @@ async def _seller_stream(
     )
 
     if decision.category == "analysis":
-        async for line in _analysis_stream(
-            request,
-            context,
-            recent_turns,
-            request_id=request_id,
-        ):
+        # [#591] `analysis` = "저장된 보고서를 찾는 의도"로 재정의됐다 — 5단 분석
+        # 파이프라인이 아니라 search 레인(조회 도구 + get_latest_report)이 답한다.
+        # 그 파이프라인은 채팅 밖 상주형으로 옮겨가고, 채팅에서 _analysis_stream 을
+        # 부르는 곳은 이제 게이트 ②.5(차트)뿐이다. meta.lane 은 "analysis" 그대로다.
+        async for line in _general_stream(request, context, request_id=request_id, lane="analysis"):
             yield line
     elif decision.category == "product":
         # [리뷰 M-1b] 게이트 판정 실패 낙하로 온 경우에도 pending 을 전달한다 —
         # 새 create draft 발급 시 이전 draftId 무효화가 누락되지 않게(동시 생존 차단).
+        # [#622] lookup.state == "found"일 때만 pending 을 넘긴다 — "none"·"unknown"은
+        # 애초에 넘길 pending 자체가 없다(unknown 은 pending_unknown 으로 별도 차단).
         async for line in _product_stream(
-            request, context, request_id=request_id, pending=pending_create
+            request,
+            context,
+            request_id=request_id,
+            pending=lookup.pending if lookup.state == "found" else None,
+            pending_unknown=pending_unknown,
         ):
             yield line
     else:

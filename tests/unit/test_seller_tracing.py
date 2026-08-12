@@ -520,7 +520,8 @@ def test_analysis_request_through_open_stream_finishes_done_with_intact_tree(
         json={
             "sessionId": "analysis-open-stream",
             "threadId": "analysis-open-stream",
-            "message": "지난달 매출 분석",
+            # [#591] 5단 파이프라인에 닿는 채팅 경로는 게이트 ②.5(차트 어휘)뿐이다.
+            "message": "지난달 매출 그래프",
         },
         headers=_seller_headers(),
     )
@@ -638,7 +639,7 @@ async def test_analysis_disconnect_cancels_and_awaits_pipeline_task(
     request = SellerChatRequest(
         session_id="analysis-disconnect",
         thread_id="analysis-disconnect",
-        message="question",
+        message="매출 그래프 보여줘",  # [#591] 게이트 ②.5 로 분석 파이프라인 진입
     )
     response = await open_stream(
         _DisconnectRequest(),
@@ -869,7 +870,7 @@ async def test_analysis_request_exports_complete_bounded_tree(
         ),
     )
     trace = _start_seller_trace(fake_trace_factory)
-    request = SellerChatRequest(session_id="s", thread_id="t", message="지난달 매출 분석")
+    request = SellerChatRequest(session_id="s", thread_id="t", message="지난달 매출 그래프")
     identity = Identity(
         user_id="7",
         is_guest=False,
@@ -884,10 +885,11 @@ async def test_analysis_request_exports_complete_bounded_tree(
     nodes = fake_trace_factory.exporter.exported[0]
     by_name = {node.name: node for node in nodes}
     root = by_name["seller_chat_turn"]
-    routing = by_name["seller.routing"]
     analysis = by_name["seller.graph.analysis"]
     assert root.metadata["lane"] == "analysis"
-    assert routing.parent_id == root.id
+    # [#591] 차트 게이트(②.5)는 라우팅 LLM 을 부르지 않는다 — seller.routing 노드가 없는 것이
+    # 정상이고, 있으면 선판정이 뚫려 supervisor 를 한 번 더 태운 것이다.
+    assert "seller.routing" not in by_name
     assert analysis.parent_id == root.id
     for name in (
         "llm.seller.planner",

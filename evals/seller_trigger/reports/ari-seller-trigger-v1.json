@@ -1,0 +1,64 @@
+{
+  "dataset_version": "seller-trigger-v1",
+  "gate": "customer",
+  "measurements": [
+    {
+      "axis": "customer",
+      "dataset_version": "seller-trigger-v1",
+      "seed": 595002,
+      "rows": 300,
+      "noise_pct": 0.05,
+      "measured": true,
+      "ari": 1.0,
+      "minimum": 0.7,
+      "passed": true,
+      "clusters_a": 5,
+      "clusters_b": 5,
+      "silhouette_a": 0.39879203238614597,
+      "silhouette_b": 0.3973533309286641,
+      "label_sizes_a": {
+        "탐색형": 62,
+        "구매망설임형": 60,
+        "휴면형": 60,
+        "이탈위험형": 60,
+        "충성형": 58
+      },
+      "label_sizes_b": {
+        "탐색형": 62,
+        "휴면형": 60,
+        "구매망설임형": 60,
+        "이탈위험형": 60,
+        "충성형": 58
+      },
+      "note": ""
+    },
+    {
+      "axis": "product",
+      "dataset_version": "seller-trigger-v1",
+      "seed": 595002,
+      "rows": 48,
+      "noise_pct": 0.05,
+      "measured": true,
+      "ari": 1.0,
+      "minimum": 0.7,
+      "passed": true,
+      "clusters_a": 4,
+      "clusters_b": 4,
+      "silhouette_a": 0.7143391394306476,
+      "silhouette_b": 0.7339772620694044,
+      "label_sizes_a": {
+        "전환직결형": 12,
+        "카트이탈형": 12,
+        "구경형": 12,
+        "저활동형": 12
+      },
+      "label_sizes_b": {
+        "전환직결형": 12,
+        "카트이탈형": 12,
+        "구경형": 12,
+        "저활동형": 12
+      },
+      "note": "exploratory — 게이트 아님"
+    }
+  ]
+}

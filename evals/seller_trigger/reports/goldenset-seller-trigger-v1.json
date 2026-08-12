@@ -1,0 +1,148 @@
+{
+  "dataset_version": "seller-trigger-v1",
+  "cases": [
+    {
+      "case_id": "gs-01",
+      "title": "매출 지속 급락 검출",
+      "claim": "7일 동안 −30% 가 이어지면 매출 트리거가 발동한다",
+      "passed": true,
+      "observed": {
+        "fired": true,
+        "threshold_met": true,
+        "significant": true,
+        "change": -0.2525466211668698,
+        "p_value": 0.0006707950223619241,
+        "direction": "drop"
+      },
+      "known_gap": false,
+      "follow_up": ""
+    },
+    {
+      "case_id": "gs-02",
+      "title": "계절 함정 미검출",
+      "claim": "요일 효과만 있는 구간에서는 매출 트리거가 걸리지 않는다 (7일 합끼리 비교하면 요일 효과가 정의상 상쇄된다)",
+      "passed": true,
+      "observed": {
+        "fired_dates": [],
+        "scanned": 77
+      },
+      "known_gap": false,
+      "follow_up": ""
+    },
+    {
+      "case_id": "gs-03",
+      "title": "무매출 직후 매출 발생 검출",
+      "claim": "기준 구간이 전부 0 이면 변화율은 정의 불가(change=None)지만 어떤 임계도 넘으므로 임계는 통과하고, 검정이 발동을 확정한다",
+      "passed": true,
+      "observed": {
+        "fired": true,
+        "change": null,
+        "threshold_met": true,
+        "significant": true,
+        "p_value": 6.28363963558109e-89
+      },
+      "known_gap": false,
+      "follow_up": ""
+    },
+    {
+      "case_id": "gs-04",
+      "title": "표본 부족은 판정 보류",
+      "claim": "2일치로는 판정할 수 없다 — decided=False 이고, 이것을 fired=False 하나로 뭉뚱그리면 '못 봤다'가 '정상이다'로 둔갑한다",
+      "passed": true,
+      "observed": {
+        "decided": false,
+        "hold_reason": "no_baseline: 비교에 14일 이력이 필요한데 2일뿐이라 판정을 보류한다"
+      },
+      "known_gap": false,
+      "follow_up": ""
+    },
+    {
+      "case_id": "gs-05",
+      "title": "전환율 상승 검출",
+      "claim": "3.0% → 4.8%(n=3000)는 임계·유의를 모두 넘어 발동한다",
+      "passed": true,
+      "observed": {
+        "fired": true,
+        "threshold_met": true,
+        "significant": true,
+        "p_value": 0.0003169853052875971,
+        "change": 0.6000000000000001
+      },
+      "known_gap": false,
+      "follow_up": ""
+    },
+    {
+      "case_id": "gs-06",
+      "title": "저볼륨 오탐 방지",
+      "claim": "n=40 의 −22% 변동은 임계를 넘지만 유의하지 않다 — **AND 의 통계 쪽이 실제로 막는다**",
+      "passed": true,
+      "observed": {
+        "fired": false,
+        "threshold_met": true,
+        "significant": false,
+        "p_value": 0.8081055669614277
+      },
+      "known_gap": false,
+      "follow_up": ""
+    },
+    {
+      "case_id": "gs-07",
+      "title": "군집 4유형 복원",
+      "claim": "유형이 분명한 입력에서 실루엣 최대 k 가 4 로 잡히고 군집이 4개 나온다",
+      "passed": true,
+      "observed": {
+        "k": 4,
+        "silhouette": 0.9112892751457998,
+        "labels": [
+          "전환직결형",
+          "카트이탈형",
+          "구경형",
+          "저활동형"
+        ]
+      },
+      "known_gap": false,
+      "follow_up": ""
+    },
+    {
+      "case_id": "gs-08",
+      "title": "장바구니 이탈률 급증 검출",
+      "claim": "20% → 32%(+12%p)는 임계(+10%p)와 유의를 모두 넘어 발동한다",
+      "passed": true,
+      "observed": {
+        "fired": true,
+        "change": 0.12,
+        "change_unit": "pp",
+        "p_value": 9.985088641941428e-10
+      },
+      "known_gap": false,
+      "follow_up": ""
+    },
+    {
+      "case_id": "gs-09",
+      "title": "remove_from_cart 편입일 경계 보류",
+      "claim": "2026-08-06 편입일을 가로지르는 비교는 '삭제가 늘었다'가 아니라 '삭제를 이제 센다'라서 같은 입력이라도 판정하지 않는다",
+      "passed": true,
+      "observed": {
+        "decided": false,
+        "hold_reason": "remove_from_cart_boundary: 비교 구간이 remove_from_cart 편입일을 가로질러 이탈률 비교가 성립하지 않는다"
+      },
+      "known_gap": false,
+      "follow_up": ""
+    },
+    {
+      "case_id": "gs-10",
+      "title": "하루짜리 급락 — 현재 미검출(고정)",
+      "claim": "주간 합끼리 비교하므로 하루 −60% 는 주간 −8.6% 로 희석돼 유의해지지 않는다. 후속 이슈가 하루 단위 검출을 붙이면 이 케이스가 실패해서 알려준다",
+      "passed": true,
+      "observed": {
+        "fired": false,
+        "threshold_met": false,
+        "significant": false,
+        "change": -0.009215813532928805,
+        "p_value": 0.6706977406920404
+      },
+      "known_gap": true,
+      "follow_up": "무인 스캔의 하루 단위 매출 급락 검출 — STL 창 경계 무검출·과다 발화 해소"
+    }
+  ]
+}

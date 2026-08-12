@@ -91,6 +91,13 @@ SellerRole = Literal[
     "draft_gate",
     # [#506 후속] category — 에이전트가 카테고리를 못 고른 턴의 폴백 택1(단발 호출).
     "category",
+    # [#598] 상주 분석 파이프라인 전용 — 채팅 레인 "report"/"recommend" 와 완전히
+    # 분리한다(설계 결정 — 채팅 레인 REPORT_PROMPT/build_report_agent 무접촉 보장).
+    "resident_report",
+    "resident_recommend",
+    # [#598] 워커 4종의 ctx-표 기반 interpret 스텝 — 채팅 레인 워커 역할("worker")과
+    # 분리한다. 도구 호출 없는 zero-tool 호출이라 관측·로그를 워커 레인과 구분해 둔다.
+    "interpret",
 ]
 
 # SPEC §8 표의 코드화 — 판매자 전 역할 smart(2026-07-29, 품질 우선 전환).
@@ -115,6 +122,11 @@ ROLE_TIER: dict[SellerRole, ModelTier] = {
     "draft_gate": "smart",
     # [#506 후속] 오배정이 등록 후 되돌릴 수 없는 필드(카테고리)를 결정하므로 smart 유지.
     "category": "smart",
+    # [#598] 상주 파이프라인도 전 역할 smart 정책을 그대로 따른다 — 판매자 미통지·
+    # 무인 실행이라 품질 저하를 사람이 즉시 교정할 기회가 없다.
+    "resident_report": "smart",
+    "resident_recommend": "smart",
+    "interpret": "smart",
 }
 
 

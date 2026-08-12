@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from uuid import uuid4
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import date
@@ -34,8 +35,9 @@ from typing import TYPE_CHECKING, Literal
 from langchain_core.messages import HumanMessage, ToolMessage
 from langgraph.graph.state import CompiledStateGraph
 
-from app.agents.seller import history
+from app.agents.seller import analysis_store, history
 from app.agents.seller import thread as seller_thread
+from app.agents.seller.analysis_records import ReportRecord, RecommendationRecord
 from app.agents.seller.context import SellerContext
 from app.agents.seller.middleware import check_scope
 from app.agents.seller.models import SellerRole, seller_trace_model_metadata
@@ -53,7 +55,7 @@ from app.agents.seller.pipeline import (
     format_rewrite_input,
     format_worker_input,
     format_worker_retry_input,
-    period_confirmation_text,
+    period_disclosure_text,
     resolve_plan,
 )
 from app.agents.seller import charts as seller_charts
@@ -127,8 +129,12 @@ def _mark_degraded(reason: str) -> None:
 ROUTE_FALLBACK_REASON = "라우팅 장애 — general 폴백(코드 지정)"
 # [#180, 2026-07-29] 저신뢰 폴백 역전 — 구 ROUTE_CONSERVATIVE_REASON(analysis 보수
 # 재지정, 2026-07-19 결정) 폐기. 오분류 비용 비대칭이 전제와 반대였다: 단순 조회가
-# analysis 로 가면 5단 파이프라인(회복 불가·최고 비용), 분석 질문이 general 로 가면
-# general 프롬프트의 "분석을 요청해 주세요" 안내로 한 턴에 회복된다.
+# analysis 로 가면 5단 파이프라인(회복 불가·최고 비용)이 돌았다.
+# [#591] 그 비대칭 자체가 사라졌다 — analysis 도 이제 search 레인(조회 도구 +
+# get_latest_report)이라 두 레인의 비용이 같다. 재지정 로직은 그대로 둔다: 보고서를
+# 찾는 발화가 general 로 가도 같은 도구를 쥔 레인이 보고서 페이지 안내로 회복하고,
+# "불확실하면 general" 단일 원칙이 장애 폴백과 방향이 같기 때문이다. 다만
+# seller_route_confidence_min(0.6)은 재보정 후보다 — 잘못 가도 손해가 작아졌다.
 ROUTE_LOW_CONFIDENCE_REASON = "confidence 미달 — general 재지정(코드 지정)"
 
 
@@ -691,8 +697,9 @@ class PipelineResult:
     """분석 파이프라인 최종 산출 — SSE 계층·save_history(4단계)가 소비한다.
 
     kind: report(정상 보고서) / clarification(되묻기 — 파이프라인 미실행) /
-    apology(전 워커 실패 사과) / refused(도메인 밖 거절) /
-    period_confirmation(기간 해석 확인 대기 — 파이프라인 미실행, #345).
+    apology(전 워커 실패 사과) / refused(도메인 밖 거절).
+    [#584] period_confirmation 은 게이트 ①.7 과 함께 폐기됐다 — 코드가 값을 보충한
+    기간은 확인을 받지 않고 실행 후 고지한다(DESIGN-SELLER-PERIOD §7).
     text 는 모든 경우에 사용자에게 보낼 최종 문안이다.
 
     findings·period·chart_requested 는 `report` SSE 이벤트(이슈 #296, api-spec §3.2
@@ -700,13 +707,9 @@ class PipelineResult:
     (None·False)이다. compose_response 가 텍스트로 눌러 펴며 버리던 구조를 와이어에
     그대로 실어 보내기 위한 확장이라, 신규 필드는 전부 default 있는 keyword 로만
     추가한다(frozen dataclass — 기존 생성부·픽스처의 positional 호환 유지).
-
-    [#345] resolved 는 kind=="period_confirmation" 일 때만 채워진다 — 호출부(SSE 계층)가
-    확인 대기에 저장했다가 승인 시 planner 없이 재개하는 그 계획이다(DESIGN §6).
-    와이어에는 나가지 않는다(내부 계약).
     """
 
-    kind: Literal["report", "clarification", "apology", "refused", "period_confirmation"]
+    kind: Literal["report", "clarification", "apology", "refused"]
     text: str
     verified: VerifiedReport | None = None
     recommendations: RecommendationSet | None = None
@@ -714,7 +717,6 @@ class PipelineResult:
     findings: list[AnalysisFinding] | None = None
     period: tuple[date, date] | None = None
     chart_requested: bool = False
-    resolved: ResolvedPlan | None = None
     # [#504] chart_unavailable: 차트를 못 만든 사유(부분 성공 시 charts 와 공존) /
     # chart_period: 차트 전용 기간(별도 지정 시에만 — SSE 가 period 와 다를 때만 실음) /
     # chart_only: 차트만 턴(제목 "판매 분석 그래프", 보고서·추천 없음).
@@ -732,7 +734,7 @@ async def run_analysis_pipeline(
     recent_turns: Sequence[seller_thread.Turn] = (),
     screen: ScreenContext | None = None,
 ) -> PipelineResult:
-    """분석 레인 전체: planner → resolve → (확인?) → 팬아웃 → 검증 루프 → recommend → compose.
+    """분석 레인 전체: planner → resolve → 팬아웃 → 검증 루프 → recommend → compose.
 
     되묻기(계획 불성립·해석 불가 기간)와 전 워커 실패 사과는 예외가 아니라
     PipelineResult 로 반환한다 — 호출부(SSE)는 kind 와 무관하게 text 를 token 으로
@@ -740,11 +742,9 @@ async def run_analysis_pipeline(
     1차 보고서 작성 실패(Q2 — 내보낼 보고서가 없음). 호출부는 둘 다 사과/error
     경로로 처리해야 한다.
 
-    [#345] 코드가 값을 보충한 기간 해석("이번 달"·"최근 3개월")은 팬아웃 전에
-    kind="period_confirmation" 으로 되돌린다 — 호출부가 ResolvedPlan 을 확인 대기에
-    저장했다가 승인 시 `run_resolved_pipeline` 로 재개한다. planner 이후 구간을 그
-    함수로 **분리**했기 때문에 승인 경로의 planner 재호출 0회가 조건문이 아니라
-    호출 그래프로 보장된다(DESIGN-SELLER-PERIOD §6).
+    [#584] 코드가 값을 보충한 기간 해석("이번 달"·"최근 3개월")도 확인 없이 그대로
+    실행한다 — 구 게이트 ①.7 이 여기서 팬아웃을 막아 확인을 받았으나 철거됐다.
+    대신 `run_resolved_pipeline` 이 응답 첫 줄에 해석을 고지한다(§7).
 
     scope 가드(3-6): 구조화 출력 레인은 end 점프 미들웨어를 쓸 수 없어(계약 파손)
     **파이프라인 입구에서 check_scope 코드 검사**로 차단한다 — LLM 호출 0회 거절.
@@ -804,16 +804,19 @@ async def run_analysis_pipeline(
     except ValueError as exc:
         return PipelineResult(kind="clarification", text=str(exc))
 
-    # [#345] 코드가 값을 보충한 해석은 실행 전에 확인받는다 — 팬아웃(LLM·Spring 호출)
-    # 앞에 두어야 잘못 해석한 기간으로 비용을 쓰지 않는다.
-    if resolved.needs_confirmation:
-        return PipelineResult(
-            kind="period_confirmation",
-            text=period_confirmation_text(resolved),
-            resolved=resolved,
-        )
-
     return await run_resolved_pipeline(question, resolved, context, emit=emit)
+
+
+def _with_period_disclosure(text: str, resolved: ResolvedPlan) -> str:
+    """[#584] 코드가 값을 보충한 기간 해석을 응답 맨 앞에 고지한다.
+
+    general 레인이 쓰는 문구를 그대로 쓴다(period.disclosure_text) — 같은 기간 표현에
+    레인마다 다른 안내가 나가지 않게 하는 지점이다(§4.2 문구 소유권). 보충이 없었으면
+    (명시 범위·기존 어휘 5종) 아무것도 붙지 않는다.
+    """
+    if not resolved.period_supplemented:
+        return text
+    return f"{period_disclosure_text(resolved)}\n\n{text}"
 
 
 async def run_resolved_pipeline(
@@ -825,12 +828,13 @@ async def run_resolved_pipeline(
 ) -> PipelineResult:
     """계획 확정 이후 구간: 팬아웃 → 검증 루프 → recommend(±graph) → compose → 이력 저장.
 
-    [#345] 신규 질문(`run_analysis_pipeline`)과 기간 확인 승인 재개가 **같은 이 함수**를
-    부른다. 승인 경로에 planner 호출이 없다는 것이 조건문이 아니라 호출 그래프로
-    보장되는 지점이다(DESIGN-SELLER-PERIOD §6 — #269 완료 조건 "planner 재호출 0회").
+    [#584] 이 함수가 갈라진 원래 이유는 기간 확인 승인 재개의 "planner 재호출 0회"
+    (#269)였고 그 경로는 게이트 ①.7 과 함께 사라졌다. **그래도 합치지 않는다**(결정 109)
+    — 이미 확정된 계획을 실행만 한다는 이 함수의 성질을 상주(배치) 파이프라인이
+    그대로 쓴다. scope 가드·이력 주입·planner 가 여기 없는 것도 같은 이유다.
 
-    scope 가드·이력 주입·planner 는 여기 없다 — 전부 계획을 세우는 단계의 일이고,
-    승인 재개는 이미 확정된 계획을 실행만 한다.
+    반환 text 는 `period_supplemented` 일 때 기간 해석 고지가 앞에 붙는다(§7) —
+    코드가 값을 보충한 해석을 말없이 실행하지 않기 위한 자리다.
     """
     # [#504] chart_only 턴 — 워커 팬아웃·보고서·추천을 생략하고 차트만 조립한다.
     # 차트 데이터는 charts.py 가 Spring 을 직접 조회하므로 워커 finding 이 필요 없다.
@@ -846,7 +850,7 @@ async def run_resolved_pipeline(
             text = "요청하신 차트를 만들지 못했습니다."
         return PipelineResult(
             kind="report",
-            text=text,
+            text=_with_period_disclosure(text, resolved),
             charts=charts,
             period=(resolved.date_from, resolved.date_to),
             chart_requested=True,
@@ -895,14 +899,55 @@ async def run_resolved_pipeline(
     except Exception:
         logger.warning("분석 이력 저장 실패 — 응답은 계속", exc_info=True)
 
+    # [이슈 #590] Store 저장(위)과 별개로 analysis_store(DB, 이슈 #585)에도 같은 결과를
+    # 남긴다 — history.apply_recommendation("N번 적용해줘")이 이 테이블을 읽는다(§6.3).
+    # 실패는 응답을 죽이지 않는다(위 save_history 와 동일한 degrade 원칙 — 저장은 부가
+    # 데이터, 판매자에게 보여줄 답은 이미 만들어졌다).
+    try:
+        report_id = uuid4()
+        report_record = ReportRecord(
+            id=report_id,
+            brand_id=context.brand_id,
+            trigger_type="manual",  # 채팅 온디맨드 — 배치(scheduled_daily)는 후속 이슈
+            period_from=resolved.date_from,
+            period_to=resolved.date_to,
+            title=f"{resolved.date_from.isoformat()}~{resolved.date_to.isoformat()} 분석 보고서",
+            summary=verified.report[:300],
+            report_md=verified.report,
+            verified=verified.passed,
+            score_total=verified.last_score.total if verified.last_score else None,
+            attempts=verified.attempts,
+        )
+        recommendation_records = [
+            RecommendationRecord(
+                id=uuid4(),
+                report_id=report_id,
+                brand_id=context.brand_id,
+                rank=i + 1,
+                action_type=rec.action_type,
+                product_ids=[rec.product_id],
+                title=rec.title,
+                rationale=rec.rationale,
+                expected_effect=rec.expected_effect,
+                changes=[change.model_dump() for change in rec.changes],
+            )
+            for i, rec in enumerate(recommendations.recommendations)
+        ]
+        await analysis_store.save_report(report_record, recommendation_records)
+    except Exception:
+        logger.warning("분석 저장 계층(analysis_store) 기록 실패 — 응답은 계속", exc_info=True)
+
     return PipelineResult(
         kind="report",
-        text=compose_response(
-            verified.report,
-            recommendations,
-            charts,
-            chart_requested=resolved.wants_chart,
-            chart_unavailable=chart_unavailable,
+        text=_with_period_disclosure(
+            compose_response(
+                verified.report,
+                recommendations,
+                charts,
+                chart_requested=resolved.wants_chart,
+                chart_unavailable=chart_unavailable,
+            ),
+            resolved,
         ),
         verified=verified,
         recommendations=recommendations,

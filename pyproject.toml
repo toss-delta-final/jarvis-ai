@@ -54,8 +54,9 @@ markers = [
     "smoke: 실제 외부 API(Google 임베딩 등) 호출 — 기본 실행에서 제외, 명시적 실행시만 동작",
     "integration: 실 인프라(pg-catalog 등) 필요 — 기본 실행에서 제외",
     "eval: 결정론적 오프라인 골든셋 평가 — 기본 PR pytest에서도 실행",
+    "slow: 무거운 전체 스윕(예: combo_matrix 전체 관측) — 기본 실행에서 제외, nightly/수동 워크플로우에서만 실행",
 ]
-addopts = "-m 'not smoke and not integration'"
+addopts = "-m 'not smoke and not integration and not slow'"
 
 [tool.ruff]
 target-version = "py312"

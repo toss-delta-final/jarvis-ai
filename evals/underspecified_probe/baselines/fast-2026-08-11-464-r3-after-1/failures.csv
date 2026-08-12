@@ -1,0 +1,7 @@
+cellId,attempt,errorType,message
+under-cbs-0003,8,LLMError,Request timed out.
+under-mg-0001,1,LLMError,"Error code: 429 - {'error': {'message': 'Rate limit reached for gpt-5-nano in organization org-*** on tokens per min (TPM): Limit 200000, Used 196666, Requested 4113. Please try again in 233ms. Visit "
+under-mg-0002,6,LLMError,decompose 필터/케이스/장바구니 파싱 실패
+under-wa-0003,7,LLMError,"Error code: 429 - {'error': {'message': 'Rate limit reached for gpt-5-nano in organization org-*** on tokens per min (TPM): Limit 200000, Used 198434, Requested 4105. Please try again in 761ms. Visit "
+under-wa-0004,5,LLMError,"Error code: 429 - {'error': {'message': 'Rate limit reached for gpt-5-nano in organization org-*** on tokens per min (TPM): Limit 200000, Used 195946, Requested 4102. Please try again in 14ms. Visit h"
+under-wa-0004,6,LLMError,"Error code: 429 - {'error': {'message': 'Rate limit reached for gpt-5-nano in organization org-*** on tokens per min (TPM): Limit 200000, Used 198184, Requested 4102. Please try again in 685ms. Visit "

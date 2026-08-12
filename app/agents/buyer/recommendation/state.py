@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 from weakref import WeakValueDictionary
 
 from langgraph.store.base import BaseStore
@@ -22,6 +22,9 @@ from app.core.pg_resilience import mutation_lock, run_with_query_timeout
 from app.core.text import _strip_unsafe
 from app.schemas.chat import ConditionChip
 from app.schemas.spring import ProductSearchFilters
+
+if TYPE_CHECKING:
+    from app.agents.buyer.recommendation.rerank_grounding import GroundingDecision
 
 _NAMESPACE_ROOT = "buyer_revert_v2"
 _CATEGORIES_KEY = "categories"
@@ -150,6 +153,8 @@ class RouteDecision:
     # [#443] 사전 기반 보강이 빈 모델 legs를 실제로 채웠는가. 모델이 원래 낸 leg와 구분해
     # 측정 산출물에서 condition_only 주입 0건 하드 불변식을 재집계한다.
     category_leg_injected: bool = False
+    # 모델이 낸 축인지 후처리가 지운 축인지를 산출물에서 가르기 위한 진단 필드.
+    attr_conditions_suppressed_axes: list[str] = field(default_factory=list)
     # 매핑 후 (canonical, query) leg 리스트(그래프가 채움; 신호 없거나 실패 시 빈 리스트 → 무필터,
     # #22) — fan-out 검색 leg 단위(§6).
     # query 는 그 카테고리 전용 검색 키워드. 대표 카테고리 = category_legs[0][0](칩·멀티턴 승계).
@@ -180,6 +185,7 @@ class RerankResult:
 
     ranked: list[tuple[int, str]] = field(default_factory=list)  # (productId, rationale)
     overall_comment: str = ""
+    grounding_decisions: list[GroundingDecision] = field(default_factory=list)
 
 
 def extract_json(text: str) -> dict:

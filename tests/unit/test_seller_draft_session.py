@@ -14,7 +14,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
-from app.agents.seller import draft_session, hitl
+from app.agents.seller import draft_lifecycle, draft_session, hitl
 from app.agents.seller.context import SellerContext
 from app.agents.seller.hitl import DraftRecord
 from app.agents.seller.schemas import DraftChange
@@ -104,6 +104,90 @@ def test_pending_namespace_is_seller_scoped() -> None:
         return await draft_session.load_pending(other, _THREAD)
 
     assert asyncio.run(run()) is None
+
+
+# ── [#622] load_pending_state — 3상태(none/found/unknown) ──────────────────────
+
+
+def test_load_pending_state_none_when_absent() -> None:
+    """대기 없음 — "none", pending 은 None."""
+    state, pending = asyncio.run(draft_session.load_pending_state(_CONTEXT, _THREAD))
+    assert (state, pending) == ("none", None)
+
+
+def test_load_pending_state_found_when_present() -> None:
+    """정상 대기 — "found", pending 채워짐."""
+
+    async def run():
+        await draft_session.save_pending(_CONTEXT, _THREAD, _pending())
+        return await draft_session.load_pending_state(_CONTEXT, _THREAD)
+
+    state, pending = asyncio.run(run())
+    assert state == "found"
+    assert pending is not None and pending.draft_id == "d-1"
+
+
+def test_load_pending_state_ttl_expiry_is_none_not_unknown() -> None:
+    """TTL 만료는 "조회 실패"가 아니라 진짜 "없음"이다 — 폐기까지 수행하고 "none"."""
+    old = datetime.now(UTC) - timedelta(minutes=11)
+
+    async def run():
+        await draft_session.save_pending(_CONTEXT, _THREAD, _pending(created_at=old))
+        state, pending = await draft_session.load_pending_state(_CONTEXT, _THREAD)
+        # 폐기까지 확인 — 재조회해도 여전히 없음.
+        state2, _ = await draft_session.load_pending_state(_CONTEXT, _THREAD)
+        return state, pending, state2
+
+    state, pending, state2 = asyncio.run(run())
+    assert (state, pending) == ("none", None)
+    assert state2 == "none"
+
+
+def test_load_pending_state_format_mismatch_is_none_and_discards() -> None:
+    """저장형이 손상됐으면(형식 불일치) "unknown"이 아니라 "none"으로 취급하고 폐기한다."""
+
+    async def run():
+        graph = await draft_session._get_graph()
+        await graph.aupdate_state(
+            draft_session._config(_CONTEXT, _THREAD),
+            {"pending": {"garbage": True}},  # draft_id 없음 — _load 가 KeyError
+            as_node=draft_session._RECORDER_NODE,
+        )
+        state, pending = await draft_session.load_pending_state(_CONTEXT, _THREAD)
+        state2, _ = await draft_session.load_pending_state(_CONTEXT, _THREAD)
+        return state, pending, state2
+
+    state, pending, state2 = asyncio.run(run())
+    assert (state, pending) == ("none", None)
+    assert state2 == "none"
+
+
+def test_load_pending_state_query_failure_is_unknown(monkeypatch) -> None:
+    """조회 자체가 실패(쿼리 타임아웃 등)하면 "unknown" — "none"과 구분되는 유일한 경로다.
+
+    draft_lifecycle.lookup_pending 이 이 상태만 보고 발급 경로를 차단한다(UNKNOWN_STATE_BLOCK_TEXT).
+    """
+
+    async def _boom():
+        raise RuntimeError("query timeout")
+
+    monkeypatch.setattr(draft_session, "_get_graph", _boom)
+
+    state, pending = asyncio.run(draft_session.load_pending_state(_CONTEXT, _THREAD))
+
+    assert state == "unknown"
+    assert pending is None
+
+
+def test_load_pending_wrapper_folds_unknown_into_none(monkeypatch) -> None:
+    """하위호환 wrapper(`load_pending`)는 "unknown"도 기존 계약대로 None 으로 뭉갠다."""
+
+    async def _boom():
+        raise RuntimeError("query timeout")
+
+    monkeypatch.setattr(draft_session, "_get_graph", _boom)
+
+    assert asyncio.run(draft_session.load_pending(_CONTEXT, _THREAD)) is None
 
 
 # ── 입구 ①.8 게이트 ─────────────────────────────────────────────────────────────
@@ -234,6 +318,67 @@ def test_gate_failure_falls_through_to_normal_flow(monkeypatch) -> None:
     events = _collect_seller(_request("경쟁사 매출 알려줘"))
     assert events[0]["data"]["lane"] == "refused"
     assert asyncio.run(draft_session.load_pending(_CONTEXT, _THREAD)) is not None
+
+
+# ── [#622] pending_unknown 게이트 — draft *발급* 경로만 차단, 조회/대화는 그대로 ──
+
+
+def _force_lookup_unknown(monkeypatch) -> None:
+    """draft_lifecycle.lookup_pending 을 "unknown"으로 고정 — 조회 실패를 재현."""
+
+    async def _unknown(context, thread_id):
+        return draft_lifecycle.PendingLookup(state="unknown")
+
+    monkeypatch.setattr(seller_api.draft_lifecycle, "lookup_pending", _unknown)
+
+
+def test_unknown_pending_state_blocks_image_direct_entry(monkeypatch) -> None:
+    """[#622] 조회 실패 중 사진 첨부 턴(product 직행) — 새 draft 발급 대신 차단 안내."""
+    _force_lookup_unknown(monkeypatch)
+    request = SellerChatRequest(
+        session_id="s-1",
+        thread_id=_THREAD,
+        message="이 사진으로 등록해줘",
+        image_urls=["https://cdn.example.com/new.jpg"],
+    )
+
+    events = _collect_seller(request)
+
+    assert [e["type"] for e in events] == ["meta", "token", "done"]
+    assert events[0]["data"]["lane"] == "product"
+    assert events[1]["data"]["text"] == draft_lifecycle.UNKNOWN_STATE_BLOCK_TEXT
+    assert events[-1]["data"]["panel"] == "keep"
+
+
+def test_unknown_pending_state_blocks_apply_shortcut(monkeypatch) -> None:
+    """[#622] 조회 실패 중 "N번 적용해줘" — apply 도 새 draft 발급이므로 동일하게 차단."""
+    _force_lookup_unknown(monkeypatch)
+
+    events = _collect_seller(_request("2번 적용해줘"))
+
+    assert [e["type"] for e in events] == ["meta", "token", "done"]
+    assert events[0]["data"]["lane"] == "apply"
+    assert events[1]["data"]["text"] == draft_lifecycle.UNKNOWN_STATE_BLOCK_TEXT
+    assert events[-1]["data"]["panel"] == "keep"
+
+
+def test_unknown_pending_state_blocks_supervisor_routed_product(monkeypatch) -> None:
+    """[#622] ③ supervisor 가 product 로 라우팅한 경우에도 동일 가드가 적용된다."""
+    _force_lookup_unknown(monkeypatch)
+
+    async def _route_to_product(question, context, recent_turns=(), screen=None):
+        from app.agents.seller.schemas import RouteDecision
+
+        return RouteDecision(category="product", reason="stub", confidence=0.9)
+
+    monkeypatch.setattr(seller_api, "route_question", _route_to_product)
+
+    # [기존 회귀 테스트(test_seller_api.py)에서 실제로 product 로 라우팅됨이 확인된 발화.
+    events = _collect_seller(_request("감귤청 가격 12900원으로 바꿔줘"))
+
+    assert events[0]["data"]["lane"] == "product"
+    assert events[1]["data"]["text"] == draft_lifecycle.UNKNOWN_STATE_BLOCK_TEXT
+    assert events[-1]["data"]["panel"] == "keep"
 
 
 def test_confirm_executed_clears_pending(monkeypatch) -> None:
