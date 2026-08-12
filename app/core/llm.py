@@ -527,7 +527,10 @@ def get_llm() -> LLMClient | None:
         # 서로를 import 하면 순환이 생긴다(#438 D5). 키를 전혀 요구하지 않고 항상 돌려준다.
         from app.core.llm_scripted import LoadTestLLM
 
-        return LoadTestLLM()
+        return LoadTestLLM(
+            mode=settings.scripted_llm_mode,
+            delay_s=settings.scripted_llm_delay_s,
+        )
     try:
         fast = resolve_provider_model(settings, "fast")
         smart = resolve_provider_model(settings, "smart")

@@ -252,6 +252,7 @@ def test_buyer_endpoint_canaries_reach_production_seams_but_not_trace_payloads(
 ) -> None:
     from langsmith import Client
 
+    from app.agents.buyer.recommendation.rerank_grounding import NEUTRAL_RATIONALE
     from app.core.llm import LLMError
     from app.schemas.spring import SpringProduct
     from app.services import search_service
@@ -358,7 +359,9 @@ def test_buyer_endpoint_canaries_reach_production_seams_but_not_trace_payloads(
     assert response.status_code == exception_response.status_code == 200
     assert any(message in user for user in provider_inputs)
     assert tool_calls[0].keyword == PRIVACY_CANARIES["tool_argument"]
-    assert PRIVACY_CANARIES["nested_metadata"] in repr(pushes[0])
+    # The validated production arm must not forward an ungrounded model rationale.
+    assert PRIVACY_CANARIES["nested_metadata"] not in repr(pushes[0])
+    assert NEUTRAL_RATIONALE in repr(pushes[0])
     assert response.request.headers["X-Authorization-Canary"] == PRIVACY_CANARIES["authorization"]
     assert response.request.headers["X-Cookie-Canary"] == PRIVACY_CANARIES["cookie"]
     assert any(PRIVACY_CANARIES["provider_exception"] in user for user in provider_inputs)

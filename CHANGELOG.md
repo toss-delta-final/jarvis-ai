@@ -12,6 +12,24 @@
 ## [Unreleased]
 
 ### Added
+- **#638 구매자 adversarial 데이터셋에 rerank grounding A/B/C 평가 연결**을 추가했다.
+  `--arms all`로 현행·구조화 prompt-only·validator 표시 결과를 같은 case에서 기록하며, B와 C는
+  같은 구조화 LLM 응답을 공유해 validator 효과가 모델 표본 차이에 섞이지 않는다. 평가 runner의
+  arm 주입과 기본 `current`는 production arm 설정과 독립이다.
+- **buyer rerank grounding 수동 A/B/C 평가 도구**(`evals/rerank_grounding`)를 추가했다.
+  현행 자유문장, 구조화 prompt-only, 구조화+결정적 validator를 같은 hashed MFT/INV/DIR fixture에서
+  비교하고 raw response·분자/분모·hard gate·prompt/model/dataset hash·비용/지연을 보존한다.
+  사람 평가는 제외하며 production 승격 근거와 별도로 탐색적 결과를 보존한다.
+- **#641 — 실제 LLM 비용 없이 배포 EC2의 두 성능 경계를 분리 측정하는 scripted 부하 테스트
+  프로파일**을 추가했다. `SCRIPTED_LLM_MODE=instant`는 기존 결정론 응답을 지연 없이 돌려
+  FastAPI·DB·Spring의 처리량 상한을 재고, `delayed`는 요청별 `LoadTestLLM` 인스턴스에서
+  기본 5초의 비동기 대기를 한 번만 적용해 오래 열린 SSE 연결의 동시성·메모리·timeout을
+  측정한다. decompose·rerank 호출마다 지연이 중복되지 않으며, 기동 배너가 프로파일과 지연값을
+  명시한다. GitHub Actions 배포는 scripted 설정과 테스트용 rate-limit 변수를 EC2 env 파일로
+  전달하되 미등록/빈 값은 제거해 기존 코드 기본값을 보존하고, rate-limit은 양수만 허용한다.
+  scripted 중에는 I-17 카탈로그 enrichment 배치를 차단해 가짜 생성물의 실 DB 저장을 막는다.
+  구매자 추천 외 레인, 실제 provider
+  네트워크·429·토큰 편차와 k6 부하 발생기는 범위 밖이며 API/SSE 계약 변경은 없다.
 - **#637 — 구매자 추천 adversarial/behavioral 평가 데이터셋**을 추가했다. 실제
   `BuyerChatRequest`와 Spring I-1 `SpringProduct` wire schema를 사용하는 7개 failure mode별
   30 family(총 210 family, 450 minimal-mutation case)를 결정론적으로 생성한다. 숫자 oracle,
@@ -56,6 +74,13 @@
 - **#635 — 구 `GET /profile/me` HTTP 조회 표면을 제거했다.** 라우터·응답 스키마·OpenAPI·회귀 테스트와 공개 문서를 함께 정리했으며, 프로필 요약 reader는 추천 경로 내부 소비로 유지한다.
 
 ### Changed
+- **구매자 rerank 근거 표시 기본을 C(`validated`)로 승격했다.** PR #638의 450-case live A/B/C
+  결과에서 등록 detector 기준 unsupported reason은 A 10.87% → C 0%였고, A/B 추천 집합은
+  비교 가능한 447/447에서 보존됐으며 B/C 순위도 450/450 동일했다. 운영 동등 추정 비용은 A보다
+  14.05%, 평가 pipeline proxy 평균 지연은 11.23% 증가한다. Production graph만 Settings의
+  `rerank_grounding_arm=validated`를 명시해 C를 쓰고, `RERANK_GROUNDING_ARM=current`로 A에
+  즉시 롤백할 수 있다. 평가 CLI의 옵션 생략 기본은 비교 기준 A로 유지한다. 후보 ID·순위와
+  와이어 계약은 바꾸지 않고, invalid metadata는 reason만 중립 템플릿으로 강등한다.
 - **#581 — 취향 밴드(`priceBand`·`ratingBand`)에 한쪽 경계만 있는 표현을 담을 수 있게 하고,
   조회 응답의 라벨을 사람이 읽는 문장으로 바꿨다** (api-spec §3.8·§3.9.1, v0.33.0).
   종전 canonical 은 양쪽 경계를 강제해서 "5만원 이하"·"평점 4점 이상" 같은 취향을 담을
