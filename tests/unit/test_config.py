@@ -20,6 +20,11 @@ def test_embedding_provenance_defaults():
     assert s.embedding_normalized is True
 
 
+def test_observability_length_buckets_default():
+    settings = Settings(_env_file=None)
+    assert settings.observability_length_buckets == (50, 150, 400)
+
+
 def test_langsmith_config_defaults_are_safe():
     settings = Settings(_env_file=None)
 
