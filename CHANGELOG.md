@@ -12,6 +12,12 @@
 ## [Unreleased]
 
 ### Added
+- **#634 관측 집계 스크립트 비용 축에 min/max·role 분해 추가** — `_cost_stats()`가 최소/최대
+  비용을 반환하도록 확장하고, 비용 롤업에 `role`(seller/member/guest)·`model`(fan-in
+  귀속)·`length`(`messageLength` 고정 버킷) 축을 신설했다. Markdown 비용 표에 최소/최대(USD)
+  열을 추가하고 그룹 라벨을 latency 표와 동일한 `dimension:group` 규약으로 통일했으며, CSV
+  metric에도 min/max를 포함했다. 버킷 경계는 `app/core/config.py`의 신규 튜너블
+  `observability_length_buckets`로 주입한다(실측 분포 전 추정치). 계약(api-spec) 무영향.
 - **#638 구매자 adversarial 데이터셋에 rerank grounding A/B/C 평가 연결**을 추가했다.
   `--arms all`로 현행·구조화 prompt-only·validator 표시 결과를 같은 case에서 기록하며, B와 C는
   같은 구조화 LLM 응답을 공유해 validator 효과가 모델 표본 차이에 섞이지 않는다. 평가 runner의
