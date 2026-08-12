@@ -191,7 +191,7 @@
   저장소 전체 `--all-files`는 이 브랜치 밖의 기존 포맷 드리프트 65개를 변경하므로 기준점 대비
   변경 파일 검사로 범위를 고정한다.
 
-- [ ] **Step 5: 커밋과 푸시**
+- [x] **Step 5: 커밋과 푸시**
 
   각 커밋은 한글 Conventional Commit 제목과 Lore trailer를 사용하고 `Refs #653` 또는 마지막
   `Closes #653`를 포함한다. hook을 우회하지 않고 `git push -u origin NyongCho/feat-653-buyer-chat-memory`를 실행한다.
