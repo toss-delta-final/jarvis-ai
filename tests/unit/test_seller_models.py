@@ -48,6 +48,7 @@ def test_role_tier_matches_provider_neutral_spec() -> None:
     # resident_report/resident_recommend 는 채팅 레인 report/recommend 와 무접촉으로
     # 분리한 역할이고, interpret 은 워커 4종 공통 zero-tool interpret 스텝이다. 무인
     # 실행이라 품질 저하를 사람이 즉시 교정할 기회가 없어 강등하지 않는다.
+    # [#600] chart_interpret — 차트 레인 해석 스텝도 동일 정책(품질 우선, 강등 없음).
     assert ROLE_TIER == {
         "supervisor": "smart",
         "planner": "smart",
@@ -66,6 +67,7 @@ def test_role_tier_matches_provider_neutral_spec() -> None:
         "resident_report": "smart",
         "resident_recommend": "smart",
         "interpret": "smart",
+        "chart_interpret": "smart",
     }
 
 

@@ -35,6 +35,11 @@ if TYPE_CHECKING:
     # annotations` 라 타입 힌트는 런타임에 평가되지 않는다 — 정적 분석용으로만 필요하다.
     from app.agents.seller.sop.context import ActionCandidate
 
+    # [#600] 이 모듈은 순수 계약이라 charts.py 를 런타임에 import 하지 않는다
+    # (compose_response 의 chart_unavailable 과 같은 원칙 — 구조적 타이핑). ChartFacts
+    # 는 타입 힌트로만 쓰인다.
+    from app.agents.seller.charts import ChartFacts
+
 
 # 차트 요청 키워드 검사 (이슈 #242 — LLM wants_chart 판정을 코드 키워드 검사로 보강).
 # 문장 전체 매칭이 아니라 **존재 검사**다("N번 적용해줘"류 _APPLY_RE 와 다른 철학) —
@@ -137,7 +142,8 @@ def resolve_plan(
     if not plan.analyses and not chart_only:
         # [#504] chart_only 턴은 워커를 쓰지 않으므로 analyses 가 비어도 계획이 성립한다.
         raise ValueError(
-            "어떤 분석을 원하시는지 파악하지 못했습니다. 조금 더 구체적으로 알려주세요."
+            "어떤 분석을 원하시는지 아직 파악하지 못했어요. 예를 들어 '이번 달 매출 "
+            "이상 있었어?'처럼 조금 더 구체적으로 말씀해 주시면 바로 분석해 드릴게요."
         )
     resolution = seller_period.resolve_period(
         plan.period_expr,
@@ -426,6 +432,151 @@ def format_graph_input(findings: list[AnalysisFinding], report: str, question: s
     )
 
 
+# ── chart 해석 입력 포맷 (이슈 #600, 09-CHART.md §2.2·§2.3·§3.1·§3.2) ─────────────
+#
+# **표기 규약(결정 88)** — 여기(LLM 입력)와 chart_verify.py(D2 허용 집합)는 반드시
+# 같은 표시 형태를 써야 한다. `ChartPoint.y`가 float 라 정규화 안 된 값(`1240000.0`)을
+# 그대로 넣으면 해석문의 "1,240,000"과 토큰이 달라져 정상 해석문이 D2에서 전건
+# 실패한다 — 그래서 `_display_number` 하나를 두 쪽 다 통해서만 쓴다.
+
+
+def _display_number(value: float) -> str:
+    """표시 형태 — 정수값이면 정수, 아니면 소수 1자리(09-CHART.md §2.3/§3.2 결정 88)."""
+    rounded = round(value, 1)
+    if rounded == int(rounded):
+        return f"{int(rounded):,}"
+    return f"{rounded:,.1f}"
+
+
+def format_chart_points(charts: ChartSet) -> list[str]:
+    """차트별 좌표 전량을 '라벨=표시값' 문자열로 직렬화한다.
+
+    요약하지 않고 전량 싣는다(상한 3차트×60점=180점, 결정 83) — 요약하면 LLM 이 빠진
+    구간을 상상한다. LLM 입력(format_chart_input)과 D2 허용 집합(format_chart_evidence)
+    양쪽에서 같은 함수를 쓴다.
+    """
+    lines: list[str] = []
+    for spec in charts.charts:
+        points = spec.series[0].points if spec.series else []
+        coords = " / ".join(f"{p.x}={_display_number(p.y)}" for p in points)
+        lines.append(f"[{spec.title}] {coords}")
+    return lines
+
+
+def format_chart_facts(charts: ChartSet, facts: Sequence[ChartFacts]) -> list[str]:
+    """`chart_facts` 산출을 표시 형태 문자열로 직렬화 — [코드 계산] 블록·D2 근거 공용.
+
+    `charts.charts` 와 `facts` 는 같은 순서·같은 길이여야 한다(호출부 책임 —
+    `run_chart_interpret` 이 `[chart_facts(spec) for spec in charts.charts]` 로 만든다).
+    """
+    lines: list[str] = []
+    for spec, fact in zip(charts.charts, facts, strict=True):
+        if fact.total is not None:
+            lines.append(f"[{spec.title}] 합계 {_display_number(fact.total)}")
+        lines.append(f"[{spec.title}] 평균 {_display_number(fact.mean)}")
+        lines.append(f"[{spec.title}] 최고 {fact.peak[0]}={_display_number(fact.peak[1])}")
+        lines.append(f"[{spec.title}] 최저 {fact.trough[0]}={_display_number(fact.trough[1])}")
+        if fact.first is not None and fact.last is not None and fact.delta is not None:
+            pct = f" · {_display_number(fact.delta_pct)}%" if fact.delta_pct is not None else ""
+            sign = "+" if fact.delta >= 0 else ""
+            lines.append(
+                f"[{spec.title}] 처음→끝 {_display_number(fact.first)} → "
+                f"{_display_number(fact.last)} ({sign}{_display_number(fact.delta)}{pct})"
+            )
+        if fact.top3:
+            top3_str = " / ".join(f"{x}={_display_number(y)}" for x, y in fact.top3)
+            lines.append(f"[{spec.title}] 상위3 {top3_str}")
+        if fact.top1_share is not None:
+            lines.append(f"[{spec.title}] 상위1 비중 {_display_number(fact.top1_share)}%")
+        lines.append(f"[{spec.title}] y=0인 점 {fact.zero_points}개")
+    return lines
+
+
+def format_chart_evidence(charts: ChartSet, facts: Sequence[ChartFacts]) -> list[str]:
+    """chart_verify 합성 finding 의 evidence 재료 — D2 허용 집합(결정 87·88).
+
+    좌표(format_chart_points) + chart_facts(format_chart_facts) + 각 차트 summary(이미
+    완성 문장) 를 합친다 — format_chart_input 이 LLM 에게 넘긴 것과 정확히 같은 재료다.
+    """
+    return [
+        *format_chart_points(charts),
+        *format_chart_facts(charts, facts),
+        *(spec.summary for spec in charts.charts if spec.summary),
+    ]
+
+
+def format_chart_input(
+    charts: ChartSet,
+    facts: Sequence[ChartFacts],
+    chart_from: date,
+    chart_to: date,
+    question: str,
+) -> str:
+    """CHART_INTERPRET_PROMPT 1차 입력 — 차트별 (좌표 전량 + chart_facts) + 판매자 질문.
+
+    "[코드 계산] 블록 밖의 수치를 인용하면 chart_verify(D2)에서 걸린다"는 문장을
+    실제로 성립시키려면 이 함수와 format_chart_evidence 가 같은 `_display_number` 를
+    통해서만 숫자를 문자열로 바꿔야 한다(결정 88 — 위 모듈 절 설명 참조).
+    """
+    total = len(charts.charts)
+    blocks: list[str] = []
+    for i, (spec, fact) in enumerate(zip(charts.charts, facts, strict=True), start=1):
+        points = spec.series[0].points if spec.series else []
+        coords = " / ".join(f"{p.x}={_display_number(p.y)}" for p in points)
+        lines = [
+            f"[차트 {i}/{total}] {spec.title} · {spec.chart_type} · {spec.unit} ·"
+            f" aggregate={spec.aggregate}",
+            f"  기간: {chart_from.isoformat()} ~ {chart_to.isoformat()}",
+            f"  좌표: {coords}",
+        ]
+        if spec.summary:
+            lines.append(f"  안내: {spec.summary}")
+        lines.append("")
+        lines.append("  [코드 계산 — 이 값만 인용한다]")
+        if fact.total is not None:
+            lines.append(f"    합계 {_display_number(fact.total)}")
+        lines.append(f"    평균 {_display_number(fact.mean)}")
+        lines.append(f"    최고 {fact.peak[0]}={_display_number(fact.peak[1])}")
+        lines.append(f"    최저 {fact.trough[0]}={_display_number(fact.trough[1])}")
+        if fact.first is not None and fact.last is not None and fact.delta is not None:
+            pct = f" · {_display_number(fact.delta_pct)}%" if fact.delta_pct is not None else ""
+            sign = "+" if fact.delta >= 0 else ""
+            lines.append(
+                f"    처음→끝 {_display_number(fact.first)} → {_display_number(fact.last)}"
+                f" ({sign}{_display_number(fact.delta)}{pct})"
+            )
+        if fact.top3:
+            top3_str = " / ".join(f"{x}={_display_number(y)}" for x, y in fact.top3)
+            lines.append(f"    상위3 {top3_str}")
+        if fact.top1_share is not None:
+            lines.append(f"    상위1 비중 {_display_number(fact.top1_share)}%")
+        lines.append(f"    y=0인 점 {fact.zero_points}개")
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks) + f"\n\n[판매자 질문]\n{question}"
+
+
+def format_chart_rewrite_input(
+    charts: ChartSet,
+    facts: Sequence[ChartFacts],
+    chart_from: date,
+    chart_to: date,
+    question: str,
+    prev_text: str,
+    feedback: str,
+) -> str:
+    """차트 해석 재작성 입력 — 결정론 실패 사유를 합산 주입한다(결정 91, 재작성 1회뿐).
+
+    report 재작성(format_rewrite_input)과 같은 철학이나 judge feedback 이 없다 —
+    이 레인엔 judge 가 없다(§3.6). feedback 은 chart_verify 실패 사유 목록뿐이다.
+    """
+    return (
+        f"{format_chart_input(charts, facts, chart_from, chart_to, question)}\n\n"
+        f"[이전 해석문]\n{prev_text}\n\n"
+        f"[개선 지시]\n{feedback}\n\n"
+        "위 개선 지시를 반영해 해석문을 처음부터 다시 작성하라."
+    )
+
+
 # ── compose_response (3-5) — 최종 응답 조립 (순수 함수, SPEC §2 COMP) ──────────
 
 # "N번 적용해줘" 안내 — §6.3 조회 계약(목록 순서=N번)의 사용자측 표면.
@@ -481,7 +632,7 @@ def compose_response(
     if notes:
         text = f"{text}\n\n[차트 안내]\n" + "\n".join(notes)
     elif chart_requested and (charts is None or not charts.charts):
-        text = f"{text}\n\n[차트 안내]\n요청하신 차트를 만들지 못했습니다."
+        text = f"{text}\n\n[차트 안내]\n요청하신 차트는 이번엔 만들어 드리지 못했어요. 죄송해요 — 잠시 후 다시 요청해 주시겠어요?"
     return text
 
 
@@ -556,8 +707,8 @@ WORKER_PROGRESS_TOKENS: dict[AnalysisType, str] = {
 
 # 전 워커 실패(집계 전부 실패) 시 사과 후 done 종료(SPEC §4·§7 degrade).
 ALL_WORKERS_FAILED_TOKEN = (
-    "죄송합니다. 지금 데이터 조회가 원활하지 않아 분석을 완료하지 못했습니다. "
-    "잠시 후 다시 시도해 주세요."
+    "지금 데이터를 불러오는 중에 문제가 있어서 분석을 마무리하지 못했어요. "
+    "번거로우시겠지만 잠시 후 다시 한 번 요청해 주시겠어요?"
 )
 
 

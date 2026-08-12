@@ -12,6 +12,24 @@
 ## [Unreleased]
 
 ### Added
+- **#645 buyer `overallComment` 최종-view grounding**을 추가했다. B/C rerank 출력은 목록 전체
+  `overallClaims`를 구조화해 보존하고, production C는 repurchase pinning·노출 보충/절단·니즈
+  분할·BUY_ALL budget-set 계산 뒤의 실제 I-21 product groups에 대해 claim을 검증한 후 고정
+  template만 노출한다. 지원 범위는 raw `reviewCount` 최댓값, 전 상품 high rating, 각 BUY_ALL
+  조합의 총예산 충족이며, 정본 metric이 없는 popularity/value-for-money 최상급은 중립 문구로
+  강등한다. fixture v2는 기존 10 case와 overall 전용 12 case의 allowed/forbidden oracle을 raw
+  데이터로 재검산하고, A bounded detector·B/C 구조화 정확도·coverage·downgrade·지연·token·비용
+  artifact를 기록한다. 기존 #632 A 표본 재채점은 등록 표현 11건 중 위반 1건(9.09%)이었다.
+  현재 worktree에는 live provider credential이 없어 새 N=3 및 N=8×2는 `not tested`로 남았으며,
+  deterministic smoke만으로 병합 품질을 주장하지 않는다. `RERANK_GROUNDING_ARM=current`는 상품별
+  근거와 전체 코멘트를 함께 기존 A로 되돌리고 Spring/CH-5/SSE wire 계약은 바뀌지 않는다.
+- **#653 — 구매자 채팅에 같은 방 전용 계층형 메모리와 캐시 인지 비용 계측을 추가했다.**
+  최근 대화는 최대 3쌍·1,000 추정 토큰, 상황 요약은 400 추정 토큰으로 제한하고, 밀려난
+  고가치 대화가 1,200 추정 토큰 이상일 때만 다음 턴용 요약을 비동기로 갱신한다. 새 방에는
+  기존 취향 프로필만 전달하며 자유대화 상황은 전달하지 않고, 옵션 답변·action-only 턴과
+  메모리 저장 장애는 기존 응답 경로를 그대로 유지한다. 요청 로그는 공급자 actual usage의
+  캐시 읽기·쓰기 토큰과 메모리 압축 비용을 원문 없이 분리 기록한다. API·SSE·DB 스키마와
+  LangGraph 그래프 구조는 변경하지 않았다.
 - **#638 구매자 adversarial 데이터셋에 rerank grounding A/B/C 평가 연결**을 추가했다.
   `--arms all`로 현행·구조화 prompt-only·validator 표시 결과를 같은 case에서 기록하며, B와 C는
   같은 구조화 LLM 응답을 공유해 validator 효과가 모델 표본 차이에 섞이지 않는다. 평가 runner의
@@ -63,6 +81,9 @@
   포함한다. 실제 human response는 포함하지 않으며 결과는 exploratory로만 해석한다.
 
 ### Fixed
+- **판매자 분석 대상 자동 등록이 pool 초기화 도중 취소될 때 pytest와 이벤트 루프 종료가
+  무기한 대기하던 결함을 고쳤다.** 부분 생성된 psycopg pool을 취소 경계에서 즉시 닫고,
+  공통 테스트 pool 정리 목록에도 분석 저장소를 포함했다.
 - **#639 — 추천 카드에서 사용자가 상품명의 유일 토큰을 지목했는데 LLM이 같은 허용 목록 안의
   다른 상품을 골라 오담기하던 결함을 고쳤다.** 추천 카드 표면에 한해 상품명과 발화를 NFKC +
   casefold 기반 정확 토큰으로 비교하고, 숫자 전용·1글자·담기 명령·장바구니 문맥 토큰을 제외한
@@ -74,6 +95,20 @@
 - **#635 — 구 `GET /profile/me` HTTP 조회 표면을 제거했다.** 라우터·응답 스키마·OpenAPI·회귀 테스트와 공개 문서를 함께 정리했으며, 프로필 요약 reader는 추천 경로 내부 소비로 유지한다.
 
 ### Changed
+- **판매자 챗봇 응답 전반의 말투를 "친절한 비서" 톤으로 개선했다.** `GENERAL_PROMPT_TEMPLATE`·
+  `REPORT_PROMPT`·`RESIDENT_REPORT_PROMPT`·`PRODUCT_PROMPT`·`RECOMMEND_PROMPT`·
+  `RESIDENT_RECOMMEND_PROMPT`(`prompts.py`)에 문체 규칙을 추가·보강하고, `vision.py`의 이미지
+  분석 결과(상품명·요약·설명) 품질 기준을 구체화했다. 채팅 화면이 실제 렌더링하는 서식(줄바꿈·
+  목록·**굵게** 3종, 표·헤딩 미지원)을 프롬프트에 명시해 지원하지 않는 마크다운 기호가 그대로
+  노출되는 걸 막았다. 아울러 `hitl.py`·`history.py`·`middleware.py`·`pipeline.py`·
+  `draft_lifecycle.py`의 하드코딩된 완료·오류 메시지 40여 곳을 "~습니다" 단정형에서
+  "~해요/~드릴게요" 구어체로 바꾸고, 내부 productId·orderItemId·enum 값 노출을 줄이고 실패
+  시 다음 행동 안내를 추가했다. 계약(api-spec) 변경 없음 — 순수 텍스트 수정이다.
+- **#650 — 판매자 general 레인에 경량 해석 허용 범위를 추가했다.** 단일 지표 증감·순위·
+  임계값 비교(예: "지난주보다 늘었다", "가장 많이 이탈한 단계")까지는 general 이 직접
+  답한다 — 원인 가설·복수 지표 교차·행동 추천은 여전히 금지이며, 필요하면 기존과 동일하게
+  "보고서 페이지에서 확인" 안내로 돌린다. `GENERAL_PROMPT_TEMPLATE`(prompts.py)과
+  `build_general_agent` 독스트링(workers.py)만 바꿨다 — 도구·스키마·SSE·API 계약 변경 없음.
 - **구매자 rerank 근거 표시 기본을 C(`validated`)로 승격했다.** PR #638의 450-case live A/B/C
   결과에서 등록 detector 기준 unsupported reason은 A 10.87% → C 0%였고, A/B 추천 집합은
   비교 가능한 447/447에서 보존됐으며 B/C 순위도 450/450 동일했다. 운영 동등 추정 비용은 A보다

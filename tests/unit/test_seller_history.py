@@ -357,7 +357,7 @@ def test_apply_converts_recommendation_to_draft_with_current_before() -> None:
 
 def test_apply_without_history_asks_for_analysis() -> None:
     record, problem = asyncio.run(history.apply_recommendation(1, _CTX))
-    assert record is None and "이력이 없습니다" in problem
+    assert record is None and "적용할 만한 분석 추천이 없어요" in problem
 
 
 def test_apply_out_of_range_reports_valid_range() -> None:
@@ -368,7 +368,7 @@ def test_apply_out_of_range_reports_valid_range() -> None:
         return await history.apply_recommendation(5, _CTX)
 
     record, problem = asyncio.run(run())
-    assert record is None and "1번~2번" in problem
+    assert record is None and "1번부터 2번까지" in problem
 
 
 def test_apply_changeless_recommendation_is_refused() -> None:
@@ -379,11 +379,11 @@ def test_apply_changeless_recommendation_is_refused() -> None:
         return await history.apply_recommendation(1, _CTX)
 
     record, problem = asyncio.run(run())
-    assert record is None and "자동 적용" in problem
+    assert record is None and "자동으로 반영할 항목이" in problem
 
 
 def test_apply_missing_product_is_refused() -> None:
-    """짧은 페이지까지 다 돌았는데 없음(exhausted=False) — "찾을 수 없습니다" 문구."""
+    """짧은 페이지까지 다 돌았는데 없음(exhausted=False) — "찾지 못했어요" 문구."""
     set_spring_client(_StubSpring(rows=[]))
 
     async def run():
@@ -391,12 +391,12 @@ def test_apply_missing_product_is_refused() -> None:
         return await history.apply_recommendation(1, _CTX)
 
     record, problem = asyncio.run(run())
-    assert record is None and "찾을 수 없습니다" in problem
+    assert record is None and "찾지 못했어요" in problem
     assert hitl.PRODUCT_LOOKUP_EXHAUSTED_TEXT not in problem
 
 
 def test_apply_product_lookup_exhausted_uses_distinct_text(monkeypatch: pytest.MonkeyPatch) -> None:
-    """[#622] 조회 상한 소진(exhausted=True) — "찾을 수 없습니다" 대신 "확인 못 했다" 문구.
+    """[#622] 조회 상한 소진(exhausted=True) — "찾지 못했어요" 대신 "확인 못 했다" 문구.
 
     `hitl._find_product`가 페이지 상한을 소진하도록 page_size/max_pages 를 작게 줄여서
     재현한다(`test_seller_hitl.py::_lookup_page_size`와 같은 패턴).
@@ -526,7 +526,7 @@ def test_apply_blocks_stock_recommendation_on_optioned_product(
 
     record, problem = asyncio.run(run())
     assert record is None
-    assert "옵션별로 재고가 관리됩니다" in problem
+    assert "옵션별로 재고가 따로 관리되고" in problem
     assert "블랙/M" in problem and "블랙/L" in problem  # 고를 수 있게 나열한다
 
 

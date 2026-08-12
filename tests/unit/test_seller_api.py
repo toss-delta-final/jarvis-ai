@@ -183,7 +183,7 @@ def test_stream_masks_output_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
     events = _collect(_request("설정 알려줘"))
 
     assert "sk-abcdefghijklmnop1234" not in events[1]["data"]["text"]
-    assert "[민감 정보 차단]" in events[1]["data"]["text"]
+    assert "[민감한 정보라 가려드렸어요]" in events[1]["data"]["text"]
 
 
 def test_stream_masks_secret_obfuscated_with_unsafe_character(
@@ -197,7 +197,7 @@ def test_stream_masks_secret_obfuscated_with_unsafe_character(
 
     text = "".join(e["data"]["text"] for e in events if e["type"] == "token")
     assert "sk-abcdefghijklmnop1234" not in text
-    assert "[민감 정보 차단]" in text
+    assert "[민감한 정보라 가려드렸어요]" in text
 
 
 @pytest.mark.parametrize(
@@ -205,10 +205,10 @@ def test_stream_masks_secret_obfuscated_with_unsafe_character(
     [
         (
             ["키는 Bearer abcdefgh", "\ufe0fijklmnop", "1234 입니다"],
-            "키는 [민감 정보 차단] 입니다",
+            "키는 [민감한 정보라 가려드렸어요] 입니다",
         ),
-        (["값은 sk-abcdef", "ghijklmnop1234 끝"], "값은 [민감 정보 차단] 끝"),
-        (["번호는 990101-", "1234567 입니다"], "번호는 [민감 정보 차단] 입니다"),
+        (["값은 sk-abcdef", "ghijklmnop1234 끝"], "값은 [민감한 정보라 가려드렸어요] 끝"),
+        (["번호는 990101-", "1234567 입니다"], "번호는 [민감한 정보라 가려드렸어요] 입니다"),
     ],
 )
 def test_stream_masks_secrets_split_across_chunks(
@@ -263,7 +263,7 @@ def test_stream_scope_refusal_without_llm(monkeypatch: pytest.MonkeyPatch) -> No
     events = _collect(_request("경쟁사 매출 알려줘"))
 
     assert [e["type"] for e in events] == ["meta", "token", "done"]
-    assert "제공할 수 없습니다" in events[1]["data"]["text"]
+    assert "도와드리기 어려운 영역" in events[1]["data"]["text"]
 
 
 def test_stream_error_event_on_build_failure(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -538,7 +538,7 @@ def test_confirm_message_short_circuits_without_llm(monkeypatch: pytest.MonkeyPa
 
     assert [e["type"] for e in events] == ["meta", "token", "done"]
     assert events[0]["data"]["lane"] == "confirm"
-    assert "찾을 수 없습니다" in events[1]["data"]["text"]
+    assert "찾지 못했어요" in events[1]["data"]["text"]
     assert events[-1]["data"]["panel"] == "keep"  # 미존재 = 변경 없음
 
 
@@ -573,7 +573,7 @@ def test_confirm_output_is_masked(monkeypatch: pytest.MonkeyPatch) -> None:
     assert [e["type"] for e in events] == ["meta", "token", "done"]
     text = events[1]["data"]["text"]
     assert "sk-abcdefghijklmnop1234" not in text
-    assert "[민감 정보 차단]" in text
+    assert "[민감한 정보라 가려드렸어요]" in text
 
 
 def test_confirm_spring_down_maps_to_apology_and_error(
@@ -630,7 +630,7 @@ def test_scope_refusal_short_circuits_before_routing(monkeypatch: pytest.MonkeyP
 
     assert [e["type"] for e in events] == ["meta", "token", "done"]
     assert events[0]["data"]["lane"] == "refused"
-    assert "제공할 수 없습니다" in events[1]["data"]["text"]
+    assert "도와드리기 어려운 영역" in events[1]["data"]["text"]
     assert events[-1]["data"]["panel"] == "keep"
 
 
@@ -1192,14 +1192,14 @@ def test_analysis_report_event_masks_and_strips_unsafe_fields(
 
     data = next(e for e in events if e["type"] == "report")["data"]
     assert "Bearer abcdefghijklmnop1234" not in data["body"]
-    assert "[민감 정보 차단]" in data["body"]
+    assert "[민감한 정보라 가려드렸어요]" in data["body"]
     assert data["summary"] == data["body"]  # 짧은 본문 — 요약도 동일 정제를 거친 값
     assert "\x1b" not in data["findings"][0]["summary"]
     assert "\x1b" not in data["findings"][0]["evidence"][0]
     chart_data = data["charts"][0]
     assert "\x1b" not in chart_data["title"]
     assert "Bearer abcdefghijklmnop1234" not in chart_data["summary"]
-    assert "[민감 정보 차단]" in chart_data["summary"]
+    assert "[민감한 정보라 가려드렸어요]" in chart_data["summary"]
 
 
 def test_analysis_token_strips_unsafe_report_text(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1242,7 +1242,7 @@ def test_analysis_token_masks_secret_after_stripping_unsafe_text(
 
     text = "".join(e["data"]["text"] for e in events if e["type"] == "token")
     assert "Bearer abcdefghijklmnop1234" not in text
-    assert "[민감 정보 차단]" in text
+    assert "[민감한 정보라 가려드렸어요]" in text
 
 
 def test_analysis_route_clarification_is_token_done(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1329,6 +1329,85 @@ def test_product_route_emits_draft_event(monkeypatch: pytest.MonkeyPatch) -> Non
     assert draft["changes"] == [{"field": "price", "before": "15000", "after": "12900"}]
 
 
+# ── [상품명 인식 개선] product 레인 recent_turns 배선 ─────────────────────────
+
+
+def test_product_agent_input_includes_recent_turns_block() -> None:
+    """recent_turns 가 있으면 [최근 대화] 블록으로 [판매자 요청] 보다 앞서 주입된다."""
+    agent_input = seller_api._product_agent_input(
+        _request("이거 가격 3000원으로 바꿔줘"),
+        analysis=None,
+        candidates=[],
+        pending=None,
+        image_urls=[],
+        recent_turns=[
+            ("user", "감귤청 재고 좀 보여줘"),
+            ("assistant", "어느 상품을 말씀하시는 건가요? 후보가 여러 개입니다."),
+        ],
+    )
+
+    assert agent_input.startswith("[최근 대화]")
+    assert "감귤청 재고 좀 보여줘" in agent_input
+    assert "어느 상품을 말씀하시는 건가요?" in agent_input
+    assert agent_input.index("[최근 대화]") < agent_input.index("[판매자 요청]")
+
+
+def test_product_agent_input_omits_recent_turns_block_when_empty() -> None:
+    """recent_turns 미지정(기본값)이면 블록 자체가 없다 — 기존 입력 그대로 유지."""
+    agent_input = seller_api._product_agent_input(
+        _request("가격 3000원으로 바꿔줘"),
+        analysis=None,
+        candidates=[],
+        pending=None,
+        image_urls=[],
+    )
+
+    assert "[최근 대화]" not in agent_input
+
+
+def test_product_route_receives_recent_turns_from_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """supervisor 경유 product 진입(③)도 스레드 최근 턴을 받는다.
+
+    product 레인은 매 턴 새 agent.ainvoke() 호출이라(checkpointer 없음) 대상 상품이
+    불명확해 되물은 다음 턴이 이전 되물음을 기억하지 못하던 문제의 회귀 방지 —
+    이제 recent_turns 가 [최근 대화] 블록으로 agent 입력에 실제로 전달돼야 한다.
+    """
+    from app.agents.seller import thread as seller_thread
+    from app.agents.seller.context import SellerContext
+    from app.agents.seller.schemas import DraftChange, DraftProposal
+
+    ctx = SellerContext(seller_id=7, brand_id=3)
+    asyncio.run(
+        seller_thread.record_turn(
+            ctx, "t-1", "감귤청 가격 바꿔줘", "어느 상품을 말씀하시는 건가요?"
+        )
+    )
+    captured: dict[str, str] = {}
+
+    class _CapturingProductAgent:
+        async def ainvoke(self, input: dict, context: object = None) -> dict:
+            captured["content"] = input["messages"][0].content
+            return {
+                "structured_response": DraftProposal(
+                    op="update",
+                    product_id=101,
+                    changes=[DraftChange(field="price", before="15000", after="12900")],
+                    summary="가격 12,900원으로 인하",
+                )
+            }
+
+    monkeypatch.setattr(seller_api, "route_question", _route_stub("product"))
+    monkeypatch.setattr(seller_api, "build_product_agent", lambda: _CapturingProductAgent())
+
+    _collect_seller(_request("12900원으로 바꿔줘"))
+
+    assert "[최근 대화]" in captured["content"]
+    assert "감귤청 가격 바꿔줘" in captured["content"]
+    assert "어느 상품을 말씀하시는 건가요?" in captured["content"]
+
+
 def test_product_draft_strips_llm_and_seller_text(monkeypatch: pytest.MonkeyPatch) -> None:
     """draft 의 seller before·LLM after/summary 는 FE diff 카드 노출 직전에 정제된다."""
     from app.agents.seller.schemas import DraftChange, DraftProposal
@@ -1354,8 +1433,8 @@ def test_product_draft_strips_llm_and_seller_text(monkeypatch: pytest.MonkeyPatc
     assert draft["changes"] == [
         {
             "field": "description",
-            "before": "기존[31m 설명 [민감 정보 차단]",
-            "after": "새\n설명 [민감 정보 차단]",
+            "before": "기존[31m 설명 [민감한 정보라 가려드렸어요]",
+            "after": "새\n설명 [민감한 정보라 가려드렸어요]",
         }
     ]
     assert draft["summary"] == "설명 수정"
@@ -1411,10 +1490,101 @@ def test_product_draft_executes_the_sanitized_after_value(
         set_spring_client(None)
 
     assert [e["type"] for e in confirm_events] == ["meta", "token", "done"]
-    assert draft["changes"][0]["after"] == "새\n설명 ❤️ [민감 정보 차단] AB"
+    assert draft["changes"][0]["after"] == "새\n설명 ❤️ [민감한 정보라 가려드렸어요] AB"
     assert spring.patch.description == "새\n설명 ❤️ Bearer abcdefghijklmnop1234 AB"
-    assert "[민감 정보 차단]" not in spring.patch.description
+    assert "[민감한 정보라 가려드렸어요]" not in spring.patch.description
     assert all(char not in spring.patch.description for char in ("\ufe0fB", "\U000e0061"))
+
+
+def test_snapshot_before_fills_update_before_from_spring(monkeypatch: pytest.MonkeyPatch) -> None:
+    """[#623] update 초안의 before 는 LLM 산물이 아니라 코드가 조회한 실제값이다.
+
+    list_my_products 가 originalPrice·description·imageUrl 을 요약하지 않아 LLM 이
+    before 를 빈 문자열로 낼 수밖에 없던 필드들 — _snapshot_before 가 I-9 재조회로
+    실제값을 채워야 confirm 시점 find_stale_changes 가 영구 불일치로 오판하지 않는다
+    (#623 증상: "초안 작성 이후 상품 정보가 변경되어 반영을 중단했습니다"가 매번 뜸).
+    stock_quantity 는 예외로 LLM(list_my_products 조회) 값을 그대로 유지해야 한다 —
+    옵션별 재고는 행 전체 합계로 덮어쓰면 안 된다.
+    """
+    from app.agents.seller.schemas import DraftChange, DraftProposal
+    from app.schemas.spring import SellerProductList, SellerProductRow
+    from app.services.spring_client import set_spring_client
+
+    class _Spring:
+        async def list_products(self, brand_id, status=None, q=None, limit=None, offset=None):
+            row = SellerProductRow(
+                productId=101,
+                name="감귤청",
+                price=15000,
+                originalPrice=20000,
+                stockQuantity=100,
+                description="실제 저장된 설명",
+                imageUrl="https://cdn.example.com/real.jpg",
+            )
+            return SellerProductList(rows=[row])
+
+    set_spring_client(_Spring())
+    proposal = DraftProposal(
+        op="update",
+        product_id=101,
+        changes=[
+            # LLM 은 [#623] 이후 계약대로 "" 로 낸다 — list_my_products 가 요약하지
+            # 않는 필드라 정확한 값을 알 방법이 없다.
+            DraftChange(field="original_price", before="", after="18000"),
+            DraftChange(field="description", before="", after="새 설명"),
+            DraftChange(field="image_url", before="", after="https://cdn.example.com/new.jpg"),
+            # 재고는 프롬프트 계약대로 LLM 이 조회값을 그대로 낸다 — 코드가 덮어쓰지 않는다.
+            DraftChange(field="stock_quantity", before="100", after="80"),
+        ],
+        summary="정가·설명·이미지·재고 수정",
+    )
+    monkeypatch.setattr(seller_api, "route_question", _route_stub("product"))
+    monkeypatch.setattr(seller_api, "build_product_agent", lambda: _StubProductAgent(proposal))
+    try:
+        events = _collect_seller(_request("101번 상품 정가·설명·이미지·재고 수정"))
+    finally:
+        set_spring_client(None)
+
+    draft = next(e for e in events if e["type"] == "draft")["data"]
+    before_by_field = {c["field"]: c["before"] for c in draft["changes"]}
+    assert before_by_field["originalPrice"] == "20000"  # 코드가 채움(LLM "" 무시)
+    assert before_by_field["description"] == "실제 저장된 설명"
+    assert before_by_field["imageUrl"] == "https://cdn.example.com/real.jpg"
+    assert before_by_field["stockQuantity"] == "100"  # 재고는 LLM/조회값 그대로 유지
+
+
+def test_snapshot_before_soft_fails_when_spring_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """조회 실패(Spring 장애 등)는 이번 턴 초안 발급을 막지 않는다 — soft-fail(#623).
+
+    before 갱신에 실패해도 기존 changes 를 그대로 두고 draft 를 발급한다. 실제
+    불일치·미발견은 confirm 시점 find_stale_changes/_execute_draft 가 최종 방어한다.
+    """
+    from app.agents.seller.schemas import DraftChange, DraftProposal
+    from app.services.spring_client import SpringUnavailableError, set_spring_client
+
+    class _DownSpring:
+        async def list_products(self, brand_id, status=None, q=None, limit=None, offset=None):
+            raise SpringUnavailableError("boom")
+
+    set_spring_client(_DownSpring())
+    proposal = DraftProposal(
+        op="update",
+        product_id=101,
+        changes=[DraftChange(field="description", before="", after="새 설명")],
+        summary="설명 수정",
+    )
+    monkeypatch.setattr(seller_api, "route_question", _route_stub("product"))
+    monkeypatch.setattr(seller_api, "build_product_agent", lambda: _StubProductAgent(proposal))
+    try:
+        events = _collect_seller(_request("설명 바꿔줘"))
+    finally:
+        set_spring_client(None)
+
+    assert [e["type"] for e in events] == ["meta", "draft", "done"]  # 초안 발급 자체는 유지
+    draft = events[1]["data"]
+    assert draft["changes"] == [{"field": "description", "before": "", "after": "새 설명"}]
 
 
 def test_draft_changes_field_is_camelcase(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1544,7 +1714,7 @@ def test_product_route_draft_is_confirmable(monkeypatch: pytest.MonkeyPatch) -> 
         set_spring_client(None)
 
     assert [e["type"] for e in confirm_events] == ["meta", "token", "done"]
-    assert "반영했습니다" in confirm_events[1]["data"]["text"]
+    assert "반영했어요" in confirm_events[1]["data"]["text"]
     assert confirm_events[-1]["data"]["panel"] == "refresh"
     assert spring.patches[0][1] == 101 and spring.patches[0][2].price == 12900
 
@@ -1557,7 +1727,7 @@ def test_apply_message_short_circuits_without_llm(monkeypatch: pytest.MonkeyPatc
 
     assert [e["type"] for e in events] == ["meta", "token", "done"]
     assert events[0]["data"]["lane"] == "apply"
-    assert "이력이 없습니다" in events[1]["data"]["text"]
+    assert "적용할 만한 분석 추천이 없어요" in events[1]["data"]["text"]
 
 
 def test_apply_message_with_history_emits_draft(monkeypatch: pytest.MonkeyPatch) -> None:

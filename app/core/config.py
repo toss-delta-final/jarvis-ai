@@ -25,7 +25,12 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 # 모델 단가표 기본값의 단일 출처(#437) — model_pricing 은 최상단에서 config 를 import 하지
 # 않으므로 여기서 최상단 import 해도 순환이 생기지 않는다.
-from app.core.model_pricing import DEFAULT_MODEL_PRICE_IN_PER_1K, DEFAULT_MODEL_PRICE_OUT_PER_1K
+from app.core.model_pricing import (
+    DEFAULT_MODEL_PRICE_CACHE_WRITE_PER_1K,
+    DEFAULT_MODEL_PRICE_CACHED_IN_PER_1K,
+    DEFAULT_MODEL_PRICE_IN_PER_1K,
+    DEFAULT_MODEL_PRICE_OUT_PER_1K,
+)
 
 # 고객 피처 스펙의 단일 출처(#593) — 기본값을 여기서 다시 적으면 스냅샷 각인과 코드가
 # 조용히 어긋난다. features/spec.py 는 math 만 import 하는 상수 모듈이고 그 패키지
@@ -312,11 +317,23 @@ class Settings(BaseSettings):
     model_price_in_per_1k: Annotated[dict[str, float], NoDecode] = Field(
         default_factory=lambda: dict(DEFAULT_MODEL_PRICE_IN_PER_1K)
     )
+    model_price_cached_in_per_1k: Annotated[dict[str, float], NoDecode] = Field(
+        default_factory=lambda: dict(DEFAULT_MODEL_PRICE_CACHED_IN_PER_1K)
+    )
+    model_price_cache_write_per_1k: Annotated[dict[str, float], NoDecode] = Field(
+        default_factory=lambda: dict(DEFAULT_MODEL_PRICE_CACHE_WRITE_PER_1K)
+    )
     model_price_out_per_1k: Annotated[dict[str, float], NoDecode] = Field(
         default_factory=lambda: dict(DEFAULT_MODEL_PRICE_OUT_PER_1K)
     )
 
-    @field_validator("model_price_in_per_1k", "model_price_out_per_1k", mode="before")
+    @field_validator(
+        "model_price_in_per_1k",
+        "model_price_cached_in_per_1k",
+        "model_price_cache_write_per_1k",
+        "model_price_out_per_1k",
+        mode="before",
+    )
     @classmethod
     def _empty_model_price_table_uses_default(cls, value: object, info) -> object:
         # deploy.yml 은 미설정 vars 를 빈 문자열로 env 파일에 쓴다. 우리가 운영자에게 이 두
@@ -738,6 +755,47 @@ class Settings(BaseSettings):
     # _require_management_lane_within_stream_cap)이 90s 캡 안에 들어오게 한다.
     seller_product_agent_timeout_s: float = 40.0
 
+    # ── chart 레인 해석 에이전트 (이슈 #600, `09-CHART.md` §8) ────────────────────────
+    # 해석은 chart_only 턴에서 유일하게 새로 도는 LLM이다 — 문제가 생기면 false 하나로
+    # #504 시점 동작(고정 문구 3종)으로 되돌린다(§4 실패 규약).
+    seller_chart_interpret_enabled: bool = True
+    # 해석 1회 상한 — 워커 60s(seller_worker_timeout_s)를 쓰지 않는다. chart_only 턴은
+    # 대화형(stream_total_timeout_s=90s) 예산 안이라 배치 상한을 그대로 물려받으면
+    # §6.1의 budget 초과를 더 키운다.
+    seller_chart_interpret_timeout_s: float = 20.0
+    # 재작성 상한 — seller_report_max_retries(3)와 분리한다(결정 91: judge 없이 1회뿐).
+    seller_chart_interpret_max_retries: int = 1
+    # 해석문 길이 상한(자) — §2.6 "전체 6문장 이내"의 코드 측 근거(D-check).
+    seller_chart_interpret_max_chars: int = 800
+    # graph_agent(축 선언, ChartPlanSet) 전용 타임아웃 — 지금까지는 seller_worker_timeout_s
+    # (60s)를 재사용했는데, 해석이 추가되며 그 값이 §6.1 예산 초과의 절반을 차지한다.
+    # 축 선언은 findings·보고서·질문만 보고 좌표를 만들지 않아 워커보다 훨씬 가볍다.
+    seller_chart_agent_timeout_s: float = 25.0
+    # C4(chart_claims_bounded, §3.5) 금지 어휘 4묶음 — seller_report_causal_terms 와
+    # 같은 규약(과탐 시 목록만 조정). 판정 조건(어느 차트가 있을 때 검사하는지)은
+    # chart_verify.py 코드 소관 — 여기는 어휘 목록만.
+    seller_chart_forbidden_terms: Annotated[dict[str, list[str]], NoDecode] = Field(
+        default_factory=lambda: {
+            # C4-a — 스냅샷(aggregate=="none") 차트에 추세 어휘.
+            "snapshot_trend": [
+                "추세",
+                "증가",
+                "감소",
+                "늘었",
+                "줄었",
+                "상승",
+                "하락",
+                "이후",
+            ],
+            # C4-b — 버킷(3일/1주) 묶음 차트에 하루 단위 서술.
+            "daily_bucket": ["하루", "일별", "당일"],
+            # C4-c — 상위 N 절단 차트에서 하위 단정.
+            "bottom_rank": ["가장 적", "최저", "꼴찌", "가장 안 팔", "제일 안"],
+            # C4-d — 행동 유형별(4종) 차트를 "전체 행동"으로 서술.
+            "behavior_all": ["전체 행동", "모든 행동", "행동 전체"],
+        }
+    )
+
     # ── SOP 스텝 타임아웃 (이슈 #589, `OPS-RUNTIME.md` T-3 / `01-ARCHITECTURE.md` §4.4) ──
     # 상주 analysis 파이프라인(채팅 밖)의 스텝별 상한. 대화형 예산(90s)과 무관한 배치
     # 경로라 워커 타임아웃(60s)을 재사용하지 않고 스텝 성격별로 나눈다 — 초과 시
@@ -890,6 +948,7 @@ class Settings(BaseSettings):
         "seller_amount_bucket_map",
         "seller_customer_cluster_group_weights",
         "seller_customer_label_thresholds",
+        "seller_chart_forbidden_terms",
         mode="before",
     )
     @classmethod
@@ -2359,6 +2418,15 @@ class Settings(BaseSettings):
     # 단일 호출 실측 p95는 4.3s다. 이 값을 올릴 때는 구매자 상한과의 관계도 함께 검토한다.
     llm_timeout_s: float = 30.0
     llm_max_retries: int = 1
+    # 같은 구매자 채팅방의 선택적 계층형 메모리(#653). 프롬프트에 실리는 원문·상황 요약과
+    # 별도 압축 호출을 각각 유계로 둔다. 비활성화하면 기존 무기억 동작으로 즉시 돌아간다.
+    buyer_memory_enabled: bool = True
+    buyer_memory_recent_turns: int = Field(default=3, ge=1, le=10)
+    buyer_memory_recent_token_cap: int = Field(default=1_000, ge=64, le=8_000)
+    buyer_memory_situation_token_cap: int = Field(default=400, ge=64, le=2_000)
+    buyer_memory_compaction_trigger_tokens: int = Field(default=1_200, ge=1, le=20_000)
+    buyer_memory_compaction_input_token_cap: int = Field(default=4_000, ge=64, le=20_000)
+    buyer_memory_compaction_max_tokens: int = Field(default=256, ge=32, le=2_000)
 
     # ── 관측 집계 SLO·degrade 알림 (scripts/aggregate_observability.py 주입, EVAL-OBS §3.3·§5) ──
     # 런타임 동작을 바꾸지 않는 **집계 리포트 전용 목표치**다. 위의 스트림 상한은 "언제 끊나"이고

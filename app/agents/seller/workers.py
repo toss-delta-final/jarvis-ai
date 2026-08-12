@@ -34,6 +34,7 @@ from app.agents.seller.prompts import (
     ANALYSIS_JUDGE_PROMPT,
     BEHAVIOR_INTERPRET_PROMPT,
     BEHAVIOR_PROMPT,
+    CHART_INTERPRET_PROMPT,
     CHURN_INTERPRET_PROMPT,
     CHURN_PROMPT,
     CONVERSION_INTERPRET_PROMPT,
@@ -197,7 +198,10 @@ GENERAL_TOOLS = [
 def build_general_agent(
     today: str, checkpointer: BaseCheckpointSaver | None = None
 ) -> CompiledStateGraph:
-    """일반 질문 에이전트 (해석 금지·calculate 강제·미지원 안내 — 자유 텍스트 응답).
+    """일반 질문 에이전트 (경량 해석 허용·calculate 강제·미지원 안내 — 자유 텍스트 응답, #650).
+
+    [#650] 단일 지표 증감·순위·임계값 비교 같은 경량 해석까지는 직접 답한다 — 원인
+    가설·복수 지표 교차·행동 추천은 여전히 금지(GENERAL_PROMPT_TEMPLATE 응답 원칙 1).
 
     분석 워커와 달리 response_format 을 강제하지 않는다 — 3단계에서 astream→token
     SSE 1차 배선 대상이다. planner 를 거치지 않는 레인이라 기간 환산을 프롬프트가
@@ -389,6 +393,23 @@ def build_graph_agent() -> CompiledStateGraph:
         response_format=ToolStrategy(ChartPlanSet),
         context_schema=SellerContext,
         middleware=[_model_usage_middleware("graph")],
+    )
+
+
+def build_chart_interpret_agent() -> CompiledStateGraph:
+    """차트 해석 에이전트 (smart tier · 도구 없음 · 자유 텍스트, 이슈 #600).
+
+    `build_report_agent`/`build_resident_report_agent`와 같은 모양(zero-tool·자유
+    텍스트)이지만 chart_only 턴 전용이라 완전히 분리한 상수·역할을 쓴다 — 입력은
+    좌표 전량 + `charts.chart_facts` 산출(`pipeline.format_chart_input`)뿐이고,
+    findings·보고서는 chart_only 턴에는 애초에 없다(run_graph 호출부 참조).
+    """
+    return create_agent(
+        model=init_seller_model("chart_interpret"),
+        tools=[],
+        system_prompt=CHART_INTERPRET_PROMPT,
+        context_schema=SellerContext,
+        middleware=[_model_usage_middleware("chart_interpret")],
     )
 
 

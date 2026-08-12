@@ -60,7 +60,9 @@ from app.agents.seller import analysis_store, report_view
 from app.agents.seller.analysis_store import note_seller_seen
 from app.agents.seller.checkpoint import get_checkpointer
 from app.agents.seller.context import SellerContext
+from app.agents.seller import history
 from app.agents.seller.history import apply_recommendation
+
 # [#622] invalidate_draft/start_draft 는 더 이상 여기서 직접 부르지 않는다 — draft
 # 발급(무효화·checkpoint 저장·pending 갱신)은 draft_lifecycle.publish_draft 단일
 # 입구를 통한다(아키텍처 테스트: tests/unit/test_seller_draft_lifecycle.py).
@@ -110,6 +112,7 @@ from app.schemas.seller_report import (
     SellerReportListItem,
     SellerReportListResponse,
 )
+from app.schemas.spring import SellerProductRow
 from app.services.spring_client import SpringRejected, SpringUnavailableError
 
 logger = logging.getLogger(__name__)
@@ -743,13 +746,27 @@ def _product_agent_input(
     candidates: list[category_catalog.CategoryEntry],
     pending: draft_session.PendingCreate | None,
     image_urls: list[str],
+    recent_turns: list[seller_thread.Turn] = (),
 ) -> str:
     """[#506] product 에이전트 입력 조립 — 발화 + 이미지 분석·카테고리 후보·기존 초안 주입.
 
     이미지 원본이 아니라 **분석 결과(텍스트)** 를 주입한다 — 분석은 첨부 턴 1회이고
     (vision.py), 에이전트는 텍스트 루프를 유지해 매 턴 이미지 토큰이 들지 않는다.
+
+    [상품명 인식 개선] recent_turns 가 있으면 [최근 대화] 블록으로 먼저 주입한다 —
+    product 레인은 매 턴 새 agent.ainvoke() 호출이라 checkpointer 메모리가 없다
+    (general 레인과 다름). 대상 상품이 불명확해 되물은 다음 턴에서 판매자의 답만
+    보면 직전에 무엇을 물었는지 알 수 없어 다시 헤매는 문제(대상 특정 실패의 주된
+    원인)를 이 블록으로 완화한다 — supervisor 라우팅을 거쳐 product 레인에 처음
+    진입하는 호출부에서만 채워진다(등록 초안 대기 중 수정/사진 계속 경로는 pending
+    이 이미 맥락을 나른다).
     """
     blocks: list[str] = []
+    if recent_turns:
+        history_lines = "\n".join(
+            f"- {'판매자' if role == 'user' else 'assistant'}: {text}" for role, text in recent_turns
+        )
+        blocks.append("[최근 대화]\n" + history_lines)
     if image_urls:
         blocks.append("[이미지 URL]\n" + "\n".join(image_urls))
     if analysis is not None:
@@ -778,6 +795,7 @@ async def _product_stream(
     request_id: str | None = None,
     pending: draft_session.PendingCreate | None = None,
     pending_unknown: bool = False,
+    recent_turns: list[seller_thread.Turn] | None = None,
 ) -> AsyncIterator[str]:
     """product 레인 (4-2 — draft 생성 + checkpoint 저장, 실행은 confirm 스트림).
 
@@ -798,6 +816,11 @@ async def _product_stream(
     막는다 — 이 상태에서 발급하면 실제로 대기 중이던 create draft(조회만 실패했을 뿐
     존재할 수 있다)가 무효화되지 않은 채 두 번째 draft 와 동시 생존할 수 있다. 이 스트림에
     닿는 진입점 전부(사진 직행·게이트 낙하·supervisor 라우팅)가 이 가드를 공유한다.
+
+    [상품명 인식 개선] `recent_turns`는 supervisor 라우팅 경로(③)에서만 이미 로드된
+    맥락을 넘겨받는다(호출부 참조) — 등록 초안 대기 중 사진 계속/수정 경로(①.3)는
+    pending 이 이미 맥락을 나르므로 넘기지 않는다(기본값 None → 빈 컨텍스트, 기존
+    동작 그대로).
     """
     request_id = _resolve_request_id(request_id)
     _set_trace_lane("product")
@@ -835,6 +858,7 @@ async def _product_stream(
         candidates=candidates,
         pending=pending,
         image_urls=image_urls,
+        recent_turns=recent_turns or [],
     )
 
     try:
@@ -949,6 +973,12 @@ async def _product_stream(
                 replaced.append(DraftChange(field="image_url", before="", after=expected_image))
             record = record.model_copy(update={"changes": replaced})
 
+    # [#623] update 초안의 changes[].before 를 코드 소유로 이관 — list_my_products 가
+    # 5개 필드(id·name·price·stock·status)만 요약해 LLM 이 originalPrice·category·
+    # description·imageUrl 의 before 를 채울 수 없던 구조적 결함(빈 문자열 → confirm
+    # 시점 find_stale_changes 가 항상 불일치로 오판, 영구 반영 차단)을 막는다.
+    record = await _snapshot_before(record, row=row)
+
     try:
         # [#622] invalidate·checkpoint 저장·pending 갱신 단일 입구 — 이전엔 invalidate_draft/
         # save_pending 이 `if record.op == "create":` 안에서만 불려, 수정 턴이 op="update"로
@@ -1001,6 +1031,55 @@ async def _product_stream(
     )
     yield _draft_event(record, preview=preview)
     yield _done("replace")  # diff 카드 = 우측 패널 교체
+
+
+async def _snapshot_before(record: DraftRecord, *, row: SellerProductRow | None) -> DraftRecord:
+    """update 초안의 changes[].before 를 조회 시점 실제값으로 코드가 덮어쓴다(#623).
+
+    [배경] list_my_products(도구)는 컨텍스트 폭주 방지를 위해 8개 필드 중
+    productId·name·price·stock·status 5개만 요약한다 — originalPrice·category·
+    description·imageUrl 은 없다. PRODUCT_PROMPT 가 "before 는 조회값 그대로"를
+    강제하던 구 규약에서는, 이 4개 필드를 건드리는 update 초안의 before 가 항상
+    빈 문자열이었다. confirm 시점 find_stale_changes(hitl.py)는 이 빈 문자열을
+    실제 현재값과 대조해 **항상** 불일치로 판정 — 재시도해도 같은 이유로 영구
+    차단됐다(#623 증상). 이 함수는 P4(#590 apply_recommendation)가 이미 쓰는
+    hitl._find_product + history._current_value_str 패턴을 product 레인에도 적용해
+    before 를 LLM 산물에서 코드 소유로 옮긴다 — PRODUCT_PROMPT 는 더는 before 를
+    책임지지 않는다(prompts.PRODUCT_PROMPT 참조).
+
+    stock_quantity 는 예외로 LLM 값을 그대로 둔다: list_my_products 는 옵션별
+    재고를 이미 정확히 노출하고(#524), 여기서 _current_value_str(row,
+    "stock_quantity")로 덮어쓰면 옵션별 값이 아니라 **행 전체 합계**로 뭉개진다.
+    find_stale_changes 도 stock_quantity 는 애초에 비교 대상에서 제외한다(주문
+    차감으로 인한 자연 변동, hitl._STALE_EXEMPT_FIELDS) — 그대로 둬도 안전하다.
+
+    조회 실패(Spring 장애·상품 미발견·페이지 상한 소진)는 soft-fail 로 처리한다 —
+    이번 턴 초안 발급 자체를 막지 않는다(가격 사전검증과 같은 기존 방침, 위
+    `touches_price` 블록 참조). 실제 불일치·미발견은 confirm 시점
+    hitl.find_stale_changes/_execute_draft 가 최종 방어선으로 남는다.
+
+    op != "update"(create·delete·ship)는 그대로 반환한다 — create 는 원래
+    before="" 계약이고, delete 의 status before(list_my_products 조회값)는
+    find_stale_changes 가 애초에 비교하지 않으며, ship 은 changes 가 비어 있다.
+    """
+    if record.op != "update":
+        return record
+    assert record.product_id is not None  # validate_draft 가 보장(update 필수)
+    if row is None:
+        try:
+            row, _exhausted = await hitl._find_product(record.brand_id, record.product_id)
+        except SpringUnavailableError:
+            row = None
+    if row is None:
+        return record  # soft-fail — 기존 before 유지, confirm 시점 안전망에 위임
+
+    changes = [
+        c.model_copy(update={"before": history._current_value_str(row, c.field)})
+        if c.field != "stock_quantity"
+        else c
+        for c in record.changes
+    ]
+    return record.model_copy(update={"changes": changes})
 
 
 def _seller_input_summary(record: DraftRecord) -> str | None:
@@ -1714,12 +1793,16 @@ async def _seller_stream(
         # 새 create draft 발급 시 이전 draftId 무효화가 누락되지 않게(동시 생존 차단).
         # [#622] lookup.state == "found"일 때만 pending 을 넘긴다 — "none"·"unknown"은
         # 애초에 넘길 pending 자체가 없다(unknown 은 pending_unknown 으로 별도 차단).
+        # [상품명 인식 개선] 위에서 이미 로드해 둔 recent_turns 를 그대로 넘긴다 —
+        # 대상 상품이 불명확해 되물은 다음 턴이 이 경로로 다시 들어올 때 직전
+        # 되물음/list_my_products 결과를 기억하게 한다.
         async for line in _product_stream(
             request,
             context,
             request_id=request_id,
             pending=lookup.pending if lookup.state == "found" else None,
             pending_unknown=pending_unknown,
+            recent_turns=recent_turns,
         ):
             yield line
     else:
