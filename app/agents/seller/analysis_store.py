@@ -731,6 +731,24 @@ async def save_report(report: ReportRecord, recommendations: list[Recommendation
             ),
         )
         for rec in recommendations:
+            # [이슈 #598] 추천 생애주기 — 새 추천이 이전 'proposed' 추천과 같은
+            # (brand_id, product, action_type)을 겨냥하면 이전 것을 superseded 로
+            # 전이한다. `DESIGN-SELLER-ANALYSIS-STORE-585.md` 가 컬럼·enum 값만 두고
+            # "전이 로직은 추천 생애주기 이슈"라고 명시적으로 미룬 지점이다. 같은
+            # 트랜잭션 안에서 실행해 새 추천 삽입과 원자적으로 묶는다 — 따로 커밋하면
+            # 그 사이 조회가 "이전 것도 살아있고 새 것도 있는" 순간을 볼 수 있다.
+            # `product_ids && %s`(배열 겹침)로 매칭한다 — 상품 하나라도 겹치면 같은
+            # 대상으로 본다(target_kind="product" 전제, 새 상품 유형이 생기면 재검토).
+            if rec.product_ids:
+                await conn.execute(
+                    """
+                    UPDATE seller_analysis_recommendations
+                    SET status = 'superseded'
+                    WHERE brand_id = %s AND action_type = %s AND status = 'proposed'
+                      AND product_ids && %s AND id != %s
+                    """,
+                    (rec.brand_id, rec.action_type, rec.product_ids, rec.id),
+                )
             await conn.execute(
                 """
                 INSERT INTO seller_analysis_recommendations (

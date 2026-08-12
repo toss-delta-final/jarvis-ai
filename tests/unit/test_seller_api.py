@@ -579,7 +579,7 @@ def test_confirm_output_is_masked(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_confirm_spring_down_maps_to_apology_and_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """confirm 중 Spring 장애 — 사과 token(초안 유지 안내) + error(INTERNAL)."""
+    """confirm 중 Spring 장애 — 사과 token(초안 유지 안내) + error(INTERNAL, retryable=True)."""
     from app.services.spring_client import SpringUnavailableError
 
     monkeypatch.setattr(seller_api, "route_question", _no_route)
@@ -594,6 +594,32 @@ def test_confirm_spring_down_maps_to_apology_and_error(
     assert [e["type"] for e in events] == ["meta", "token", "error"]
     assert "초안은 유지" in events[1]["data"]["text"]
     assert events[2]["data"]["code"] == "INTERNAL"
+    assert events[2]["data"]["retryable"] is True
+
+
+def test_confirm_spring_rejected_maps_to_non_retryable_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#620] confirm 중 매핑 안 된 4xx(SpringRejected) — 5xx 와 달리 retryable=False.
+
+    SpringRejected 는 SpringUnavailableError 의 하위라 이 except 를 먼저 두지 않으면
+    위 5xx 테스트와 같은 "일시적 오류(재시도 가능)" 로 뭉개진다 — 그게 이 이슈의 핵심
+    증상이었다.
+    """
+    from app.services.spring_client import SpringRejected
+
+    monkeypatch.setattr(seller_api, "route_question", _no_route)
+
+    async def fake_confirm(draft_id, *, seller_id, brand_id):
+        raise SpringRejected("SOME_NEW_CODE: PATCH /internal/seller/1/products/101")
+
+    monkeypatch.setattr(seller_api, "confirm_draft", fake_confirm)
+
+    events = _collect_seller(_confirm_request("d-9"))
+
+    assert [e["type"] for e in events] == ["meta", "token", "error"]
+    assert events[2]["data"]["code"] == "INTERNAL"
+    assert events[2]["data"]["retryable"] is False
 
 
 def test_scope_refusal_short_circuits_before_routing(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -724,7 +750,9 @@ def test_chart_keyword_does_not_bypass_image_product_lane(
 
     monkeypatch.setattr(seller_api, "run_analysis_pipeline", _must_not_run)
 
-    async def _fake_product_stream(request, context, *, request_id=None, pending=None):
+    async def _fake_product_stream(
+        request, context, *, request_id=None, pending=None, pending_unknown=False
+    ):
         yield seller_api._meta("product")
         yield seller_api._done("keep")
 
@@ -1493,7 +1521,9 @@ def test_product_route_draft_is_confirmable(monkeypatch: pytest.MonkeyPatch) -> 
 
         async def update_product(self, brand_id, product_id, patch):
             self.patches.append((brand_id, product_id, patch))
-            return ProductUpdateResult(productId=product_id)
+            # [#620] changes 가 비면 "이미 그 값" 으로 갈음돼 already_done 이 된다 —
+            # 이 테스트는 실제 반영(executed)을 검증하므로 비어있지 않은 값을 준다.
+            return ProductUpdateResult(productId=product_id, changes=["PRICE"])
 
     spring = _Spring()
     set_spring_client(spring)
@@ -2035,3 +2065,92 @@ def test_general_stream_does_not_disclose_plain_vocabulary(
 
     texts = [e["data"]["text"] for e in events if e["type"] == "token"]
     assert texts == ["1,200,000원입니다."]
+
+
+# ── [#622 결정 — 이슈 ⑤] _ensure_draft_category 카테고리 복구 + preview note ──────
+
+
+def test_ensure_draft_category_revives_pending_category_on_modify_turn() -> None:
+    """수정 턴에서 에이전트가 카테고리를 비웠으면 이전 초안 값을 되살린다(① 경로)."""
+    from app.agents.seller import category_catalog, draft_session
+    from app.agents.seller.schemas import DraftChange, DraftProposal
+
+    category_id = category_catalog.all_entries()[0].id
+    pending = draft_session.PendingCreate(
+        draft_id="d-1",
+        image_urls=(),
+        analysis=None,
+        changes={"category": category_id, "name": "감귤청"},
+    )
+    proposal = DraftProposal(
+        op="create",
+        product_id=None,
+        changes=[DraftChange(field="price", before="", after="12900")],
+        summary="가격만 수정",
+    )
+
+    result, revived = asyncio.run(
+        seller_api._ensure_draft_category(
+            proposal, message="가격만 12900원으로 바꿔줘", analysis=None, pending=pending
+        )
+    )
+
+    assert revived is True
+    category_change = next(c for c in result.changes if c.field == "category")
+    assert category_change.after == category_id
+
+
+def test_ensure_draft_category_not_revived_when_agent_already_chose_valid_category() -> None:
+    """에이전트가 이미 유효한 카테고리를 골랐으면 되살릴 필요가 없다 — revived=False."""
+    from app.agents.seller import category_catalog, draft_session
+    from app.agents.seller.schemas import DraftChange, DraftProposal
+
+    entries = category_catalog.all_entries()
+    chosen_id, pending_id = entries[0].id, entries[1].id
+    pending = draft_session.PendingCreate(
+        draft_id="d-1", image_urls=(), analysis=None, changes={"category": pending_id}
+    )
+    proposal = DraftProposal(
+        op="create",
+        product_id=None,
+        changes=[DraftChange(field="category", before="", after=chosen_id)],
+        summary="새 상품 등록",
+    )
+
+    result, revived = asyncio.run(
+        seller_api._ensure_draft_category(
+            proposal, message="상품 등록해줘", analysis=None, pending=pending
+        )
+    )
+
+    assert revived is False
+    category_change = next(c for c in result.changes if c.field == "category")
+    assert category_change.after == chosen_id  # 되살리지 않고 에이전트 선택 유지
+
+
+def test_ensure_draft_category_not_revived_when_no_pending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """대기 중인 초안이 없으면(신규 등록 첫 턴 등) 되살릴 이전 값 자체가 없다."""
+    from app.agents.seller.schemas import DraftChange, DraftProposal
+
+    async def _no_match(message, *, hint=None):
+        return None
+
+    monkeypatch.setattr(seller_api.category_resolver, "resolve_category", _no_match)
+
+    proposal = DraftProposal(
+        op="create",
+        product_id=None,
+        changes=[DraftChange(field="price", before="", after="12900")],
+        summary="새 상품 등록",
+    )
+
+    result, revived = asyncio.run(
+        seller_api._ensure_draft_category(
+            proposal, message="아무 카테고리나", analysis=None, pending=None
+        )
+    )
+
+    assert revived is False
+    assert all(c.field != "category" for c in result.changes)
