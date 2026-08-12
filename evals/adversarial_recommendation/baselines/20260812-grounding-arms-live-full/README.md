@@ -85,8 +85,37 @@ code에도 모델이 덧붙인 숫자·자유 문구를 결정론 템플릿으�
 | C derived | 0 | 0 | 0 | N/A | N/A |
 
 B rerank는 A rerank보다 총 token이 약 1.15% 많았고, p50/p95 지연은 각각 약 19.3%/32.3%
-높았다. 전체 provider 사용량은 1,150 calls, 2,749,310 tokens였다. 설정 모델의 가격 정보가 없어
-`costUsd`는 기록되지 않았으며 비용을 추정하지 않았다.
+높았다. 전체 provider 사용량은 1,150 calls, 2,749,310 tokens였다.
+
+### 비용 비교
+
+실행 결과의 `costUsd`는 runner가 `RecordingLLM`에 price book을 주입하지 않아 `null`이지만,
+모델 ID와 input/cached-input/output token usage는 모두 기록됐다. 실행일 기준 OpenAI 공식 단가를
+사후 적용하면 usage 기반 API 요금은 다음과 같다.
+
+- [`gpt-5-nano`](https://developers.openai.com/api/docs/models/gpt-5-nano): input $0.05 /
+  cached input $0.005 / output $0.40 per 1M tokens
+- [`gpt-5.6-luna`](https://developers.openai.com/api/docs/models/gpt-5.6-luna): input $0.20 /
+  cached input $0.02 / output $1.20 per 1M tokens
+
+| 비용 구간 | usage 기반 비용 |
+|---|---:|
+| 공통 decompose 450회 | $0.0491038 |
+| A rerank 350회 | $0.1238694 |
+| B rerank 350회 | $0.1481738 |
+| C validator 추가 LLM 비용 | $0 |
+
+동일한 450-case traffic을 arm 하나로 독립 운영한다고 가정하면 A는 **$0.1729732**, B와 C는
+각각 **$0.1972776**이다. B/C는 A보다 **$0.0243044, 14.05%** 비싸다. decompose를 제외한
+rerank만 비교하면 B가 A보다 **19.62%** 비싸다. 이 표본 분포를 1,000 request로 환산하면 A는
+약 **$0.3844**, B/C는 약 **$0.4384**다.
+
+실제 A/B/C 전체 실험은 decompose를 한 번만 공유하고 C를 B에서 파생했으므로 합계는
+**$0.3211470**이다. 여기서 C의 실험상 한계비용이 $0인 것과 운영 C 비용이 B와 같은 것은
+구분해야 한다. 운영 C도 B와 같은 구조화 rerank 호출을 하고 그 뒤 로컬 validator를 적용한다.
+
+이 값은 기록된 usage와 공개 단가를 곱한 API 요금이다. 조직별 할인, 세금, 크레딧, 청구 반올림을
+포함한 invoice 실결제액과 대조하려면 OpenAI billing export가 추가로 필요하다.
 
 ## 해석 한계와 다음 실험
 
