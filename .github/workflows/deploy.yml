@@ -2,7 +2,7 @@ name: Jarvis AI Server CI/CD
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   workflow_dispatch:   # Actions 탭에서 수동 실행 가능
 
 env:
@@ -35,9 +35,10 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max   # 레이어 캐시로 빌드 가속
 
-  # 2단계: 자동 배포 (CD)
+  # 2단계: 자동 배포 (CD) — main 브랜치 전용
   #   AI 서버는 1대뿐이라 대체할 인스턴스가 없음 — 실패 시 자동 복구가 필수
   deploy:
+    if: github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
     permissions:
@@ -224,4 +225,125 @@ jobs:
             docker inspect -f '{{.Config.Image}}' jarvis-ai > "$LAST_GOOD"
 
             # 8. 48시간 이상 지난 미사용 이미지 정리 (sha 태그 누적 방지)
+            docker image prune -af --filter "until=48h"
+
+  # 3단계: dev 서버 배포 — dev 브랜치 전용
+  #   DB는 catalog_dev·profile_dev로 분리, 백엔드 호출은 dev 도메인으로 향한다.
+  deploy-dev:
+    if: github.ref == 'refs/heads/dev'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      packages: read
+    steps:
+      - name: dev AI 서버 배포 및 기동 검증
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_AI_HOST_DEV }}
+          username: ${{ secrets.EC2_USERNAME }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          timeout: 15m
+          command_timeout: 15m
+          script: |
+            set -e
+
+            ENV_FILE=/home/ubuntu/jarvis-ai.env
+            ENV_PREV=/home/ubuntu/jarvis-ai.env.prev
+            LAST_GOOD=/home/ubuntu/jarvis-ai.last-good
+
+            PREV_IMAGE=$(docker inspect -f '{{.Config.Image}}' jarvis-ai 2>/dev/null || true)
+
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+            docker pull ${{ env.IMAGE }}:${{ github.sha }}
+
+            umask 077
+            if [ -f "$ENV_FILE" ]; then
+              cp "$ENV_FILE" "$ENV_PREV"
+            fi
+            cat << 'ENVEOF' > "$ENV_FILE"
+            AUTH_MODE=${{ vars.AUTH_MODE }}
+            LLM_PROVIDER=${{ vars.LLM_PROVIDER }}
+            CATALOG_DB_URL=${{ secrets.CATALOG_DB_URL_DEV }}
+            PROFILE_DB_URL=${{ secrets.PROFILE_DB_URL_DEV }}
+            SPRING_BASE_URL=https://dev.narvis.shop
+            JWKS_URL=https://dev.narvis.shop/.well-known/jwks.json
+            JWT_ISSUER=${{ vars.JWT_ISSUER }}
+            JWT_AUDIENCE=${{ vars.JWT_AUDIENCE }}
+            JWT_SCOPE=${{ vars.JWT_SCOPE }}
+            INTERNAL_API_TOKEN=${{ secrets.INTERNAL_API_TOKEN }}
+            OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
+            OPENAI_FAST_MODEL_ID=${{ vars.OPENAI_FAST_MODEL_ID }}
+            OPENAI_SMART_MODEL_ID=${{ vars.OPENAI_SMART_MODEL_ID }}
+            OPENAI_FAST_REASONING_EFFORT=${{ vars.OPENAI_FAST_REASONING_EFFORT }}
+            OPENAI_SMART_REASONING_EFFORT=${{ vars.OPENAI_SMART_REASONING_EFFORT }}
+            APP_ENVIRONMENT=dev
+            COLOR_SYNONYM_EXPANSION_ENABLED=${{ vars.COLOR_SYNONYM_EXPANSION_ENABLED }}
+            COLOR_SYNONYM_ARRAY_CONTRACT_READY=${{ vars.COLOR_SYNONYM_ARRAY_CONTRACT_READY }}
+            TRUST_FORWARDED_FOR=${{ vars.TRUST_FORWARDED_FOR }}
+            FORWARDED_FOR_TRUSTED_HOPS=${{ vars.FORWARDED_FOR_TRUSTED_HOPS }}
+            LANGSMITH_TRACING=${{ vars.LANGSMITH_TRACING }}
+            LANGSMITH_API_KEY=${{ secrets.LANGSMITH_API_KEY }}
+            LANGSMITH_PROJECT=${{ vars.LANGSMITH_PROJECT }}
+            LANGSMITH_TRACING_SAMPLING_RATE=${{ vars.LANGSMITH_TRACING_SAMPLING_RATE }}
+            LANGSMITH_EXPORT_TIMEOUT_S=${{ vars.LANGSMITH_EXPORT_TIMEOUT_S }}
+            LANGSMITH_TRACE_CONTENT=${{ vars.LANGSMITH_TRACE_CONTENT }}
+            GOOGLE_API_KEY=${{ secrets.GOOGLE_API_KEY }}
+            PII_HASH_PEPPER=${{ secrets.PII_HASH_PEPPER }}
+            EMBEDDING_MODEL_ID=${{ vars.EMBEDDING_MODEL_ID }}
+            EMBEDDING_DIM=${{ vars.EMBEDDING_DIM }}
+            CORS_ORIGINS=https://dev.narvis.shop
+            MODEL_PRICE_IN_PER_1K=${{ vars.MODEL_PRICE_IN_PER_1K }}
+            MODEL_PRICE_OUT_PER_1K=${{ vars.MODEL_PRICE_OUT_PER_1K }}
+            SPRING_MAX_RETRIES=${{ vars.SPRING_MAX_RETRIES }}
+            RESCUE_BUDGET_MODE=${{ vars.RESCUE_BUDGET_MODE }}
+            ENVEOF
+
+            sed -i -E '/^(MODEL_PRICE_IN_PER_1K|MODEL_PRICE_OUT_PER_1K|SPRING_MAX_RETRIES|RESCUE_BUDGET_MODE)=[[:space:]]*$/d' "$ENV_FILE"
+
+            docker stop jarvis-ai || true
+            docker rm -f jarvis-ai || true
+            docker run -d \
+              --name jarvis-ai \
+              --restart always \
+              -p 8000:8000 \
+              --log-opt max-size=10m \
+              --log-opt max-file=3 \
+              --env-file "$ENV_FILE" \
+              ${{ env.IMAGE }}:${{ github.sha }} || true
+
+            OK=0
+            for i in $(seq 1 45); do
+              if curl -fs http://localhost:8000/health > /dev/null; then OK=1; break; fi
+              sleep 2
+            done
+
+            if [ "$OK" != "1" ]; then
+              docker logs --tail 100 jarvis-ai || true
+              docker rm -f jarvis-ai || true
+
+              ROLLBACK_IMAGE="$PREV_IMAGE"
+              if [ -z "$ROLLBACK_IMAGE" ] && [ -f "$LAST_GOOD" ]; then
+                ROLLBACK_IMAGE=$(cat "$LAST_GOOD")
+              fi
+              if [ -z "$ROLLBACK_IMAGE" ]; then
+                docker images ${{ env.IMAGE }} --format '{{.Tag}} {{.CreatedSince}}' | head -10
+                exit 1
+              fi
+
+              if [ -f "$ENV_PREV" ]; then
+                cp "$ENV_PREV" "$ENV_FILE"
+              fi
+
+              docker run -d \
+                --name jarvis-ai \
+                --restart always \
+                -p 8000:8000 \
+                --log-opt max-size=10m \
+                --log-opt max-file=3 \
+                --env-file "$ENV_FILE" \
+                "$ROLLBACK_IMAGE" || true
+              exit 1
+            fi
+
+            docker inspect -f '{{.Config.Image}}' jarvis-ai > "$LAST_GOOD"
             docker image prune -af --filter "until=48h"
