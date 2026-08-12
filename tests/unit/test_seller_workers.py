@@ -241,10 +241,11 @@ def test_general_lane_does_not_bind_permanent_stub() -> None:
 
 
 def test_general_prompt_principles() -> None:
-    """확정 3원칙 — 해석 금지·calculate 강제·미지원 안내 + today 주입 슬롯."""
+    """확정 원칙 — 경량 해석만 허용(#650)·calculate 강제·미지원 안내 + today 주입 슬롯."""
     prompt = GENERAL_PROMPT_TEMPLATE.format(today="2026-07-18")
     assert "2026-07-18" in prompt  # today 주입(대화 맥락 — 기간 환산용이 아니다)
-    assert "해석 금지" in prompt
+    assert "경량 해석만 허용" in prompt
+    assert "원인 가설" in prompt  # 원인 규명·복수 지표 교차는 여전히 금지
     assert "calculate" in prompt
     assert "암산·추정 금지" in prompt
     assert "미지원 안내" in prompt
