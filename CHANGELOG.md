@@ -12,6 +12,16 @@
 ## [Unreleased]
 
 ### Added
+- **#641 — 실제 LLM 비용 없이 배포 EC2의 두 성능 경계를 분리 측정하는 scripted 부하 테스트
+  프로파일**을 추가했다. `SCRIPTED_LLM_MODE=instant`는 기존 결정론 응답을 지연 없이 돌려
+  FastAPI·DB·Spring의 처리량 상한을 재고, `delayed`는 요청별 `LoadTestLLM` 인스턴스에서
+  기본 5초의 비동기 대기를 한 번만 적용해 오래 열린 SSE 연결의 동시성·메모리·timeout을
+  측정한다. decompose·rerank 호출마다 지연이 중복되지 않으며, 기동 배너가 프로파일과 지연값을
+  명시한다. GitHub Actions 배포는 scripted 설정과 테스트용 rate-limit 변수를 EC2 env 파일로
+  전달하되 미등록/빈 값은 제거해 기존 코드 기본값을 보존하고, rate-limit은 양수만 허용한다.
+  scripted 중에는 I-17 카탈로그 enrichment 배치를 차단해 가짜 생성물의 실 DB 저장을 막는다.
+  구매자 추천 외 레인, 실제 provider
+  네트워크·429·토큰 편차와 k6 부하 발생기는 범위 밖이며 API/SSE 계약 변경은 없다.
 - **#637 — 구매자 추천 adversarial/behavioral 평가 데이터셋**을 추가했다. 실제
   `BuyerChatRequest`와 Spring I-1 `SpringProduct` wire schema를 사용하는 7개 failure mode별
   30 family(총 210 family, 450 minimal-mutation case)를 결정론적으로 생성한다. 숫자 oracle,
