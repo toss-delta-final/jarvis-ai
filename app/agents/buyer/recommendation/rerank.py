@@ -8,6 +8,7 @@ MVP 슬라이스: 후보 외 id 미노출(REQ-REC-081 — 값싼 부분집합 �
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from statistics import median
 
 from app.agents.buyer.recommendation.rerank_grounding import (
@@ -15,6 +16,11 @@ from app.agents.buyer.recommendation.rerank_grounding import (
     GroundingArm,
     GroundingDecision,
     validate_and_render_grounding,
+)
+from app.agents.buyer.recommendation.rerank_scoring import (
+    RankingArm,
+    ScoringSchemaError,
+    compute_scored_ranking,
 )
 from app.agents.buyer.recommendation.state import RerankResult, extract_json
 from app.core.config import get_settings
@@ -58,6 +64,36 @@ _SYSTEM_STRUCTURED_GROUNDING = """당신은 커머스 추천 재랭킹기입니�
 - 검증 가능한 전체 주장이 없으면 NO_VERIFIABLE_OVERALL_CLAIM, FINAL_EXPOSED_PRODUCTS,
   빈 subjectProductIds, 빈 evidenceFields 한 건만 쓰세요.
 - 가장 적합한 순으로 정렬하고 상위만 남기세요."""
+
+_SYSTEM_STRUCTURED_SCORING = """당신은 커머스 추천 평가기입니다. 후보 상품과 사용자 질의(+프로필)를 받아
+각 후보의 적합도와 검증 가능한 근거를 평가합니다. 최종 순위는 코드가 계산하므로 정렬하거나 상위만
+고르지 마세요. 반드시 아래 JSON 만 출력하세요(설명·코드펜스 금지):
+{"evaluations": [{"productId": int, "intentFit": int, "needFit": int, "profileFit": int, "rationale": "한글 40자 이내 1문장", "reasonCode": "RATING_HIGH|REVIEW_MANY|PRICE_RELATIVE_LOW|NO_VERIFIABLE_EVIDENCE", "evidenceFields": ["ratingLevel|reviewLevel|priceLevel"]}], "overallComment": "전체 1~2문장 코멘트", "overallClaims": [{"claimCode": "TOP_REVIEW_COUNT|ALL_RATING_HIGH|ALL_WITHIN_TOTAL_BUDGET|NO_VERIFIABLE_OVERALL_CLAIM", "scope": "FINAL_EXPOSED_PRODUCTS|FINAL_RECOMMENDATION_LISTS", "subjectProductIds": [int], "evidenceFields": ["reviewCount|ratingLevel|price|totalBudget"]}]}
+규칙:
+- CANDIDATES의 모든 후보를 입력 순서와 무관하게 평가하고, 각 productId를 정확히 한 번 쓰세요.
+- 후보 밖 productId를 만들거나 후보를 누락·중복하지 마세요.
+- intentFit은 현재 QUERY의 핵심 의도 충족도이며 정수 0..4입니다.
+- needFit은 후보의 need 필드가 있으면 해당 니즈 충족도, 없으면 QUERY의 구체 조건 충족도이며 정수 0..3입니다.
+- profileFit은 QUERY 적합도가 같은 후보 사이의 동점 처리용 개인화 적합도이며 정수 0..1입니다.
+- PROFILE_SUMMARY가 '(없음)'이면 profileFit은 반드시 0입니다. 프로필로 QUERY에 덜 맞는 후보를 우선하지 마세요.
+- RATING_HIGH 는 ratingLevel 이 높음/매우높음일 때만 쓰고 evidenceFields 는 ["ratingLevel"]입니다.
+- REVIEW_MANY 는 reviewLevel 이 많음/매우많음일 때만 쓰고 evidenceFields 는 ["reviewLevel"]입니다.
+- PRICE_RELATIVE_LOW 는 priceLevel 이 저렴/매우저렴일 때만 쓰고 evidenceFields 는 ["priceLevel"]입니다.
+- 셋 중 검증 가능한 근거가 없으면 NO_VERIFIABLE_EVIDENCE 와 빈 evidenceFields 를 쓰고 rationale 은
+  "요청과의 관련도를 기준으로 추천했어요"로 답하세요.
+- ratingLevel·reviewLevel·priceLevel은 정성 등급입니다. 정확한 금액·평점·리뷰 수를 만들지 마세요.
+- rationale 은 한글 40자 이내 1문장으로 간결하게 쓰고 개행하지 마세요.
+- overallComment 는 마크다운을 쓰지 말고 평문 산문으로 쓰세요.
+- overallClaims 는 전체 코멘트의 검증 가능한 주장만 최대 2개 제안하세요.
+- TOP_REVIEW_COUNT 는 첫 추천 상품 하나를 subjectProductIds 로 쓰고 scope 는
+  FINAL_EXPOSED_PRODUCTS, evidenceFields 는 ["reviewCount"]로 쓰세요.
+- ALL_RATING_HIGH 는 추천한 모든 상품을 subjectProductIds 로 쓰고 scope 는
+  FINAL_EXPOSED_PRODUCTS, evidenceFields 는 ["ratingLevel"]로 쓰세요.
+- ALL_WITHIN_TOTAL_BUDGET 는 최종 추천 조합 전체를 subjectProductIds 로 쓰고 scope 는
+  FINAL_RECOMMENDATION_LISTS, evidenceFields 는 ["price", "totalBudget"]로 쓰세요.
+- 인기·가성비처럼 CANDIDATES 필드로 증명할 수 없는 최상급을 제안하지 마세요.
+- 검증 가능한 전체 주장이 없으면 NO_VERIFIABLE_OVERALL_CLAIM, FINAL_EXPOSED_PRODUCTS,
+  빈 subjectProductIds, 빈 evidenceFields 한 건만 쓰세요."""
 
 # [#119] 프로필이 있는 턴에만 user 메시지에 덧붙는 동점 처리 지시. `_SYSTEM` 에 두지 않는 이유는
 # rerank() docstring 참조(프로필 없는 경로의 프롬프트 불변 유지). 테스트는 리터럴을 복붙하지 말고
@@ -235,6 +271,10 @@ async def rerank(
     per_need: int | None = None,
     rating_min_requested: bool = False,
     grounding_arm: GroundingArm = "current",
+    ranking_arm: RankingArm = "current",
+    rrf_alpha: float = 0.65,
+    rrf_k: int = 60,
+    search_rank_by_id: Mapping[int, int] | None = None,
 ) -> RerankResult:
     """Sonnet 1회 호출로 재랭킹 결과를 산출한다(후보 외 id 는 코드로 제거).
 
@@ -301,10 +341,16 @@ async def rerank(
         f"CANDIDATES: {json.dumps(cand, ensure_ascii=False)}"
     )
 
-    # 출력 예산은 **요청한 노출 개수에 비례**한다 — 고정값이면 니즈별 분할로 항목이 늘 때
-    # 응답이 잘리고 아래 extract_json 이 파싱에 실패해 LLMError → 근거 없는 degrade 가 된다.
-    max_tokens = settings.rerank_max_tokens_base + settings.rerank_max_tokens_per_item * expose_max
-    system = _SYSTEM if grounding_arm == "current" else _SYSTEM_STRUCTURED_GROUNDING
+    # current는 종전처럼 노출 개수만 생성한다. scored arm은 누락 여부까지 코드가 검증해야 하므로
+    # 최종 노출 상한과 무관하게 모든 후보의 평가를 받을 예산을 확보한다(#631).
+    output_item_count = expose_max if ranking_arm == "current" else len(candidates)
+    max_tokens = (
+        settings.rerank_max_tokens_base + settings.rerank_max_tokens_per_item * output_item_count
+    )
+    if ranking_arm == "current":
+        system = _SYSTEM if grounding_arm == "current" else _SYSTEM_STRUCTURED_GROUNDING
+    else:
+        system = _SYSTEM_STRUCTURED_SCORING
     raw = await llm.complete(system=system, user=user, tier=tier, max_tokens=max_tokens)
     data = extract_json(raw)
 
@@ -320,6 +366,45 @@ async def rerank(
     }
     ranked: list[tuple[int, str]] = []
     grounding_decisions: list[GroundingDecision] = []
+    if ranking_arm != "current":
+        try:
+            computation = compute_scored_ranking(
+                [candidate.product_id for candidate in candidates],
+                data.get("evaluations"),
+                arm=ranking_arm,
+                profile_available=bool(profile_summary),
+                alpha=rrf_alpha,
+                k=rrf_k,
+                search_rank_by_id=search_rank_by_id,
+            )
+        except ScoringSchemaError as exc:
+            raise LLMError(str(exc)) from exc
+
+        for pid in computation.ordered_product_ids[:expose_max]:
+            item = computation.model_items_by_id.get(pid)
+            if item is None:
+                ranked.append((pid, ""))
+                continue
+            if grounding_arm == "current":
+                rationale = str(item.get("rationale") or "")
+            else:
+                decision = validate_and_render_grounding(item, facts_by_id[pid])
+                grounding_decisions.append(decision)
+                rationale = (
+                    decision.rendered_rationale
+                    if grounding_arm == "validated"
+                    else decision.model_rationale
+                )
+            ranked.append((pid, rationale))
+
+        return RerankResult(
+            ranked=ranked,
+            overall_comment=str(data.get("overallComment") or ""),
+            overall_claims=_parse_overall_claims(data, grounding_arm),
+            grounding_decisions=grounding_decisions,
+            ranking_decisions=list(computation.decisions),
+        )
+
     seen: set[int] = set()
     for item in data.get("ranked") or []:
         if not isinstance(item, dict):
