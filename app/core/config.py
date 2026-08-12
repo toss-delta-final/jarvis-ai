@@ -2418,6 +2418,14 @@ class Settings(BaseSettings):
     # 단일 호출 실측 p95는 4.3s다. 이 값을 올릴 때는 구매자 상한과의 관계도 함께 검토한다.
     llm_timeout_s: float = 30.0
     llm_max_retries: int = 1
+    # 같은 구매자 채팅방의 선택적 계층형 메모리(#653). 프롬프트에 실리는 원문·상황 요약과
+    # 별도 압축 호출을 각각 유계로 둔다. 비활성화하면 기존 무기억 동작으로 즉시 돌아간다.
+    buyer_memory_enabled: bool = True
+    buyer_memory_recent_turns: int = Field(default=3, ge=1, le=10)
+    buyer_memory_recent_token_cap: int = Field(default=1_000, ge=64, le=8_000)
+    buyer_memory_situation_token_cap: int = Field(default=400, ge=64, le=2_000)
+    buyer_memory_compaction_trigger_tokens: int = Field(default=1_200, ge=1, le=20_000)
+    buyer_memory_compaction_max_tokens: int = Field(default=256, ge=32, le=2_000)
 
     # ── 관측 집계 SLO·degrade 알림 (scripts/aggregate_observability.py 주입, EVAL-OBS §3.3·§5) ──
     # 런타임 동작을 바꾸지 않는 **집계 리포트 전용 목표치**다. 위의 스트림 상한은 "언제 끊나"이고

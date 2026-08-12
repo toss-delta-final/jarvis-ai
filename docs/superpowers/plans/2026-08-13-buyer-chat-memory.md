@@ -72,21 +72,21 @@
 - Produces: `SituationMemory`, `BuyerMemoryContext`, `prepare_buyer_memory(...)`, `compact_buyer_memory(...)`, `estimate_tokens(text)`.
 - Consumes: `Turn`, `BaseStore`, `LLMClient`, buyer-memory settings, 기존 PII redaction.
 
-- [ ] **Step 1: 선택 규칙 RED 테스트 작성**
+- [x] **Step 1: 선택 규칙 RED 테스트 작성**
 
   같은 thread만 포함, `PENDING` 제외, `FAILED`/`CANCELLED` 포함, 최신 3쌍, 쌍 보존 token cap, 새 thread 빈 결과를 각각 단일 행동 테스트로 작성한다.
 
-- [ ] **Step 2: 압축 규칙 RED 테스트 작성**
+- [x] **Step 2: 압축 규칙 RED 테스트 작성**
 
   저가치 제외, 미처리 토큰 누적 후 임계치에서만 trigger, 손상 저장값 fail-open, 성공 시 PII 제거·400 토큰 cap·cursor 전진, LLM 실패 시 이전 값 보존을 검증한다.
 
-- [ ] **Step 3: RED 확인**
+- [x] **Step 3: RED 확인**
 
   Run: `uv run pytest tests/unit/test_buyer_memory.py -q`
 
   Expected: `app.agents.buyer.memory`가 없어 collection error가 발생한다. 테스트 import 골격만 임시로 만들고 다시 실행해 기대 assertion 실패도 확인한다.
 
-- [ ] **Step 4: 최소 구현 후 GREEN 확인**
+- [x] **Step 4: 최소 구현 후 GREEN 확인**
 
   결정론적 추정기와 immutable context를 만들고 BaseStore 레코드를 방별 namespace로 읽고 쓴다. 압축은 JSON 출력만 파싱하고 성공할 때만 mutation lock 안에서 최신 cursor를 재확인해 저장한다.
 
