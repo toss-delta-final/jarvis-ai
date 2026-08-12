@@ -51,6 +51,17 @@
 
 ### Fixed
 
+- **product 레인 대화 맥락 배선 — 상품 대상 되묻기에 답해도 다음 턴이 기억하지
+  못하던 문제.** `_product_stream`/`_product_agent_input` 는 `general`/`analysis`
+  레인과 달리 `recent_turns`(스레드 최근 대화)를 받지 않았다 — `product_agent` 는
+  checkpointer 없이 매 턴 새로 호출되므로, "어느 상품을 말씀하시는 건가요?"라고
+  되물은 다음 턴에서 판매자의 답변 한 줄만 보고 다시 헤매는 구조였다. supervisor
+  라우팅(③)에서 이미 로드해 둔 `recent_turns` 를 `_product_stream` 에도 넘기고,
+  `[최근 대화]` 블록으로 에이전트 입력에 주입한다. `PRODUCT_PROMPT` 에도 (a)
+  `list_my_products` 의 `q` 파라미터를 먼저 시도하는 검색 전략과 (b) `[최근 대화]`
+  블록을 되묻기 답변 해석에 우선 활용하라는 규칙을 추가했다. 등록 초안 대기 중
+  사진 계속/수정 경로(pending)는 이미 다른 방식으로 맥락을 나르므로 영향 없음.
+
 - **#620 — 매핑 안 된 4xx 가 5xx 와 뭉뚱그려 "일시적 오류(재시도 가능)"로 나가던 문제**
   (api-spec-seller §6.3). `_request` 의 공용 폴백이 `error_code_map` 에 없는 응답을
   전부 `SpringUnavailableError` 로 냈다 — 그러면 진짜 일시 장애(5xx·타임아웃)와 서버가
