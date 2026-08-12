@@ -412,11 +412,18 @@ class RequestObservation:
         compaction_calls = [
             call for call in self.model_calls if call.purpose == "memory_compaction"
         ]
-        settings = get_settings()
-        compaction_cost_usd = round(
-            sum(self._call_cost_usd(call, settings) or 0.0 for call in compaction_calls),
-            8,
-        )
+        try:
+            settings = get_settings()
+            compaction_cost_usd = round(
+                sum(self._call_cost_usd(call, settings) or 0.0 for call in compaction_calls),
+                8,
+            )
+        except Exception:
+            logger.warning(
+                "memory compaction cost calculation failed "
+                "code=MEMORY_COMPACTION_COST_CALCULATION_FAILED"
+            )
+            compaction_cost_usd = 0.0
         record = {
             "event": "chat_request",
             "requestId": self.request_id,

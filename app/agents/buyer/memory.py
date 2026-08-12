@@ -411,6 +411,24 @@ async def compact_buyer_memory(
     if not context.compaction_triggered or not context.compaction_turns:
         return False
     try:
+        _, observed_cursor, loaded = await _load_situation(store, thread_key, situation_token_cap)
+        if not loaded or observed_cursor != context.compacted_through_turn_id:
+            return False
+        call_id = (
+            observer.record_model_call(model_id, usage_reserved=True, purpose="memory_compaction")
+            if observer is not None and model_id is not None
+            else None
+        )
+        with bind_model_call_usage(call_id):
+            raw = await llm.complete(
+                system=_COMPACTION_SYSTEM,
+                user=_compaction_user(context),
+                tier="fast",
+                max_tokens=max_tokens,
+            )
+        parsed = _parse_situation(extract_json(raw), situation_token_cap)
+        if parsed is None:
+            return False
         async with mutation_lock(
             store,
             f"buyer:situation-memory:{thread_key}",
@@ -420,23 +438,6 @@ async def compact_buyer_memory(
             if not loaded:
                 return False
             if latest_cursor != context.compacted_through_turn_id:
-                return False
-            call_id = (
-                observer.record_model_call(
-                    model_id, usage_reserved=True, purpose="memory_compaction"
-                )
-                if observer is not None and model_id is not None
-                else None
-            )
-            with bind_model_call_usage(call_id):
-                raw = await llm.complete(
-                    system=_COMPACTION_SYSTEM,
-                    user=_compaction_user(context),
-                    tier="fast",
-                    max_tokens=max_tokens,
-                )
-            parsed = _parse_situation(extract_json(raw), situation_token_cap)
-            if parsed is None:
                 return False
             await run_with_query_timeout(
                 store.aput(

@@ -34,6 +34,7 @@
 - Modify: `app/core/observability.py`
 - Modify: `app/core/tracing.py`
 - Modify: `app/core/llm.py`
+- Modify: `.github/workflows/deploy.yml`
 
 **Interfaces:**
 - Produces: `ModelCall.cached_input_tokens`, `ModelCall.cache_write_tokens`, 캐시 단가 설정, `bind_model_call_usage(call_id)`.
@@ -55,7 +56,7 @@
 
 - [x] **Step 4: 최소 구현 후 GREEN 확인**
 
-  가격 엔트리와 설정 dict를 확장하고 usage 정규화 helper를 추가한다. `RequestTrace`에서 explicit call ID를 전달하고 예약된 호출은 모델명 fallback에서 제외한다.
+  가격 엔트리와 설정 dict를 확장하고 usage 정규화 helper를 추가한다. `RequestTrace`에서 explicit call ID를 전달하고 예약된 호출은 모델명 fallback에서 제외한다. 네 가격표 env를 production/dev 배포에 모두 전달한다.
 
   Run: `uv run pytest tests/unit/test_model_pricing.py tests/unit/test_observability.py tests/unit/test_llm_provider.py -q`
 
@@ -174,7 +175,7 @@
 
   Expected before implementation: 새 로그 필드가 없어 실패. 구현 후: all selected tests pass.
 
-- [ ] **Step 3: 변경 로그 작성**
+- [x] **Step 3: 변경 로그 작성**
 
   `CHANGELOG.md`의 Unreleased에 같은 방 bounded memory, fail-open compaction, cache-aware cost measurement를 한글로 기록한다.
 

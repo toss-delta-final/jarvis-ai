@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 
 import pytest
 
@@ -100,6 +101,21 @@ def test_env_injection_replaces_default_price_table(monkeypatch: pytest.MonkeyPa
         assert settings.model_price_out_per_1k == DEFAULT_MODEL_PRICE_OUT_PER_1K
     finally:
         get_settings.cache_clear()
+
+
+def test_deploy_workflow_wires_all_cache_aware_price_tables() -> None:
+    """운영·dev 배포 모두 네 단가표를 env 파일에 전달하고 빈 변수는 기본값으로 되돌린다."""
+    workflow = (Path(__file__).parents[2] / ".github/workflows/deploy.yml").read_text(
+        encoding="utf-8"
+    )
+    for name in (
+        "MODEL_PRICE_IN_PER_1K",
+        "MODEL_PRICE_CACHED_IN_PER_1K",
+        "MODEL_PRICE_CACHE_WRITE_PER_1K",
+        "MODEL_PRICE_OUT_PER_1K",
+    ):
+        assert workflow.count(f"{name}=${{{{ vars.{name} }}}}") == 2
+        assert workflow.count(name) >= 4
 
 
 @pytest.mark.parametrize("blank_value", ["", "   "])

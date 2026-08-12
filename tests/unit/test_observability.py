@@ -1099,6 +1099,32 @@ async def test_cost_failure_does_not_drop_chat_request(
     assert "PRIVATE-COST-CANARY" not in caplog.text
 
 
+async def test_settings_failure_does_not_drop_chat_request(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """단가 설정 전체 조회 실패도 압축 비용 단계에서 요청 로그를 유실시키지 않는다."""
+    observation = await _obs("settings-failure")
+
+    def fail_settings():
+        raise RuntimeError("PRIVATE-SETTINGS-CANARY")
+
+    monkeypatch.setattr(observability, "get_settings", fail_settings)
+
+    with caplog.at_level(logging.INFO, logger="observability"):
+        await observation.finish(1.0, TurnStatus.COMPLETED)
+
+    record = next(
+        json.loads(item.getMessage())
+        for item in caplog.records
+        if item.name == "observability" and item.getMessage().startswith("{")
+    )
+    assert record["costUsd"] == 0
+    assert record["memoryCompactionCostUsd"] == 0
+    assert "MODEL_COST_CALCULATION_FAILED" in caplog.text
+    assert "PRIVATE-SETTINGS-CANARY" not in caplog.text
+
+
 def test_message_fingerprint_is_not_raw() -> None:
     """지문은 (길이, 해시)이며 원문을 그대로 노출하지 않는다."""
     length, digest = message_fingerprint("hello")

@@ -776,6 +776,7 @@ async def _run_buyer_turn_impl(
     request_id: str | None = None,
     turn_started_at: float | None = None,
     memory_runtime: _BuyerMemoryRuntime | None = None,
+    thread_adoption_prechecked: bool = False,
 ) -> AsyncIterator[str]:
     """구매자 1턴을 SSE 프레임으로 스트리밍한다(open_stream 이 감싸는 inner).
 
@@ -797,11 +798,12 @@ async def _run_buyer_turn_impl(
     context_id = getattr(observer, "context_id", None)
     if not isinstance(context_id, str) or not context_id:
         raise SessionStateUnavailable
-    await ensure_thread_adopted(
-        context_id,
-        request.thread_id,
-        buyer_owner_id(identity, settings),
-    )
+    if not thread_adoption_prechecked:
+        await ensure_thread_adopted(
+            context_id,
+            request.thread_id,
+            buyer_owner_id(identity, settings),
+        )
     thread_key = context_thread_key(context_id, request.thread_id)
 
     search = search or search_service.search_catalog
@@ -1037,6 +1039,17 @@ async def _run_buyer_turn_impl(
                 observer=observer,
                 model_id=resolve_model_id(settings, "fast"),
             )
+        )
+    if (
+        memory_context is not None
+        and observer is not None
+        and hasattr(observer, "record_memory_context")
+    ):
+        observer.record_memory_context(
+            recent_tokens=memory_context.recent_tokens,
+            situation_tokens=memory_context.situation_tokens,
+            evicted_tokens=memory_context.evicted_tokens,
+            compaction_triggered=memory_runtime.compaction_task is not None,
         )
     # [#118] **옵션 되물음 중에는 화면 맥락을 통째로 끈다.** 이 한 플래그를 아래 세 지점이 함께
     # 쓴다 — ① decompose 프롬프트 주입(`prompt_screen`) ② 담기 허용 목록(`allowed`)
@@ -1989,13 +2002,6 @@ async def _prepare_memory_runtime(
             compaction_trigger_tokens=settings.buyer_memory_compaction_trigger_tokens,
             compaction_input_token_cap=settings.buyer_memory_compaction_input_token_cap,
         )
-        if observer is not None and hasattr(observer, "record_memory_context"):
-            observer.record_memory_context(
-                recent_tokens=context.recent_tokens,
-                situation_tokens=context.situation_tokens,
-                evicted_tokens=context.evicted_tokens,
-                compaction_triggered=context.compaction_triggered,
-            )
         return _BuyerMemoryRuntime(context, thread_key, state_store)
     except Exception:
         logger.warning("buyer memory preparation failed code=BUYER_MEMORY_PREPARE_FAILED")
@@ -2019,7 +2025,17 @@ async def run_buyer_turn(
 ) -> AsyncIterator[str]:
     """메모리 준비·다음 턴용 압축을 기존 구매자 스트림과 겹쳐 실행하는 공개 진입점."""
     settings = get_settings()
-    memory_runtime = await _prepare_memory_runtime(request, observer, settings)
+    context_id = getattr(observer, "context_id", None)
+    thread_adoption_prechecked = False
+    memory_runtime = None
+    if isinstance(context_id, str) and context_id:
+        await ensure_thread_adopted(
+            context_id,
+            request.thread_id,
+            buyer_owner_id(identity, settings),
+        )
+        thread_adoption_prechecked = True
+        memory_runtime = await _prepare_memory_runtime(request, observer, settings)
     try:
         async for frame in _run_buyer_turn_impl(
             request,
@@ -2035,6 +2051,7 @@ async def run_buyer_turn(
             request_id=request_id,
             turn_started_at=turn_started_at,
             memory_runtime=memory_runtime,
+            thread_adoption_prechecked=thread_adoption_prechecked,
         ):
             yield frame
     except asyncio.CancelledError:

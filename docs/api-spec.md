@@ -3042,6 +3042,14 @@ BE "API·ERD 변경 정리(07/17)" Part 2가 **우리(LLM팀)에게 확정을 �
 | 클라이언트 취소(§2.9 b) | **부분 생성 텍스트 보존** | `CANCELLED` |
 
 - `FAILED`/`CANCELLED`의 부분 텍스트도 다음 턴 컨텍스트·프로필 스캔(결정 4-A sleep-time)에 포함한다.
+- 구매자 응답은 **같은 `threadId`의 최근 원문 최대 3쌍·1,000 추정 토큰**과 방별 상황 요약
+  최대 400 추정 토큰만 조건부로 사용한다. 새 `threadId`에는 이 자유대화 상황을 넘기지 않고
+  기존 장기 취향 프로필만 별도 규약대로 적용한다. 옵션 답변(`pending_cart`)과 발화 없는
+  action-only 턴에는 자유대화 메모리를 주입·압축하지 않는다.
+- 최근 원문 밖으로 밀려난 고가치 대화가 1,200 추정 토큰 이상일 때만 다음 턴용 상황 요약을
+  갱신한다. 압축 입력은 최대 4,000 추정 토큰이고, 조회·요약·저장 실패는 현재 사용자 응답에
+  영향을 주지 않는 fail-open이다. 느린 LLM 호출 동안 DB advisory lock을 점유하지 않으며,
+  저장 직전에만 최신 압축 커서를 다시 확인한다.
 - FE 채팅 히스토리 복원(`GET /chat/history` 류)은 **미결** — 지원 결정 시 이 저장소를 원천으로 계약 신설.
 
 #### (b) 로그/모니터링 필드 (요청 단위 구조화 로그)
@@ -3056,12 +3064,19 @@ BE "API·ERD 변경 정리(07/17)" Part 2가 **우리(LLM팀)에게 확정을 �
 | `scopeFp` / `scopeType` / `ipFp` | 429 스코프와 IP의 peppered HMAC 지문 및 비민감 유형(`sub`/`ip`). raw scope/IP 금지 |
 | `latencyFirstToken` / `latencyTotal` | SSE 2분할 — 체감 응답성 vs 전체 시간(§2.9 c 기준 대비) |
 | `model` | 호출 모델 id(Haiku/Sonnet, 노드별 다중 기록) |
-| `promptTokens` / `completionTokens` | LLM 호출별 합산 |
+| `promptTokens` / `completionTokens` | 공급자 actual usage 기준 LLM 호출별 합산 |
+| `cachedInputTokens` / `cacheWriteTokens` | 캐시 읽기·쓰기 actual usage 합산. 일반 입력과 분리 과금 |
+| `recentHistoryTokens` / `situationMemoryTokens` | 요청에 준비된 같은 방 최근 원문·상황 요약의 추정 토큰 수 |
+| `evictedHistoryTokens` | 최근 원문 창 밖의 미압축 고가치 대화 추정 토큰 수 |
+| `memoryCompactionTriggered` | 해당 요청에서 다음 턴용 압축 태스크를 실제 시작했는지 여부 |
+| `memoryCompactionPromptTokens` / `memoryCompactionCompletionTokens` | 명시적 압축 호출에 귀속된 actual usage |
+| `memoryCompactionCostUsd` / `costUsd` | 압축 부분 비용과 전체 요청 비용. 캐시 읽기·쓰기를 각 단가로 계산 |
 | `errorType` | in-stream `error` 코드·`FAILED` 사유·타임아웃 구간 |
 | `streamStatus` | `COMPLETED` / `FAILED` / `CANCELLED` (a와 동일 enum) |
 
 - **PII/식별자 정책**: 사용자 message 원문과 raw owner/session/thread/stream 식별자는
   **로그에 남기지 않는다**. message는 길이·peppered HMAC, 식별자는 위 `*Fp`만 기록한다.
+  최근 대화·상황 요약·압축 프롬프트/응답 원문도 로그에 남기지 않고 위 숫자·boolean만 기록한다.
   rejection 로그의 추가 필드는 명시 allowlist만 허용하며 Authorization/token/exception과
   사용자 입력 원문은 폐기한다. 원문은 (a) 대화 저장소에만 존재한다.
 - 레이트 리밋(§2.8)·409(§2.9 a) 발동도 `errorType`으로 집계해 상한값 튜닝 근거로 쓴다.

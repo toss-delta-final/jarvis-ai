@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 import json
 
 from langgraph.store.memory import InMemoryStore
+import pytest
 
+from app.agents.buyer import memory as buyer_memory
 from app.agents.buyer.memory import (
     compact_buyer_memory,
     estimate_tokens,
@@ -267,6 +270,51 @@ async def test_compaction_reserves_explicit_usage_call_id() -> None:
 
     assert changed is True
     assert observer.calls == [("fast-model", True)]
+
+
+async def test_compaction_does_not_hold_mutation_lock_during_llm_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """느린 외부 LLM 대기 동안 DB advisory lock 연결을 점유하지 않는다."""
+    store = InMemoryStore()
+    context = await _prepare(
+        [
+            _turn(1, user="가" * 30, assistant="나" * 30),
+            _turn(2, user="현재", assistant="응답"),
+        ],
+        store=store,
+        recent_turn_limit=1,
+        compaction_trigger_tokens=1,
+    )
+    lock_held = False
+
+    @asynccontextmanager
+    async def recording_lock(*args, **kwargs):
+        del args, kwargs
+        nonlocal lock_held
+        lock_held = True
+        try:
+            yield
+        finally:
+            lock_held = False
+
+    class LockAwareLLM(_FakeLLM):
+        async def complete(self, **kwargs) -> str:
+            assert lock_held is False
+            return await super().complete(**kwargs)
+
+    monkeypatch.setattr(buyer_memory, "mutation_lock", recording_lock)
+
+    changed = await compact_buyer_memory(
+        context,
+        store=store,
+        thread_key="context:room-a",
+        llm=LockAwareLLM('{"topic":"새 주제"}'),
+        situation_token_cap=400,
+        max_tokens=256,
+    )
+
+    assert changed is True
 
 
 async def test_compaction_failure_keeps_previous_situation_and_cursor() -> None:

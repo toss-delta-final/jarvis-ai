@@ -149,8 +149,8 @@ cost = uncached * input_rate
 
 - 대화/메모리 조회 실패: 메모리 없이 응답
 - 압축 LLM/JSON/PII/저장 실패: 이전 요약 유지, 응답 정상
-- 동일 방 동시 압축: 기존 PostgreSQL mutation lock으로 쓰기를 직렬화하고 최신 저장 레코드를
-  다시 확인한 뒤 이미 처리한 배치를 건너뜀
+- 동일 방 동시 압축: 느린 LLM 호출은 잠금 밖에서 수행하고, 기존 PostgreSQL mutation lock은
+  저장 직전 커서 재확인·쓰기만 직렬화해 이미 처리한 배치를 건너뜀
 - 클라이언트 취소: 응답 task와 함께 압축 task 취소
 - 가격 누락: 기존 경고와 `costUsd=0` 정책 유지
 

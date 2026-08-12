@@ -129,6 +129,39 @@ async def test_new_room_does_not_inject_previous_room_conversation() -> None:
     assert "다른 방 비밀 맥락" not in prompt
 
 
+async def test_thread_adoption_is_verified_before_memory_store_access(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """thread 소유권 검증 실패 요청은 대화 메모리 저장소를 먼저 읽지 않는다."""
+
+    class CountingConversationStore:
+        def __init__(self) -> None:
+            self.reads = 0
+
+        async def turns_for(self, key: str):
+            del key
+            self.reads += 1
+            return []
+
+    async def reject_adoption(*args, **kwargs):
+        del args, kwargs
+        raise buyer_graph.SessionStateUnavailable
+
+    store = CountingConversationStore()
+    observer = SimpleNamespace(
+        store=store,
+        pending_key="owner:session-653",
+        context_id="context-653",
+        request_id="request-653",
+    )
+    monkeypatch.setattr(buyer_graph, "ensure_thread_adopted", reject_adoption)
+
+    with pytest.raises(buyer_graph.SessionStateUnavailable):
+        await _collect(_request("검증되지 않은 방"), observer, _general_llm())
+
+    assert store.reads == 0
+
+
 async def test_pending_cart_turn_omits_free_conversation_memory() -> None:
     await _seed_turn(
         session_id="session-653",
@@ -184,6 +217,8 @@ async def test_pending_cart_turn_does_not_start_memory_compaction(
     await _collect(request, observer, _general_llm())
 
     assert called == 0
+    assert observer.evicted_history_tokens > 0
+    assert observer.memory_compaction_triggered is False
 
 
 async def test_compaction_exception_is_fail_open_after_done(
