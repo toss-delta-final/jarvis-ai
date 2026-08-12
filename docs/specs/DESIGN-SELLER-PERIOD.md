@@ -1,14 +1,19 @@
-# DESIGN-SELLER-PERIOD — 판매자 분석 레인 기간 어휘·확인 흐름
+# DESIGN-SELLER-PERIOD — 판매자 기간 어휘·고지 규약
 
-v0.1.0 · 이슈 #345 (#269 P1) · 2026-08-06
+v0.2.0 · 이슈 #345 (#269 P1) · #346 · **#584(확인 게이트 철거)** · 2026-08-11
 
-관련 코드: `app/agents/seller/period.py`(신설) · `app/agents/seller/period_confirm.py`(신설) ·
-`app/agents/seller/prompts.py`(PLANNER_PROMPT) · `app/agents/seller/schemas.py`(AnalysisPlan) ·
-`app/agents/seller/pipeline.py`(resolve_plan) · `app/agents/seller/orchestrator.py` · `app/api/seller.py`
+관련 코드: `app/agents/seller/period.py` · `app/agents/seller/prompts.py`(PLANNER_PROMPT) ·
+`app/agents/seller/schemas.py`(AnalysisPlan) · `app/agents/seller/pipeline.py`(resolve_plan) ·
+`app/agents/seller/orchestrator.py` · `app/api/seller.py`
 
-이 문서는 판매자 두 레인(분석·general)의 기간 규약 정본이다. §1~§6 은 분석 레인,
-§7 은 general 레인 — 어휘표(§2)와 경계 규칙(§3)은 **두 레인 공통**이다(#346).
-와이어 계약(SSE 이벤트·요청 필드)은 바뀌지 않는다 — api-spec 개정 대상이 아니다(§5.2).
+이 문서는 판매자 두 레인(분석·general)의 기간 규약 정본이다. 어휘표(§2)와 경계
+규칙(§3)은 **두 레인 공통**이고, 고지 규약(§4.3·§7.2)도 #584 이후 공통이다.
+와이어 계약(SSE 이벤트·요청 필드)은 바뀌지 않는다 — api-spec 개정 대상이 아니다.
+
+> **[#584] 확인 게이트(구 ①.7)는 철거됐다.** 코드가 값을 보충한 기간 해석은 확인
+> 왕복 없이 그대로 실행하고 **응답에 해석을 고지한다**. §5·§6 은 폐지 기록으로만 남는다
+> — `period_confirm.py`·`parse_period_approval`·`confirmation_text`·
+> `seller_period_confirm_ttl_minutes` 는 코드에 없다.
 
 ---
 
@@ -183,111 +188,77 @@ R2 로 잘렸다는 사실은 §4 확인 문구에 반드시 드러난다. 자�
 끊으면 `period.py` 는 **한 번도 호출되지 않는다.** ①②를 고치는 것이 이 이슈에서
 부수 작업이 아니라 주 작업인 이유다.
 
-### 4.3 확인 문구 형식
+### 4.3 고지 문구 형식
 
 ```
-'이번 달' 을 2026-08-01 ~ 2026-08-05 기간으로 보고 분석하겠습니다.
-(오늘은 집계가 끝나지 않아 제외합니다.)
-이대로 진행할까요? 맞으면 "응" 이라고 답해 주시고,
-다른 기간이면 원하시는 기간을 말씀해 주세요.
+'이번 달' 을 2026-08-01 ~ 2026-08-05 기간으로 봤습니다. (아직 지나지 않은 날짜는 빼고 어제까지만 봤습니다.)
+비교 기준은 '지난달 대비' — 2026-07-01 ~ 2026-07-31 입니다.
 ```
 
 환산 결과(`date_from`~`date_to`)를 **날짜로** 보여준다 — 어휘를 되풀이하면 판매자는
-코드가 무엇으로 해석했는지 알 수 없다. R2 로 잘렸으면 그 사실을 괄호 줄에 덧붙인다.
+코드가 무엇으로 해석했는지 알 수 없다. R2 로 잘렸으면 그 사실을 덧붙이고, 비교 기간이
+있으면 대조군 날짜도 함께 밝힌다(본 기간만 밝히면 고지가 절반이다).
+
+생성 지점은 `period.disclosure_text` **하나**다. 분석 레인은
+`pipeline.period_disclosure_text`(ResolvedPlan 어댑터) → `orchestrator._with_period_disclosure`
+로, general 레인은 `api/seller.py` 가 직접 부른다. 붙는 조건은 양쪽 모두
+`needs_confirmation`(코드가 값을 보충했는가) 하나다.
+
+> [#584 이전] 이 자리에는 확인 문구(`'이번 달' 을 … 보고 분석하겠습니다. / 이대로
+> 진행할까요? …`)가 있었다. 게이트 철거와 함께 삭제됐다.
 
 ---
 
-## 5. 확인 흐름
+## 5. ~~확인 흐름~~ — 폐지 (#584)
 
-### 5.1 상태기계 — 3경로
+게이트 ①.7 은 코드가 값을 보충한 기간 해석을 실행 **전에** 판매자에게 확인받고, 승인
+발화가 올 때까지 `ResolvedPlan` 을 checkpoint 에 보관했다. #584 로 전부 걷어냈다.
 
-이슈 원안은 4경로(승인·수정·새 질문·TTL)였으나 **수정은 새 질문으로 흡수한다**.
+| 폐지된 것 | 있던 곳 |
+|---|---|
+| pending 저장소(`save_pending`/`load_pending`/`clear_pending`) | `app/agents/seller/period_confirm.py` — **모듈 삭제** |
+| 입구 선판정 ①.7 | `api/seller.py` `_seller_stream` |
+| 승인 판정(전 토큰 긍정 어휘 ~50종) | `period.parse_period_approval` |
+| 확인 문구 | `period.confirmation_text` · `pipeline.period_confirmation_text` |
+| `PipelineResult(kind="period_confirmation")` · `.resolved` | `orchestrator.py` |
+| TTL 설정 | `config.seller_period_confirm_ttl_minutes` |
+| 승인 재개 인자 | `_analysis_stream(pending=...)` |
 
-| 경로 | 판정 | 동작 |
-|---|---|---|
-| **승인** | `period.parse_period_approval(message)` → True | 저장된 `ResolvedPlan` 으로 즉시 실행. **planner 재호출 0회** |
-| **새 질문** | 승인이 아닌 모든 발화 | pending 폐기 후 일반 라우팅(②③)으로 흘림 |
-| **TTL 만료** | `created_at + seller_period_confirm_ttl_minutes < now` | pending 폐기, 발화는 신규 질문으로 처리 |
+**철거 근거.** 확인 왕복의 값은 "잘못 해석한 기간으로 비싼 팬아웃을 돌리지 않는다"
+하나였는데, 그 대가로 상태기계·승인 어휘 사전·TTL·IDOR 네임스페이스·전용 테스트
+15개를 한 레인에만 얹었다. general 레인은 같은 위험을 **고지**로 처리하며 이미
+운영되고 있었고(§7.2), 두 레인이 다른 규약을 쓴다는 사실 자체가 회귀의 원천이었다.
+지금은 양쪽 모두 관용 해석 + 고지다 — P0 가 없앤 "조용한 대체"는 확인이 아니라
+그 고지가 막는다.
 
-`아니 7월로` 같은 수정 발화가 별도 구현 없이 동작하는 이유: 확인 문구가 이미
-`record_turn` 으로 대화 스레드에 기록돼 있어(`api/seller.py` `_analysis_stream`)
-planner 가 그 맥락을 읽고 새 계획을 세운다. 수정 전용 기간 파서를 따로 두면
-**어휘 정의가 두 곳으로 갈라진다** — `period.py` 하나만 어휘를 안다는 원칙을 지킨다.
+> **§5.2 의 "발화 ≠ 동의 [HARD] 예외"는 함께 사라졌다.** 기간 확인이 자유 텍스트
+> 승인을 받던 유일한 경로였으므로, 이제 이 저장소에 텍스트 승인은 **없다**. HITL
+> 상품 쓰기는 종전대로 최상위 `action:"confirm"` + `draftId` 구조화 필드로만 받는다.
 
-### 5.2 승인 신호 — 쓰기와 읽기의 경계 [중요]
+### 5.1 잔여 상태 — 배포 시점의 pending
 
-이 저장소는 **"발화 ≠ 동의" [HARD]**(`app/schemas/seller.py`)를 지켜, HITL 상품 쓰기 승인을
-자유 텍스트가 아니라 최상위 `action:"confirm"` 구조화 필드로만 받는다(FE 계약 A-2, 2026-07-22).
-기간 확인은 이 원칙의 **명시적 예외**다.
-
-| | 쓰기(HITL draft) | 읽기(기간 확인) |
-|---|---|---|
-| 승인 신호 | 최상위 `action`/`draftId` 구조화 필드 | 자유 텍스트 + 코드 선판정 |
-| 근거 | 실행하면 상품·주문이 바뀌고 되돌릴 수 없다 | 상태를 바꾸지 않는다. 오해석돼도 조회 결과가 하나 더 나올 뿐이고 판매자가 즉시 정정할 수 있다 |
-| 와이어 | 계약 필드 존재 | **계약 변경 없음** — api-spec 개정 불필요, FE 무작업 |
-
-**이 예외를 쓰기 쪽으로 확장하지 않는다.** 새로운 확인 흐름을 만들 때 "기간 확인도
-자유 텍스트인데" 를 근거로 쓰면 안 된다 — 갈림길은 "자유 텍스트냐"가 아니라
-**"승인이 되돌릴 수 없는 부작용을 일으키는가"** 다.
-
-### 5.3 승인 판정 — 전 토큰 긍정 어휘
-
-정규식 한 덩어리 대신, 공백으로 나눈 **모든 토큰이 긍정 어휘 집합에 속할 때만** 승인이다.
-
-- `응` · `네 맞아` · `ㅇㅇ 좋아` · `응 그래 해줘` → 승인
-- `네 7월로 해줘` → `7월로` 가 집합 밖 → **새 질문** (수정 경로가 이렇게 동작한다)
-- `응 아니야` → `아니야` 가 집합 밖 → 새 질문
-
-정규식 누적보다 오탐이 예측 가능하고, 부정어가 섞이면 자동으로 승인에서 빠진다.
-판정은 pending 이 있을 때만 수행되므로 `어`·`네` 같은 짧은 토큰의 위험도 그 턴으로 한정된다.
-
-### 5.4 저장
-
-`seller-period:{seller_id}:{threadId}` 네임스페이스의 공용 checkpoint(pg-profile).
-`thread.py` 의 recorder 그래프 패턴을 따른다(no-op 1노드 + `aget_state`/`aupdate_state`).
-
-- **키가 threadId 인 이유**: 승인 발화에는 식별자가 실리지 않는다(§5.2 — 와이어 무변경).
-  후속 요청에서 복원할 수 있는 키는 `(seller_id, threadId)` 뿐이다. `seller_id` 접두가
-  곧 IDOR 차단이다(`thread.py` 와 동일 규약 — 신원은 검증된 JWT 에서만 온다).
-- 스레드당 pending 은 최대 1건 — 새 확인은 이전 것을 덮어쓴다.
-- **저장 실패는 degrade**: 확인 문구는 그대로 나가고, 후속 `"응"` 은 pending 이 없어
-  새 질문으로 처리된다(planner 가 대화 맥락으로 재계획). 응답을 죽이지 않는다 —
-  대화 스레드·분석 이력의 degrade 원칙과 같다.
-
-### 5.5 입구 판정 순서
-
-`api/seller.py` `_seller_stream` 에 **①.7** 로 들어간다.
-
-```
-⓪ 신원 캐스팅
-① confirm 필드 선판정 (HITL 쓰기 승인)
-①.5 "N번 적용해줘" 선판정
-①.7 기간 확인 pending 선판정   ← 신규
-②  scope 선차단
-③  supervisor 라우팅
-```
-
-②(scope)보다 **앞**이어야 한다 — `"응"` 은 판매 도메인 어휘가 아니라 scope 필터에
-걸릴 수 있다. ①·①.5 보다 뒤인 이유는 그 둘이 더 명시적인 신호(구조화 필드·정형 발화)라
-기간 확인이 그것들을 가로채면 안 되기 때문이다.
+배포 직전에 확인 문구를 받아 둔 판매자의 다음 `"응"` 은 승인으로 읽히지 않고 신규
+질문으로 떨어진다(planner 가 대화 스레드 맥락으로 재계획). checkpoint 에 남은
+`seller-period:*` 스레드는 읽는 코드가 없어 자연 사멸한다 — 마이그레이션 불필요.
 
 ---
 
-## 6. 실행 재개 — planner 재호출 0회
+## 6. `run_resolved_pipeline` 분리 유지 (결정 109)
 
-`run_analysis_pipeline` 의 planner 이후 구간을 `_run_resolved(question, resolved, ...)` 로
-분리하고, 신규 진입과 승인 재개가 **같은 함수**를 부른다.
+`run_analysis_pipeline` 의 planner 이후 구간은 `run_resolved_pipeline(question, resolved, …)`
+로 갈라져 있다. 갈라진 원래 이유는 승인 재개의 **planner 재호출 0회**(#269 완료 조건)
+였고 그 경로는 §5 와 함께 사라졌다. **그래도 합치지 않는다.**
 
 ```
-신규:  question → planner → resolve_plan → [확인 필요?] → _run_resolved
-승인:  저장된 ResolvedPlan                              → _run_resolved
+채팅:  question → planner → resolve_plan → run_resolved_pipeline
+상주:  확정된 ResolvedPlan            → run_resolved_pipeline
 ```
 
-승인 경로에 planner 호출이 없다는 것이 조건문이 아니라 **호출 그래프**로 보장된다.
-테스트는 planner 빌더 호출 횟수를 세어 0 을 단언한다(#269 완료 조건).
+"이미 확정된 계획을 실행만 한다"는 이 함수의 성질을 상주(배치) 분석 파이프라인이 그대로
+쓴다 — scope 가드·이력 주입·planner 가 여기 없는 것이 그 성질의 표현이다. 기간 고지도
+이 함수가 붙인다(`_with_period_disclosure`) — 두 진입로가 같은 고지를 얻는다.
 
-`PipelineResult.kind` 에 `period_confirmation` 을 추가한다. 패널 조치는 `keep` —
-확인 질문은 대화이지 보고서가 아니다(`kind=="report"` 만 `replace`, 기존 규칙 그대로).
+`PipelineResult.kind` 는 `report`·`clarification`·`apology`·`refused` **4종**이다.
 
 ---
 
@@ -329,16 +300,16 @@ planner 가 그 맥락을 읽고 새 계획을 세운다. 수정 전용 기간 �
 잡는" 어휘가 생기므로, 어휘표 전 항목을 두 경로에 통과시키는 대조 테스트로 묶어 둔다
 (`tests/unit/test_seller_period_lane_parity.py`).
 
-### 7.2 확인이 아니라 **고지** — 레인 간 의도된 비대칭
+### 7.2 확인이 아니라 **고지** — 이제 두 레인 공통 (#584)
 
-`needs_confirmation` 인 해석(`이번 달`·`최근 3개월`)을 general 레인은 확인 없이 실행하고
-`period.disclosure_text` 로 **무엇으로 봤는지 먼저 밝힌다.** 오해석 비용이 비대칭이기
-때문이다 — 분석 레인은 잘못 해석한 기간으로 워커 팬아웃·검증 루프·추천까지 돌지만,
-general 은 조회 한두 번이고 판매자가 곧바로 정정하면 그만이다. 확인 상태기계(§5)를
-레인마다 두는 대신 해석을 밝혀 "조용한 대체"를 막는다.
+`needs_confirmation` 인 해석(`이번 달`·`최근 3개월`)은 확인 없이 실행하고
+`period.disclosure_text` 로 **무엇으로 봤는지 먼저 밝힌다.** #346 시점에는 이것이
+general 레인만의 규약이었고 분석 레인은 확인을 받았다(구 §5) — 오해석 비용이
+비대칭이라는 근거였다. #584 가 그 비대칭을 없앴다: 분석 레인도 같은 함수로 고지한다.
 
-정합의 기준은 **`(from, to)` 와 되묻기 문구**이지 확인 왕복의 유무가 아니다 —
-전자는 대조 테스트가 문구까지 동일성을 단언하고, 후자는 여기 적은 대로 다르다.
+정합의 기준은 **`(from, to)`·고지 판정·되묻기 문구** 셋이고, 세 축 모두 대조 테스트가
+동일성을 단언한다(`tests/unit/test_seller_period_lane_parity.py`). 남은 차이는 고지를
+싣는 자리뿐이다 — general 은 선행 token, 분석은 보고서 텍스트의 첫 줄.
 
 ### 7.3 백스톱 — 도구 인자 재검증
 
@@ -356,7 +327,6 @@ general 은 조회 한두 번이고 판매자가 곧바로 정정하면 그만�
 |---|---|---|
 | `seller_recent_days_default` | 7 | `최근`(단독) 기본 일수 (기존) |
 | `seller_period_max_days` | 731 | 기간 상한 R4 (기존) |
-| `seller_period_confirm_ttl_minutes` | 10 | 기간 확인 대기 만료 (신규 — `seller_draft_ttl_minutes` 와 같은 감각) |
 
 ---
 
@@ -365,8 +335,8 @@ general 은 조회 한두 번이고 판매자가 곧바로 정정하면 그만�
 | 완료 조건 | 대응 |
 |---|---|
 | 기존 4종 `needs_confirmation == False` | §2.1 + 회귀 가드 테스트(`최근` 단독 포함 5종) |
-| `이번 달`·`올해`·`상반기`·`최근 3개월` 확인 후 실행 | §2.2 |
-| 확인 경로 동작 + 승인 시 planner 재호출 0회 | §5.1(3경로) + §6(호출 그래프 분리 + 호출 수 단언) |
+| `이번 달`·`올해`·`상반기`·`최근 3개월` 확인 후 실행 | §2.2 — **#584 로 "고지 후 실행"으로 대체** |
+| 확인 경로 동작 + 승인 시 planner 재호출 0회 | ~~§5.1·§6~~ — **#584 로 폐지**(경로 자체가 없다) |
 | 되묻기 문구 생성 지점 확정 + 테스트 고정 | §4.2(구조적 단일화) + 문구 소유권 테스트 |
 | `DESIGN-SELLER-PERIOD.md` 작성 | 이 문서 |
 | `uv run pytest` 통과 | — |

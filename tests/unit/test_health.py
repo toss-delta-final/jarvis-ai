@@ -5,7 +5,7 @@
   - POST /chat 가 text/event-stream 을 스트리밍하고 done 이벤트로 종료
   - SSE 이벤트명·필드가 api-spec v0.4.0 §3.1 과 일치 (camelCase, 6-event 세트)
   - [HARD] SSE 는 상품 카드를 싣지 않는다 (경로 B): products.ready 는 {sessionId, listIds} 상관키만
-  - MVP 표면: /profile/me, /events/* 는 404
+  - 구 프로필 HTTP 표면은 등록되지 않는다
 """
 
 from __future__ import annotations
@@ -105,14 +105,6 @@ def test_seller_chat_requires_seller_scope() -> None:
     assert resp.status_code == 403
 
 
-def test_profile_me_guest_returns_exists_false() -> None:
-    """GET /profile/me — 게스트(무토큰 dev)는 exists:false 정상 200 (§3.4, REQ-PROF-081)."""
-    resp = client.get("/profile/me")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["exists"] is False and body["markdown"] is None
-
-
 def test_events_catalog_is_post_mvp_404() -> None:
     """POST /events/catalog 는 고도화(post-MVP)로 미등록 → 404 (MVP 표면 축소)."""
     resp = client.post(
@@ -129,7 +121,6 @@ def test_openapi_surface_is_exactly_mvp() -> None:
         "/chat",
         "/seller/chat",
         "/health",
-        "/profile/me",
         "/events/session-end",
         "/events/session-claim",
         # [#148] I-22 홈 추천 랭킹 — Spring → AI 위임(레인 b, api-spec §3.7).

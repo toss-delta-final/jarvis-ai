@@ -89,12 +89,12 @@ repo에는 **키 목록(`.env.example`)만** 있고 실제 시크릿은 없다(�
 
 **A. 컨테이너로 띄우는 경우(권장 — compose와 동일):** `pgvector/pgvector:pg16` 두 개를 각각 띄우고 init 스크립트를 `/docker-entrypoint-initdb.d`로 마운트하면 **빈 볼륨 최초 부팅 시 자동 생성**된다.
 - catalog init: [`db/catalog/init/`](db/catalog/init/) (`00_products.sql` → `02_categories.sql`)
-- profile init: [`db/profile/init/`](db/profile/init/) (`00_processed_events.sql` → `01_conversation_turns.sql` → `02_profile_session_activity.sql` → **`03_chat_session_contexts.sql`**)
+- profile init: [`db/profile/init/`](db/profile/init/) (`00_processed_events.sql` → `01_conversation_turns.sql` → `02_profile_session_activity.sql` → **`03_chat_session_contexts.sql`** → ... → `05_seller_analysis.sql`, 판매자 분석 저장 계층 5테이블, 이슈 #585)
 
 **B. 관리형 PostgreSQL(RDS 등)인 경우:** pgvector 확장 가용 확인 후 위 init SQL을 순서대로 수동 적용. **기존 볼륨 업그레이드**는 [`db/catalog/migrations/`](db/catalog/migrations/)의 마이그레이션도 적용:
 ```bash
 psql "$CATALOG_DB_URL" -f db/catalog/init/00_products.sql   # 이후 02
-psql "$PROFILE_DB_URL" -f db/profile/init/00_processed_events.sql   # 이후 01, 02, 03
+psql "$PROFILE_DB_URL" -f db/profile/init/00_processed_events.sql   # 이후 01, 02, 03 ... 05
 # 기존 볼륨: db/catalog/migrations/*.sql 을 날짜순 적용
 ```
 
@@ -125,7 +125,7 @@ schema 또는 backfill이 실패한 인스턴스는 readiness에 들어가거나
 - [ ] `docker build -t jarvis-ai .`
 - [ ] `deploy.env` 작성 — §2 필수값, `AUTH_MODE=jwks`, `INTERNAL_API_TOKEN`은 백엔드와 동일, `CORS_ORIGINS`에 FE 운영 오리진
 - [ ] `JWT_SCOPE=chat:stream` exact 값 확인(빈 값·다른 값 금지)
-- [ ] PostgreSQL ×2(pgvector) 준비 + profile `03_chat_session_contexts.sql`까지 init/migration 적용(§4)
+- [ ] PostgreSQL ×2(pgvector) 준비 + profile `05_seller_analysis.sql`까지 init/migration 적용(§4)
 - [ ] AI startup 로그에서 schema → bounded backfill 완료 → scheduler 시작 순서를 확인
 - [ ] 컨테이너 실행(`-p 8000:8000`) 후 `GET /health` = `{"status":"ok"}` 확인
 - [ ] Spring(`SPRING_BASE_URL`)·JWKS(`JWKS_URL`) 도달 확인 — 검색·인증 레인 정상

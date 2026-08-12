@@ -70,6 +70,8 @@ def test_samples_csv_has_the_cause_axis_and_intent_columns(tmp_path: Path) -> No
         "outcome",
         "causeAxes",
         "blockingAxes",
+        "attrConditionAxes",
+        "attrConditionsSuppressedAxes",
         "expansionReason",
         "latencyMs",
     }

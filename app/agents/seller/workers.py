@@ -32,8 +32,11 @@ from app.agents.seller.models import SellerRole, init_seller_model, seller_trace
 from app.agents.seller.prompts import (
     ABUSE_PROMPT,
     ANALYSIS_JUDGE_PROMPT,
+    BEHAVIOR_INTERPRET_PROMPT,
     BEHAVIOR_PROMPT,
+    CHURN_INTERPRET_PROMPT,
     CHURN_PROMPT,
+    CONVERSION_INTERPRET_PROMPT,
     CONVERSION_PROMPT,
     GENERAL_PROMPT_TEMPLATE,
     GRAPH_PROMPT,
@@ -42,7 +45,10 @@ from app.agents.seller.prompts import (
     PRODUCT_PROMPT,
     RECOMMEND_PROMPT,
     REPORT_PROMPT,
+    RESIDENT_RECOMMEND_PROMPT,
+    RESIDENT_REPORT_PROMPT,
     REVIEW_PROMPT,
+    SALES_ANOMALY_INTERPRET_PROMPT,
     SALES_ANOMALY_PROMPT,
     SUPERVISOR_PROMPT,
 )
@@ -50,6 +56,7 @@ from app.agents.seller.schemas import (
     AnalysisFinding,
     AnalysisPlan,
     AnalysisScore,
+    BehaviorFinding,
     ChartPlanSet,
     DraftProposal,
     RecommendationSet,
@@ -161,16 +168,29 @@ def build_review_agent() -> CompiledStateGraph:
 
 # ── general_agent (2-6) — 분석 워커가 아닌 일반 질문 레인 ──────────────────────
 
+# [#591] search 레인 도구 12종 — supervisor 의 `general`(조회)과 `analysis`(저장된 보고서를
+# 찾는 의도)가 **같은 이 레인**을 쓴다. 조회 11종 + 보고서 조회 1종이고 쓰기는 0개다.
+#
+# search_analysis_guide 를 뺀 이유: 영구 스텁이라 항상 "Error:" 를 돌려주는데, LLM 은 쓸 수
+# 있는 도구로 보고 용어 질문("장바구니 전환율이 뭐야?")에 호출했다가 그 실패를 판매자에게
+# 그대로 안내한다 — 도구가 없느니만 못하다. 용어 설명은 GENERAL_PROMPT 의 "용어·서비스
+# 설명" 절이 이미 담당한다. 함수와 분석 워커 6종의 바인딩은 그대로 둔다(상주 파이프라인 소관).
 GENERAL_TOOLS = [
     seller_tools.get_sales_timeseries,
+    seller_tools.get_funnel,  # [#591] I-7 퍼널
+    seller_tools.get_behavior_events,  # [#591] I-13 행동 이벤트
     seller_tools.get_order_events,
     # [#297] I-29 현재 상태 스냅샷("신규 주문 뭐 있어?") — 전이 이력(I-14)과 역할 분리.
     seller_tools.get_orders,
-    # [#297] I-31 리뷰 단순 조회("최근 리뷰 보여줘") — 해석·진단은 analysis(review 워커).
+    seller_tools.get_product_change_logs,  # [#591] I-15 변경 이력
+    seller_tools.get_churn_cohort,  # [#591] I-16 이탈 코호트
+    seller_tools.get_account_events,  # [#591] I-8 계정 이벤트
+    # [#297] I-31 리뷰 단순 조회("최근 리뷰 보여줘") — 요약·해석은 하지 않는다(프롬프트 1번).
     seller_tools.get_reviews,
     seller_tools.list_my_products,
     seller_tools.calculate,
-    seller_tools.search_analysis_guide,
+    # [#591] 보고서 조회 도구는 이것 하나뿐 — 목록 브라우징은 보고서 페이지의 일이다.
+    seller_tools.get_latest_report,
 ]
 
 
@@ -213,15 +233,16 @@ def build_general_agent(
 # ── product_agent (2-7) — draft 생성까지, 쓰기는 4단계 confirm-resume 코드 경로 ──
 
 # A안(2026-07-18 확정): 조회만 바인딩 — LLM 이 쓰기 도구를 볼 수 없어 HITL
-# (발화 ≠ 동의 [HARD])이 프롬프트가 아니라 구조로 보장된다. 배정표(§3)의
-# PRODUCT_TOOLS(쓰기 3종 포함)는 4단계 실행 레인용으로 유지된다.
+# (발화 ≠ 동의 [HARD])이 프롬프트가 아니라 구조로 보장된다. 실행(4단계)은 LLM
+# 도구 호출이 아니라 코드가 담당한다 — hitl._execute_draft 가 승인된 draft 를
+# SpringClient 로 직접 매핑한다(#620, 배정표 §3 개정 — 쓰기 도구는 존재하지 않는다).
 # calculate 는 2-9 리뷰 반영(2026-07-18 사용자 확정) — 재고 증감 환산 암산 방지.
-# 배정표 §3 개정 필요(REVIEW-SELLER-STAGE2 기록).
 PRODUCT_DRAFT_TOOLS = [
     seller_tools.list_my_products,
     seller_tools.calculate,
     # [#297] 발송 draft(op=ship)의 대상 orderItemId·현재 상태 확인용(I-29, 조회 전용).
-    # 쓰기(update_order_status)는 여기 바인딩하지 않는다 — HITL 구조 보장 유지.
+    # 발송 실행도 hitl._execute_draft 가 코드로 담당한다 — 쓰기 도구는 여기 바인딩하지
+    # 않는다(HITL 구조 보장 유지).
     seller_tools.get_orders,
 ]
 
@@ -389,4 +410,77 @@ def build_recommend_agent() -> CompiledStateGraph:
             tool_call_limit_middleware(),
             ToolCallObservationMiddleware(),
         ],  # 읽기 2종 호출 상한 + 실제 호출 관측
+    )
+
+
+# ── 상주(무인) 분석 파이프라인 (이슈 #598) ──────────────────────────────────────
+# 채팅 레인(위 report/recommend/워커 5종)과 완전히 분리한다 — 무접촉 보장이 설계
+# 결정이다(design-598 §3-5 안 B). 전부 zero-tool: 입력은 ctx 표/finding/보고서
+# 문자열뿐이고, 조회는 SOP `load`/`compare` 스텝(코드)이 이미 끝냈다.
+
+
+def _build_interpret_worker(
+    system_prompt: str, response_schema: type[AnalysisFinding]
+) -> CompiledStateGraph:
+    """워커 4종 상주 interpret 공통 조립 — smart tier · 도구 없음."""
+    return create_agent(
+        model=init_seller_model("interpret"),
+        tools=[],
+        system_prompt=system_prompt,
+        response_format=ToolStrategy(response_schema),
+        context_schema=SellerContext,
+        middleware=[_model_usage_middleware("interpret")],
+    )
+
+
+def build_behavior_interpret_agent() -> CompiledStateGraph:
+    """고객 행동 상주 interpret (세그먼트별 별칭·설명 — `BehaviorFinding` 출력)."""
+    return _build_interpret_worker(BEHAVIOR_INTERPRET_PROMPT, BehaviorFinding)
+
+
+def build_churn_interpret_agent() -> CompiledStateGraph:
+    """고객 이탈 상주 interpret."""
+    return _build_interpret_worker(CHURN_INTERPRET_PROMPT, AnalysisFinding)
+
+
+def build_conversion_interpret_agent() -> CompiledStateGraph:
+    """구매전환 상주 interpret."""
+    return _build_interpret_worker(CONVERSION_INTERPRET_PROMPT, AnalysisFinding)
+
+
+def build_sales_anomaly_interpret_agent() -> CompiledStateGraph:
+    """매출 이상 상주 interpret."""
+    return _build_interpret_worker(SALES_ANOMALY_INTERPRET_PROMPT, AnalysisFinding)
+
+
+def build_resident_report_agent() -> CompiledStateGraph:
+    """상주 보고서 작성 에이전트 (smart tier · 도구 없음 · 자유 텍스트).
+
+    채팅 레인 `build_report_agent`/`REPORT_PROMPT` 와 완전히 분리된 별도 상수를 쓴다
+    (설계 결정 3 — 채팅 레인 무접촉 보장). 검증(V1 D1~D3 + V2 C1~C3/V2-d + judge)·
+    재작성 루프 배선은 `resident.py` 소관 — 여기는 빌더만.
+    """
+    return create_agent(
+        model=init_seller_model("resident_report"),
+        tools=[],
+        system_prompt=RESIDENT_REPORT_PROMPT,
+        context_schema=SellerContext,
+        middleware=[_model_usage_middleware("resident_report")],
+    )
+
+
+def build_resident_recommend_agent() -> CompiledStateGraph:
+    """상주 행동 추천 에이전트 (smart tier · 도구 없음 · `ctx.candidate_actions` 입력).
+
+    채팅 레인 `build_recommend_agent`(도구 2개)와 달리 도구가 없다 — 실존·중복 확인은
+    후보 생성기(후속 이슈)가 후보를 만드는 시점에 이미 보장한다는 전제다(design-598
+    §3-4). 출력 스키마는 채팅 레인과 동일한 `RecommendationSet`을 공유한다.
+    """
+    return create_agent(
+        model=init_seller_model("resident_recommend"),
+        tools=[],
+        system_prompt=RESIDENT_RECOMMEND_PROMPT,
+        response_format=ToolStrategy(RecommendationSet),
+        context_schema=SellerContext,
+        middleware=[_model_usage_middleware("resident_recommend")],
     )

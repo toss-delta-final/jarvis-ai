@@ -5,9 +5,12 @@
 
 from __future__ import annotations
 
+import math
+
 import pytest
 from pydantic import ValidationError
 
+from app.agents.seller.features import spec
 from app.core.config import Settings
 
 
@@ -220,3 +223,270 @@ def test_general_lane_budget_tracks_every_serial_term() -> None:
     assert 10.0 + 31.0 + 20.0 < 90.0, "이 값이 1배 계산에서는 통과한다는 전제"
     with pytest.raises(ValidationError):
         Settings(_env_file=None, seller_checkpoint_connect_timeout_s=31.0)
+
+
+# ── 이슈 #621 — management/confirm 레인 직렬 예산 ────────────────────────────────
+
+
+def test_management_lane_budget_defaults_pass() -> None:
+    """기본값(이미지 82 / 텍스트수정 83)은 90s 캡 안에 들어온다."""
+    ok = Settings(_env_file=None)
+    downstream = 3 * ok.state_store_query_timeout_s
+    image_path = (
+        ok.state_store_query_timeout_s
+        + ok.seller_vision_timeout_s
+        + ok.seller_product_agent_timeout_s
+        + ok.seller_category_resolve_timeout_s
+        + downstream
+    )
+    text_edit_path = (
+        ok.state_store_query_timeout_s
+        + ok.seller_pending_gate_timeout_s
+        + ok.state_store_query_timeout_s
+        + ok.seller_route_timeout_s
+        + ok.seller_product_agent_timeout_s
+        + ok.seller_category_resolve_timeout_s
+        + downstream
+    )
+    assert max(image_path, text_edit_path) < ok.stream_total_timeout_s
+
+
+def test_management_lane_budget_rejects_over_cap_image_path() -> None:
+    """이미지 경로만 캡을 넘겨도 기동 실패 — vision 상한을 크게 올린다."""
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_vision_timeout_s=60.0)
+
+
+def test_management_lane_budget_rejects_over_cap_text_edit_path() -> None:
+    """텍스트 수정 경로만 캡을 넘겨도 기동 실패 — 라우팅 상한을 크게 올린다(이미지
+    경로는 라우팅을 거치지 않아 영향받지 않는다)."""
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_route_timeout_s=60.0)
+
+
+def test_management_lane_budget_boundary_is_strict() -> None:
+    """동률(>=)도 거절한다 — 어느 시계가 먼저 터질지 지터로 갈린다."""
+    ok = Settings(_env_file=None)
+    downstream = 3 * ok.state_store_query_timeout_s
+    text_edit_path = (
+        ok.state_store_query_timeout_s
+        + ok.seller_pending_gate_timeout_s
+        + ok.state_store_query_timeout_s
+        + ok.seller_route_timeout_s
+        + ok.seller_product_agent_timeout_s
+        + ok.seller_category_resolve_timeout_s
+        + downstream
+    )
+    boundary_route = ok.seller_route_timeout_s + (ok.stream_total_timeout_s - text_edit_path)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_route_timeout_s=boundary_route)
+
+
+def test_confirm_lane_budget_defaults_pass() -> None:
+    """기본값(3+45+3=51)은 90s 캡 안에 들어온다."""
+    ok = Settings(_env_file=None)
+    budget = 2 * ok.state_store_query_timeout_s + ok.seller_confirm_execute_timeout_s
+    assert budget < ok.stream_total_timeout_s
+
+
+def test_confirm_lane_budget_rejects_over_cap() -> None:
+    """seller_confirm_execute_timeout_s 를 크게 올리면 기동 실패."""
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_confirm_execute_timeout_s=90.0)
+
+
+def test_confirm_lane_budget_boundary_is_strict() -> None:
+    """동률(>=)도 거절한다."""
+    ok = Settings(_env_file=None)
+    boundary = ok.stream_total_timeout_s - 2 * ok.state_store_query_timeout_s
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_confirm_execute_timeout_s=boundary)
+
+
+# ── 고객 축 피처·군집 (이슈 #593, 03-FEATURES 2부 / 04-CLUSTERING §7) ──────────
+
+
+def test_customer_feature_settings_defaults() -> None:
+    """기본값의 출처는 features/spec.py 다 — 여기서 숫자를 다시 적지 않는다."""
+    settings = Settings(_env_file=None)
+
+    assert settings.seller_feature_spec_version == "fe_v1"
+    assert tuple(settings.seller_cluster_input_keys) == spec.CLUSTER_INPUT_KEYS
+    assert settings.seller_feature_shrinkage_alpha == 5.0
+    assert settings.seller_feature_min_denom == 5
+    assert settings.seller_amount_bucket_map == spec.AMOUNT_BUCKET_MAP
+    assert settings.seller_customer_kmeans_k_min == 2
+    assert settings.seller_customer_kmeans_k_max == 6
+    assert settings.seller_customer_kmeans_n_init == 10
+    assert settings.seller_customer_pca_variance == 0.95
+    assert settings.seller_customer_pca_auto_compare is True
+    assert settings.seller_customer_segment_min_size == 30
+    assert settings.seller_snapshot_row_limit == 1000
+    assert settings.seller_customer_label_thresholds == spec.DEFAULT_LABEL_THRESHOLDS
+
+
+def test_customer_kmeans_settings_are_separate_from_product_axis() -> None:
+    """⚠️ 상품 축 키를 재사용하면 값 하나로 두 파이프라인이 동시에 흔들린다(결정 28b)."""
+    settings = Settings(_env_file=None, seller_customer_kmeans_random_state=7)
+
+    assert settings.seller_customer_kmeans_random_state == 7
+    assert settings.seller_kmeans_random_state == 42  # 상품 축 — 무접촉
+    assert settings.seller_behavior_kmeans_k_max == 5  # 상품 축 k 범위도 별개
+
+
+def test_cluster_group_weights_default_to_one_over_sqrt_n() -> None:
+    """축군의 총 영향력이 1 이 되도록 열별 가중치는 1/√n 이다(04 §1.2)."""
+    weights = Settings(_env_file=None).seller_customer_cluster_group_weights
+
+    assert weights["activity"] == pytest.approx(1 / math.sqrt(5))
+    assert weights["funnel"] == pytest.approx(1 / math.sqrt(3))
+    assert weights["explore"] == pytest.approx(1.0)
+    # 각 축군의 기여 합 = n × w² = 1.
+    for group, keys in spec.CLUSTER_GROUP_KEYS.items():
+        assert len(keys) * weights[group] ** 2 == pytest.approx(1.0)
+
+
+def test_cluster_input_keys_must_match_spec_order() -> None:
+    """스냅샷 각인과 코드가 어긋난 채 기동하면 다른 정의로 만든 숫자를 비교하게 된다."""
+    shuffled = list(spec.CLUSTER_INPUT_KEYS)
+    shuffled[0], shuffled[1] = shuffled[1], shuffled[0]
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_cluster_input_keys=shuffled)
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_cluster_input_keys=list(spec.CLUSTER_INPUT_KEYS)[:11])
+
+
+def test_amount_bucket_map_must_match_spec_order() -> None:
+    """응답 amountBuckets 와의 대조는 런타임이고, 부팅은 상수끼리만 본다."""
+    reordered = {key: spec.AMOUNT_BUCKET_MAP[key] for key in reversed(spec.AMOUNT_BUCKET_ORDER)}
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_amount_bucket_map=reordered)
+
+
+def test_cluster_group_weights_reject_unknown_or_negative() -> None:
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_customer_cluster_group_weights={"activity": 1.0})
+    with pytest.raises(ValidationError):
+        Settings(
+            _env_file=None,
+            seller_customer_cluster_group_weights={
+                **spec.DEFAULT_CLUSTER_GROUP_WEIGHTS,
+                "explore": 0.0,
+            },
+        )
+
+
+def test_label_thresholds_require_every_key_and_percentile_range() -> None:
+    partial = dict(spec.DEFAULT_LABEL_THRESHOLDS)
+    partial.pop("loyal_recency_min")
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_customer_label_thresholds=partial)
+
+    with pytest.raises(ValidationError):
+        Settings(
+            _env_file=None,
+            seller_customer_label_thresholds={
+                **spec.DEFAULT_LABEL_THRESHOLDS,
+                "loyal_orders_min": 120.0,
+            },
+        )
+
+
+def test_customer_kmeans_k_range_is_validated() -> None:
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_customer_kmeans_k_min=1)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_customer_kmeans_k_min=6, seller_customer_kmeans_k_max=4)
+
+
+def test_feature_dict_settings_survive_empty_env_string() -> None:
+    """deploy.yml 은 미설정 vars 를 빈 문자열로 쓴다 — model_price_* 와 같은 방어다."""
+    settings = Settings(
+        _env_file=None,
+        seller_amount_bucket_map="",
+        seller_customer_cluster_group_weights="",
+        seller_customer_label_thresholds="",
+    )
+    assert settings.seller_amount_bucket_map == spec.AMOUNT_BUCKET_MAP
+    assert settings.seller_customer_label_thresholds == spec.DEFAULT_LABEL_THRESHOLDS
+
+
+def test_snapshot_comparison_settings_defaults() -> None:
+    """이슈 #594 신설 4종 — 보관 14일 / 비교 거리 7일 / 순유입 3% / 이동 표시 1%."""
+    settings = Settings(_env_file=None)
+
+    assert settings.seller_snapshot_retention_days == 14
+    assert settings.seller_baseline_offset_days == 7
+    assert settings.seller_segment_shift_pct == 0.03
+    assert settings.seller_move_report_min_pct == 0.01
+    # 소규모 군집 임계는 #593 이 이미 둔 키다 — 신설하지 않고 재사용한다.
+    assert settings.seller_customer_segment_min_size == 30
+
+
+def test_retention_shorter_than_baseline_offset_fails_fast() -> None:
+    """보관이 비교 거리보다 짧으면 churn 이 구조적으로 영원히 no_baseline 이 된다."""
+    with pytest.raises(ValidationError, match="SELLER_SNAPSHOT_RETENTION_DAYS"):
+        Settings(_env_file=None, seller_snapshot_retention_days=3, seller_baseline_offset_days=7)
+
+
+def test_seller_trigger_defaults() -> None:
+    """무인 스캔 트리거 고정 임계(#595, `10-TRIGGER` §3.2 표).
+
+    ⚠️ 단위가 둘이다 — `*_pct` 는 상대 변화율, `*_pp` 는 퍼센트포인트. 섞으면 임계의
+    뜻이 바뀐다(이탈률 2%→3% 를 상대로 재면 +50%).
+    """
+    settings = Settings(_env_file=None)
+    assert settings.seller_trigger_sales_pct == 0.05
+    assert settings.seller_trigger_conversion_pct == 0.10
+    assert settings.seller_trigger_product_drop_pct == 0.30
+    assert settings.seller_trigger_cart_abandon_pp == 0.10
+    assert settings.seller_trigger_new_customer_drop_pct == 0.30
+    assert settings.seller_trigger_repurchase_drop_pp == 0.10
+    assert settings.seller_scan_baseline_days == 7
+
+
+def test_seller_eval_gate_defaults() -> None:
+    """판정 검증 게이트(#595, `12-EVAL` 결정 119·121)."""
+    settings = Settings(_env_file=None)
+    assert settings.seller_eval_null_days == 1000
+    assert settings.seller_eval_trigger_rate_max == 0.01
+    assert settings.seller_cluster_stability_min == 0.7
+
+
+def test_seller_trigger_thresholds_fail_fast() -> None:
+    """0 이면 AND 의 한쪽이 사라지고 1 이상이면 도달 불가 — 둘 다 조용한 무력화라 막는다."""
+    for field in (
+        "seller_trigger_sales_pct",
+        "seller_trigger_conversion_pct",
+        "seller_trigger_product_drop_pct",
+        "seller_trigger_cart_abandon_pp",
+        "seller_trigger_new_customer_drop_pct",
+        "seller_trigger_repurchase_drop_pp",
+    ):
+        with pytest.raises(ValidationError):
+            Settings(_env_file=None, **{field: 0.0})
+        with pytest.raises(ValidationError):
+            Settings(_env_file=None, **{field: 1.0})
+    # 경계 안쪽은 유효하다.
+    assert Settings(_env_file=None, seller_trigger_sales_pct=0.99).seller_trigger_sales_pct == 0.99
+
+
+def test_seller_scan_window_relations_fail_fast() -> None:
+    """lookback 이 비교 구간 이하면 대상일 자리가 없어 트리거 1 이 상시 보류가 된다."""
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_scan_baseline_days=0)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_scan_baseline_days=28)  # lookback 과 같다
+    assert Settings(_env_file=None, seller_scan_baseline_days=27).seller_scan_baseline_days == 27
+
+
+def test_seller_eval_gate_fail_fast() -> None:
+    """시뮬레이션이 lookback 보다 짧으면 잴 날이 0 일이라 게이트가 조용히 통과한다."""
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_eval_null_days=10)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_eval_trigger_rate_max=0.0)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_cluster_stability_min=1.5)
+    assert Settings(_env_file=None, seller_eval_null_days=28).seller_eval_null_days == 28

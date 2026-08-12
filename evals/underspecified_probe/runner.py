@@ -12,7 +12,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
@@ -25,6 +24,11 @@ from app.agents.buyer.recommendation.needs_expansion import detect_expansion_nee
 from app.agents.buyer.recommendation.no_condition import _is_blank
 from app.agents.buyer.recommendation.state import RouteDecision
 from app.agents.buyer.recommendation.underspecified import is_underspecified_turn
+from app.agents.buyer.recommendation.underspecified_classifier import (
+    apply_underspecified_classification,
+    classify_underspecified,
+    could_be_underspecified_message,
+)
 from app.core.config import Settings
 from app.core.llm import LLMClient
 from app.schemas.spring import ProductSearchFilters
@@ -63,7 +67,9 @@ def dedicated_suppressed_decision(decision: RouteDecision) -> tuple[RouteDecisio
     문자열을 냈을 수도 있어 구분 불가하며, 그 모호 표본은 두번째 반환값으로 산출물에 남긴다.
     """
     clone = _clone_decision(decision)
-    leg_query = (clone.category_queries[0].query or "").strip() if len(clone.category_queries) == 1 else ""
+    leg_query = (
+        (clone.category_queries[0].query or "").strip() if len(clone.category_queries) == 1 else ""
+    )
     semantic = (clone.filters.semantic_query or "").strip()
     ambiguous = bool(leg_query and semantic == leg_query and not clone.semantic_query_is_fallback)
     clone.category_queries = []
@@ -77,8 +83,11 @@ def postprocessed_decision(
 ) -> tuple[RouteDecision, bool]:
     """파싱부 head 억제와 동형인 사본; fallback 파생은 dedicated와 단일 구현을 공유한다."""
     legs = suppress_generic_single_leg(
-        decision.category_queries, decision.filters, enabled=True,
-        generic_heads=generic_heads, condition_terms=condition_terms,
+        decision.category_queries,
+        decision.filters,
+        enabled=True,
+        generic_heads=generic_heads,
+        condition_terms=condition_terms,
     )
     if len(legs) == len(decision.category_queries):
         return _clone_decision(decision), False
@@ -95,6 +104,7 @@ def _clone_decision(decision: RouteDecision) -> RouteDecision:
         category_legs=list(decision.category_legs),
         repurchase_products=list(decision.repurchase_products),
         revert_categories=list(decision.revert_categories),
+        attr_conditions_suppressed_axes=list(decision.attr_conditions_suppressed_axes),
     )
 
 
@@ -219,6 +229,10 @@ class Sample:
     dedicated_ambiguous: bool = False
     before_verdict: bool | None = None
     postprocess_verdict: bool | None = None
+    # [#464] 후처리 뒤 `filters.attr_conditions` 에 남은 축 — samples.csv 재집계용 원문.
+    attr_condition_axes: list[str] = field(default_factory=list)
+    # [#464] attrConditions 에서 결정론 후처리로 제거한 축 — samples.csv 재집계용 진단 원문.
+    attr_conditions_suppressed_axes: list[str] = field(default_factory=list)
 
     @property
     def intent(self) -> str:
@@ -282,6 +296,8 @@ class Sample:
             dedicated_ambiguous=dedicated_ambiguous,
             before_verdict=before_verdict,
             postprocess_verdict=postprocess_verdict,
+            attr_condition_axes=list((decision.filters.attr_conditions or {}).keys()),
+            attr_conditions_suppressed_axes=list(decision.attr_conditions_suppressed_axes),
         )
 
 
@@ -326,11 +342,14 @@ async def run_cell(
     leg_head_suppression: bool = False,
     leg_generic_heads: frozenset[str] = frozenset(),
     leg_condition_terms: frozenset[str] = frozenset(),
+    attr_axis_suppression: bool = False,
+    attr_constraint_axes: frozenset[str] = frozenset(),
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     union_enabled: bool = False,
     union_llm: Any | None = None,
     union_settings: Settings | None = None,
     dedicated_llm: LLMClient | None = None,
+    dedicated_settings: Settings | None = None,
     tri_generic_heads: frozenset[str] = frozenset(),
     tri_condition_terms: frozenset[str] = frozenset(),
 ) -> CellResult:
@@ -345,6 +364,13 @@ async def run_cell(
     anchor = cell.anchor
     # [§D5] priorExists 앵커는 decompose·판정에 같은 prior(빈 멀티턴 상태)를 넘긴다.
     prior = ProductSearchFilters() if anchor.prior_exists else None
+    dedicated_call_gate = (
+        dedicated_llm is not None
+        and dedicated_settings is not None
+        and prior is None
+        and could_be_underspecified_message(anchor.utterance)
+    )
+    dedicated_prompt = dedicated_settings is not None and (prior is not None or dedicated_call_gate)
     result = CellResult(cell_id=cell.cell_id, case_id=anchor.case_id, slice=anchor.slice)
     max_attempts = n * attempt_multiplier
     while len(result.samples) < n and result.attempts < max_attempts:
@@ -365,6 +391,9 @@ async def run_cell(
                 leg_head_suppression=leg_head_suppression,
                 leg_generic_heads=leg_generic_heads,
                 leg_condition_terms=leg_condition_terms,
+                attr_axis_suppression=attr_axis_suppression,
+                attr_constraint_axes=attr_constraint_axes,
+                dedicated_underspecified_classifier=dedicated_prompt,
             )
         except BudgetExceeded as exc:
             result.failures.append(
@@ -388,22 +417,24 @@ async def run_cell(
             await sleep(backoff_seconds(len(result.failures)))
             continue
         before_verdict = is_underspecified_turn(decision, prior, judgment_settings)
-        post_decision, _ = postprocessed_decision(decision, generic_heads=tri_generic_heads, condition_terms=tri_condition_terms)
+        post_decision, _ = postprocessed_decision(
+            decision, generic_heads=tri_generic_heads, condition_terms=tri_condition_terms
+        )
         postprocess_verdict = is_underspecified_turn(post_decision, prior, judgment_settings)
         dedicated_called = dedicated_disagreed = dedicated_failed = dedicated_ambiguous = False
-        if dedicated_llm is not None:
+        if dedicated_call_gate:
             dedicated_called = True
             try:
-                raw = await dedicated_llm.complete(
-                    system='사용자가 무엇을 살지 지목하지 않았으면 {"underspecified":true}, 아니면 false만 JSON으로 답하세요.',
-                    user=anchor.utterance,
-                    tier=tier,
-                    max_tokens=24,
+                verdict = await classify_underspecified(
+                    dedicated_llm, message=anchor.utterance, settings=dedicated_settings
                 )
-                suppress = json.loads(raw).get("underspecified") is True
-                if suppress:
-                    clone, dedicated_ambiguous = dedicated_suppressed_decision(decision)
-                    dedicated_disagreed = is_underspecified_turn(clone, prior, judgment_settings) != is_underspecified_turn(decision, prior, judgment_settings)
+                clone = _clone_decision(decision)
+                if apply_underspecified_classification(
+                    clone, message=anchor.utterance, verdict=verdict
+                ):
+                    dedicated_disagreed = is_underspecified_turn(
+                        clone, prior, judgment_settings
+                    ) != is_underspecified_turn(decision, prior, judgment_settings)
                     decision = clone
             except Exception:
                 dedicated_failed = True
@@ -467,12 +498,15 @@ async def run_probe(
     leg_head_suppression: bool = False,
     leg_generic_heads: frozenset[str] = frozenset(),
     leg_condition_terms: frozenset[str] = frozenset(),
+    attr_axis_suppression: bool = False,
+    attr_constraint_axes: frozenset[str] = frozenset(),
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     on_cell_done: Callable[[CellResult], None] | None = None,
     union_enabled: bool = False,
     union_llm: Any | None = None,
     union_settings: Settings | None = None,
     dedicated_llm: LLMClient | None = None,
+    dedicated_settings: Settings | None = None,
     tri_generic_heads: frozenset[str] = frozenset(),
     tri_condition_terms: frozenset[str] = frozenset(),
 ) -> list[CellResult]:
@@ -493,11 +527,14 @@ async def run_probe(
                 leg_head_suppression=leg_head_suppression,
                 leg_generic_heads=leg_generic_heads,
                 leg_condition_terms=leg_condition_terms,
+                attr_axis_suppression=attr_axis_suppression,
+                attr_constraint_axes=attr_constraint_axes,
                 sleep=sleep,
                 union_enabled=union_enabled,
                 union_llm=union_llm,
                 union_settings=union_settings,
                 dedicated_llm=dedicated_llm,
+                dedicated_settings=dedicated_settings,
                 tri_generic_heads=tri_generic_heads,
                 tri_condition_terms=tri_condition_terms,
             )

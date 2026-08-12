@@ -1,19 +1,29 @@
-"""app/agents/seller/tools.py(ToolRuntime 도구 + READ_TOOLS/PRODUCT_TOOLS) 단위 테스트.
+"""app/agents/seller/tools.py(ToolRuntime 도구 + READ_TOOLS) 단위 테스트.
 
 DESIGN-SELLER-TOOLS-STAGE1 §6 테스트 목록. 실 Spring 호출 없이 FakeSpringClient 로
-브랜드 스코프 주입(IDOR 방지)·degrade 문자열 반환·쓰기/조회 분리를 검증한다.
+브랜드 스코프 주입(IDOR 방지)·degrade 문자열 반환을 검증한다.
+
+[#620] 상품/주문 쓰기 도구(create_product/update_product/delete_product/
+update_order_status @tool)와 그 레지스트리(PRODUCT_TOOLS/ORDER_WRITE_TOOLS)는 어느
+에이전트에도 바인딩되지 않는 죽은 코드였다 — 제거됐다. 실행은 hitl._execute_draft 가
+코드로 SpringClient 를 직접 호출한다(HITL 모듈 결정 1). 이 파일은 이제 조회·계산
+도구(READ_TOOLS)만 검증한다.
 """
 
 from __future__ import annotations
 
+from datetime import UTC, date, datetime
+from uuid import UUID
+
 from langchain_core.tools import BaseTool
 
+from app.agents.seller.analysis_records import RecommendationRecord, ReportRecord
 from app.agents.seller.context import SellerContext
+from app.agents.seller import tools as seller_tools
 from app.agents.seller.tools import (
-    ORDER_WRITE_TOOLS,
-    PRODUCT_TOOLS,
     READ_TOOLS,
     get_account_events,
+    get_latest_report,
     get_behavior_events,
     get_churn_cohort,
     get_funnel,
@@ -22,8 +32,6 @@ from app.agents.seller.tools import (
     get_reviews,
     get_sales_timeseries,
     list_my_products,
-    update_order_status,
-    update_product,
 )
 from app.services import spring_client as spring_client_module
 from app.schemas.spring import (
@@ -52,10 +60,7 @@ from app.schemas.spring import (
     SellerReviewRow,
     SellerReviewStats,
 )
-from app.services.spring_client import (
-    OrderAlreadyShipped,
-    SpringUnavailableError,
-)
+from app.services.spring_client import SpringUnavailableError
 from app.core.tracing import (
     FakeTraceExporter,
     LangSmithTraceExporter,
@@ -252,26 +257,26 @@ async def _call_runtime_tool(tool: BaseTool, args: dict, fake, brand_id: int = 4
         spring_client_module.set_spring_client(None)
 
 
-def test_write_tools_isolated_from_read() -> None:
-    """read_tools 에는 쓰기 도구가 없고, 쓰기는 전용 레지스트리에만 존재한다."""
+def test_no_write_tools_exist() -> None:
+    """[#620] 상품/주문 쓰기 도구는 모듈에 아예 없다 — 실행은 hitl._execute_draft 가
+    코드로 SpringClient 를 직접 호출한다(HITL 모듈 결정 1). 예전엔 PRODUCT_TOOLS·
+    ORDER_WRITE_TOOLS 라는 전용 레지스트리에 격리돼 있었는데, 어느 에이전트에도
+    바인딩되지 않는 죽은 코드로 확인돼 레지스트리째 제거했다 — 되살아나는 회귀를
+    이 테스트가 잡는다.
+    """
     read_names = {t.name for t in READ_TOOLS}
-    product_names = {t.name for t in PRODUCT_TOOLS}
-    order_write_names = {t.name for t in ORDER_WRITE_TOOLS}
-
-    for write_name in ("create_product", "update_product", "delete_product"):
+    for write_name in ("create_product", "update_product", "delete_product", "update_order_status"):
         assert write_name not in read_names
-        assert write_name in product_names
-    # [#297] 주문 쓰기(발송)도 read 에 없고 ORDER_WRITE_TOOLS 에만 있다.
-    assert "update_order_status" not in read_names
-    assert "update_order_status" in order_write_names
+        assert not hasattr(seller_tools, write_name)
+    assert not hasattr(seller_tools, "PRODUCT_TOOLS")
+    assert not hasattr(seller_tools, "ORDER_WRITE_TOOLS")
     # 신설 조회 2종은 read 에 있다.
     assert {"get_orders", "get_reviews"} <= read_names
 
 
 def test_no_identity_params_in_any_tool() -> None:
     """모든 도구의 args_schema 에 sellerId/brandId 류 키가 없다(IDOR — 신원 미노출)."""
-    all_tools = {t.name: t for t in (*READ_TOOLS, *PRODUCT_TOOLS, *ORDER_WRITE_TOOLS)}.values()
-    for t in all_tools:
+    for t in READ_TOOLS:
         arg_keys = set(t.args.keys())
         assert not (arg_keys & FORBIDDEN_IDENTITY_KEYS), (
             f"{t.name} exposes identity arg: {arg_keys}"
@@ -424,10 +429,11 @@ async def test_search_analysis_guide_is_stub() -> None:
     assert "NotImplementedError" not in result
 
 
-def test_list_my_products_in_both_lists() -> None:
-    """list_my_products 는 read_tools·product_tools 양쪽에 모두 존재한다."""
+def test_list_my_products_in_read_tools() -> None:
+    """list_my_products 는 READ_TOOLS 에 있다 — product_agent 는 workers.py 의
+    PRODUCT_DRAFT_TOOLS(별도 리스트, #620 이후 조회·계산 전용)에서 같은 함수를
+    재사용한다."""
     assert "list_my_products" in {t.name for t in READ_TOOLS}
-    assert "list_my_products" in {t.name for t in PRODUCT_TOOLS}
 
 
 async def test_calculate_tool_handles_division_by_zero() -> None:
@@ -1078,18 +1084,9 @@ async def test_list_products_uses_default_limit_from_settings() -> None:
     assert fake.recorded_limit == get_settings().seller_list_default_limit
 
 
-async def test_update_product_exposes_all_schema_fields() -> None:
-    """update_product 는 ProductUpdate 전 필드를 인자로 노출한다(2026-07-17 사용자 확정)."""
-    fake = FakeSpringClient()
-    result = await _call_runtime_tool(
-        update_product, {"product_id": 9, "name": "새 이름", "category": "패션"}, fake
-    )
-
-    assert "9" in result
-    assert fake.recorded_patch.name == "새 이름"  # name 이 스키마까지 전달된다
-    assert fake.recorded_patch.category == "패션"
-    assert fake.recorded_patch.price is None  # 미지정 필드는 None(부분 수정)
-
+# [#620] update_product 도구(및 ProductUpdate.category 인자) 테스트는 제거됐다 — 도구
+# 자체가 죽은 코드로 확인돼 삭제됐고, category 필드도 스키마에서 빠졌다
+# (app/agents/seller/hitl.py 의 validate_draft 가 카드 표시 전에 선차단한다).
 
 # ── I-13 행동 이벤트 도구 (REALIGN ②-3 — 07/17 확정 명세) ──
 
@@ -2623,43 +2620,10 @@ async def test_get_reviews_without_bucket_keeps_legacy_output() -> None:
     assert fake.review_stats_calls == [(None, None, None, None)]
 
 
-# ── [#297] update_order_status (I-30 발송 처리, §4.19 — ORDER_WRITE_TOOLS 전용) ──
-
-
-async def test_update_order_status_executes_and_reports_transition() -> None:
-    fake = FakeSpringClient()
-
-    result = await _call_runtime_tool(
-        update_order_status, {"order_item_id": 5551}, fake, brand_id=12
-    )
-
-    assert fake.recorded_brand_id == 12
-    order_item_id, payload = fake.recorded_order_status_args
-    assert order_item_id == 5551
-    assert payload.to_status == "SHIPPING"
-    assert "발송 처리됨" in result and "ORDERED→SHIPPING" in result
-
-
-async def test_update_order_status_already_shipped_is_distinct_error() -> None:
-    """409 는 '이미 발송'으로 구분 안내 — 멱등 성공으로 뭉개지 않는다(I-12 논리)."""
-    fake = FakeSpringClient()
-    fake.order_status_error = OrderAlreadyShipped("ORDER_ALREADY_SHIPPED")
-
-    result = await _call_runtime_tool(update_order_status, {"order_item_id": 5551}, fake)
-
-    assert result.startswith("Error:")
-    assert "이미 발송" in result
-
-
-async def test_update_order_status_spring_failure_never_claims_success() -> None:
-    """500·타임아웃은 '반영 여부 미확인'으로 — 성공 보고 금지(§4.19)."""
-    fake = FakeSpringClient(fail={"update_order_item_status"})
-
-    result = await _call_runtime_tool(update_order_status, {"order_item_id": 5551}, fake)
-
-    assert result.startswith("Error:")
-    assert "반영 여부가 확인되지 않았습니다" in result
-
+# [#620] update_order_status 도구(ORDER_WRITE_TOOLS 전용, #297) 테스트는 제거됐다 —
+# 도구 자체가 어느 에이전트에도 바인딩되지 않는 죽은 코드로 확인돼 삭제됐다. I-30
+# 발송 실행 경로(성공/이미 발송/장애)는 app/agents/seller/hitl.py 의 _execute_draft
+# 가 담당하며 test_seller_hitl.py 에서 검증한다.
 
 # ─────────── 기간 인자 백스톱 가드 (이슈 #346) ───────────
 
@@ -2725,3 +2689,92 @@ async def test_period_arg_guard_skips_optional_unset_period() -> None:
     result = await _call_runtime_tool(get_orders, {}, fake)
 
     assert not result.startswith("Error:")
+
+
+# ── [#591] get_latest_report — 보고서 조회 도구는 이것 하나뿐(결정 10) ──────────
+
+
+def _report(brand_id: int = 42) -> ReportRecord:
+    return ReportRecord(
+        id=UUID("11111111-1111-4111-8111-111111111111"),
+        brand_id=brand_id,
+        trigger_type="scheduled_daily",
+        period_from=date(2026, 8, 3),
+        period_to=date(2026, 8, 9),
+        title="주간 매출 진단",
+        summary="전환율이 결제 단계에서 유의하게 떨어졌습니다.",
+        report_md="# 본문",
+        verified=True,
+        attempts=1,
+        created_at=datetime(2026, 8, 10, 5, 0, tzinfo=UTC),
+    )
+
+
+def _recommendation(rank: int, title: str) -> RecommendationRecord:
+    return RecommendationRecord(
+        id=UUID(f"2222222{rank}-2222-4222-8222-222222222222"),
+        report_id=UUID("11111111-1111-4111-8111-111111111111"),
+        brand_id=42,
+        rank=rank,
+        action_type="price_adjust",
+        title=title,
+        rationale="근거",
+    )
+
+
+async def test_get_latest_report_returns_summary_and_ranked_recommendations(
+    monkeypatch,
+) -> None:
+    """요약 + rank 번호가 함께 나간다 — 채팅에서 바로 "N번 적용해줘"로 이어지는 근거다."""
+
+    async def _reports(brand_id: int, *, limit: int):
+        assert (brand_id, limit) == (42, 1)
+        return [_report()]
+
+    async def _recs(report_id, *, brand_id: int):
+        assert brand_id == 42
+        return [_recommendation(1, "가격 인하"), _recommendation(2, "재고 보충")]
+
+    monkeypatch.setattr(seller_tools.analysis_store, "list_reports", _reports)
+    monkeypatch.setattr(seller_tools.analysis_store, "list_recommendations_by_report", _recs)
+
+    result = await get_latest_report.coroutine(runtime=FakeRuntime())
+
+    assert not result.startswith("Error:")
+    assert "주간 매출 진단" in result
+    assert "2026-08-03~2026-08-09" in result  # 보고서 기간을 그대로 인용한다
+    assert "1. 가격 인하" in result and "2. 재고 보충" in result
+
+
+async def test_get_latest_report_empty_is_not_an_error(monkeypatch) -> None:
+    """보고서 0건은 장애가 아니다 — "Error:" 로 나가면 한 번도 분석된 적 없음이 고장으로 안내된다."""
+
+    async def _reports(brand_id: int, *, limit: int):
+        return []
+
+    monkeypatch.setattr(seller_tools.analysis_store, "list_reports", _reports)
+
+    result = await get_latest_report.coroutine(runtime=FakeRuntime())
+
+    assert not result.startswith("Error:")
+    assert "아직" in result
+
+
+async def test_get_latest_report_degrades_on_store_failure(monkeypatch) -> None:
+    """조회 장애는 degrade 문자열(§3.4) — raise 하면 스트림이 통째로 죽는다."""
+
+    async def _boom(brand_id: int, *, limit: int):
+        raise RuntimeError("pool down")
+
+    monkeypatch.setattr(seller_tools.analysis_store, "list_reports", _boom)
+
+    result = await get_latest_report.coroutine(runtime=FakeRuntime())
+
+    assert result.startswith("Error:")
+
+
+async def test_get_latest_report_never_takes_brand_id_arg() -> None:
+    """신원은 runtime.context 에서만 온다 — 인자로 열면 남의 보고서를 읽는다(IDOR)."""
+    tool = next(t for t in READ_TOOLS if t.name == "get_latest_report")
+
+    assert set(tool.args) == set()

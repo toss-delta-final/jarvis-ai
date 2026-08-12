@@ -301,71 +301,6 @@ def test_expanded_vocab_still_obeys_max_days() -> None:
         _resolve("최근 24개월", max_days=30)
 
 
-# ── 5. 확인 문구 (DESIGN §4.3 — 기간 문구의 유일한 생성 지점) ────────────────────
-
-
-def test_confirmation_text_shows_dates_not_just_vocab() -> None:
-    """확인 문구는 환산 결과를 **날짜로** 되돌려 보여준다.
-
-    어휘만 되풀이하면("이번 달로 분석할까요?") 판매자는 코드가 무엇으로 해석했는지
-    알 수 없다 — 확인의 의미가 사라진다.
-    """
-    text = period.confirmation_text(_resolve("이번 달"))
-    assert "2026-08-01" in text
-    assert "2026-08-05" in text
-    assert "이번 달" in text
-    assert "응" in text  # 승인 방법을 함께 안내한다
-
-
-def test_confirmation_text_discloses_clipping() -> None:
-    """절단(R2)이 있었으면 확인 문구가 그 사실을 밝힌다."""
-    assert "제외" in period.confirmation_text(_resolve("이번 달"))
-    assert "제외" not in period.confirmation_text(_resolve("상반기"))
-
-
-# ── 6. 승인 판정 (DESIGN §5.3 — 전 토큰 긍정 어휘) ──────────────────────────────
-
-
-@pytest.mark.parametrize(
-    "message",
-    [
-        "응",
-        "네",
-        "ㅇㅇ",
-        "맞아",
-        "맞아요",
-        "그래",
-        "좋아요",
-        "응 맞아",
-        "ㅇㅇ 좋아",
-        "네 진행해줘",
-        "응!!",
-        "OK",
-        "오케이",
-    ],
-)
-def test_approval_accepts_affirmatives(message: str) -> None:
-    """짧은 긍정 발화는 승인이다 — 호출부는 확인 대기가 있을 때만 이 판정을 돌린다."""
-    assert period.parse_period_approval(message) is True
-
-
-@pytest.mark.parametrize(
-    "message",
-    [
-        "아니 7월로",  # 수정 — 새 질문으로 흘러 planner 가 재계획한다
-        "네 7월로 해줘",  # 긍정어가 섞여도 기간 표현이 있으면 승인이 아니다
-        "응 아니야",  # 부정어가 섞이면 승인에서 빠진다
-        "지난달 매출 분석해줘",  # 완전히 새 질문
-        "",
-        "   ",
-        "그건 좀 아닌 것 같은데 다시 해줄래 이번엔 지난달로 부탁해",  # 장문
-    ],
-)
-def test_approval_rejects_non_affirmatives(message: str) -> None:
-    """승인이 아닌 발화는 전부 '새 질문'이다 — 수정 전용 경로를 두지 않는 근거(DESIGN §5.1)."""
-    assert period.parse_period_approval(message) is False
-
-
 # ── 5. general 레인 진입점 (#346 — 자유 발화 스캔) ──────────────────────────────
 
 
@@ -556,14 +491,14 @@ def test_any_confirmation_needed_covers_comparison_only_case() -> None:
     assert resolution.any_confirmation_needed is True
 
 
-def test_confirmation_and_disclosure_text_reveal_the_comparison_dates() -> None:
-    """확인·고지 문구가 비교 기간 날짜도 밝힌다 — 본 기간만 밝히면 확인이 절반이다."""
+def test_disclosure_text_reveals_the_comparison_dates() -> None:
+    """고지 문구가 비교 기간 날짜도 밝힌다 — 본 기간만 밝히면 고지가 절반이다."""
     resolution = _from_message("지난달 대비 이번 달 매출")
 
-    for text in (period.confirmation_text(resolution), period.disclosure_text(resolution)):
-        assert resolution.comparison is not None
-        assert resolution.comparison.date_from.isoformat() in text
-        assert resolution.comparison.date_to.isoformat() in text
+    text = period.disclosure_text(resolution)
+    assert resolution.comparison is not None
+    assert resolution.comparison.date_from.isoformat() in text
+    assert resolution.comparison.date_to.isoformat() in text
 
 
 # ── [#518] 버킷 분할 (I-31 리뷰 추이) ─────────────────────────────────────────

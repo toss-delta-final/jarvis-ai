@@ -7,8 +7,11 @@
 2. **load_recent / build_planner_input**: 최근 N건(seller_history_recent_n)을
    planner **입력 메시지**에 주입한다 — PLANNER_PROMPT 는 불변(2026-07-19 확정).
 3. **apply_recommendation**: "N번 적용해줘"(입구 코드 선판정, 2026-07-20 사용자 확정)
-   → 최신 이력의 recommendations[N-1] 을 **대화 재해석 없이** DraftProposal 로 변환,
-   before 는 I-9 현재값으로 채워 4-2 HITL 경로(validate→start_draft→confirm)에 합류.
+   → [이슈 #590] 참조처를 analysis_store(DB, 이슈 #585)의 최신 보고서로 교체 —
+   recommendations[N-1] 을 **대화 재해석 없이** DraftProposal 로 변환(rec_id 주입,
+   07 결정 49), before 는 I-9 현재값으로 채워 4-2 HITL 경로(validate→start_draft→confirm)에
+   합류. 1·2번 역할(Store 저장·조회)은 이번 이슈에서 그대로 유지 — Store 폐지는
+   11-MIGRATION.md 결정 108 대로 별도(Phase 2) 이슈 소관이다.
 
 저장 구조(SPEC §9.1 각색): AsyncPostgresStore(pg-profile) 네임스페이스
 ("sellers", {sellerId}) + 키 "analysis_history" 에 **최신순 목록 1건**으로 보관 —
@@ -33,12 +36,12 @@ from langgraph.store.base import BaseStore
 from langgraph.store.memory import InMemoryStore
 from pydantic import BaseModel, Field
 
-from app.agents.seller import hitl
+from app.agents.seller import analysis_store, hitl
 from app.agents.seller.context import SellerContext
 from app.agents.seller.schemas import (
-    ActionRecommendation,
     DraftChange,
     DraftProposal,
+    ProposedChange,
     RecommendationSet,
 )
 from app.agents.seller.stock_options import option_labels
@@ -239,6 +242,9 @@ def build_planner_input(question: str, entries: list[HistoryEntry]) -> str:
 
 
 # ── "N번 적용해줘" → draft 변환 (§6.3 — 대화 재해석 금지, 조회·변환은 전부 코드) ──
+# [이슈 #590] 참조처를 Store(analysis_history) 최근 1건에서 analysis_store(DB, 이슈 #585)
+# 최신 보고서로 교체한다. Store 자체(save_history/load_recent)는 이번엔 그대로 둔다 —
+# 폐지는 11-MIGRATION.md 결정 108 대로 별도(Phase 2) 이슈 소관이다.
 
 
 def _current_value_str(row: object, field: str) -> str:
@@ -247,7 +253,7 @@ def _current_value_str(row: object, field: str) -> str:
 
 
 def _option_stock_blocker(
-    rec: ActionRecommendation, row: SellerProductRow
+    title: str, changes: list[ProposedChange], row: SellerProductRow
 ) -> str | None:
     """옵션별 재고 상품의 재고 추천은 초안을 만들지 않는다 — 되묻기 문구 (#524).
 
@@ -265,13 +271,13 @@ def _option_stock_blocker(
     """
     if get_settings().seller_stock_wire_mode != "stocks":
         return None
-    if not any(change.field == "stock_quantity" for change in rec.changes):
+    if not any(change.field == "stock_quantity" for change in changes):
         return None
     named = [stock for stock in row.stocks if stock.option_id is not None]
     if len(named) <= 1:
         return None
     return (
-        f"'{rec.title}' 추천은 재고 변경인데 이 상품은 옵션별로 재고가 관리됩니다"
+        f"'{title}' 추천은 재고 변경인데 이 상품은 옵션별로 재고가 관리됩니다"
         f"({' · '.join(option_labels(row.stocks))}). "
         "어느 옵션의 재고를 얼마로 바꿀지 말씀해 주시면 초안을 만들어 드리겠습니다."
     )
@@ -280,51 +286,83 @@ def _option_stock_blocker(
 async def apply_recommendation(
     n: int, context: SellerContext
 ) -> tuple[hitl.DraftRecord | None, str | None]:
-    """최신 분석의 recommendations[n-1] 을 DraftRecord 로 변환 — 불성립은 (None, 안내).
+    """최신 보고서의 추천 N번을 DraftRecord 로 변환 — 불성립은 (None, 안내).
 
-    §6.3 절차: 이력 조회 → 인덱스 검증 → before 를 I-9 현재값으로 채워 DraftProposal
-    구성 → hitl.validate_draft(4-2 재사용). 조회 실패·인덱스 불일치·적용 불가 유형은
-    실행하지 않고 안내 문구를 돌려준다(되묻기). Spring 장애는 전파(호출부 error 경로).
+    [이슈 #590] §6.3 절차 — analysis_store(DB, 이슈 #585)에서 브랜드의 최신 보고서 1건과
+    그 추천 전체(rank 순)를 조회 → 인덱스 검증 → before 를 I-9 현재값으로 채워
+    DraftProposal 구성(rec_id 주입, 07 결정 49) → hitl.validate_draft(4-2 재사용).
+    조회 실패·인덱스 불일치·적용 불가 유형은 실행하지 않고 안내 문구를 돌려준다(되묻기).
+    Spring 장애는 전파(호출부 error 경로).
+
+    [이슈 #622 결정] 조회는 의도적으로 브랜드 축(`brand_id`)만 쓴다 — **보고서는 브랜드
+    자산**으로 취급한다. 같은 브랜드에 판매자 계정이 여럿이면 A가 만든 보고서의 추천을
+    B가 이 함수로 초안화할 수 있다(승인은 `hitl.confirm_draft`가 자기 draftId로 독립
+    검증하므로 그대로 통과) — 이는 사고가 아니라 명시적 결정이다. 좁히려면(추천을 요청한
+    판매자만 적용 가능) `analysis_store.list_reports`·`list_recommendations_by_report`에
+    `seller_id` 축을 추가해야 하는데, 이번 이슈에서는 채택하지 않았다. summary 에 출처
+    보고서를 명시(결정 61, 아래)해 최소한의 추적성만 확보한다.
     """
-    entries = await load_recent(context.seller_id, 1)
-    if not entries:
+    reports = await analysis_store.list_reports(context.brand_id, limit=1)
+    if not reports:
         return None, (
             "적용할 분석 추천 이력이 없습니다. 먼저 분석을 요청하시면 추천을 만들어 드립니다."
         )
-    recommendations = RecommendationSet.model_validate(entries[0].recommendations)
-    items: list[ActionRecommendation] = recommendations.recommendations
+    report = reports[0]
+    items = await analysis_store.list_recommendations_by_report(
+        report.id, brand_id=context.brand_id
+    )
     if not items:
         return None, "가장 최근 분석에는 적용할 추천이 없었습니다. 새 분석을 요청해 주세요."
     if not 1 <= n <= len(items):
         return None, (f"최근 분석의 추천은 1번~{len(items)}번까지입니다. 몇 번을 적용할까요?")
     rec = items[n - 1]
-    if not rec.changes:
+    changes = [ProposedChange.model_validate(c) for c in rec.changes]
+    if not changes:
         return None, (
             f"'{rec.title}' 추천은 자동 적용할 필드 변경이 없는 유형입니다. "
             "구체적으로 무엇을 바꿀지 말씀해 주시면 초안을 만들어 드리겠습니다."
         )
-
-    row = await hitl._find_product(context.brand_id, rec.product_id)
-    if row is None:
+    product_id = rec.product_ids[0] if rec.product_ids else None
+    if product_id is None:
         return None, (
-            f"추천 대상 상품(productId={rec.product_id})을 상품 목록에서 찾을 수 없습니다. "
-            "상품이 삭제되었을 수 있어요. 다시 확인 후 요청해 주세요."
+            f"'{rec.title}' 추천에 대상 상품이 지정되어 있지 않습니다. "
+            "구체적으로 어느 상품을 바꿀지 말씀해 주시면 초안을 만들어 드리겠습니다."
         )
 
-    if problem := _option_stock_blocker(rec, row):
+    row, exhausted = await hitl._find_product(context.brand_id, product_id)
+    if row is None:
+        if exhausted:
+            # [#622] 상한 소진 — 상품이 많아 못 찾은 것뿐이라 "삭제됨"으로 단정하지 않는다.
+            return None, hitl.PRODUCT_LOOKUP_EXHAUSTED_TEXT
+        # [#622] 문구를 hitl._execute_draft 의 판단("이미 삭제되었거나 다른 브랜드로
+        # 옮겨진 것 같습니다")과 통일한다 — #590 전에는 이 함수만 "삭제되었을 수 있어요"라는
+        # 더 부정확한 자체 문구를 달고 있었다.
+        return None, (
+            f"추천 대상 상품(productId={product_id})을 상품 목록에서 찾을 수 없습니다. "
+            "이미 삭제되었거나 다른 브랜드로 옮겨진 것 같습니다. 다시 확인 후 요청해 주세요."
+        )
+
+    if problem := _option_stock_blocker(rec.title, changes, row):
         return None, problem
 
     proposal = DraftProposal(
         op="update",
-        product_id=rec.product_id,
+        product_id=product_id,
         changes=[
             DraftChange(
                 field=change.field,
                 before=_current_value_str(row, change.field),  # 조회 시점 현재값 = diff 기준
                 after=change.after,
             )
-            for change in rec.changes
+            for change in changes
         ],
-        summary=rec.title,
+        # [결정 61] 출처 보고서를 요약에 명시 — 판매자가 다른 날짜의 보고서를 보고 있었다면
+        # 문구가 달라 승인 전에 알아챌 수 있다("최신 보고서 기준"의 함정 방어).
+        summary=f"{report.title} · {n}번 — {rec.title}",
+        rec_id=str(rec.id),
     )
-    return hitl.validate_draft(proposal, seller_id=context.seller_id, brand_id=context.brand_id)
+    # [#620] row 는 어차피 이 함수가 위에서 이미 조회했다 — validate_draft 의 price
+    # 선차단(row-aware)에 그대로 넘긴다(추가 Spring 왕복 없음).
+    return hitl.validate_draft(
+        proposal, seller_id=context.seller_id, brand_id=context.brand_id, row=row
+    )

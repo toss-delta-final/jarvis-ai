@@ -257,3 +257,103 @@ def test_route_screen_injection_does_not_touch_the_supervisor_prompt() -> None:
 
     assert "현재 화면" not in prompts.SUPERVISOR_PROMPT
     assert "screen" not in prompts.SUPERVISOR_PROMPT.lower()
+
+
+# ── [#591] analysis 재정의 — 경계 예시 판정 계약 ───────────────────────────────
+#
+# 실 LLM 없이 검증할 수 있는 것은 "프롬프트가 무엇을 지시하는가"다. 판정이 뒤집힌 8개는
+# 프롬프트의 [경계 예시] 줄이 유일한 근거이므로, 그 줄이 general 을 가리키는지를 고정한다.
+# 여기가 초록인데 실제 라우팅이 틀리면 프롬프트가 아니라 모델 문제로 좁혀진다.
+
+_FLIPPED_TO_GENERAL = [
+    "최근 7일 매출 왜 떨어졌어?",
+    "주문 패턴이 이상해",
+    "전환율이 낮은 것 같은데 문제야?",
+    "지난달 매출 어때?",
+    "요즘 장사 잘 되고 있어?",
+    "이번 주 리뷰 요약해줘",
+    "평점 낮은 리뷰 뭐가 문제야?",
+    "매출 올리려면?",
+]
+
+_STILL_ANALYSIS = [
+    "분석 보고서 보여줘",
+    "이번 주 리포트 있어?",
+    "어제 분석 결과 뭐였어?",
+]
+
+
+def _boundary_examples() -> list[str]:
+    """[경계 예시] 절만 잘라낸다 — 같은 발화가 위 카테고리 설명에도 나오므로 구간을 좁힌다."""
+    from app.agents.seller import prompts
+
+    block = prompts.SUPERVISOR_PROMPT.split("[경계 예시", 1)
+    assert len(block) == 2, "[경계 예시] 절이 사라졌다"
+    return block[1].split("\n[", 1)[0].splitlines()
+
+
+def _example_line(utterance: str) -> str:
+    lines = [ln for ln in _boundary_examples() if f'"{utterance}"' in ln]
+    assert lines, f"경계 예시에서 사라졌다: {utterance}"
+    assert len(lines) == 1, f"경계 예시에 중복 판정이 있다: {utterance}"
+    return lines[0]
+
+
+@pytest.mark.parametrize("utterance", _FLIPPED_TO_GENERAL)
+def test_interpretation_questions_are_routed_to_general(utterance: str) -> None:
+    """원인·평가·요약 질문은 general 이다 — 그 자리에서 해석해 줄 주체가 없어졌다."""
+    assert "→ general" in _example_line(utterance)
+
+
+@pytest.mark.parametrize("utterance", _STILL_ANALYSIS)
+def test_saved_report_requests_are_routed_to_analysis(utterance: str) -> None:
+    """analysis 는 저장된 산출물(보고서·리포트·지난 분석 결과)을 찾는 발화만 남는다."""
+    assert "→ analysis" in _example_line(utterance)
+
+
+def test_supervisor_prompt_drops_the_interpretation_catch_all() -> None:
+    """혼합 규칙의 "해석 의도가 하나라도 있으면 analysis" 는 삭제됐다.
+
+    이 문장이 남아 있으면 위 8개를 general 로 적어둬도 혼합 발화가 전부 analysis 로
+    빨려 들어가 경계 예시가 무력화된다.
+    """
+    from app.agents.seller import prompts
+
+    assert "해석 의도가 하나라도 있으면" not in prompts.SUPERVISOR_PROMPT
+    assert "저장된 보고서를 찾는 요청이 섞여 있으면" in prompts.SUPERVISOR_PROMPT
+
+
+def test_supervisor_prompt_keeps_the_route_decision_vocabulary() -> None:
+    """[S-4 무개정] 카테고리 값 3종은 그대로다 — 바뀐 것은 analysis 의 의미뿐이다."""
+    from app.agents.seller import prompts
+
+    for category in ("analysis", "product", "general"):
+        assert category in prompts.SUPERVISOR_PROMPT
+
+
+def test_general_prompt_points_to_the_report_page_not_an_on_demand_analysis() -> None:
+    """[#591] 판매자가 분석을 요청하는 경로가 사라졌다 — 구 안내는 거짓말이 된다."""
+    from app.agents.seller import prompts
+
+    prompt = prompts.GENERAL_PROMPT_TEMPLATE.format(today="2026-08-11")
+    assert "분석을 요청해 주세요" not in prompt
+    assert "보고서 페이지" in prompt
+
+
+def test_general_prompt_covers_the_widened_tool_scope() -> None:
+    """3번 "지원 범위" 문구가 12종 바인딩과 같은 것을 약속한다(한쪽만 늘면 거짓말이 된다)."""
+    from app.agents.seller import prompts
+
+    prompt = prompts.GENERAL_PROMPT_TEMPLATE.format(today="2026-08-11")
+    for scope in ("퍼널", "행동 이벤트", "변경 이력", "이탈 코호트", "계정 이벤트"):
+        assert scope in prompt
+    assert "get_latest_report" in prompt
+
+
+def test_general_prompt_chart_guidance_is_untouched() -> None:
+    """[#531] 차트 안내는 무수정 — 게이트 ②.5 가 실제로 그 발화를 잡으므로 참인 안내다."""
+    from app.agents.seller import prompts
+
+    prompt = prompts.GENERAL_PROMPT_TEMPLATE.format(today="2026-08-11")
+    assert "차트나 그래프를 그리지 않는다" in prompt
+    assert "매출 그래프 보여줘" in prompt

@@ -1,0 +1,7 @@
+cellId,attempt,errorType,message
+buy-under-0005,3,LLMError,"Error code: 429 - {'error': {'message': 'Rate limit reached for gpt-5-nano in organization org-*** on tokens per min (TPM): Limit 200000, Used 197017, Requested 4102. Please try again in 335ms. Visit "
+buy-under-0006,3,LLMError,"Error code: 429 - {'error': {'message': 'Rate limit reached for gpt-5-nano in organization org-*** on tokens per min (TPM): Limit 200000, Used 196780, Requested 4110. Please try again in 267ms. Visit "
+buy-under-0007,3,LLMError,"Error code: 429 - {'error': {'message': 'Rate limit reached for gpt-5-nano in organization org-*** on tokens per min (TPM): Limit 200000, Used 196589, Requested 4102. Please try again in 207ms. Visit "
+under-br-0001,3,LLMError,"Error code: 429 - {'error': {'message': 'Rate limit reached for gpt-5-nano in organization org-*** on tokens per min (TPM): Limit 200000, Used 197266, Requested 4107. Please try again in 411ms. Visit "
+under-nc-0002,5,LLMError,"Error code: 429 - {'error': {'message': 'Rate limit reached for gpt-5-nano in organization org-*** on tokens per min (TPM): Limit 200000, Used 200000, Requested 4103. Please try again in 1.23s. Visit "
+under-wa-0004,6,LLMError,"Error code: 429 - {'error': {'message': 'Rate limit reached for gpt-5-nano in organization org-*** on tokens per min (TPM): Limit 200000, Used 200000, Requested 4102. Please try again in 1.23s. Visit "

@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.agents.buyer.cart import graph as cart_graph
 from app.agents.buyer.cart.graph import (
     _options_prompt,
     _options_text,
@@ -220,7 +221,7 @@ async def test_cart_option_reask_strips_seller_text() -> None:
     token = next(e for e in events if e["type"] == "token")["data"]["text"]
     # 이슈 #570 — 옵션 줄은 이제 "\n" 으로 정당하게 나뉘므로, 옵션명에 실려온 원시 "\n"(레\n드)이
     # 별도 줄을 만들지 않고 한 줄로 접혔는지(= "레 드")까지 리터럴로 확인한다.
-    assert token == "옵션을 선택해 주세요:\n블[31m루\n레 드\n어떤 걸로 담을까요?"
+    assert token == ("옵션을 선택해 주세요:\n1. **블[31m루**\n2. **레 드**\n어떤 걸로 담을까요?")
     assert all(ch not in token for ch in ("\x1b", "\u200b", "\u202e"))
 
 
@@ -795,8 +796,9 @@ async def test_route_cart_remove(monkeypatch: pytest.MonkeyPatch) -> None:
             items=[CartViewItem(cart_item_id=1, product_id=1, product_name="키보드", quantity=1)]
         )
 
-    async def fake_delete(cart_item_id, *, user_id=None, guest_id=None):
+    async def fake_delete(cart_item_id, *, user_id=None, guest_id=None, chat_session_id=None):
         assert cart_item_id == 1
+        assert chat_session_id == "s1"
         return None
 
     monkeypatch.setattr(sc, "get_cart", fake_get)
@@ -1047,6 +1049,47 @@ async def test_add_to_cart_success_parses(monkeypatch: pytest.MonkeyPatch) -> No
     )
     res = await sc.add_to_cart(AddToCartRequest(user_id=1, product_id=1, quantity=1))
     assert res.success and res.cart_item_id == 55
+
+
+async def test_add_to_cart_serializes_chat_and_recommendation_attribution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """I-2는 챗 sentinel과 추천→담기 귀속을 같은 요청에 전달한다."""
+    import app.services.spring_client as sc
+    from app.schemas.spring import AddToCartRequest, RecommendationContext
+
+    client = _CartClient(_CartResp(200, {"success": True, "data": {"cartItemId": 55}}))
+    monkeypatch.setattr(sc, "_client", lambda: client)
+
+    await sc.add_to_cart(
+        AddToCartRequest(
+            user_id=1,
+            product_id=7,
+            chat_session_id="chat-session-1",
+            recommendation_context=RecommendationContext(
+                recommendation_request_id="request-1", list_id="list-1"
+            ),
+        )
+    )
+
+    assert client.calls == [
+        (
+            "POST",
+            "/internal/cart/items",
+            {
+                "userId": 1,
+                "guestId": None,
+                "productId": 7,
+                "optionId": None,
+                "quantity": 1,
+                "chatSessionId": "chat-session-1",
+                "recommendationContext": {
+                    "recommendationRequestId": "request-1",
+                    "listId": "list-1",
+                },
+            },
+        )
+    ]
 
 
 async def test_add_to_cart_option_required_raises_with_options(
@@ -1378,6 +1421,23 @@ async def test_delete_cart_item_200_missing_success_key_is_not_failure(
     monkeypatch.setattr(sc, "_client", lambda: _CartClient(_CartResp(200, {"data": None})))
     result = await sc.delete_cart_item(55, user_id=1)
     assert result is None
+
+
+async def test_delete_cart_item_serializes_chat_session_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    import app.services.spring_client as sc
+
+    client = _CartClient(_CartResp(200, {"success": True, "data": None}))
+    monkeypatch.setattr(sc, "_client", lambda: client)
+
+    await sc.delete_cart_item(55, user_id=1, chat_session_id="chat-session-1")
+
+    assert client.calls == [
+        (
+            "DELETE",
+            "/internal/cart/items/55",
+            {"userId": 1, "chatSessionId": "chat-session-1"},
+        )
+    ]
 
 
 async def test_delete_cart_item_not_found_raises(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2129,6 +2189,56 @@ async def test_cart_add_discourse_interjection_before_number_option_still_adds()
     }
     assert _types(events) == ["action", "done"]
     assert await store.get_pending("m:t") is None
+
+
+async def test_route_cart_add_forwards_saved_recommendation_context() -> None:
+    """추천 카드에서 해소한 담기는 현재 세션과 그 카드의 귀속 키를 함께 보낸다."""
+    from tests._fakes import FakeLLM
+    import app.services.spring_client as sc
+    from app.agents.buyer.cart.state import get_cart_store
+    from app.schemas.spring import RecommendationContext
+
+    captured = []
+
+    async def fake_add(request):
+        captured.append(request)
+        return AddToCartResult(success=True, cart_item_id=42)
+
+    async def fake_get(*, user_id=None, guest_id=None):
+        return CartView(items=[])
+
+    request = _req(thread_id="attribution")
+    request.session_id = "chat-session-1"
+    store = await get_cart_store()
+    key = await _thread_key(request, _member())
+    await store.set_last_reco(
+        key,
+        [(101, "이어폰")],
+        recommendation_contexts={
+            101: RecommendationContext(recommendation_request_id="request-1", list_id="list-1")
+        },
+    )
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(sc, "add_to_cart", fake_add)
+    monkeypatch.setattr(sc, "get_cart", fake_get)
+    try:
+        events = await _collect(
+            run_buyer_turn(
+                request,
+                _member(),
+                llm=FakeLLM(decompose={"intent": "cart_add", "cart": {"productId": 101}}),
+            )
+        )
+    finally:
+        monkeypatch.undo()
+
+    assert (
+        next(event for event in events if event["type"] == "action")["data"]["type"] == "CART_ADDED"
+    )
+    assert captured[0].chat_session_id == "chat-session-1"
+    assert captured[0].recommendation_context == RecommendationContext(
+        recommendation_request_id="request-1", list_id="list-1"
+    )
 
 
 @pytest.mark.parametrize(
@@ -3248,6 +3358,27 @@ async def test_cart_add_empty_options_without_hint_degrades_to_stock_message() -
     assert token == "지금은 고를 수 있는 옵션이 없어요. 품절된 것 같아요. 다른 상품을 보여드릴까요?"
 
 
+async def test_cart_add_empty_options_with_sanitized_empty_hint_degrades_to_stock_message() -> None:
+    """I-1 힌트가 있어도 모든 이름이 정제 뒤 비면 품절 안내로 degrade한다."""
+    store = CartStateStore()
+
+    async def add_fn(req):
+        raise CartOptionRequired([])
+
+    await store.set_last_reco(
+        "m:t",
+        [(1, "상품")],
+        option_hints={1: OptionHint(names=("\x1b", "\u200b", "\u202e"), total=3)},
+    )
+
+    events = await _run_add(store, CartIntent(product_id=1, quantity=1), add_fn)
+
+    assert "action" not in _types(events)
+    token = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert token == "지금은 고를 수 있는 옵션이 없어요. 품절된 것 같아요. 다른 상품을 보여드릴까요?"
+    assert all(marker not in token for marker in ("1.", "2.", "3.", "**"))
+
+
 # ─────────── 색상 동의어 등가·조건 미충족 고지 (이슈 #454) ───────────
 #
 # 사전 적재는 `_cart_option_required_text` 호출 전에 `spring_client._load_color_synonym_map` 을
@@ -3529,8 +3660,26 @@ async def test_cart_add_synonym_load_failure_degrades_without_crashing(
 # `_options_text` 의 "\n".join 을 " | ".join 으로 바꾸면 이 리터럴 테스트들이 모두 빨개져야 한다.
 
 
+def test_numbered_option_rows_bolds_complete_labels_in_order() -> None:
+    labels = ["블랙 / M", "화이트 / L(+1,000원)"]
+
+    assert cart_graph._numbered_option_rows(labels) == (
+        "1. **블랙 / M**\n2. **화이트 / L(+1,000원)**"
+    )
+
+
+def test_options_text_numbers_only_sanitized_displayable_labels_contiguously() -> None:
+    options = [
+        CartOption(option_id=1, name="블\x1b[31m랙\u200b"),
+        CartOption(option_id=2, name="\u200b\u202e"),
+        CartOption(option_id=3, name="화\n이트"),
+    ]
+
+    assert _options_text(options) == "1. **블[31m랙**\n2. **화 이트**"
+
+
 async def test_cart_option_narrow_reask_literal_matches_issue_570() -> None:
-    """(1) #455 조건 좁힘 — 옵션 두 개가 줄바꿈으로 나열되고 마침표가 옵션 줄에 붙지 않는다."""
+    """(1) #582 조건 좁힘 — 옵션 두 개가 번호·굵은 글씨로 나열된다."""
     store = CartStateStore()
     options = [
         CartOption(option_id=1, name="블랙 / M"),
@@ -3552,8 +3701,8 @@ async def test_cart_option_narrow_reask_literal_matches_issue_570() -> None:
     token = next(e for e in events if e["type"] == "token")["data"]["text"]
     assert token == (
         "말씀하신 조건에 맞는 옵션이에요:\n"
-        "블랙 / M\n"
-        "화이트 / M\n"
+        "1. **블랙 / M**\n"
+        "2. **화이트 / M**\n"
         "이 중에서 고르시거나 다른 옵션을 말씀해 주세요."
     )
 
@@ -3561,7 +3710,7 @@ async def test_cart_option_narrow_reask_literal_matches_issue_570() -> None:
 async def test_cart_option_color_unmet_reask_literal_matches_issue_570(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """(2) #454 색상 미충족 고지 — 첫 줄은 종전처럼 두 문장이 한 줄이고, 옵션은 줄바꿈 나열된다."""
+    """(2) #582 색상 미충족 고지 — 첫 줄은 종전처럼 두 문장이 한 줄이고, 옵션은 번호·굵은 글씨로 나열된다."""
     mapping = {"빨강": ["빨강", "레드"], "블랙": ["블랙", "검정"], "화이트": ["화이트", "흰색"]}
     monkeypatch.setattr(
         "app.services.spring_client._load_color_synonym_map", _mock_synonym_map(mapping)
@@ -3583,14 +3732,14 @@ async def test_cart_option_color_unmet_reask_literal_matches_issue_570(
     token = next(e for e in events if e["type"] == "token")["data"]["text"]
     assert token == (
         "'빨강' 조건에 맞는 옵션은 찾지 못했어요. 고를 수 있는 옵션은 이거예요:\n"
-        "블랙 / M\n"
-        "화이트 / M\n"
+        "1. **블랙 / M**\n"
+        "2. **화이트 / M**\n"
         "이 중에서 고르시거나 다른 상품을 말씀해 주세요."
     )
 
 
 async def test_cart_option_default_reask_literal_matches_issue_570() -> None:
-    """(3) 기본 되물음 — 옵션 두 개가 줄바꿈으로 나열된다."""
+    """(3) #582 기본 되물음 — 옵션 두 개가 번호·굵은 글씨로 나열된다."""
     store = CartStateStore()
     options = [CartOption(option_id=1, name="블랙 / M"), CartOption(option_id=2, name="화이트 / M")]
 
@@ -3600,11 +3749,13 @@ async def test_cart_option_default_reask_literal_matches_issue_570() -> None:
     events = await _run_add(store, CartIntent(product_id=1, quantity=1), add_fn)
 
     token = next(e for e in events if e["type"] == "token")["data"]["text"]
-    assert token == "옵션을 선택해 주세요:\n블랙 / M\n화이트 / M\n어떤 걸로 담을까요?"
+    assert token == (
+        "옵션을 선택해 주세요:\n1. **블랙 / M**\n2. **화이트 / M**\n어떤 걸로 담을까요?"
+    )
 
 
 async def test_cart_option_invalid_reask_literal_matches_issue_570() -> None:
-    """(4) CART_OPTION_INVALID 재질문 — 마무리 줄 없이 옵션만 줄바꿈으로 나열된다(종전에도 없었다)."""
+    """(4) #582 CART_OPTION_INVALID 재질문 — 마무리 줄 없이 번호·굵은 글씨 옵션만 나열된다."""
     store = CartStateStore()
     await store.set_pending(
         "m:t",
@@ -3629,11 +3780,13 @@ async def test_cart_option_invalid_reask_literal_matches_issue_570() -> None:
         )
     )
     token = next(e for e in events if e["type"] == "token")["data"]["text"]
-    assert token == "그 옵션을 찾지 못했어요. 다시 골라 주세요:\n블랙 / M\n화이트 / M"
+    assert token == (
+        "그 옵션을 찾지 못했어요. 다시 골라 주세요:\n1. **블랙 / M**\n2. **화이트 / M**"
+    )
 
 
 async def test_cart_option_hint_fallback_literal_matches_issue_570() -> None:
-    """(hint) I-1 힌트 이름 폴백 — '외 N개' 는 독립된 줄이고 마지막 이름에 붙지 않는다(패킷 §1 A-4)."""
+    """(hint) #582 I-1 힌트 이름 폴백 — '외 N개' 는 독립된 줄이고 마지막 이름에 붙지 않는다(패킷 §1 A-4)."""
     store = CartStateStore()
 
     async def add_fn(req):
@@ -3648,7 +3801,14 @@ async def test_cart_option_hint_fallback_literal_matches_issue_570() -> None:
     events = await _run_add(store, CartIntent(product_id=1, quantity=1), add_fn)
 
     token = next(e for e in events if e["type"] == "token")["data"]["text"]
-    assert token == "옵션을 선택해 주세요:\n블랙\n화이트\n레드\n외 2개\n어떤 걸로 담을까요?"
+    assert token == (
+        "옵션을 선택해 주세요:\n"
+        "1. **블랙**\n"
+        "2. **화이트**\n"
+        "3. **레드**\n"
+        "외 2개\n"
+        "어떤 걸로 담을까요?"
+    )
 
 
 async def test_cart_option_hint_fallback_without_total_has_no_extra_line() -> None:
@@ -3667,7 +3827,7 @@ async def test_cart_option_hint_fallback_without_total_has_no_extra_line() -> No
     events = await _run_add(store, CartIntent(product_id=1, quantity=1), add_fn)
 
     token = next(e for e in events if e["type"] == "token")["data"]["text"]
-    assert token == "옵션을 선택해 주세요:\n블랙\n화이트\n어떤 걸로 담을까요?"
+    assert token == ("옵션을 선택해 주세요:\n1. **블랙**\n2. **화이트**\n어떤 걸로 담을까요?")
 
 
 async def test_cart_option_reask_reproduces_issue_570_symptom() -> None:
@@ -3684,7 +3844,7 @@ async def test_cart_option_reask_reproduces_issue_570_symptom() -> None:
     token = next(e for e in events if e["type"] == "token")["data"]["text"]
     lines = token.split("\n")
     option_lines = lines[1:-1]  # 안내 줄·마무리 줄 제외
-    assert option_lines == ["블랙 / M", "화이트 / M"]
+    assert option_lines == ["1. **블랙 / M**", "2. **화이트 / M**"]
     assert all(not line.endswith(".") for line in option_lines)
 
 
@@ -3702,7 +3862,9 @@ async def test_cart_add_reask_surcharge_option_on_own_line() -> None:
     events = await _run_add(store, CartIntent(product_id=1, quantity=1), add_fn)
 
     token = next(e for e in events if e["type"] == "token")["data"]["text"]
-    assert token == "옵션을 선택해 주세요:\n블루\n레드(+1,000원)\n어떤 걸로 담을까요?"
+    assert token == (
+        "옵션을 선택해 주세요:\n1. **블루**\n2. **레드(+1,000원)**\n어떤 걸로 담을까요?"
+    )
 
 
 def test_options_text_empty_list_falls_back_to_default_label() -> None:
@@ -3728,7 +3890,7 @@ async def test_cart_option_numeric_prefix_name_not_escaped() -> None:
 
     token = next(e for e in events if e["type"] == "token")["data"]["text"]
     assert "\\" not in token  # 이스케이프하지 않는다
-    assert "4. 얼큰한맛 92g x 30개" in token.split("\n")
+    assert "1. **4. 얼큰한맛 92g x 30개**" in token.split("\n")
 
 
 async def test_cart_state_store_option_hint_round_trip_and_pruning(
@@ -4146,7 +4308,9 @@ async def test_pending_turn_prompt_excludes_the_screen_block_and_rule() -> None:
 
 async def test_non_pending_turn_prompt_carries_the_screen_block_and_rule() -> None:
     """되물음이 아닌 턴에서는 종전대로 실린다 — 이번 수정이 화면 해소 자체를 끄지 않았다."""
-    from app.agents.buyer.recommendation.decompose import _SYSTEM_WITH_SCREEN
+    from app.agents.buyer.recommendation.decompose import (
+        _SYSTEM_WITH_SCREEN_DEDICATED_UNDERSPECIFIED,
+    )
 
     request = _screen_request("이거 담아줘", "t-nonpending-screen")
 
@@ -4155,5 +4319,5 @@ async def test_non_pending_turn_prompt_carries_the_screen_block_and_rule() -> No
 
     assert "SCREEN: {" in llm.user
     assert '"순번": 1' in llm.user and '"순번": 2' in llm.user
-    # system — 화면 규칙이 덧붙은 변형과 **바이트 동일**.
-    assert llm.system == _SYSTEM_WITH_SCREEN
+    # #463 후보 프롬프트는 #430의 빈 semanticQuery 문장만 빼고 화면 규칙은 보존한다.
+    assert llm.system == _SYSTEM_WITH_SCREEN_DEDICATED_UNDERSPECIFIED

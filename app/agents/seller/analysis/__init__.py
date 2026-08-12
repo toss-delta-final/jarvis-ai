@@ -8,6 +8,7 @@
 - ``proportions``: Wilson CI + two-proportion z-검정 — conversion·churn 공용
 - ``segmentation``: 상품 행동 피처화 + k-means — behavior
 - ``outliers``: MAD 스파이크·Tukey fence — abuse
+- ``scan``: 트리거 7종 판정(고정 임계 AND 통계 유의) — 무인 스캔·null 시뮬레이션 공용
 - ``types``: 결과 dataclass (프록시 근사는 ``basis`` 필드로 명시)
 
 원칙(calc.py 에서 계승, SPEC-SELLER-001 §10-②·§0.1 D):

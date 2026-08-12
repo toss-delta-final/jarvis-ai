@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -25,6 +26,7 @@ from app.agents.buyer.recommendation.category_leg_injection import (
     DEFAULT_CATEGORY_LEG_INJECTION_PATH,
     inject_category_leg,
 )
+from app.agents.buyer.recommendation.attr_axis import strip_constraint_axes
 from app.agents.buyer.screen_reference import grid_position
 from app.core.llm import LLMClient, LLMError
 from app.schemas.spring import ProductSearchFilters
@@ -197,6 +199,20 @@ _SYSTEM = """당신은 커머스 어시스턴트의 질의 분해기입니다.
   결과를 가리키는 말이 없으면** false. 애매하면 **false** 로 두세요.
 - general: intent=general, reply 에 짧게 답하세요.
 - reply 는 마크다운을 쓰지 마세요 — 제목(#)·표·코드블럭·링크·목록 기호 금지, 평문 산문으로."""
+
+# #430의 빈 semanticQuery 규칙은 그 자체로는 첫 무맥락 과소지정 보호에 필요하다. 그러나 SCREEN·
+# 직전 카테고리를 함께 읽는 거대한 라우팅 호출에서 그 판정까지 맡기면 화면 exact pick과 category
+# clear가 흔들렸다(#463). 전용 분류기가 켜진 배포 경로에서는 이 문면만 빼고, 결과를 그 분류기로
+# 후처리한다. 플래그를 끄거나 기존 직접 호출은 `_SYSTEM` 그대로라 즉시 오늘 동작으로 롤백된다.
+_LEGACY_UNDERSPECIFIED_RULE = """  찾는 상품의 단서(종류·용도·상황·목적·브랜드·색상)가 발화에도 PRIOR_FILTERS·
+  LAST_RECOMMENDATIONS·SCREEN 맥락에도 없으면 semanticQuery 는 **빈 문자열(\"\")** 로 두세요 —
+  지어내거나 발화를 옮겨 적지 마세요.
+"""
+_SYSTEM_WITH_DEDICATED_UNDERSPECIFIED = _SYSTEM.replace(_LEGACY_UNDERSPECIFIED_RULE, "")
+if _SYSTEM_WITH_DEDICATED_UNDERSPECIFIED == _SYSTEM:
+    raise RuntimeError(
+        "#430 과소지정 규칙을 찾지 못해 #463 전용 분류기 프롬프트를 만들지 못했습니다."
+    )
 
 
 # ── `- recommend:` 불릿의 브랜드 절 (#466) ──────────────────────────────────────────────────
@@ -372,6 +388,9 @@ _CART_ADD_ANCHOR = "  productId 를 고르세요. 못 고르면 productId=null. 
 # ⚠️ 이 문장은 **screen 이 실린 턴에만** 붙는다(아래 decompose 참조). screen 이 없으면 system 도
 # user 도 오늘과 바이트 동일해야 한다 — 프로브의 회귀 대조군도 그 전제로 측정했다.
 _SYSTEM_WITH_SCREEN = _SYSTEM.replace(_CART_ADD_ANCHOR, _CART_ADD_ANCHOR + _SCREEN_CART_RULE)
+_SYSTEM_WITH_SCREEN_DEDICATED_UNDERSPECIFIED = _SYSTEM_WITH_DEDICATED_UNDERSPECIFIED.replace(
+    _CART_ADD_ANCHOR, _CART_ADD_ANCHOR + _SCREEN_CART_RULE
+)
 # [10차 리뷰] `assert` 가 아니라 `if`+`raise` 다 — `assert` 는 `python -O`/`PYTHONOPTIMIZE=1`
 # 로 최적화 모드 배포 시 바이트코드에서 통째로 제거된다(`assert` 문서화된 동작). 이 검사가
 # 지키는 것은 "`_CART_ADD_ANCHOR` 가 `_SYSTEM` 안에 그대로 남아 있어 `.replace()` 가 no-op 이
@@ -616,6 +635,9 @@ async def decompose(
     category_leg_injection: bool = False,
     category_leg_injection_path: str = DEFAULT_CATEGORY_LEG_INJECTION_PATH,
     category_leg_injection_min_length: int = 2,
+    attr_axis_suppression: bool = False,
+    attr_constraint_axes: frozenset[str] = frozenset(),
+    dedicated_underspecified_classifier: bool = False,
 ) -> RouteDecision:
     """Haiku 1회 호출로 intent(추천/담기/장바구니조회/주문상태/일반)와 필터를 산출한다.
 
@@ -637,9 +659,15 @@ async def decompose(
     ]
     # screen 이 None 이면 아래 두 값이 그대로라 프롬프트는 오늘과 바이트 단위로 동일하다.
     screen_line = ""
-    system = _SYSTEM
+    system = (
+        _SYSTEM_WITH_DEDICATED_UNDERSPECIFIED if dedicated_underspecified_classifier else _SYSTEM
+    )
     if screen is not None and (payload := _screen_payload(screen)):
-        system = _SYSTEM_WITH_SCREEN
+        system = (
+            _SYSTEM_WITH_SCREEN_DEDICATED_UNDERSPECIFIED
+            if dedicated_underspecified_classifier
+            else _SYSTEM_WITH_SCREEN
+        )
         screen_line = f"SCREEN: {json.dumps(payload, ensure_ascii=False)}\n{_SCREEN_DATA_NOTICE}\n"
     reco_json = json.dumps(reco_entries, ensure_ascii=False)
     pending_json = "null" if not pending_cart else json.dumps(pending_cart, ensure_ascii=False)
@@ -695,6 +723,15 @@ async def decompose(
             data.get("repurchaseProducts"), repurchase_max
         )
         parsed_attr = _parse_attr_conditions(data.get("attrConditions"))
+        attr_conditions_suppressed_axes: list[str] = []
+        parsed_attr, parsed_suppressed_axes = strip_constraint_axes(
+            parsed_attr,
+            enabled=attr_axis_suppression,
+            constraint_axes=attr_constraint_axes,
+        )
+        for axis in parsed_suppressed_axes:
+            if axis not in attr_conditions_suppressed_axes:
+                attr_conditions_suppressed_axes.append(axis)
         # attrConditions 는 ProductSearchFilters 모델 필드가 아니므로, leg 훅보다 먼저 파싱해
         # what-축 게이트에 명시적으로 준다. 훅은 cat_signal 전이어야 폴백 플래그도 함께 뒤집힌다.
         filters.attr_conditions = parsed_attr or None
@@ -702,8 +739,13 @@ async def decompose(
         # 주입은 head 억제 전에만 본다. 억제로 비워진 leg는 다시 채우지 않는다.
         category_leg_injected = False
         if category_leg_injection:
-            injected_queries = inject_category_leg(category_queries, intent=intent, utterance=query,
-                path=category_leg_injection_path, min_length=category_leg_injection_min_length)
+            injected_queries = inject_category_leg(
+                category_queries,
+                intent=intent,
+                utterance=query,
+                path=category_leg_injection_path,
+                min_length=category_leg_injection_min_length,
+            )
             category_leg_injected = not category_queries and bool(injected_queries)
             category_queries = injected_queries
         category_queries = suppress_generic_single_leg(
@@ -732,7 +774,11 @@ async def decompose(
         # 필드(revert·categoryQueries)처럼 isinstance(str) 가드 후 strip 한다(구 str() 안전장치 복원).
         raw_sq = data.get("semanticQuery")
         llm_sq = raw_sq.strip() if isinstance(raw_sq, str) else ""
-        filters.semantic_query = llm_sq or cat_signal or prior_sq or query
+        # [#603] 단일 상품 leg에서 LLM 값이 구조화-only면 category query로 보정하고, 남은
+        # 목적·문맥·동의어가 있으면 그 값을 보존한 채 literal 상품 앵커를 덧붙인다. 멀티 leg는
+        # cat_signal 자체가 None이라 기존 전역 semantic_query 계약을 그대로 따른다.
+        repaired_sq = _repair_single_leg_semantic_query(llm_sq, cat_signal, filters)
+        filters.semantic_query = repaired_sq or cat_signal or prior_sq or query
         # [#162] 위 셋이 전부 없어 **원문으로 폴백**했는가 — 조건 없는 발화 판정의 근거다.
         # semantic_query 는 이 폴백 때문에 절대 비지 않아서, 값의 유무로는 "사용자가 의미 신호를
         # 줬는가"를 알 수 없다. 여기서만 알 수 있으므로 결과에 실어 보낸다.
@@ -747,6 +793,14 @@ async def decompose(
         merged = {**(prior_attr or {}), **(parsed_attr or {})}
         for axis in _parse_attr_removals(data.get("attrRemovals")):
             merged.pop(axis, None)
+        merged, merged_suppressed_axes = strip_constraint_axes(
+            merged,
+            enabled=attr_axis_suppression,
+            constraint_axes=attr_constraint_axes,
+        )
+        for axis in merged_suppressed_axes:
+            if axis not in attr_conditions_suppressed_axes:
+                attr_conditions_suppressed_axes.append(axis)
         filters.attr_conditions = merged or None
         buy_all = data.get("buyAll") is True
         raw_total_budget = data.get("totalBudget")
@@ -786,6 +840,7 @@ async def decompose(
         repurchase_products=repurchase_products,
         category_queries=category_queries,
         category_leg_injected=category_leg_injected,
+        attr_conditions_suppressed_axes=attr_conditions_suppressed_axes,
         # [#113] `is True` 로 좁힌다 — 문자열 "false"·1·null 등 애매한 산출을 전부 False 로
         # 떨어뜨려 **엄격한 쪽**(원래 조건 유지)으로 기울인다. 놓치면 무해하지만 오탐하면
         # 사용자가 말한 조건이 조용히 바뀐다.
@@ -866,6 +921,128 @@ def _parse_category_queries(raw: object, fanout_max: int) -> list[CategoryQuery]
     # slice 절단 — category_mapping 의 dedup_truncate·_merge_fanout_results 와 동일 규약
     # (fanout_max<=0 이면 정확히 0개; append 후 체크는 첫 항목이 남아 절단 의미가 어긋난다, PR #73 리뷰).
     return signal[:fanout_max]
+
+
+_PRICE_LITERAL_RE = re.compile(
+    r"(?<![0-9A-Za-z가-힣])(?P<number>\d[\d,.]*(?:\.\d+)?)(?:\s*(?P<unit>만원|천원|만|천|원))?"
+)
+_PRICE_MODIFIER_RE = re.compile(r"\s*(?:이하|이상|미만|초과|까지|부터|내|대)(?![0-9A-Za-z가-힣])")
+_SURFACE_TERM_BOUNDARY = r"(?<![0-9A-Za-z가-힣]){term}(?![0-9A-Za-z가-힣])"
+
+
+def _compact_semantic_text(value: str) -> str:
+    """Structured-only 판정을 위한 텍스트 정규화(공백·구두점 제거, casefold)."""
+    return re.sub(r"[\W_]+", "", value, flags=re.UNICODE).casefold()
+
+
+def _parse_price_literal(raw: str) -> int | None:
+    """숫자 가격 표현을 원 단위 정수로 변환한다.
+
+    이슈 #603 후처리는 임의의 자연어 가격 표현을 추측하지 않는다. LLM 쿼리 안의 숫자가
+    이미 파싱된 priceMin/priceMax 와 정확히 일치할 때만 구조화 제약으로 인정한다.
+    """
+    match = re.fullmatch(r"(\d[\d,.]*)(만원|천원|만|천|원)?", raw.strip())
+    if match is None:
+        return None
+    try:
+        amount = float(match.group(1).replace(",", ""))
+    except ValueError:
+        return None
+    unit = match.group(2) or ""
+    if unit.startswith("만"):
+        amount *= 10_000
+    elif unit.startswith("천"):
+        amount *= 1_000
+    if unit == "원" or not unit or unit.startswith(("만", "천")):
+        return int(amount) if amount.is_integer() else None
+    return None
+
+
+def _surface_term_spans(semantic_query: str, value: object) -> list[tuple[int, int]]:
+    """구조화 값과 정확히 일치하는 surface term 범위만 찾는다."""
+    if not isinstance(value, str) or not value.strip():
+        return []
+    pattern = re.compile(
+        _SURFACE_TERM_BOUNDARY.format(term=re.escape(value.strip())),
+        flags=re.IGNORECASE,
+    )
+    return [match.span() for match in pattern.finditer(semantic_query)]
+
+
+def _merge_spans(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """겹치는 제거 범위를 합쳐 원문 인덱스가 어긋나지 않게 한다."""
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(spans):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _clean_semantic_residual(value: str) -> str:
+    """구조화 표면을 제거한 뒤 읽을 수 있는 공백·양끝 구두점을 정리한다."""
+    residual = re.sub(r"\s+", " ", value).strip()
+    return residual.strip(" ,，。.!?;；:：|/\\~～")
+
+
+def _strip_structured_semantic_terms(
+    semantic_query: str,
+    filters: ProductSearchFilters,
+) -> tuple[str, bool]:
+    """확정된 구조화 표면만 제거하고 (읽을 수 있는 잔여, 제거 여부)를 돌려준다.
+
+    색상·브랜드는 값 전체가 독립 surface term으로 일치할 때만, 가격은 파싱된 숫자 표현이
+    priceMin/priceMax 중 하나와 정확히 일치할 때만 제거한다. 동의어·일반 자연어 제약은
+    건드리지 않는다.
+    """
+    spans: list[tuple[int, int]] = []
+    for value in [*(filters.brand or []), filters.color or ""]:
+        spans.extend(_surface_term_spans(semantic_query, value))
+
+    price_values = {
+        value
+        for value in (filters.price_min, filters.price_max)
+        if isinstance(value, int) and not isinstance(value, bool)
+    }
+    if price_values:
+        for match in _PRICE_LITERAL_RE.finditer(semantic_query):
+            if _parse_price_literal(match.group(0)) not in price_values:
+                continue
+            end = match.end()
+            if modifier := _PRICE_MODIFIER_RE.match(semantic_query, end):
+                end = modifier.end()
+            spans.append((match.start(), end))
+
+    if not spans:
+        return semantic_query, False
+    remaining = semantic_query
+    for start, end in reversed(_merge_spans(spans)):
+        remaining = remaining[:start] + remaining[end:]
+    return _clean_semantic_residual(remaining), True
+
+
+def _repair_single_leg_semantic_query(
+    semantic_query: str,
+    category_signal: str | None,
+    filters: ProductSearchFilters,
+) -> str:
+    """단일 상품 leg의 의미쿼리에 확정된 상품 앵커를 보장한다.
+
+    구조화-only 산출은 category query로 치환하고, 그 밖의 산출은 확인된 구조화 표면만 제거한
+    뒤 잔여 문맥을 보존하며 literal category query를 붙인다. 동의어 판정은 안전하게 일반화할
+    근거가 없으므로 정규화한 literal 포함만 중복 방지 기준으로 쓴다. category signal이 없거나
+    LLM 값이 비면 기존 폴백 체인이 처리하도록 빈 문자열을 돌려준다.
+    """
+    if not semantic_query or not category_signal:
+        return semantic_query
+    residual, stripped = _strip_structured_semantic_terms(semantic_query, filters)
+    candidate = residual if stripped else semantic_query
+    if stripped and not residual:
+        return category_signal
+    if _compact_semantic_text(category_signal) not in _compact_semantic_text(candidate):
+        return f"{candidate} {category_signal}".strip()
+    return candidate
 
 
 def _as_int(value: object) -> int | None:

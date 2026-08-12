@@ -71,40 +71,29 @@ def test_resolve_plan_unsupported_period_propagates() -> None:
 # ── #345 P1: 확인 흐름 계약 (어휘 판정 자체는 test_seller_period.py) ──────────────
 
 
-def test_resolve_plan_canonical_vocab_never_needs_confirmation() -> None:
-    """회귀 가드 — 기존 어휘 5종은 needs_confirmation=False 로 통과한다(#345 완료 조건).
+def test_resolve_plan_canonical_vocab_is_never_supplemented() -> None:
+    """회귀 가드 — 기존 어휘 5종은 period_supplemented=False 로 통과한다(#345·#584).
 
-    이 테스트가 깨지면 잘 쓰던 판매자에게 없던 확인 왕복을 새로 물린 것이다.
+    이 테스트가 깨지면 잘 쓰던 판매자에게 없던 기간 고지를 새로 물린 것이다.
     """
     today = dt.date(2026, 8, 6)
     for expr in ("지난달", "최근 7일", "최근", "어제", "2026-06-01~2026-06-30"):
         resolved = pipeline.resolve_plan(
             _plan(period_expr=expr), today=today, recent_default_days=7
         )
-        assert resolved.needs_confirmation is False, expr
+        assert resolved.period_supplemented is False, expr
 
 
-def test_resolve_plan_expanded_vocab_needs_confirmation() -> None:
-    """신규 어휘는 값이 나오되 확인 대기 신호를 함께 올린다(#345)."""
+def test_resolve_plan_expanded_vocab_is_supplemented() -> None:
+    """신규 어휘는 값이 나오되 고지 신호를 함께 올린다(#345·#584)."""
     today = dt.date(2026, 8, 6)
     for expr in ("이번 달", "올해", "상반기", "최근 3개월"):
         resolved = pipeline.resolve_plan(
             _plan(period_expr=expr), today=today, recent_default_days=7
         )
-        assert resolved.needs_confirmation is True, expr
+        assert resolved.period_supplemented is True, expr
         assert resolved.period_expr == expr
         assert resolved.date_to <= dt.date(2026, 8, 5)  # R1 — 오늘 제외
-
-
-def test_period_confirmation_text_shows_resolved_dates() -> None:
-    """확인 문구는 어휘가 아니라 **환산된 날짜**를 되돌려 보여준다(DESIGN §4.3)."""
-    resolved = pipeline.resolve_plan(
-        _plan(period_expr="이번 달"), today=dt.date(2026, 8, 6), recent_default_days=7
-    )
-    text = pipeline.period_confirmation_text(resolved)
-    assert "2026-08-01" in text
-    assert "2026-08-05" in text
-    assert "이번 달" in text
 
 
 def test_resolve_plan_wants_chart_from_plan_field() -> None:
@@ -596,8 +585,8 @@ def test_resolve_plan_resolves_comparison_expression() -> None:
     assert resolved.comparison_expr == "지난달 대비"
 
 
-def test_resolve_plan_confirmation_is_the_union_of_both_periods() -> None:
-    """본 기간이 명시적이어도 비교 기간이 보충됐으면 확인 대상이다(합집합)."""
+def test_resolve_plan_supplemented_is_the_union_of_both_periods() -> None:
+    """본 기간이 명시적이어도 비교 기간이 보충됐으면 고지 대상이다(합집합)."""
     plan = _plan(
         analyses=["conversion"],
         period_expr="2026-06-01~2026-06-30",
@@ -608,7 +597,7 @@ def test_resolve_plan_confirmation_is_the_union_of_both_periods() -> None:
         plan, today=dt.date(2026, 8, 6), recent_default_days=7, max_days=731
     )
 
-    assert resolved.needs_confirmation is True
+    assert resolved.period_supplemented is True
 
 
 def test_format_worker_input_injects_comparison_period() -> None:

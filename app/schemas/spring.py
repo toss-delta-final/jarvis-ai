@@ -343,6 +343,17 @@ class OrderStatusSummary(CamelModel):
 # ── 4. 장바구니 담기 (I-2, §4.1) — BE 문서 채택, 단건 ──
 
 
+class RecommendationContext(CamelModel):
+    """추천 카드에서 전환된 담기의 출처(I-2, 선택).
+
+    Spring은 ``list_id``를 권위로 다시 검증하므로, 이 값이 없거나 낡았어도 담기 자체는
+    실패하지 않는다. AI는 직전 추천을 실제로 노출한 경우에만 이 문맥을 보낸다.
+    """
+
+    recommendation_request_id: str = Field(max_length=36)
+    list_id: str = Field(max_length=64)
+
+
 class AddToCartRequest(CamelModel):
     """I-2 POST /internal/cart/items 요청 본문 (api-spec §4.1, BE 문서 채택).
 
@@ -356,6 +367,10 @@ class AddToCartRequest(CamelModel):
     product_id: int  # 숫자(BIGINT, product.id)
     option_id: int | None = None  # 숫자(BIGINT, product_option.id)
     quantity: int = Field(1, ge=1, le=99)
+    # Spring은 "chat:{chatSessionId}" sentinel로 챗봇 전환 이벤트를 적재한다. 누락 시
+    # 담기는 성공하지만 분석 이벤트만 빠지므로, 챗봇 경로는 항상 sessionId를 배선한다.
+    chat_session_id: str | None = None
+    recommendation_context: RecommendationContext | None = None
 
 
 class AddToCartResult(CamelModel):
@@ -968,6 +983,56 @@ class AccountEventsResult(SellerAggregateModel):
     rows: list[dict] = Field(default_factory=list)
 
 
+# ── I-38 고객 행동 피처 집계 (노션 2026-08-10 확정 / BE #582 실장, 이슈 #592) ──
+
+
+class SellerCustomerFeatureRow(SellerAggregateModel):
+    """I-38 rows[] 1건 — `SellerCustomerFeaturesResponse.Row`(jarvis-back) 1:1 대응.
+
+    실측(`SellerAnalyticsService.toCustomerRow`): 전 필드가 `long`/`String` primitive라
+    BE가 null을 보내지 않는다 — `str=""`/`int=0` 기본값 위장 문제(02-DATA-SOURCES §0.1 ③)의
+    대상이 아니다. 그래도 파싱 실패 시 도구 전체가 degrade하는 사고를 피하려면 필드는
+    required로 선언하고(결측이면 즉시 ValidationError로 드러나야 한다), 기본값을 주지 않는다.
+
+    `customerLabel`은 I-14·I-16과 동일한 브랜드 스코프 HMAC — memberId·IP는 어떤 필드로도
+    내려가지 않는다(CustomerLabeler.label, jarvis-back 실측).
+    """
+
+    customer_label: str
+    sessions: int
+    product_views: int
+    cart_adds: int
+    checkout_starts: int
+    order_count: int
+    cancel_count: int
+    amount_bucket: str
+    last_activity_days_ago: int
+    first_seen_days_ago: int
+
+
+class SellerCustomerFeaturesResult(SellerAggregateModel):
+    """I-38 GET /internal/seller/{brandId}/customer-features 응답
+    (`SellerAnalyticsService.customerFeatures` 실측 — 이슈 #592).
+
+    `from`/`to` 에코는 다른 I-* 응답과 동일하게 `extra="allow"`로 흡수하고 별도 필드를
+    선언하지 않는다(`from`이 파이썬 예약어라 별도 alias 처리가 필요해지는데, 다른 조회
+    모델들도 echo 필드를 흡수만 하지 소비하지 않는 관행 — ChurnResult 등과 동일).
+
+    `insufficientCohort=true`일 때 BE는 `rows=[]`를 내려보낸다(코호트 30명 미만 —
+    `MIN_COHORT_SIZE`, jarvis-back 실측). "고객 없음"으로 오독 금지(노션 규약,
+    02-DATA-SOURCES §2 최소 모집단 가드).
+    `truncated=true`는 `totalCustomers > rowLimit`(1000, `CUSTOMER_ROW_LIMIT`)일 때 —
+    활동량(이벤트 3종 합) 내림차순으로 절단(02 §2 "정렬" 절 실측).
+    """
+
+    total_customers: int
+    row_limit: int
+    truncated: bool
+    insufficient_cohort: bool
+    amount_buckets: list[str] = Field(default_factory=list)
+    rows: list[SellerCustomerFeatureRow] = Field(default_factory=list)
+
+
 # ── I-9 자사 상품 목록 (§4.5) ──
 
 
@@ -1009,9 +1074,16 @@ class SellerProductRow(CamelModel):
 
 
 class SellerProductList(CamelModel):
-    """I-9 GET /internal/seller/{brandId}/products 응답."""
+    """I-9 GET /internal/seller/{brandId}/products 응답.
+
+    [이슈 #622] `total`(필터 적용 전체 건수)은 BE 가 이미 내려주고 있었다
+    (`SellerProductInternalListResponse{rows, total}`) — 이 모델에 필드가 없어
+    pydantic 이 조용히 버렸을 뿐이다. `hitl._find_product` 가 페이지 순회 종료를
+    정확히 판단하는 데 쓴다(상한 도달 vs 진짜 끝).
+    """
 
     rows: list[SellerProductRow] = Field(default_factory=list)
+    total: int = 0
 
 
 # ── I-10/I-11/I-12 상품 쓰기 (§4.5, product_agent 전용, HITL 승인 후 호출) ──
@@ -1063,11 +1135,13 @@ class ProductCreate(CamelModel):
 class ProductUpdate(CamelModel):
     """I-11 PATCH 요청 본문 — 바꿀 필드만(전 필드 Optional). 재고도 이 API로 통합.
 
-    ⚠️ `category` 는 BE `SellerProductUpdateRequest` 에 **없는 필드**다(2026-08-09 실측)
-    — Jackson 이 모르는 키로 버리므로 카테고리 수정 요청은 조용히 무시된다. I-10 등록
-    시에만 정할 수 있는 값이라는 뜻이고, preview 의 "카테고리는 등록 후 변경할 수
-    없습니다" 경고와도 일치한다. BE 가 필드를 열기 전까지 여기 남는 값은 전송돼도
-    효과가 없다 — 수정 흐름에서 카테고리를 다루려면 별도 이슈로 BE 를 먼저 연다."""
+    ⚠️ `category` 는 BE `SellerProductUpdateRequest` 에 **없는 필드**다(2026-08-09 실측,
+    #620 재확인) — DTO 자체에 필드가 없어 Jackson 이 모르는 키로 버리므로 카테고리 수정
+    요청은 조용히 무시된다. I-10 등록 시에만 정할 수 있는 값이라는 뜻이고, preview 의
+    "카테고리는 등록 후 변경할 수 없습니다" 경고와도 일치한다. 그래서 이 스키마엔 애초에
+    `category` 필드를 두지 않는다 — draft 단계(hitl.validate_draft)에서 update 초안에
+    category 변경이 섞여 있으면 선차단한다. BE 가 필드를 열기 전까지는 수정 흐름에서
+    카테고리를 다루려면 별도 이슈로 BE 를 먼저 연다."""
 
     name: str | None = None
     price: int | None = None
@@ -1076,7 +1150,6 @@ class ProductUpdate(CamelModel):
     # stocks 는 부분 수정이다: 배열에 실린 옵션만 갱신되고 나머지는 그대로다(05 §I-11).
     stock_quantity: int | None = Field(default=None, ge=0)
     stocks: list[StockEntry] | None = None
-    category: str | None = None
     description: str | None = None
     image_url: str | None = None
     status: str | None = None  # ON_SALE | HIDDEN — DELETED 는 BE 가 거부(삭제는 I-12 전용)
@@ -1090,9 +1163,15 @@ class ProductCreateResult(SellerAggregateModel):
 
 
 class ProductUpdateResult(SellerAggregateModel):
-    """I-11 200 응답 — 갱신분(🔴 스키마 미확정, extra="allow"로 여분 필드 보존)."""
+    """I-11 200 응답 — 갱신분(🔴 스키마 미확정, extra="allow"로 여분 필드 보존).
+
+    `changes` 는 BE change-log 어휘 대문자 배열(PRICE/STOCK/STATUS만 — 로그 없는 필드
+    변경은 미포함, SellerProductUpdateResponse 참조). 빈 배열은 "요청은 성공했지만
+    실제로 바뀐 값이 없다"는 뜻(#620) — `_execute_draft` 가 이 경우 "이미 그 값이었어요"
+    로 갈음한다."""
 
     product_id: int
+    changes: list[str] = Field(default_factory=list)
 
 
 class ProductDeleteResult(SellerAggregateModel):

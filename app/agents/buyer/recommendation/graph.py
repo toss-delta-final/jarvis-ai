@@ -79,6 +79,7 @@ from app.schemas.spring import (
     RecoReason,
     LIST_LABEL_MAX_LEN,
     MAX_LISTS,
+    RecommendationContext,
     RecommendationListEntry,
     RecommendationPush,
     SpringProduct,
@@ -1051,6 +1052,13 @@ async def stream_recommendation(
                     await cart_store.set_last_reco(
                         thread_key,
                         [(pid, exposed_names.get(pid, "")) for pid in exposed],
+                        recommendation_contexts={
+                            pid: RecommendationContext(
+                                recommendation_request_id=profile_recommendation_request_id,
+                                list_id=profile_entry.list_id,
+                            )
+                            for pid in exposed
+                        },
                         # #571 — 프로필 벡터 경로는 항상 목록 1개(`exposed`)라 표시 순서 = 저장
                         # 순서가 성립한다.
                         ordinal_span=len(exposed),
@@ -2711,6 +2719,14 @@ async def stream_recommendation(
                 thread_key,
                 [(pid, name_by_id.get(pid, "")) for pid in ranked_ids],
                 option_hints=option_hints,
+                recommendation_contexts={
+                    product_id: RecommendationContext(
+                        recommendation_request_id=recommendation_request_id,
+                        list_id=entry.list_id,
+                    )
+                    for entry in push.lists
+                    for product_id in entry.product_ids
+                },
                 # #571 — 표시 순서 = 저장 순서는 목록이 정확히 1개일 때만 성립한다(BUY_ALL 은
                 # 세트 간 중복이 dedup 로 접혀 화면 칸 수와 저장 건수가 어긋나고, 다목록 PICK_ONE
                 # 은 화면이 섹션으로 쪼개져 전역 순번이 정의되지 않는다 — §2 결정 2).

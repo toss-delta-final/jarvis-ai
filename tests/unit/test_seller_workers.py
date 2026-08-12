@@ -26,7 +26,6 @@ from app.agents.seller.prompts import (
     SALES_ANOMALY_PROMPT,
     WORKER_COMMON_RULES,
 )
-from app.agents.seller.tools import PRODUCT_TOOLS
 from app.agents.seller.workers import (
     ABUSE_TOOLS,
     BEHAVIOR_TOOLS,
@@ -62,6 +61,15 @@ def _configured_seller_model(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = Settings(_env_file=None, openai_api_key="test-key")
     monkeypatch.setattr(seller_models, "get_settings", lambda: settings)
 
+
+# [#620] 상품/주문 쓰기 도구(create_product/update_product/delete_product/
+# update_order_status)는 실제 @tool 로 존재하지 않는다(어느 에이전트에도 바인딩된 적
+# 없는 죽은 코드로 확인돼 tools.py 에서 제거됐다 — 실행은 hitl._execute_draft 가 코드로
+# 담당한다). 그래도 "이 이름들은 분석·general·product 워커 어디에도 배정되지 않는다"는
+# 회귀 방지 취지는 유효해 이름만 하드코딩으로 남긴다.
+_KNOWN_WRITE_TOOL_NAMES = frozenset(
+    {"create_product", "update_product", "delete_product", "update_order_status"}
+)
 
 # (analysis_type, 도구 목록, 프롬프트, 빌더, 배정표 기대 도구명) — 워커 추가 시 여기만 확장.
 WORKERS = [
@@ -137,7 +145,7 @@ def test_tool_assignment_matches_table(analysis_type, tools, prompt, builder, ex
 )
 def test_excludes_write_tools(analysis_type, tools, prompt, builder, expected) -> None:
     """쓰기 도구 3종(create/update/delete)은 분석 워커에 절대 배정되지 않는다(§4)."""
-    write_names = {t.name for t in PRODUCT_TOOLS} - {"list_my_products"}
+    write_names = _KNOWN_WRITE_TOOL_NAMES
     assert {t.name for t in tools}.isdisjoint(write_names)
 
 
@@ -192,23 +200,42 @@ def test_builder_compiles(analysis_type, tools, prompt, builder, expected) -> No
 
 
 def test_general_tool_assignment() -> None:
-    """배정표(HANDOFF §3, #297 확장) — 조회 5종 + calculate + 기준서, 쓰기 0."""
+    """[#591] search 레인 배정표 — 조회 11종 + get_latest_report, 쓰기 0.
+
+    스냅샷으로 고정하는 이유: 이 목록이 곧 GENERAL_PROMPT 3번 "지원 범위" 문구의 근거다.
+    한쪽만 늘면 프롬프트가 없는 도구를 약속하거나 있는 도구를 감춘다.
+    """
     assert {t.name for t in GENERAL_TOOLS} == {
         "get_sales_timeseries",
+        "get_funnel",  # [#591] I-7
+        "get_behavior_events",  # [#591] I-13
         "get_order_events",
         "get_orders",  # [#297] I-29 현재 상태 스냅샷
+        "get_product_change_logs",  # [#591] I-15
+        "get_churn_cohort",  # [#591] I-16
+        "get_account_events",  # [#591] I-8
         "get_reviews",  # [#297] I-31 리뷰 단순 조회
         "list_my_products",
         "calculate",
-        "search_analysis_guide",
+        "get_latest_report",  # [#591] 보고서 조회는 이 하나뿐(결정 10)
     }
-    write_names = {t.name for t in PRODUCT_TOOLS} - {"list_my_products"}
+    write_names = _KNOWN_WRITE_TOOL_NAMES
     assert {t.name for t in GENERAL_TOOLS}.isdisjoint(write_names)
     # [#297] 주문 쓰기(발송)도 general 에 절대 없다.
     assert "update_order_status" not in {t.name for t in GENERAL_TOOLS}
     for t in GENERAL_TOOLS:
         for hidden in ("runtime", "brand_id", "seller_id"):
             assert hidden not in t.args
+
+
+def test_general_lane_does_not_bind_permanent_stub() -> None:
+    """[#591] 영구 스텁(search_analysis_guide)은 search 레인에 없다.
+
+    항상 "Error:" 를 돌려주는 도구가 바인딩돼 있으면 LLM 이 용어 질문에 그걸 호출하고
+    실패를 판매자에게 그대로 안내한다 — 도구가 없느니만 못한 상태였다. 분석 워커 6종의
+    바인딩은 상주 파이프라인 소관이라 건드리지 않았으므로, 여기서 **부재만** 고정한다.
+    """
+    assert "search_analysis_guide" not in {t.name for t in GENERAL_TOOLS}
 
 
 def test_general_prompt_principles() -> None:
@@ -252,7 +279,7 @@ def test_product_agent_binds_read_only() -> None:
         "calculate",
         "get_orders",  # [#297] ship draft 의 orderItemId·현재 상태 확인(조회 전용)
     }
-    write_names = {t.name for t in PRODUCT_TOOLS} - {"list_my_products"}
+    write_names = _KNOWN_WRITE_TOOL_NAMES
     assert {t.name for t in PRODUCT_DRAFT_TOOLS}.isdisjoint(write_names)
     # [#297] 주문 쓰기(발송, update_order_status)도 draft 에이전트가 볼 수 없다 —
     # HITL(발화 ≠ 동의)이 프롬프트가 아니라 구조로 보장된다.
@@ -340,7 +367,7 @@ def test_recommend_tool_assignment() -> None:
         "list_my_products",
         "get_product_change_logs",
     }
-    write_names = {t.name for t in PRODUCT_TOOLS} - {"list_my_products"}
+    write_names = _KNOWN_WRITE_TOOL_NAMES
     assert {t.name for t in RECOMMEND_TOOLS}.isdisjoint(write_names)
     for t in RECOMMEND_TOOLS:
         for hidden in ("runtime", "brand_id", "seller_id"):

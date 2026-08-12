@@ -1,7 +1,6 @@
-"""프로필 스키마 (SPEC-PROFILE-001, api-spec §3.4/§3.5).
+"""프로필 lifecycle 스키마 (api-spec §3.5).
 
-GET /profile/me 응답(마이페이지 자연어 마크다운 passthrough)과 POST /events/session-end 수신
-페이로드. 와이어 포맷 camelCase (CamelModel by_alias). session-end 필드는 AI 소유 inbound
+POST /events/session-end 수신 페이로드. 와이어 포맷 camelCase. session-end 필드는 AI 소유 inbound
 계약(결정 21) — v0.15.17에서 BE 실측 payload로 확정(이슈 #62).
 """
 
@@ -9,20 +8,10 @@ from __future__ import annotations
 
 from pydantic import Field, field_validator
 
-from app.schemas.chat import CamelModel
 from app.schemas.events import StrictEventModel
 
 _BIGINT_MAX = 2**63 - 1  # PostgreSQL BIGINT 상한 — 신원 id 범위 방어
 _SESSION_END_REASON_MAX_CHARS = 64  # 알려진 enum 이름은 최대 17자; 확장 허용 + inbound 남용 방어
-
-
-class ProfileView(CamelModel):
-    """GET /profile/me 응답 (§3.4). 게스트·신규는 exists=false·markdown=null 정상 200."""
-
-    user_id: str
-    exists: bool
-    markdown: str | None = None
-    generated_at: str | None = None  # ISO-8601, 요약 생성 시각
 
 
 class SessionEndEvent(StrictEventModel):
