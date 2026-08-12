@@ -448,7 +448,14 @@ async def _write(run: Callable[[AsyncConnection], Awaitable[_T]]) -> _T | None:
         try:
             async with pool.connection(timeout=settings.state_store_query_timeout_s) as conn:
                 async with conn.transaction():
-                    await conn.execute("SET LOCAL statement_timeout = %s", (write_timeout_ms,))
+                    # SET/SET LOCAL 은 서버측 파라미터 바인딩($1)을 지원하지 않아 실 PG
+                    # 에서 SyntaxError 가 난다 — _run_ddl 과 같은 set_config 형태로 통일.
+                    # 세 번째 인자 is_local=true 라 SET LOCAL 과 동일하게 트랜잭션 종료 시
+                    # 원복된다.
+                    await conn.execute(
+                        "SELECT set_config('statement_timeout', %s, true)",
+                        (str(write_timeout_ms),),
+                    )
                     return await run(conn)
         except Exception as exc:
             if attempt + 1 >= attempts or not is_state_store_unavailable(exc):
@@ -745,7 +752,7 @@ async def save_report(report: ReportRecord, recommendations: list[Recommendation
                     UPDATE seller_analysis_recommendations
                     SET status = 'superseded'
                     WHERE brand_id = %s AND action_type = %s AND status = 'proposed'
-                      AND product_ids && %s AND id != %s
+                      AND product_ids && %s::bigint[] AND id != %s
                     """,
                     (rec.brand_id, rec.action_type, rec.product_ids, rec.id),
                 )
