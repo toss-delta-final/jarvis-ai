@@ -117,6 +117,14 @@ def test_synthetic_rollup_matches_hand_calculation():
     assert result["error_rate"] == pytest.approx(0.1)
     assert result["cost"]["overall"]["total"] == pytest.approx(0.55)
     assert result["cost"]["overall"]["average"] == pytest.approx(0.055)
+    assert result["cost"]["overall"]["min"] == pytest.approx(0.01)
+    assert result["cost"]["overall"]["max"] == pytest.approx(0.10)
+    assert result["cost"]["role"]["seller"]["min"] == pytest.approx(0.01)
+    assert result["cost"]["role"]["seller"]["max"] == pytest.approx(0.08)
+    assert result["cost"]["role"]["member"]["min"] == pytest.approx(0.03)
+    assert result["cost"]["role"]["member"]["max"] == pytest.approx(0.09)
+    assert result["cost"]["role"]["guest"]["min"] == pytest.approx(0.04)
+    assert result["cost"]["role"]["guest"]["max"] == pytest.approx(0.10)
 
 
 def test_rejection_is_included_in_degrade_and_error_denominators():
@@ -167,6 +175,70 @@ def test_missing_and_null_cost_are_excluded_and_marked_partial():
     markdown = aggregate_observability.render_markdown(result, _settings())
     assert "비용 표본 1 / 전체 3 (33.3%)" in markdown
     assert "부분 집계(partial)" in markdown
+
+
+def test_cost_stats_min_max_are_none_for_zero_samples_and_render_as_dash():
+    """표본이 아예 없으면(빈 로그) min/max가 None이고 Markdown엔 '-'로 표시돼야 한다."""
+    result = aggregate_observability.aggregate_lines([])
+
+    assert result["cost"]["overall"]["min"] is None
+    assert result["cost"]["overall"]["max"] is None
+    markdown = aggregate_observability.render_markdown(result, _settings())
+    assert "| 전체 | 비용 표본 0 / 전체 0 (-) | - | - | - | - | - | 완전 집계 |" in markdown
+
+
+def test_cost_stats_min_max_are_none_when_turns_exist_but_no_costusd():
+    """턴은 있지만 costUsd가 전부 결측이면(표본 0건) min/max는 None이어야 한다."""
+    without_cost = json.loads(_line(requestId="missing"))
+    without_cost.pop("costUsd")
+    result = aggregate_observability.aggregate_lines([json.dumps(without_cost)])
+
+    overall = result["cost"]["overall"]
+    assert overall["sample_count"] == 0
+    assert overall["turn_count"] == 1
+    assert overall["min"] is None
+    assert overall["max"] is None
+
+
+def test_model_fan_in_duplicates_cost_across_model_groups():
+    """한 턴이 모델 2개를 쓰면 costUsd 전액이 두 모델 그룹 모두에 들어간다(fan-in, §4.3)."""
+    result = aggregate_observability.aggregate_lines(
+        [_line(model=["haiku", "sonnet"], costUsd=0.5)]
+    )
+
+    assert result["cost"]["model"]["haiku"]["total"] == pytest.approx(0.5)
+    assert result["cost"]["model"]["sonnet"]["total"] == pytest.approx(0.5)
+    assert result["cost"]["model"]["haiku"]["sample_count"] == 1
+    assert result["cost"]["model"]["sonnet"]["sample_count"] == 1
+    # 모델별 합계 합(1.0)이 전체 합계(0.5)보다 크다 — fan-in 중복의 표식.
+    assert (
+        result["cost"]["model"]["haiku"]["total"] + result["cost"]["model"]["sonnet"]["total"]
+        > result["cost"]["overall"]["total"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("length", "expected_bucket"),
+    [
+        (0, "<50"),
+        (49, "<50"),
+        (50, "50-150"),
+        (149, "50-150"),
+        (150, "150-400"),
+        (399, "150-400"),
+        (400, "400+"),
+        (10_000, "400+"),
+    ],
+)
+def test_length_bucket_boundaries_match_config_edges(length, expected_bucket):
+    assert (
+        aggregate_observability._length_bucket(length, (50, 150, 400)) == expected_bucket
+    )
+
+
+@pytest.mark.parametrize("value", [None, -1, "12", 12.5, True])
+def test_length_bucket_treats_missing_negative_non_int_as_unknown(value):
+    assert aggregate_observability._length_bucket(value, (50, 150, 400)) == "unknown"
 
 
 def test_cost_usd_partial_marks_complete_coverage_as_partial():
@@ -285,6 +357,7 @@ def _settings(**overrides: object) -> SimpleNamespace:
         "slo_total_buyer_ms": 30_000,
         "degrade_rate_alert_threshold": 0.10,
         "degrade_alert_min_samples": 50,
+        "observability_length_buckets": (50, 150, 400),
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -372,6 +445,68 @@ def test_csv_and_markdown_outputs_have_long_format_and_missing_markers(tmp_path,
     for heading in ["## 개요", "## 지연", "## 비용", "## degrade", "## error", "## SLO", "## 알림"]:
         assert heading in markdown
     assert "| 전체 first_token | 0 | - | - | - |" in markdown
+
+
+def test_cost_table_has_min_max_columns_and_dimension_group_labels(tmp_path, monkeypatch):
+    """비용 표에 최소/최대 열이 생기고, lane/role/model/length 그룹이 latency 표와 같은
+    ``dimension:group`` 라벨 규약으로 나와야 한다."""
+    monkeypatch.setattr(aggregate_observability, "get_settings", lambda: _settings())
+    log_path = _write_log(
+        tmp_path,
+        [
+            _line(
+                requestId="1",
+                role="seller",
+                lane="analysis",
+                model=["haiku"],
+                costUsd=0.10,
+                messageLength=10,
+            ),
+            _line(
+                requestId="2",
+                role="seller",
+                lane="analysis",
+                model=["haiku"],
+                costUsd=0.20,
+                messageLength=200,
+            ),
+        ],
+    )
+    csv_path = tmp_path / "report.csv"
+    markdown_path = tmp_path / "report.md"
+
+    assert (
+        aggregate_observability.main(
+            [str(log_path), "--csv", str(csv_path), "--markdown", str(markdown_path)]
+        )
+        == 0
+    )
+
+    markdown = markdown_path.read_text(encoding="utf-8")
+    assert (
+        "| 그룹 | 표본/전체 | 커버리지 | 합계(USD) | 평균(USD) | 최소(USD) | 최대(USD) | 상태 |"
+        in markdown
+    )
+    assert "| lane:analysis |" in markdown
+    assert "| role:seller |" in markdown
+    assert "| model:haiku |" in markdown
+    assert "| length:<50 |" in markdown
+    assert "| length:150-400 |" in markdown
+    assert "모델별 비용은 fan-in 귀속이다" in markdown
+
+    with csv_path.open(newline="", encoding="utf-8") as file:
+        rows = list(csv.reader(file))
+    cost_groups = {row[1] for row in rows if row[0] == "cost"}
+    assert {
+        "overall",
+        "lane:analysis",
+        "role:seller",
+        "model:haiku",
+        "length:<50",
+        "length:150-400",
+    } <= cost_groups
+    assert any(row[0] == "cost" and row[2] == "min" for row in rows)
+    assert any(row[0] == "cost" and row[2] == "max" for row in rows)
 
 
 def test_slo_reports_overage_rate_and_leaves_unknown_role_unjudged():
