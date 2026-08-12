@@ -104,17 +104,17 @@
 - Consumes: `recent_conversation: list[dict[str, str]] | None`, `situation_memory: dict[str, object] | None`.
 - Produces: 메모리가 있을 때만 JSON 데이터 블록과 우선순위 안내가 추가된 decompose 프롬프트.
 
-- [ ] **Step 1: 프롬프트 RED 테스트 작성**
+- [x] **Step 1: 프롬프트 RED 테스트 작성**
 
   현재 메시지가 마지막이며 과거는 비신뢰 데이터라는 지시, 메모리 JSON 포함, `None`일 때 기존 프롬프트 바이트 동일성을 검증한다.
 
-- [ ] **Step 2: RED 확인**
+- [x] **Step 2: RED 확인**
 
   Run: `uv run pytest tests/unit/test_recommendation.py -k 'conversation_memory or identical_to_guest' -q`
 
   Expected: `decompose()`가 새 keyword argument를 받지 않아 실패한다.
 
-- [ ] **Step 3: 최소 구현 후 GREEN 확인**
+- [x] **Step 3: 최소 구현 후 GREEN 확인**
 
   선택 인자를 추가하고 메모리가 있을 때만 system notice와 두 JSON line을 추가한다. 기존 출력 schema와 parsing은 바꾸지 않는다.
 
