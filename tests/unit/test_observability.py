@@ -887,6 +887,70 @@ async def test_observation_logs_lane_degrade_cost_and_tool_calls(
     assert record["toolCalls"] == 2
 
 
+async def test_observation_prices_and_logs_cached_input_and_cache_writes(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """캐시 읽기·쓰기는 전체 입력에서 분리 과금되고 원문 없이 숫자만 로그에 남는다."""
+    monkeypatch.setattr(
+        observability,
+        "get_settings",
+        lambda: types.SimpleNamespace(
+            pii_hash_pepper="test-pepper",
+            model_price_in_per_1k={"priced-model": 0.01},
+            model_price_cached_in_per_1k={"priced-model": 0.001},
+            model_price_cache_write_per_1k={"priced-model": 0.0125},
+            model_price_out_per_1k={"priced-model": 0.02},
+        ),
+    )
+    observation = await _obs("cache-cost")
+    observation.record_model_call(
+        "priced-model",
+        prompt_tokens=1_000,
+        completion_tokens=500,
+        cached_input_tokens=400,
+        cache_write_tokens=100,
+    )
+
+    with caplog.at_level(logging.INFO, logger="observability"):
+        await observation.finish(1.0, TurnStatus.COMPLETED)
+
+    record = next(
+        json.loads(item.getMessage())
+        for item in caplog.records
+        if item.name == "observability" and item.getMessage().startswith("{")
+    )
+    assert record["promptTokens"] == 1_000
+    assert record["cachedInputTokens"] == 400
+    assert record["cacheWriteTokens"] == 100
+    assert record["costUsd"] == pytest.approx(0.01665)
+
+
+async def test_bound_model_call_receives_usage_without_touching_same_model_placeholder() -> None:
+    """동시 fast 호출도 예약 call ID를 쓰면 같은 모델의 일반 placeholder와 섞이지 않는다."""
+    from app.core import llm as llm_mod
+    from app.core.tracing import bind_model_call_usage, bind_request_trace
+
+    trace = _trace(FakeTraceExporter())
+    observation = await _obs("bound-call", trace=trace)
+    reserved_id = observation.record_model_call("fast-model", usage_reserved=True)
+    ordinary_id = observation.record_model_call("fast-model")
+
+    with bind_request_trace(trace), bind_model_call_usage(reserved_id):
+        llm_mod._record_usage(
+            types.SimpleNamespace(
+                usage_metadata={"input_tokens": 12, "output_tokens": 4},
+                response_metadata={},
+            ),
+            "fast-model",
+        )
+
+    assert observation.model_calls[reserved_id].prompt_tokens == 12
+    assert observation.model_calls[reserved_id].completion_tokens == 4
+    assert observation.model_calls[ordinary_id].prompt_tokens == 0
+    assert observation.model_calls[ordinary_id].completion_tokens == 0
+
+
 async def test_unregistered_model_costs_zero_and_warns(
     caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,

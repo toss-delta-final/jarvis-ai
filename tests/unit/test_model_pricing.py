@@ -33,6 +33,8 @@ def test_default_prices_match_pricing_manifest_exactly() -> None:
     for entry in DEFAULT_MODEL_PRICES:
         manifest_entry = manifest.entries[entry.model]
         assert entry.in_per_1k == manifest_entry["inPer1k"]
+        assert entry.cached_in_per_1k == manifest_entry["cachedInPer1k"]
+        assert entry.cache_write_per_1k == manifest_entry["cacheWritePer1k"]
         assert entry.out_per_1k == manifest_entry["outPer1k"]
         assert entry.effective_date == manifest_entry["effectiveDate"]
         assert entry.source == manifest_entry["source"]
@@ -45,7 +47,32 @@ def test_settings_defaults_expose_both_manifest_models() -> None:
     for entry in manifest.entries.values():
         model = entry["model"]
         assert settings.model_price_in_per_1k[model] == entry["inPer1k"]
+        assert settings.model_price_cached_in_per_1k[model] == entry["cachedInPer1k"]
+        assert settings.model_price_cache_write_per_1k[model] == entry["cacheWritePer1k"]
         assert settings.model_price_out_per_1k[model] == entry["outPer1k"]
+
+
+def test_gpt_5_6_luna_uses_official_cache_aware_prices() -> None:
+    """2026-08-13 공식 모델 문서 단가와 캐시 쓰기 1.25배 규칙을 고정한다."""
+    entry = PriceBook.load().entries["gpt-5.6-luna"]
+
+    assert entry["inPer1k"] == 0.0002
+    assert entry["cachedInPer1k"] == 0.00002
+    assert entry["cacheWritePer1k"] == 0.00025
+    assert entry["outPer1k"] == 0.0012
+
+
+def test_price_book_cost_separates_cached_reads_and_writes() -> None:
+    """캐시 토큰은 전체 입력의 부분집합이며 일반 입력으로 중복 과금하지 않는다."""
+    cost = PriceBook.load().cost(
+        model="gpt-5.6-luna",
+        input_tokens=1_000,
+        output_tokens=500,
+        cached_input_tokens=400,
+        cache_write_tokens=100,
+    )
+
+    assert cost == pytest.approx(0.000733)
 
 
 def test_default_price_tables_are_isolated_between_instances() -> None:

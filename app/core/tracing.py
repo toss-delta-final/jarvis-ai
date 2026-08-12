@@ -93,6 +93,8 @@ SAFE_METADATA_KEYS = frozenset(
         "model",
         "promptTokens",
         "completionTokens",
+        "cachedInputTokens",
+        "cacheWriteTokens",
         "httpMethod",
         "upstream",
         "statusClass",
@@ -120,6 +122,10 @@ class ObservationSink(Protocol):
         model: str,
         prompt_tokens: int = 0,
         completion_tokens: int = 0,
+        cached_input_tokens: int = 0,
+        cache_write_tokens: int = 0,
+        *,
+        usage_reserved: bool = False,
     ) -> int: ...
 
     def record_model_usage(
@@ -128,6 +134,8 @@ class ObservationSink(Protocol):
         prompt_tokens: int | None,
         completion_tokens: int | None,
         call_id: int | None = None,
+        cached_input_tokens: int | None = None,
+        cache_write_tokens: int | None = None,
     ) -> int: ...
 
     def record_tool_call(self) -> None: ...
@@ -572,6 +580,8 @@ class RequestTrace:
         prompt_tokens: int | None,
         completion_tokens: int | None,
         call_id: int | None = None,
+        cached_input_tokens: int | None = None,
+        cache_write_tokens: int | None = None,
     ) -> int | None:
         """Attach bounded provider facts to the active explicit LLM span."""
         if self._is_closing():
@@ -583,6 +593,8 @@ class RequestTrace:
                 prompt_tokens,
                 completion_tokens,
                 call_id,
+                cached_input_tokens,
+                cache_write_tokens,
             )
         stack = _active_span_stack.get()
         if not stack:
@@ -597,6 +609,10 @@ class RequestTrace:
             node.metadata["promptTokens"] = prompt_tokens
         if completion_tokens is not None:
             node.metadata["completionTokens"] = completion_tokens
+        if cached_input_tokens is not None:
+            node.metadata["cachedInputTokens"] = cached_input_tokens
+        if cache_write_tokens is not None:
+            node.metadata["cacheWriteTokens"] = cache_write_tokens
         return observation_call_id
 
     def record_llm_call(self, *, model: str) -> int | None:
@@ -769,6 +785,8 @@ class NoopRequestTrace(RequestTrace):
         prompt_tokens: int | None,
         completion_tokens: int | None,
         call_id: int | None = None,
+        cached_input_tokens: int | None = None,
+        cache_write_tokens: int | None = None,
     ) -> int | None:
         if self._observation is not None:
             return self._observation.record_model_usage(
@@ -776,6 +794,8 @@ class NoopRequestTrace(RequestTrace):
                 prompt_tokens,
                 completion_tokens,
                 call_id,
+                cached_input_tokens,
+                cache_write_tokens,
             )
         return None
 
@@ -820,6 +840,7 @@ _current_request_trace: ContextVar[RequestTrace | None] = ContextVar(
     "current_request_trace", default=None
 )
 _active_span_stack: ContextVar[tuple[UUID, ...]] = ContextVar("active_span_stack", default=())
+_bound_model_call_id: ContextVar[int | None] = ContextVar("bound_model_call_id", default=None)
 
 
 class TraceFactory:
@@ -1028,13 +1049,30 @@ def current_request_trace() -> RequestTrace | None:
     return _current_request_trace.get()
 
 
+def current_model_call_usage() -> int | None:
+    """현재 task의 provider usage를 받을 명시적 observation call ID."""
+    return _bound_model_call_id.get()
+
+
+@contextmanager
+def bind_model_call_usage(call_id: int | None) -> Iterator[None]:
+    """동일 모델의 동시 호출에서도 usage 귀속 대상을 task-local로 고정한다."""
+    token = _bound_model_call_id.set(call_id)
+    try:
+        yield
+    finally:
+        _bound_model_call_id.reset(token)
+
+
 @contextmanager
 def bind_request_trace(trace: RequestTrace) -> Iterator[None]:
     trace_token = _current_request_trace.set(trace)
     stack_token = _active_span_stack.set(())
+    call_token = _bound_model_call_id.set(None)
     try:
         yield
     finally:
+        _bound_model_call_id.reset(call_token)
         _active_span_stack.reset(stack_token)
         _current_request_trace.reset(trace_token)
 

@@ -481,7 +481,11 @@ async def test_provider_complete_records_usage_without_provider_ttft(
             contexts.append(get_tracing_context()["enabled"])
             return SimpleNamespace(
                 content='{"ok": true}',
-                usage_metadata={"input_tokens": 7, "output_tokens": 2},
+                usage_metadata={
+                    "input_tokens": 7,
+                    "output_tokens": 2,
+                    "input_token_details": {"cache_read": 3, "cache_creation": 1},
+                },
             )
 
     llm = _provider(provider)
@@ -501,6 +505,8 @@ async def test_provider_complete_records_usage_without_provider_ttft(
         "model": "fast-model",
         "promptTokens": 7,
         "completionTokens": 2,
+        "cachedInputTokens": 3,
+        "cacheWriteTokens": 1,
     }
     assert contexts == [False]
 

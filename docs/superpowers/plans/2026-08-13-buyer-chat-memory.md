@@ -39,21 +39,21 @@
 - Produces: `ModelCall.cached_input_tokens`, `ModelCall.cache_write_tokens`, 캐시 단가 설정, `bind_model_call_usage(call_id)`.
 - Consumes: LangChain `AIMessage.usage_metadata`와 기존 `RequestTrace`/`RequestObservation`.
 
-- [ ] **Step 1: 가격·비용 RED 테스트 작성**
+- [x] **Step 1: 가격·비용 RED 테스트 작성**
 
   Luna 입력/캐시 읽기/캐시 쓰기/출력 단가와 `uncached = input - cache_read - cache_write` 비용식을 기대하는 테스트를 작성한다. manifest와 런타임 기본표의 완전 일치를 함께 고정한다.
 
-- [ ] **Step 2: usage 정규화 RED 테스트 작성**
+- [x] **Step 2: usage 정규화 RED 테스트 작성**
 
   `input_token_details.cache_read`, `cache_creation`, `cached_tokens`, `cache_write_tokens` 변형이 trace와 요청 로그의 숫자 필드로 전달되는지 검증한다.
 
-- [ ] **Step 3: RED 확인**
+- [x] **Step 3: RED 확인**
 
   Run: `uv run pytest tests/unit/test_model_pricing.py tests/unit/test_observability.py tests/unit/test_llm_provider.py -q`
 
   Expected: 새 필드·단가·비용식이 없어 assertion이 실패한다.
 
-- [ ] **Step 4: 최소 구현 후 GREEN 확인**
+- [x] **Step 4: 최소 구현 후 GREEN 확인**
 
   가격 엔트리와 설정 dict를 확장하고 usage 정규화 helper를 추가한다. `RequestTrace`에서 explicit call ID를 전달하고 예약된 호출은 모델명 fallback에서 제외한다.
 

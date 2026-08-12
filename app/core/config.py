@@ -25,7 +25,12 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 # 모델 단가표 기본값의 단일 출처(#437) — model_pricing 은 최상단에서 config 를 import 하지
 # 않으므로 여기서 최상단 import 해도 순환이 생기지 않는다.
-from app.core.model_pricing import DEFAULT_MODEL_PRICE_IN_PER_1K, DEFAULT_MODEL_PRICE_OUT_PER_1K
+from app.core.model_pricing import (
+    DEFAULT_MODEL_PRICE_CACHE_WRITE_PER_1K,
+    DEFAULT_MODEL_PRICE_CACHED_IN_PER_1K,
+    DEFAULT_MODEL_PRICE_IN_PER_1K,
+    DEFAULT_MODEL_PRICE_OUT_PER_1K,
+)
 
 # 고객 피처 스펙의 단일 출처(#593) — 기본값을 여기서 다시 적으면 스냅샷 각인과 코드가
 # 조용히 어긋난다. features/spec.py 는 math 만 import 하는 상수 모듈이고 그 패키지
@@ -312,11 +317,23 @@ class Settings(BaseSettings):
     model_price_in_per_1k: Annotated[dict[str, float], NoDecode] = Field(
         default_factory=lambda: dict(DEFAULT_MODEL_PRICE_IN_PER_1K)
     )
+    model_price_cached_in_per_1k: Annotated[dict[str, float], NoDecode] = Field(
+        default_factory=lambda: dict(DEFAULT_MODEL_PRICE_CACHED_IN_PER_1K)
+    )
+    model_price_cache_write_per_1k: Annotated[dict[str, float], NoDecode] = Field(
+        default_factory=lambda: dict(DEFAULT_MODEL_PRICE_CACHE_WRITE_PER_1K)
+    )
     model_price_out_per_1k: Annotated[dict[str, float], NoDecode] = Field(
         default_factory=lambda: dict(DEFAULT_MODEL_PRICE_OUT_PER_1K)
     )
 
-    @field_validator("model_price_in_per_1k", "model_price_out_per_1k", mode="before")
+    @field_validator(
+        "model_price_in_per_1k",
+        "model_price_cached_in_per_1k",
+        "model_price_cache_write_per_1k",
+        "model_price_out_per_1k",
+        mode="before",
+    )
     @classmethod
     def _empty_model_price_table_uses_default(cls, value: object, info) -> object:
         # deploy.yml 은 미설정 vars 를 빈 문자열로 env 파일에 쓴다. 우리가 운영자에게 이 두

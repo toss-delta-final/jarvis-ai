@@ -27,7 +27,7 @@ from typing import Any, Literal, Protocol, runtime_checkable
 from langsmith.run_helpers import tracing_context
 
 from app.core.config import LLMProvider, Settings, get_settings
-from app.core.tracing import current_request_trace
+from app.core.tracing import current_model_call_usage, current_request_trace
 
 ModelTier = Literal["fast", "smart"]
 
@@ -275,19 +275,59 @@ def _record_content(system: str, user: str, output: str | None) -> None:
 def _record_usage(message: Any, model: str) -> None:
     """Record only normalized model/token facts on the active explicit LLM span."""
     usage = getattr(message, "usage_metadata", None)
+    response_metadata = getattr(message, "response_metadata", None)
     if not isinstance(usage, dict):
-        response_metadata = getattr(message, "response_metadata", None)
         usage = (
             response_metadata.get("token_usage") if isinstance(response_metadata, dict) else None
         )
     usage = usage if isinstance(usage, dict) else {}
     prompt_tokens = usage.get("input_tokens", usage.get("prompt_tokens"))
     completion_tokens = usage.get("output_tokens", usage.get("completion_tokens"))
+
+    details: list[dict[str, Any]] = []
+    for value in (
+        usage.get("input_token_details"),
+        usage.get("prompt_tokens_details"),
+        response_metadata.get("input_tokens_details")
+        if isinstance(response_metadata, dict)
+        else None,
+        response_metadata.get("prompt_tokens_details")
+        if isinstance(response_metadata, dict)
+        else None,
+    ):
+        if isinstance(value, dict):
+            details.append(value)
+
+    def detail_tokens(*keys: str, suffixes: tuple[str, ...] = ()) -> int | None:
+        for source in (*details, usage):
+            for key, value in source.items():
+                if (key in keys or any(key.endswith(suffix) for suffix in suffixes)) and isinstance(
+                    value, int
+                ):
+                    return max(value, 0)
+        return None
+
+    cached_input_tokens = detail_tokens(
+        "cache_read",
+        "cached_tokens",
+        "cache_read_input_tokens",
+        suffixes=("_cache_read",),
+    )
+    cache_write_tokens = detail_tokens(
+        "cache_creation",
+        "cache_write",
+        "cache_write_tokens",
+        "cache_creation_input_tokens",
+        suffixes=("_cache_creation", "_cache_write"),
+    )
     if trace := current_request_trace():
         trace.record_llm_usage(
             model=model,
             prompt_tokens=prompt_tokens if isinstance(prompt_tokens, int) else None,
             completion_tokens=completion_tokens if isinstance(completion_tokens, int) else None,
+            call_id=current_model_call_usage(),
+            cached_input_tokens=cached_input_tokens,
+            cache_write_tokens=cache_write_tokens,
         )
 
 

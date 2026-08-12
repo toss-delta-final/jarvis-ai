@@ -29,12 +29,20 @@ class PriceBook:
         model: str,
         input_tokens: int | None,
         output_tokens: int | None,
+        cached_input_tokens: int = 0,
+        cache_write_tokens: int = 0,
     ) -> float | None:
         entry = self.entries.get(model)
         if entry is None or input_tokens is None or output_tokens is None:
             return None
+        cached = min(max(cached_input_tokens, 0), input_tokens)
+        cache_write = min(max(cache_write_tokens, 0), input_tokens - cached)
+        uncached = input_tokens - cached - cache_write
         return (
-            input_tokens * float(entry["inPer1k"]) + output_tokens * float(entry["outPer1k"])
+            uncached * float(entry["inPer1k"])
+            + cached * float(entry["cachedInPer1k"])
+            + cache_write * float(entry["cacheWritePer1k"])
+            + output_tokens * float(entry["outPer1k"])
         ) / 1000
 
     @staticmethod

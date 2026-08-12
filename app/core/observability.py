@@ -108,6 +108,9 @@ class ModelCall:
     model: str
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    cached_input_tokens: int = 0
+    cache_write_tokens: int = 0
+    usage_reserved: bool = False
 
 
 @dataclass
@@ -170,10 +173,26 @@ class RequestObservation:
             self.context_id = committed.context_id
 
     def record_model_call(
-        self, model: str, prompt_tokens: int = 0, completion_tokens: int = 0
+        self,
+        model: str,
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+        cached_input_tokens: int = 0,
+        cache_write_tokens: int = 0,
+        *,
+        usage_reserved: bool = False,
     ) -> int:
         """노드별 LLM 호출 기록(model·tokens). 그래프가 호출한다."""
-        self.model_calls.append(ModelCall(model, prompt_tokens, completion_tokens))
+        self.model_calls.append(
+            ModelCall(
+                model,
+                prompt_tokens,
+                completion_tokens,
+                cached_input_tokens,
+                cache_write_tokens,
+                usage_reserved,
+            )
+        )
         return len(self.model_calls) - 1
 
     def record_model_usage(
@@ -182,6 +201,8 @@ class RequestObservation:
         prompt_tokens: int | None,
         completion_tokens: int | None,
         call_id: int | None = None,
+        cached_input_tokens: int | None = None,
+        cache_write_tokens: int | None = None,
     ) -> int:
         """provider usage를 호출 ID 항목에 합치고, 레거시 호출은 모델 placeholder를 찾는다."""
         if call_id is None:
@@ -190,6 +211,7 @@ class RequestObservation:
                     index
                     for index in range(len(self.model_calls) - 1, -1, -1)
                     if self.model_calls[index].model == model
+                    and not self.model_calls[index].usage_reserved
                     and self.model_calls[index].prompt_tokens == 0
                     and self.model_calls[index].completion_tokens == 0
                 ),
@@ -202,6 +224,10 @@ class RequestObservation:
             target.prompt_tokens = prompt_tokens
         if completion_tokens is not None:
             target.completion_tokens = completion_tokens
+        if cached_input_tokens is not None:
+            target.cached_input_tokens = cached_input_tokens
+        if cache_write_tokens is not None:
+            target.cache_write_tokens = cache_write_tokens
         return call_id
 
     def set_lane(self, lane: str) -> None:
@@ -246,7 +272,18 @@ class RequestObservation:
                     )
                     warned.add(call.model)
                 continue
-            total += call.prompt_tokens / 1_000 * (input_price or 0.0)
+            cached_price = getattr(settings, "model_price_cached_in_per_1k", {}).get(
+                call.model, input_price
+            )
+            cache_write_price = getattr(settings, "model_price_cache_write_per_1k", {}).get(
+                call.model, input_price
+            )
+            cached = min(max(call.cached_input_tokens, 0), call.prompt_tokens)
+            cache_write = min(max(call.cache_write_tokens, 0), max(call.prompt_tokens - cached, 0))
+            uncached = max(call.prompt_tokens - cached - cache_write, 0)
+            total += uncached / 1_000 * (input_price or 0.0)
+            total += cached / 1_000 * (cached_price or 0.0)
+            total += cache_write / 1_000 * (cache_write_price or 0.0)
             total += call.completion_tokens / 1_000 * (output_price or 0.0)
         return round(total, 8)
 
@@ -359,6 +396,8 @@ class RequestObservation:
             "model": [m.model for m in self.model_calls] or None,
             "promptTokens": sum(m.prompt_tokens for m in self.model_calls),
             "completionTokens": sum(m.completion_tokens for m in self.model_calls),
+            "cachedInputTokens": sum(m.cached_input_tokens for m in self.model_calls),
+            "cacheWriteTokens": sum(m.cache_write_tokens for m in self.model_calls),
             "lane": self.lane,
             "degraded": self.degraded,
             "degradeReason": self.degrade_reason,
