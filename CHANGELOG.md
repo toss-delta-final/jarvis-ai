@@ -12,6 +12,12 @@
 ## [Unreleased]
 
 ### Added
+- **#637 — 구매자 추천 adversarial/behavioral 평가 데이터셋**을 추가했다. 실제
+  `BuyerChatRequest`와 Spring I-1 `SpringProduct` wire schema를 사용하는 7개 failure mode별
+  30 family(총 210 family, 450 minimal-mutation case)를 결정론적으로 생성한다. 숫자 oracle,
+  family 불변식, unintended mutation, 경계 contrast를 validator가 검사하며, 고정 seed로
+  category별 20%를 층화 추출한 42 family 직접 재검토 기록도 함께 검증한다. 판매자 경로와
+  임의 schema는 포함하지 않는다.
 - **#153 — buyer-only blind pairwise 사람 평가 패키지** (`evals/blind_pairwise/`)를 추가했다.
   수집 전 고정된 seed A/B 배정, 비식별 raw response schema, tie/abstain 보존, rubric별 ordinal
   분포, 분모가 명시된 Wilson 95% interval, Krippendorff alpha, 선택적 LLM judge 비교와
