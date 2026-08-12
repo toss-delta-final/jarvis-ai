@@ -99,6 +99,25 @@ _SEARCH_RETRY = object()
 _SEARCH_DONE = object()
 
 
+def _rerank_prompt_version(
+    *,
+    degraded: bool,
+    ranking_arm: str,
+    grounding_arm: str,
+    grounding_prompt_version: str,
+    scoring_prompt_version: str,
+) -> str | None:
+    """Return the prompt contract that actually produced the exposed ranking."""
+
+    if degraded:
+        return None
+    if ranking_arm != "current":
+        return scoring_prompt_version
+    if grounding_arm != "current":
+        return grounding_prompt_version
+    return "rerank-v1"
+
+
 def _now() -> datetime:
     """현재 시각 — naive-UTC(ordered_at 정규화와 동일 기준으로 비교, 테스트 주입 지점)."""
     return datetime.now(timezone.utc).replace(tzinfo=None)
@@ -2113,7 +2132,10 @@ async def stream_recommendation(
             with trace_span(
                 "llm.rerank",
                 "llm",
-                {"model": resolve_model_id(settings, "smart")},
+                {
+                    "model": resolve_model_id(settings, "smart"),
+                    "rankingArm": settings.rerank_ranking_arm,
+                },
             ):
                 rr = await rerank(
                     llm,
@@ -2127,10 +2149,13 @@ async def stream_recommendation(
                     # [#132] 사용자가 평점을 명시했는지 — 무평점 후보의 근거문 고지 지시를 켠다.
                     # 완화가 적용됐으면 `effective_filters` 가 그 결과라 표시-실제가 어긋나지 않는다.
                     rating_min_requested=effective_filters.rating_min is not None,
-                    # 450-case A/B/C 실측으로 선택한 production arm. rerank()의 직접 호출 기본값과
-                    # 평가 CLI 기본 A는 유지하고 graph 경계에서만 C를 활성화한다. 운영 롤백은
-                    # RERANK_GROUNDING_ARM=current로 코드 변경 없이 수행한다.
+                    # grounding과 ranking은 독립 rollout 축이다. 기존 grounding 선택은 유지하되
+                    # ranking은 current를 시작/롤백 기본값으로 두고 graph 경계에서만 명시 전달한다.
+                    # 따라서 한 축의 실험이 다른 축의 prompt/validator 계약을 조용히 바꾸지 않는다.
                     grounding_arm=settings.rerank_grounding_arm,
+                    ranking_arm=settings.rerank_ranking_arm,
+                    rrf_alpha=settings.rerank_rrf_alpha,
+                    rrf_k=settings.rerank_rrf_k,
                 )
             ranked_ids = [pid for pid, _ in rr.ranked]
             # [이슈 #140] provenance rankSource 판정용 스냅샷 — pin 을 얹기 **전**의 rerank
@@ -2738,14 +2763,12 @@ async def stream_recommendation(
             recommendation_request_id=recommendation_request_id,
             surface="chat",
             pipeline="search_rerank",
-            prompt_version=(
-                None
-                if rerank_degraded
-                else (
-                    "rerank-v1"
-                    if settings.rerank_grounding_arm == "current"
-                    else settings.rerank_prompt_version
-                )
+            prompt_version=_rerank_prompt_version(
+                degraded=rerank_degraded,
+                ranking_arm=settings.rerank_ranking_arm,
+                grounding_arm=settings.rerank_grounding_arm,
+                grounding_prompt_version=settings.rerank_prompt_version,
+                scoring_prompt_version=settings.rerank_scoring_prompt_version,
             ),
             ranker_model=None if rerank_degraded else resolve_model_id(settings, "smart"),
             personalized=bool(profile),

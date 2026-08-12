@@ -72,6 +72,32 @@ def _only_provenance(caplog: pytest.LogCaptureFixture) -> dict:
     return records[0]
 
 
+def _scored_rerank_payload() -> dict[str, object]:
+    return {
+        "evaluations": [
+            {
+                "productId": product_id,
+                "intentFit": intent_fit,
+                "needFit": 3,
+                "profileFit": 0,
+                "rationale": "요청과의 관련도를 기준으로 추천했어요",
+                "reasonCode": "NO_VERIFIABLE_EVIDENCE",
+                "evidenceFields": [],
+            }
+            for product_id, intent_fit in ((101, 4), (102, 3), (103, 2))
+        ],
+        "overallComment": "추천이에요",
+        "overallClaims": [
+            {
+                "claimCode": "NO_VERIFIABLE_OVERALL_CLAIM",
+                "scope": "FINAL_EXPOSED_PRODUCTS",
+                "subjectProductIds": [],
+                "evidenceFields": [],
+            }
+        ],
+    }
+
+
 # ─────────── join 결정성 · 순서 복원 ───────────
 
 
@@ -198,6 +224,71 @@ async def test_current_grounding_rollback_restores_legacy_prompt_version(
         )
 
     assert _only_provenance(caplog)["promptVersion"] == "rerank-v1"
+
+
+@pytest.mark.parametrize(
+    ("ranking_arm", "grounding_arm", "expected_prompt_version"),
+    [
+        ("current", "current", "rerank-v1"),
+        ("current", "validated", "rerank-grounding-v1"),
+        ("structured", "validated", "rerank-scoring-v1"),
+        ("hybrid", "validated", "rerank-scoring-v1"),
+    ],
+)
+async def test_prompt_version_tracks_independent_ranking_and_grounding_boundaries(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    ranking_arm: str,
+    grounding_arm: str,
+    expected_prompt_version: str,
+) -> None:
+    settings = get_settings()
+    monkeypatch.setattr(settings, "rerank_ranking_arm", ranking_arm)
+    monkeypatch.setattr(settings, "rerank_grounding_arm", grounding_arm)
+    rerank_payload = _scored_rerank_payload() if ranking_arm != "current" else None
+
+    with caplog.at_level(logging.INFO, logger=_GRAPH_LOGGER):
+        await _collect(
+            run_buyer_turn(
+                _req(),
+                _member(),
+                llm=FakeLLM(rerank=rerank_payload),
+                search=_make_search(DEFAULT_PRODUCTS),
+                push_fn=_RecordingPush(),
+            )
+        )
+
+    assert _only_provenance(caplog)["promptVersion"] == expected_prompt_version
+
+
+async def test_rerank_trace_records_internal_ranking_arm_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(get_settings(), "rerank_ranking_arm", "hybrid")
+    exporter = FakeTraceExporter()
+    trace = TraceFactory(exporter=exporter, enabled=True, sampling_rate=1.0).start_request(
+        name="buyer_chat_turn",
+        request_id="req-ranking-arm",
+        conversation_id="session-ranking-arm",
+        thread_id="thread-ranking-arm",
+        lane="recommend",
+        environment="test",
+    )
+
+    with bind_request_trace(trace):
+        await _collect(
+            run_buyer_turn(
+                _req(),
+                _member(),
+                llm=FakeLLM(rerank=_scored_rerank_payload()),
+                search=_make_search(DEFAULT_PRODUCTS),
+                push_fn=_RecordingPush(),
+            )
+        )
+    await trace.finish(status="COMPLETED", error_type=None, terminal_reason="done")
+
+    rerank_span = next(node for node in exporter.exported[0] if node.name == "llm.rerank")
+    assert rerank_span.metadata["rankingArm"] == "hybrid"
 
 
 async def test_rerank_ranked_item_without_rationale_is_still_rank_source_rerank(
