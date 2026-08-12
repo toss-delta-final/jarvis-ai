@@ -882,6 +882,11 @@ uv run pytest -q
 
 Verification (2026-08-13): `7332 passed, 229 deselected, 2 warnings in 119.68s`.
 
+Post-implementation live smoke (6 budget MFT cases, one seed) exposed a common scored-arm
+`LengthFinishReasonError`: the 2,760-token output cap was consumed entirely by reasoning before JSON.
+The same failing case succeeded with a 4,096-token scored-only reserve, while the current-arm budget
+remained unchanged. Initial `alpha=0.65` quality remains experimental; the smoke is not a release gate.
+
 If environment-dependent auth/PostgreSQL tests or a known hang recur, record exact node IDs and fresh output; do not count them as passed and do not hide them behind deselection unless the repository's documented command already specifies that selection.
 
 - [x] **Step 5: Inspect branch scope and commit final docs**

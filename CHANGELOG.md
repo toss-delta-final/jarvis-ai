@@ -19,8 +19,10 @@
   (`RERANK_RRF_ALPHA`, `RERANK_RRF_K`)로 결합하며, 프로필이 없으면 profile 점수를 0으로
   강제한다. 순위 arm은 기존 `RERANK_GROUNDING_ARM`과 독립적으로 선택·롤백할 수 있다. 같은
   provider 응답을 공유하는 paired A/B/C runner와 nDCG@10·순위 안정성·fallback/무결성·비용
-  artifact도 추가했다. scripted dry-run은 harness 재현성만 검증했으며, 초기 가중치와 RRF
-  설정의 품질 개선은 live paired 평가 전까지 `not-tested`다. API·SSE wire 계약 변경 없음.
+  artifact도 추가했다. bounded live smoke에서 30개 후보 scored 응답이 reasoning token만으로
+  기존 출력 예산을 소진하는 문제를 확인해, `current` 예산은 유지하면서 structured/hybrid에만
+  설정 가능한 reasoning reserve를 추가했다. 소규모 smoke는 초기 RRF 값의 개선 근거가 아니며
+  전체 dev paired 평가 전까지 production 기본은 `current`다. API·SSE wire 계약 변경 없음.
 - **#634 관측 집계 스크립트 비용 축에 min/max·role 분해 추가** — `_cost_stats()`가 최소/최대
   비용을 반환하도록 확장하고, 비용 롤업에 `role`(seller/member/guest)·`model`(fan-in
   귀속)·`length`(`messageLength` 고정 버킷) 축을 신설했다. Markdown 비용 표에 최소/최대(USD)

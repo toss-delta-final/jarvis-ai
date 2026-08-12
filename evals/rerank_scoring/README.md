@@ -29,6 +29,10 @@ uv run python -m evals.rerank_scoring \
 열지 않는다. 출력 디렉터리는 새 경로여야 하며 `samples.csv`, `failures.csv`,
 `results.json`, `run_manifest.json`, `report.md` 다섯 파일만 생성한다.
 
+30개 후보를 모두 평가하는 scored prompt는 JSON 생성 전 reasoning token도 소비한다.
+`RERANK_SCORING_REASONING_TOKEN_RESERVE`(기본 4096)는 structured/hybrid에만 추가되며,
+기존 current arm의 출력 예산은 바꾸지 않는다.
+
 `samples.csv`는 후보 permutation, 원래 search rank를 담은 decision, raw response hash,
 fallback/무결성 카운트를 보존한다. profile 원문이나 credential은 기록하지 않는다.
 `results.json`은 두 CSV에서 다시 계산할 수 있으며, 데이터셋·prompt·model provenance가

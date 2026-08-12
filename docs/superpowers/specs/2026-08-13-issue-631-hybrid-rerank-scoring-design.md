@@ -86,6 +86,7 @@ scoring metadata가 잘못되면 해당 후보의 LLM 순위를 복구한다. gr
 | `rerank_ranking_arm` | `RERANK_RANKING_ARM` | `current` | `current\|structured\|hybrid` |
 | `rerank_rrf_alpha` | `RERANK_RRF_ALPHA` | `0.65` | `0.0 <= value <= 1.0` |
 | `rerank_rrf_k` | `RERANK_RRF_K` | `60` | 양의 정수 |
+| `rerank_scoring_reasoning_token_reserve` | `RERANK_SCORING_REASONING_TOKEN_RESERVE` | `4096` | 0 이상 정수 |
 
 함수 `rerank()`의 `ranking_arm` 기본값도 `current`로 둔다. Production graph는 Settings 값을
 명시적으로 전달한다. 설정 오류는 Pydantic 검증으로 기동 전에 거부한다.
@@ -220,7 +221,9 @@ effectiveAlpha = alpha + (1 - alpha) * (1 / 23)
 3. `productId` 오름차순.
 
 `alpha=0.65`, `k=60`, component 가중치 `4:2:1`은 구조적 불변식이 아니라 #631의 초기 실험값이다.
-config와 artifact에 기록하고 실험 결과 없이 정답으로 주장하지 않는다.
+config와 artifact에 기록하고 실험 결과 없이 정답으로 주장하지 않는다. scored arm의 출력 예산에는
+모든 후보 JSON 몫과 별도로 reasoning reserve를 더한다. 이 reserve는 `current` arm 예산에는 적용하지
+않아 기존 경로의 provider 호출 계약을 보존한다.
 
 ## 오류 및 fallback
 

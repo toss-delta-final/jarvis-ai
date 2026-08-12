@@ -342,11 +342,14 @@ async def rerank(
     )
 
     # current는 종전처럼 노출 개수만 생성한다. scored arm은 누락 여부까지 코드가 검증해야 하므로
-    # 최종 노출 상한과 무관하게 모든 후보의 평가를 받을 예산을 확보한다(#631).
+    # 최종 노출 상한과 무관하게 모든 후보의 평가를 받을 예산을 확보한다(#631). scored prompt는
+    # reasoning 모델이 JSON 생성 전 사고 토큰을 소비하므로 그 reserve도 scored arm에만 더한다.
     output_item_count = expose_max if ranking_arm == "current" else len(candidates)
     max_tokens = (
         settings.rerank_max_tokens_base + settings.rerank_max_tokens_per_item * output_item_count
     )
+    if ranking_arm != "current":
+        max_tokens += settings.rerank_scoring_reasoning_token_reserve
     if ranking_arm == "current":
         system = _SYSTEM if grounding_arm == "current" else _SYSTEM_STRUCTURED_GROUNDING
     else:

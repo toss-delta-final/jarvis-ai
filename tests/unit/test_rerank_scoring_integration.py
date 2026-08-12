@@ -199,7 +199,7 @@ async def test_hybrid_uses_same_scored_schema_but_changes_only_code_order() -> N
     assert [row[0] for row in hybrid.ranked] == [101, 102]
 
 
-async def test_scored_arm_token_budget_uses_candidate_count_not_expose_max() -> None:
+async def test_scored_arm_token_budget_reserves_reasoning_and_uses_candidate_count() -> None:
     payload = _scored_payload(
         (101, 4, 3, 0),
         (102, 3, 3, 0),
@@ -215,7 +215,9 @@ async def test_scored_arm_token_budget_uses_candidate_count_not_expose_max() -> 
     settings = get_settings()
 
     assert llm.max_tokens == [
-        settings.rerank_max_tokens_base + settings.rerank_max_tokens_per_item * 3
+        settings.rerank_max_tokens_base
+        + settings.rerank_scoring_reasoning_token_reserve
+        + settings.rerank_max_tokens_per_item * 3
     ]
 
 

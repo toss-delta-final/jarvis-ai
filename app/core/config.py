@@ -1086,6 +1086,9 @@ class Settings(BaseSettings):
     rerank_ranking_arm: Literal["current", "structured", "hybrid"] = "current"
     rerank_rrf_alpha: float = Field(default=0.65, ge=0.0, le=1.0)
     rerank_rrf_k: int = Field(default=60, gt=0)
+    # Scored prompt는 모든 후보를 rubric별로 비교하므로 OpenAI reasoning 모델이 JSON을 쓰기 전
+    # 사고 토큰을 별도로 소비한다. 기존 current 예산은 바꾸지 않고 scored arm에만 reserve한다.
+    rerank_scoring_reasoning_token_reserve: int = Field(default=4096, ge=0)
     rerank_max_tokens_base: int = Field(default=960, ge=0)  # overallComment·JSON 골격 몫
     rerank_max_tokens_per_item: int = Field(default=60, ge=1)  # {productId, rationale} 1건 몫
     llm_call_limit: int = 2

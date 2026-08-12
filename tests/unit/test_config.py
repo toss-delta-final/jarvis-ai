@@ -21,6 +21,7 @@ def test_rerank_ranking_defaults_to_current_and_validates_hybrid_config(monkeypa
     assert defaults.rerank_ranking_arm == "current"
     assert defaults.rerank_rrf_alpha == 0.65
     assert defaults.rerank_rrf_k == 60
+    assert defaults.rerank_scoring_reasoning_token_reserve == 4096
     assert defaults.rerank_scoring_prompt_version == "rerank-scoring-v1"
 
     monkeypatch.setenv("RERANK_RANKING_ARM", "hybrid")
@@ -33,6 +34,8 @@ def test_rerank_ranking_defaults_to_current_and_validates_hybrid_config(monkeypa
         Settings(_env_file=None, rerank_rrf_alpha=1.01)
     with pytest.raises(ValidationError):
         Settings(_env_file=None, rerank_rrf_k=0)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, rerank_scoring_reasoning_token_reserve=-1)
 
 
 def test_embedding_provenance_defaults():
