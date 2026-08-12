@@ -37,10 +37,15 @@ carried commits: 05633b08 (design spec), 이 구현 계획 문서 commit
 
 ```bash
 uv run pytest tests/unit/test_config.py tests/unit/test_rerank_grounding.py -q
-uv run pre-commit run --all-files
+uv run pre-commit run --files \
+  docs/superpowers/specs/2026-08-13-issue-631-hybrid-rerank-scoring-design.md \
+  docs/superpowers/plans/2026-08-13-issue-631-hybrid-rerank-scoring.md
 ```
 
 baseline 실패가 feature 변경 전부터 재현되면 해당 출력과 commit SHA를 기록하고 원인을 분리한다.
+2026-08-13 baseline에서 repo 전체 `--all-files` 실행은 pinned hook Ruff 0.8.6이 `origin/dev`의 무관한
+66개 Python 파일을 재포맷해 feature scope를 오염시켰다. 따라서 각 commit의 정상 hook은 유지하고,
+수동 pre-commit 검증은 carryover/feature diff 파일에 한정한다.
 
 ---
 
@@ -859,7 +864,7 @@ uv run pytest \
 ```bash
 uv run ruff check .
 uv run ruff format --check .
-uv run pre-commit run --all-files
+git diff --name-only -z origin/dev...HEAD | xargs -0 uv run pre-commit run --files
 git diff --check
 ```
 
@@ -895,7 +900,7 @@ Not-tested: Production traffic and sealed holdout unless separately reported"
 
 ```bash
 git status --short --branch
-uv run pre-commit run --all-files
+git diff --name-only -z origin/dev...HEAD | xargs -0 uv run pre-commit run --files
 git diff --check origin/dev...HEAD
 ```
 
