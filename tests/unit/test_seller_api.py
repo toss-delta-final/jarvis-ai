@@ -1678,7 +1678,13 @@ def test_product_route_invalid_draft_becomes_token(monkeypatch: pytest.MonkeyPat
 def test_product_route_draft_is_confirmable(monkeypatch: pytest.MonkeyPatch) -> None:
     """E2E: 스트림 1 draft 의 draftId 로 confirm(스트림 2) — checkpoint 바인딩 검증."""
     from app.agents.seller.schemas import DraftChange, DraftProposal
-    from app.schemas.spring import ProductUpdateResult, SellerProductList, SellerProductRow
+    from app.schemas.spring import (
+        BehaviorEventsResult,
+        BehaviorProductRow,
+        ProductUpdateResult,
+        SellerProductList,
+        SellerProductRow,
+    )
     from app.services.spring_client import set_spring_client
 
     class _Spring:
@@ -1694,6 +1700,15 @@ def test_product_route_draft_is_confirmable(monkeypatch: pytest.MonkeyPatch) -> 
             # [#620] changes 가 비면 "이미 그 값" 으로 갈음돼 already_done 이 된다 —
             # 이 테스트는 실제 반영(executed)을 검증하므로 비어있지 않은 값을 준다.
             return ProductUpdateResult(productId=product_id, changes=["PRICE"])
+
+        # [#659] 저성과 참고 문구 조회 — 임계 이상으로 두어 이 테스트의 반영 안내
+        # 텍스트·이벤트 시퀀스를 건드리지 않는다.
+        async def get_events(
+            self, brand_id, from_=None, to=None, event_type=None, product_id=None, group_by=None
+        ):
+            return BehaviorEventsResult(
+                rows=[BehaviorProductRow(productId=product_id, salesQuantity=999, counts={})]
+            )
 
     spring = _Spring()
     set_spring_client(spring)
