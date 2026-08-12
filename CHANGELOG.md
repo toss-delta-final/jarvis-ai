@@ -95,6 +95,15 @@
 - **#635 — 구 `GET /profile/me` HTTP 조회 표면을 제거했다.** 라우터·응답 스키마·OpenAPI·회귀 테스트와 공개 문서를 함께 정리했으며, 프로필 요약 reader는 추천 경로 내부 소비로 유지한다.
 
 ### Changed
+- **판매자 챗봇 응답 전반의 말투를 "친절한 비서" 톤으로 개선했다.** `GENERAL_PROMPT_TEMPLATE`·
+  `REPORT_PROMPT`·`RESIDENT_REPORT_PROMPT`·`PRODUCT_PROMPT`·`RECOMMEND_PROMPT`·
+  `RESIDENT_RECOMMEND_PROMPT`(`prompts.py`)에 문체 규칙을 추가·보강하고, `vision.py`의 이미지
+  분석 결과(상품명·요약·설명) 품질 기준을 구체화했다. 채팅 화면이 실제 렌더링하는 서식(줄바꿈·
+  목록·**굵게** 3종, 표·헤딩 미지원)을 프롬프트에 명시해 지원하지 않는 마크다운 기호가 그대로
+  노출되는 걸 막았다. 아울러 `hitl.py`·`history.py`·`middleware.py`·`pipeline.py`·
+  `draft_lifecycle.py`의 하드코딩된 완료·오류 메시지 40여 곳을 "~습니다" 단정형에서
+  "~해요/~드릴게요" 구어체로 바꾸고, 내부 productId·orderItemId·enum 값 노출을 줄이고 실패
+  시 다음 행동 안내를 추가했다. 계약(api-spec) 변경 없음 — 순수 텍스트 수정이다.
 - **#650 — 판매자 general 레인에 경량 해석 허용 범위를 추가했다.** 단일 지표 증감·순위·
   임계값 비교(예: "지난주보다 늘었다", "가장 많이 이탈한 단계")까지는 general 이 직접
   답한다 — 원인 가설·복수 지표 교차·행동 추천은 여전히 금지이며, 필요하면 기존과 동일하게

@@ -186,8 +186,8 @@ def validate_draft(
     if proposal.op == "ship":
         if proposal.order_item_id is None:
             return None, (
-                "발송할 주문 아이템을 특정하지 못했습니다. 주문 번호나 상품명을 "
-                "알려주시면 주문을 조회해 대상을 확정하겠습니다."
+                "어떤 주문을 발송 처리할지 아직 특정하지 못했어요. 주문 번호나 상품명을 "
+                "알려주시면 주문을 찾아서 확인해 드릴게요."
             )
         record = DraftRecord(
             draft_id=str(uuid.uuid4()),
@@ -249,24 +249,27 @@ def validate_draft(
         if change.field in seen_fields:
             label = _FIELD_LABELS.get(change.field, change.field)
             return None, (
-                f"'{label}' 변경이 초안에 중복으로 실려 있어 어느 값을 반영할지 "
-                "판단하지 못했습니다. 바꿀 내용을 다시 한 번 말씀해 주세요."
+                f"'{label}' 변경 내용이 초안에 두 번 들어 있어서 어느 값을 반영해야 할지 "
+                "헷갈려요. 바꾸고 싶은 내용을 한 번만 다시 말씀해 주시겠어요?"
             )
         seen_fields.add(change.field)
 
     if proposal.op in ("update", "delete") and proposal.product_id is None:
         return None, (
-            "어느 상품을 변경할지 특정하지 못했습니다. 상품명이나 상품 번호를 알려주세요."
+            "어느 상품을 바꾸실 건지 아직 확인하지 못했어요. 상품명이나 상품 번호를 알려주시겠어요?"
         )
     if proposal.op == "update" and not changes:
-        return None, "무엇을 어떻게 바꿀지 파악하지 못했습니다. 변경할 내용을 알려주세요."
+        return (
+            None,
+            "무엇을 어떻게 바꾸실지 아직 파악하지 못했어요. 바꾸고 싶은 내용을 알려주시겠어요?",
+        )
     if proposal.op == "update" and "category" in fields:
         # [#620] ProductUpdate 스키마에 애초에 category 필드가 없다(BE DTO 에도 없음,
         # 2026-08-09 실측) — 여기서 막지 않으면 카드에는 "카테고리 변경"이 보이는데
         # confirm 해도 조용히 무시되는(보여준 것≠실행하는 것) 상황이 된다.
         return None, (
-            "카테고리는 상품 수정으로 바꿀 수 없습니다 — 등록 시에만 정할 수 있는 "
-            "값입니다. 카테고리를 바꾸려면 상품을 새로 등록해 주세요."
+            "카테고리는 상품 수정으로는 바꿀 수 없고, 처음 등록할 때만 정할 수 있어요. "
+            "카테고리를 바꾸고 싶으시면 상품을 새로 등록해 주시겠어요?"
         )
     name_change = next((c for c in changes if c.field == "name"), None)
     if name_change is not None:
@@ -276,8 +279,8 @@ def validate_draft(
             # 방어 — 초과분은 BE 400 VALIDATION_ERROR(미매핑 → "일시적 오류")로 새던 것을
             # 여기서 선차단한다.
             return None, (
-                f"상품명이 {name_max_len}자를 초과해 저장할 수 없습니다. "
-                "짧게 줄여 다시 말씀해 주세요."
+                f"상품명이 {name_max_len}자를 넘어서 저장할 수 없어요. "
+                "조금 더 짧게 줄여서 다시 말씀해 주시겠어요?"
             )
     if proposal.op == "update" and row is not None:
         price_change = next((c for c in changes if c.field == "price"), None)
@@ -304,16 +307,16 @@ def validate_draft(
                 # 필드는 저장된 값)을 카드 표시 전에 미리 계산 — confirm 후 422 로 처음
                 # 알리는 대신 여기서 되묻는다("선차단").
                 return None, (
-                    f"판매가({effective_price:,}원)가 정가({effective_original_price:,}원)를 "
-                    "넘어 저장할 수 없습니다. 가격을 다시 확인해 말씀해 주세요."
+                    f"판매가({effective_price:,}원)가 정가({effective_original_price:,}원)보다 "
+                    "높아서 저장할 수 없어요. 가격을 다시 한번 확인해서 알려주시겠어요?"
                 )
     if proposal.op == "create":
         forbidden = fields & _CREATE_FORBIDDEN_FIELDS
         if forbidden:
             return None, (
-                "상품 등록 시에는 상태(status)를 함께 지정할 수 없습니다 — 등록되면 "
-                "판매중(ON_SALE)으로 시작합니다. 숨김이 필요하면 등록 후 수정으로 "
-                "요청해 주세요."
+                "상품을 등록할 때는 판매 상태를 함께 지정할 수 없어요. 등록하면 자동으로 "
+                "'판매중' 상태로 시작하니, 숨기고 싶으시면 등록 후에 수정을 요청해 "
+                "주시겠어요?"
             )
         missing = _CREATE_REQUIRED_FIELDS - fields
         if missing:
@@ -322,13 +325,13 @@ def validate_draft(
                 # 카테고리만 비었으면 판매자가 다시 적을 것은 카테고리뿐이다 —
                 # 상품명·가격까지 되물으면 이미 말한 값을 또 입력하게 된다.
                 return None, (
-                    "어느 카테고리에 등록할지 확정하지 못했습니다. "
+                    "어느 카테고리에 등록할지 아직 확정하지 못했어요. "
                     "'남성 셔츠', '강아지 사료'처럼 상품 종류를 알려주시면 "
-                    "카테고리를 찾아 초안에 반영하겠습니다."
+                    "알맞은 카테고리를 찾아서 초안에 반영해 드릴게요."
                 )
             return None, (
-                "상품 등록에는 상품명·가격·재고 수량·카테고리가 필요합니다. "
-                f"누락된 항목({', '.join(labels)})을 알려주세요."
+                "상품을 등록하려면 상품명·가격·재고 수량·카테고리가 모두 필요해요. "
+                f"{', '.join(labels)} 항목이 빠져 있으니 알려주시겠어요?"
             )
         # [#620] BE 는 originalPrice 생략 시 price 로 채운 뒤(동일값 → 무할인) 비교하므로
         # (SellerProductService.create), 여기서 명시된 값끼리만 비교해도 규칙이 같다 —
@@ -350,8 +353,8 @@ def validate_draft(
                 and create_price > create_original_price
             ):
                 return None, (
-                    f"판매가({create_price:,}원)가 정가({create_original_price:,}원)를 "
-                    "넘어 등록할 수 없습니다. 가격을 다시 확인해 말씀해 주세요."
+                    f"판매가({create_price:,}원)가 정가({create_original_price:,}원)보다 "
+                    "높아서 등록할 수 없어요. 가격을 다시 확인해서 알려주시겠어요?"
                 )
         # [#506] image_url 값 검증 — 2차 방어(1차는 요청 스키마·FE 서버 라우트).
         # presigned URL 이 저장되면 만료 시점에 상품 이미지가 조용히 죽는다(FE 계약 §2.3).
@@ -359,11 +362,11 @@ def validate_draft(
         if image_url is not None:
             settings = get_settings()
             if not image_url.startswith(("https://", "http://")):
-                return None, "상품 이미지 URL 형식이 올바르지 않습니다. 사진을 다시 첨부해 주세요."
+                return None, "상품 사진이 제대로 인식되지 않았어요. 사진을 다시 첨부해 주시겠어요?"
             if len(image_url) > settings.seller_image_url_max_len or "X-Amz-Signature" in image_url:
                 return None, (
-                    "상품 이미지 URL 이 저장 가능한 형식이 아닙니다(길이 초과 또는 만료형 URL). "
-                    "사진을 다시 첨부해 주세요."
+                    "이 사진은 저장할 수 있는 형식이 아니에요(주소가 너무 길거나 곧 만료되는 "
+                    "형태예요). 사진을 다시 첨부해 주시겠어요?"
                 )
         # [#506] category 는 카테고리 스냅샷의 id 여야 한다 — LLM 은 주입된 후보 중에서만
         # 고르지만(프롬프트), 목록 밖 값·자유 문자열은 여기서 되묻기로 전환한다(이중 방어).
@@ -372,16 +375,16 @@ def validate_draft(
         category_id = next((c.after for c in changes if c.field == "category"), None)
         if category_id is not None and category_catalog.get(category_id) is None:
             return None, (
-                "카테고리를 확정하지 못했습니다. 원하시는 카테고리를 알려주시면 "
-                "후보를 다시 찾아 초안에 반영하겠습니다."
+                "카테고리를 아직 확정하지 못했어요. 원하시는 카테고리를 알려주시면 "
+                "다시 찾아서 초안에 반영해 드릴게요."
             )
     for change in changes:
         try:
             _typed_after(change, op=proposal.op)
         except ValueError:
             return None, (
-                f"'{change.field}' 값 '{change.after}' 을(를) 해석하지 못했습니다. "
-                "값을 다시 확인해 주세요."
+                f"'{change.field}'에 입력하신 '{change.after}' 값을 제가 정확히 이해하지 "
+                "못했어요. 다르게 한 번 더 말씀해 주시겠어요?"
             )
 
     record = DraftRecord(
@@ -401,8 +404,8 @@ def validate_draft(
 # [#524] stocks 모드 전제가 서버에 없을 때의 안내 — 판매자에게는 "지금은 안 된다"까지만
 # 알린다(설정·배포 사정은 내부 사정이라 표면에 내지 않는다).
 _STOCKS_MODE_NOT_READY = (
-    "재고 시스템 전환이 서버에 아직 반영되지 않아 재고 변경을 중단했습니다. "
-    "가격·설명 등 다른 항목은 정상 반영됩니다."
+    "지금은 재고 변경 기능이 일시적으로 준비 중이라 재고는 반영하지 못했어요. "
+    "가격이나 설명 같은 다른 항목은 정상적으로 반영됐어요."
 )
 
 
@@ -452,8 +455,8 @@ def _build_update_patch(
             has_options = any(s.option_id is not None for s in row.stocks)
             if has_options or any(c.option_name for c in stock_changes) or len(stock_changes) > 1:
                 return None, (
-                    "옵션별 재고 반영은 재고 시스템 전환 후에 열립니다. 지금은 상품 전체 "
-                    "재고 수량 하나만 바꿀 수 있어 반영을 중단했습니다."
+                    "옵션별 재고 변경은 아직 지원되지 않아요. 지금은 상품 전체 "
+                    "재고 수량만 한 번에 바꿀 수 있어서 이번 요청은 반영하지 못했어요."
                 )
             other_fields["stock_quantity"] = _typed_after(stock_changes[0])
         return ProductUpdate(**other_fields), None
@@ -474,8 +477,8 @@ def _build_update_patch(
         option_id = matched.option_id if matched is not None else None
         if option_id in seen:
             return None, (
-                "같은 옵션의 재고 변경이 초안에 두 번 실려 있어 반영을 중단했습니다. "
-                "옵션별로 한 번씩만 말씀해 주세요."
+                "같은 옵션의 재고 변경이 초안에 두 번 들어 있어서 반영하지 못했어요. "
+                "옵션마다 한 번씩만 말씀해 주시겠어요?"
             )
         seen.add(option_id)
         entries.append(StockEntry(option_id=option_id, quantity=int(_typed_after(change))))
@@ -550,9 +553,7 @@ async def _find_product(brand_id: int, product_id: int) -> tuple[SellerProductRo
 
 # ── 실행 (confirm resume 후 — LLM 0회, draft 그대로 I-10/11/12 매핑) ────────────
 
-_STALE_RETRY_GUIDE = (
-    "변경을 원하시면 다시 요청해 주세요. 최신 값으로 새 초안을 만들어 드리겠습니다."
-)
+_STALE_RETRY_GUIDE = "다시 변경을 원하시면 말씀해 주세요. 최신 정보로 새 초안을 만들어 드릴게요."
 
 # [#622] _find_product 가 exhausted=True(페이지 상한 소진, 더 있을 수 있음)를 돌려줄 때의
 # 안내 — hitl._execute_draft·history.apply_recommendation 두 호출부가 함께 쓴다. 상품이
@@ -560,8 +561,8 @@ _STALE_RETRY_GUIDE = (
 # 맞춰 따로 적되, "이미 삭제되었거나 다른 브랜드로 옮겨진 것 같습니다"라는 같은 판단으로
 # 통일한다 — #590 전에는 두 곳이 서로 다른(한쪽은 더 부정확한) 오보 문구를 달고 있었다.
 PRODUCT_LOOKUP_EXHAUSTED_TEXT = (
-    "등록 상품이 많아 대상 상품을 확인하지 못했습니다. "
-    "상품명을 함께 말씀해 주시면 다시 찾아보겠습니다."
+    "등록된 상품이 많아서 원하시는 상품을 바로 찾지 못했어요. "
+    "상품명을 함께 알려주시면 다시 찾아볼게요."
 )
 
 
@@ -582,7 +583,7 @@ async def _execute_draft(record: DraftRecord) -> tuple[str, str]:
     if record.op == "ship":
         assert record.order_item_id is not None  # validate_draft 가 보장
         try:
-            shipped = await client.update_order_item_status(
+            await client.update_order_item_status(
                 record.brand_id,
                 record.order_item_id,
                 OrderItemStatusUpdate(to_status=_SHIP_TO_STATUS, reason=None),
@@ -590,27 +591,26 @@ async def _execute_draft(record: DraftRecord) -> tuple[str, str]:
         except OrderAlreadyShipped:
             return (
                 "already_done",
-                f"이미 발송 처리된 주문 아이템입니다 (orderItemId={record.order_item_id}) "
-                "— 중복 실행하지 않았습니다.",
+                "이 주문은 이미 발송 처리가 완료돼 있어요. 중복으로 처리되지 않도록 "
+                "다시 실행하지는 않았어요.",
             )
         except OrderInvalidTransition:
             return (
                 "stale",
-                f"지금은 발송 처리할 수 없는 상태입니다 (orderItemId={record.order_item_id}) "
-                "— 이미 배송 단계로 넘어갔거나 취소 요청 등 클레임이 진행 중입니다. "
-                "주문 현황을 다시 확인해 주세요.",
+                "이 주문은 지금 발송 처리를 할 수 없는 상태예요. 이미 배송 단계로 "
+                "넘어갔거나 취소 요청 등 처리 중인 일이 있는 것 같아요. "
+                "주문 현황을 다시 확인해 주시겠어요?",
             )
         except OrderItemNotFound:
             return (
                 "stale",
-                f"대상 주문 아이템(orderItemId={record.order_item_id})을 찾을 수 없어 "
-                "반영을 중단했습니다. 주문 현황을 다시 확인해 주세요.",
+                "해당 주문을 찾지 못해서 발송 처리를 하지 못했어요. "
+                "주문 현황을 다시 확인해 주시겠어요?",
             )
         return (
             "executed",
-            f"발송 처리했습니다 (orderItemId={shipped.order_item_id}, "
-            f"{shipped.from_status}→{shipped.to_status}). 발송 후에는 취소·되돌리기가 "
-            "불가하며, 구매자 구제는 반품 절차로만 진행됩니다.",
+            "발송 처리를 완료했어요. 주문 상태가 배송중으로 바뀌었습니다. 발송 후에는 "
+            "취소·되돌리기가 어려우며, 구매자 구제는 반품 절차로만 진행돼요.",
         )
 
     if record.op == "create":
@@ -627,8 +627,8 @@ async def _execute_draft(record: DraftRecord) -> tuple[str, str]:
             # 뒤 스냅샷이 교체될 수 있다. 여기서도 확인해야 BE 422 대신 안내가 나간다.
             return (
                 "stale",
-                "초안의 카테고리가 더 이상 유효하지 않습니다(카테고리 목록 갱신). "
-                "등록할 상품 종류를 다시 말씀해 주시면 새 초안을 만들어 드리겠습니다.",
+                "초안에 있던 카테고리가 그 사이 바뀌어서 더 이상 쓸 수 없게 됐어요. "
+                "등록할 상품 종류를 다시 말씀해 주시면 새 초안을 만들어 드릴게요.",
             )
         # [#524 듀얼모드] 재고는 wire_mode 가 정한 딱 한 필드로 나간다. 등록 시점엔
         # 옵션이 없으므로(#506 create 흐름) stocks 모드는 optionId null 한 줄이다.
@@ -652,14 +652,14 @@ async def _execute_draft(record: DraftRecord) -> tuple[str, str]:
             image_url=str(values["image_url"]) if "image_url" in values else None,
         )
         try:
-            created = await client.create_product(record.brand_id, payload)
+            await client.create_product(record.brand_id, payload)
         except InvalidStock:
             # [#524] 등록 재고는 _parse_int 가 음수를 선차단하므로 정상 경로에선 안 온다.
             # 여기 오면 계약 해석이 어긋난 것이라 재시도를 권하지 않는다.
             return (
                 "stale",
-                "재고 수량이 서버에서 거부되어 등록을 중단했습니다. "
-                f"재고를 다시 확인해 말씀해 주세요. {_STALE_RETRY_GUIDE}",
+                "재고 수량이 서버에서 받아들여지지 않아 등록을 진행하지 못했어요. "
+                f"재고를 다시 확인해서 알려주시겠어요? {_STALE_RETRY_GUIDE}",
             )
         except InvalidPrice:
             # [#620] validate_draft 가 price/originalPrice 를 이미 선차단하므로 정상
@@ -667,8 +667,8 @@ async def _execute_draft(record: DraftRecord) -> tuple[str, str]:
             # 잡지 않으면 그대로 새어나가므로(§ 예외 계약) 안전망으로 둔다.
             return (
                 "stale",
-                "판매가가 정가를 넘어 서버에서 거부되어 등록을 중단했습니다. "
-                "가격을 다시 확인해 말씀해 주세요.",
+                "판매가가 정가보다 높아서 서버에서 등록을 거부했어요. "
+                "가격을 다시 확인해서 알려주시겠어요?",
             )
         except ProductCategoryInvalid:
             # [#541] 위 spring_category_id 선검증은 **스냅샷 기준**이라 스냅샷이 정본 DB
@@ -681,8 +681,9 @@ async def _execute_draft(record: DraftRecord) -> tuple[str, str]:
             )
             return (
                 "stale",
-                "초안의 카테고리가 서버에서 거부되어 등록을 중단했습니다(카테고리 목록 갱신). "
-                "등록할 상품 종류를 다시 말씀해 주시면 새 초안을 만들어 드리겠습니다.",
+                "초안에 있던 카테고리를 서버에서 받아주지 않아 등록을 진행하지 못했어요"
+                "(카테고리 목록이 갱신된 것 같아요). 등록할 상품 종류를 다시 말씀해 주시면 "
+                "새 초안을 만들어 드릴게요.",
             )
         except ProductFieldMissing:
             # [#541] validate_draft 가 필수 4종을 모두 강제하므로 값 누락으로는 오지
@@ -696,12 +697,13 @@ async def _execute_draft(record: DraftRecord) -> tuple[str, str]:
             )
             return (
                 "stale",
-                "서버가 등록 요청을 받아들이지 않아 등록을 중단했습니다(필수 항목 누락). "
-                "같은 내용으로 다시 시도해도 결과가 같아 담당자 확인이 필요합니다.",
+                "서버에서 등록 요청을 처리하지 못했어요. 같은 내용으로 다시 시도해도 "
+                "결과가 같을 것 같아서, 담당자 확인이 필요할 것 같아요. 잠시만 기다려 "
+                "주시겠어요?",
             )
         return (
             "executed",
-            f"상품을 등록했습니다 (productId={created.product_id}, status={created.status}).",
+            "말씀하신 상품을 등록했어요. 지금 바로 판매중 상태로 노출됩니다.",
         )
 
     assert record.product_id is not None  # validate_draft 가 보장
@@ -713,20 +715,20 @@ async def _execute_draft(record: DraftRecord) -> tuple[str, str]:
             return ("stale", f"{PRODUCT_LOOKUP_EXHAUSTED_TEXT} {_STALE_RETRY_GUIDE}")
         return (
             "stale",
-            f"대상 상품(productId={record.product_id})을 상품 목록에서 찾을 수 없어 "
-            "반영을 중단했습니다. 이미 삭제되었거나(삭제한 상품은 목록에서 빠집니다) "
-            f"다른 브랜드로 옮겨진 것 같습니다. {_STALE_RETRY_GUIDE}",
+            "해당 상품을 목록에서 찾지 못해서 이번 변경은 반영하지 못했어요. "
+            "이미 삭제됐거나(삭제한 상품은 목록에서 빠져요) "
+            f"다른 브랜드로 옮겨진 것 같아요. {_STALE_RETRY_GUIDE}",
         )
 
     mismatches = find_stale_changes(row, record.changes, op=record.op)
     if mismatches:
         lines = [
-            f"- {_FIELD_LABELS.get(field, field)}: 초안 기준 '{before}' → 현재 '{current}'"
+            f"- {_FIELD_LABELS.get(field, field)}: 초안에는 '{before}'였는데 지금은 '{current}'이에요."
             for field, before, current in mismatches
         ]
         return (
             "stale",
-            "초안 작성 이후 상품 정보가 변경되어 반영을 중단했습니다.\n"
+            "초안을 만든 뒤에 상품 정보가 바뀌어서 이번 변경은 반영하지 못했어요.\n"
             + "\n".join(lines)
             + f"\n{_STALE_RETRY_GUIDE}",
         )
@@ -758,26 +760,26 @@ async def _execute_draft(record: DraftRecord) -> tuple[str, str]:
                 f"{option_label} {current_stock}건" if option_label else f"{current_stock}건"
             )
     stock_note = (
-        f" 참고: 초안 작성 후 재고가 {' · '.join(stock_notes)}으로 변동되어 "
-        "있었습니다(주문 처리 등)."
+        f" 참고로, 초안을 만든 뒤 주문 처리 등으로 재고가 {' · '.join(stock_notes)}으로 "
+        "바뀌어 있었어요."
         if stock_notes
         else ""
     )
 
     if record.op == "delete":
         try:
-            deleted = await client.delete_product(record.brand_id, record.product_id)
+            await client.delete_product(record.brand_id, record.product_id)
         except ProductAlreadyDeleted:
             return (
                 "already_done",
-                f"이미 삭제된 상품입니다 (productId={record.product_id}) — 중복 실행하지 "
-                "않았습니다. 삭제는 되돌릴 수 없어 다시 시도해도 결과가 같습니다.",
+                "이 상품은 이미 삭제되어 있어요. 중복으로 처리되지 않도록 다시 실행하지는 "
+                "않았어요. 삭제는 되돌릴 수 없어서 다시 요청하셔도 결과는 같을 거예요.",
             )
         return (
             "executed",
-            f"상품을 삭제했습니다 (productId={deleted.product_id}, status={deleted.status}). "
-            "숨김(판매정지)과 달리 판매자 상품 목록에서도 빠지며 되돌릴 수 없습니다. "
-            "다만 물리 삭제는 아니라 기존 주문 내역·매출 통계는 그대로 남습니다.",
+            "요청하신 상품을 삭제했어요. 목록에서도 바로 사라집니다. "
+            "숨김(판매정지)과 달리 되돌릴 수 없어요. 다만 물리적으로 삭제되는 것은 "
+            "아니라서 기존 주문 내역·매출 통계는 그대로 남아요.",
         )
 
     patch, stock_problem = _build_update_patch(record.changes, row)
@@ -789,8 +791,8 @@ async def _execute_draft(record: DraftRecord) -> tuple[str, str]:
         # [#511] 삭제된 상품은 수정 대상이 아니다 — 재시도해도 결과가 같다.
         return (
             "already_done",
-            f"이미 삭제된 상품이라 수정할 수 없습니다 (productId={record.product_id}). "
-            "삭제는 되돌릴 수 없으니 같은 상품이 필요하시면 새로 등록해 주세요.",
+            "이미 삭제된 상품이라 수정할 수 없어요. 삭제는 되돌릴 수 없으니, 같은 상품이 "
+            "다시 필요하시면 새로 등록해 주시겠어요?",
         )
     except InvalidStock:
         # [#624] quantity 모드는 _build_update_patch 가 옵션 상품 재고 change 를 이미
@@ -804,13 +806,13 @@ async def _execute_draft(record: DraftRecord) -> tuple[str, str]:
         if get_settings().seller_stock_wire_mode == "stocks":
             return (
                 "stale",
-                "재고를 반영하는 사이에 상품 옵션이 변경되어 반영을 중단했습니다. "
+                "재고를 반영하는 사이에 상품 옵션이 바뀌어서 이번엔 반영하지 못했어요. "
                 f"{_STALE_RETRY_GUIDE}",
             )
         return (
             "stale",
-            "재고 변경이 서버에서 거부되어 반영을 중단했습니다. "
-            f"재고를 다시 확인해 말씀해 주세요. {_STALE_RETRY_GUIDE}",
+            "재고 변경이 서버에서 받아들여지지 않아 반영하지 못했어요. 재고를 다시 "
+            f"확인해서 알려주시겠어요? {_STALE_RETRY_GUIDE}",
         )
     except InvalidPrice:
         # [#620] validate_draft 가 row 를 받았으면 price/originalPrice 를 이미
@@ -819,8 +821,8 @@ async def _execute_draft(record: DraftRecord) -> tuple[str, str]:
         # 다시 보내도 결과가 같으므로 재조회 후 새 초안을 권한다.
         return (
             "stale",
-            "판매가가 정가를 넘어 서버에서 거부되어 반영을 중단했습니다. "
-            f"초안 표시 이후 가격이 바뀐 것 같습니다. {_STALE_RETRY_GUIDE}",
+            "판매가가 정가보다 높아서 서버에서 반영을 거부했어요. "
+            f"초안을 보여드린 뒤에 가격이 바뀐 것 같아요. {_STALE_RETRY_GUIDE}",
         )
     if not updated.changes:
         # [#620] BE 는 실제로 바뀐 값이 없으면 changes 를 빈 배열로 응답한다(요청 자체는
@@ -829,12 +831,12 @@ async def _execute_draft(record: DraftRecord) -> tuple[str, str]:
         # (_confirm_stream 의 panel 분기는 status=="executed" 만 refresh).
         return (
             "already_done",
-            f"이미 요청하신 값으로 되어 있어 바뀐 내용이 없습니다 (productId={updated.product_id}).",
+            "이미 요청하신 값으로 되어 있어서 따로 바뀐 내용은 없었어요.",
         )
     summary_part = f" {record.summary}" if record.summary else ""
     return (
         "executed",
-        f"변경을 반영했습니다 (productId={updated.product_id}).{summary_part}{stock_note}",
+        f"말씀하신 대로 반영했어요.{summary_part}{stock_note} (상품 ID {updated.product_id})",
     )
 
 
@@ -1026,8 +1028,8 @@ class ConfirmOutcome:
 
 # 미존재·소유 불일치 공용 문구 — 타 판매자에게 draft 존재 여부를 노출하지 않는다(④).
 _NOT_FOUND_TEXT = (
-    "해당 승인 요청을 찾을 수 없습니다. 초안이 만료됐거나 잘못된 요청입니다. "
-    "변경 내용을 다시 말씀해 주시면 새 초안을 만들어 드리겠습니다."
+    "해당 승인 요청을 찾지 못했어요. 초안이 만료됐거나 요청이 잘못된 것 같아요. "
+    "다시 변경 내용을 말씀해 주시면 새 초안을 만들어 드릴게요."
 )
 
 
@@ -1066,7 +1068,8 @@ async def confirm_draft(draft_id: str, *, seller_id: int, brand_id: int) -> Conf
         if values.get("result"):  # 실행 완료 스레드 — 멱등(안전장치 ③)
             return ConfirmOutcome(
                 "already_done",
-                f"이미 처리된 승인 요청입니다 — 중복 실행하지 않았습니다. 이전 결과: {values['result']}",
+                "이 승인 요청은 이미 처리됐어요. 중복으로 실행되지 않도록 막았어요. "
+                f"이전 처리 결과는 다음과 같아요: {values['result']}",
             )
 
         # [이슈 #621, 실측 정정] 애초 설계는 "attempted_at 有·result 無"를 여기서
@@ -1088,8 +1091,8 @@ async def confirm_draft(draft_id: str, *, seller_id: int, brand_id: int) -> Conf
         if datetime.now(UTC) - created >= timedelta(minutes=settings.seller_draft_ttl_minutes):
             return ConfirmOutcome(
                 "expired",
-                f"초안이 만료됐습니다(유효 {settings.seller_draft_ttl_minutes}분). "
-                "변경 내용을 다시 말씀해 주시면 새 초안을 만들어 드리겠습니다.",
+                f"초안이 유효 시간({settings.seller_draft_ttl_minutes}분)을 넘겨서 "
+                "만료됐어요. 변경 내용을 다시 말씀해 주시면 새 초안을 만들어 드릴게요.",
             )
 
         # [이슈 #621 ①] shield — 클라이언트 절단·90s 캡 절단으로 이 await 을 감싼 바깥
@@ -1113,8 +1116,8 @@ async def confirm_draft(draft_id: str, *, seller_id: int, brand_id: int) -> Conf
         except TimeoutError:
             return ConfirmOutcome(
                 "unknown",
-                "이전 승인 처리 결과를 확인하지 못했습니다. 상품 목록에서 반영 여부를 "
-                "확인해 주신 뒤, 반영되지 않았다면 다시 말씀해 주세요.",
+                "방금 처리 결과를 확인하는 데 시간이 좀 걸렸어요. 상품 목록에서 반영됐는지 "
+                "한번 확인해 주시고, 혹시 반영되지 않았다면 다시 말씀해 주시겠어요?",
             )
     outcome_status = result.get("outcome")
     if outcome_status is None:
@@ -1124,6 +1127,6 @@ async def confirm_draft(draft_id: str, *, seller_id: int, brand_id: int) -> Conf
         # 반영 여부가 불확실하므로 성공 안내를 내지 않는다.
         return ConfirmOutcome(
             "stale",
-            f"승인 처리 결과를 확인하지 못해 반영 여부가 불확실합니다. {_STALE_RETRY_GUIDE}",
+            f"승인 처리 결과를 확실히 확인하지 못했어요. {_STALE_RETRY_GUIDE}",
         )
     return ConfirmOutcome(outcome_status, result.get("result", ""))

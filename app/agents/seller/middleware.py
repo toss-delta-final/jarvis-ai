@@ -70,8 +70,9 @@ SCOPE_BLOCK_RULES: dict[str, tuple[str, ...]] = {
 }
 
 SCOPE_REFUSAL = (
-    "죄송합니다. 판매자님 브랜드의 데이터 분석·상품 관리·일반 조회만 도와드릴 수 "
-    "있습니다. 다른 판매자 정보, 고객 개인정보, 시스템 내부 정보는 제공할 수 없습니다."
+    "그 부분은 제가 도와드리기 어려운 영역이에요 — 다른 판매자님 정보나 고객 개인정보, "
+    "시스템 내부 정보는 확인해 드릴 수 없거든요. 대신 판매자님 브랜드의 데이터 분석·"
+    "상품 관리·조회는 언제든 편하게 물어봐 주세요."
 )
 
 
@@ -136,7 +137,7 @@ def seller_pii_middlewares() -> list[PIIMiddleware]:
 
 # ── 3. 출력 검사 — 시크릿 마스킹 (SSE 쓰기 직전에 적용, 순수 함수) ──────────────
 
-MASK_REPLACEMENT = "[민감 정보 차단]"
+MASK_REPLACEMENT = "[민감한 정보라 가려드렸어요]"
 
 _OUTPUT_SECRET_RES: tuple[re.Pattern[str], ...] = (
     re.compile(r"sk-[A-Za-z0-9\-_]{16,}"),  # API 키 형태

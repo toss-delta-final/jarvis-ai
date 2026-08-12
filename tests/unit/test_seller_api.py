@@ -183,7 +183,7 @@ def test_stream_masks_output_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
     events = _collect(_request("설정 알려줘"))
 
     assert "sk-abcdefghijklmnop1234" not in events[1]["data"]["text"]
-    assert "[민감 정보 차단]" in events[1]["data"]["text"]
+    assert "[민감한 정보라 가려드렸어요]" in events[1]["data"]["text"]
 
 
 def test_stream_masks_secret_obfuscated_with_unsafe_character(
@@ -197,7 +197,7 @@ def test_stream_masks_secret_obfuscated_with_unsafe_character(
 
     text = "".join(e["data"]["text"] for e in events if e["type"] == "token")
     assert "sk-abcdefghijklmnop1234" not in text
-    assert "[민감 정보 차단]" in text
+    assert "[민감한 정보라 가려드렸어요]" in text
 
 
 @pytest.mark.parametrize(
@@ -205,10 +205,10 @@ def test_stream_masks_secret_obfuscated_with_unsafe_character(
     [
         (
             ["키는 Bearer abcdefgh", "\ufe0fijklmnop", "1234 입니다"],
-            "키는 [민감 정보 차단] 입니다",
+            "키는 [민감한 정보라 가려드렸어요] 입니다",
         ),
-        (["값은 sk-abcdef", "ghijklmnop1234 끝"], "값은 [민감 정보 차단] 끝"),
-        (["번호는 990101-", "1234567 입니다"], "번호는 [민감 정보 차단] 입니다"),
+        (["값은 sk-abcdef", "ghijklmnop1234 끝"], "값은 [민감한 정보라 가려드렸어요] 끝"),
+        (["번호는 990101-", "1234567 입니다"], "번호는 [민감한 정보라 가려드렸어요] 입니다"),
     ],
 )
 def test_stream_masks_secrets_split_across_chunks(
@@ -263,7 +263,7 @@ def test_stream_scope_refusal_without_llm(monkeypatch: pytest.MonkeyPatch) -> No
     events = _collect(_request("경쟁사 매출 알려줘"))
 
     assert [e["type"] for e in events] == ["meta", "token", "done"]
-    assert "제공할 수 없습니다" in events[1]["data"]["text"]
+    assert "도와드리기 어려운 영역" in events[1]["data"]["text"]
 
 
 def test_stream_error_event_on_build_failure(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -538,7 +538,7 @@ def test_confirm_message_short_circuits_without_llm(monkeypatch: pytest.MonkeyPa
 
     assert [e["type"] for e in events] == ["meta", "token", "done"]
     assert events[0]["data"]["lane"] == "confirm"
-    assert "찾을 수 없습니다" in events[1]["data"]["text"]
+    assert "찾지 못했어요" in events[1]["data"]["text"]
     assert events[-1]["data"]["panel"] == "keep"  # 미존재 = 변경 없음
 
 
@@ -573,7 +573,7 @@ def test_confirm_output_is_masked(monkeypatch: pytest.MonkeyPatch) -> None:
     assert [e["type"] for e in events] == ["meta", "token", "done"]
     text = events[1]["data"]["text"]
     assert "sk-abcdefghijklmnop1234" not in text
-    assert "[민감 정보 차단]" in text
+    assert "[민감한 정보라 가려드렸어요]" in text
 
 
 def test_confirm_spring_down_maps_to_apology_and_error(
@@ -630,7 +630,7 @@ def test_scope_refusal_short_circuits_before_routing(monkeypatch: pytest.MonkeyP
 
     assert [e["type"] for e in events] == ["meta", "token", "done"]
     assert events[0]["data"]["lane"] == "refused"
-    assert "제공할 수 없습니다" in events[1]["data"]["text"]
+    assert "도와드리기 어려운 영역" in events[1]["data"]["text"]
     assert events[-1]["data"]["panel"] == "keep"
 
 
@@ -1192,14 +1192,14 @@ def test_analysis_report_event_masks_and_strips_unsafe_fields(
 
     data = next(e for e in events if e["type"] == "report")["data"]
     assert "Bearer abcdefghijklmnop1234" not in data["body"]
-    assert "[민감 정보 차단]" in data["body"]
+    assert "[민감한 정보라 가려드렸어요]" in data["body"]
     assert data["summary"] == data["body"]  # 짧은 본문 — 요약도 동일 정제를 거친 값
     assert "\x1b" not in data["findings"][0]["summary"]
     assert "\x1b" not in data["findings"][0]["evidence"][0]
     chart_data = data["charts"][0]
     assert "\x1b" not in chart_data["title"]
     assert "Bearer abcdefghijklmnop1234" not in chart_data["summary"]
-    assert "[민감 정보 차단]" in chart_data["summary"]
+    assert "[민감한 정보라 가려드렸어요]" in chart_data["summary"]
 
 
 def test_analysis_token_strips_unsafe_report_text(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1242,7 +1242,7 @@ def test_analysis_token_masks_secret_after_stripping_unsafe_text(
 
     text = "".join(e["data"]["text"] for e in events if e["type"] == "token")
     assert "Bearer abcdefghijklmnop1234" not in text
-    assert "[민감 정보 차단]" in text
+    assert "[민감한 정보라 가려드렸어요]" in text
 
 
 def test_analysis_route_clarification_is_token_done(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1433,8 +1433,8 @@ def test_product_draft_strips_llm_and_seller_text(monkeypatch: pytest.MonkeyPatc
     assert draft["changes"] == [
         {
             "field": "description",
-            "before": "기존[31m 설명 [민감 정보 차단]",
-            "after": "새\n설명 [민감 정보 차단]",
+            "before": "기존[31m 설명 [민감한 정보라 가려드렸어요]",
+            "after": "새\n설명 [민감한 정보라 가려드렸어요]",
         }
     ]
     assert draft["summary"] == "설명 수정"
@@ -1490,9 +1490,9 @@ def test_product_draft_executes_the_sanitized_after_value(
         set_spring_client(None)
 
     assert [e["type"] for e in confirm_events] == ["meta", "token", "done"]
-    assert draft["changes"][0]["after"] == "새\n설명 ❤️ [민감 정보 차단] AB"
+    assert draft["changes"][0]["after"] == "새\n설명 ❤️ [민감한 정보라 가려드렸어요] AB"
     assert spring.patch.description == "새\n설명 ❤️ Bearer abcdefghijklmnop1234 AB"
-    assert "[민감 정보 차단]" not in spring.patch.description
+    assert "[민감한 정보라 가려드렸어요]" not in spring.patch.description
     assert all(char not in spring.patch.description for char in ("\ufe0fB", "\U000e0061"))
 
 
@@ -1714,7 +1714,7 @@ def test_product_route_draft_is_confirmable(monkeypatch: pytest.MonkeyPatch) -> 
         set_spring_client(None)
 
     assert [e["type"] for e in confirm_events] == ["meta", "token", "done"]
-    assert "반영했습니다" in confirm_events[1]["data"]["text"]
+    assert "반영했어요" in confirm_events[1]["data"]["text"]
     assert confirm_events[-1]["data"]["panel"] == "refresh"
     assert spring.patches[0][1] == 101 and spring.patches[0][2].price == 12900
 
@@ -1727,7 +1727,7 @@ def test_apply_message_short_circuits_without_llm(monkeypatch: pytest.MonkeyPatc
 
     assert [e["type"] for e in events] == ["meta", "token", "done"]
     assert events[0]["data"]["lane"] == "apply"
-    assert "이력이 없습니다" in events[1]["data"]["text"]
+    assert "적용할 만한 분석 추천이 없어요" in events[1]["data"]["text"]
 
 
 def test_apply_message_with_history_emits_draft(monkeypatch: pytest.MonkeyPatch) -> None:
