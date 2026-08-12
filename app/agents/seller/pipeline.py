@@ -142,7 +142,8 @@ def resolve_plan(
     if not plan.analyses and not chart_only:
         # [#504] chart_only 턴은 워커를 쓰지 않으므로 analyses 가 비어도 계획이 성립한다.
         raise ValueError(
-            "어떤 분석을 원하시는지 파악하지 못했습니다. 조금 더 구체적으로 알려주세요."
+            "어떤 분석을 원하시는지 아직 파악하지 못했어요. 예를 들어 '이번 달 매출 "
+            "이상 있었어?'처럼 조금 더 구체적으로 말씀해 주시면 바로 분석해 드릴게요."
         )
     resolution = seller_period.resolve_period(
         plan.period_expr,
@@ -631,7 +632,7 @@ def compose_response(
     if notes:
         text = f"{text}\n\n[차트 안내]\n" + "\n".join(notes)
     elif chart_requested and (charts is None or not charts.charts):
-        text = f"{text}\n\n[차트 안내]\n요청하신 차트를 만들지 못했습니다."
+        text = f"{text}\n\n[차트 안내]\n요청하신 차트는 이번엔 만들어 드리지 못했어요. 죄송해요 — 잠시 후 다시 요청해 주시겠어요?"
     return text
 
 
@@ -706,8 +707,8 @@ WORKER_PROGRESS_TOKENS: dict[AnalysisType, str] = {
 
 # 전 워커 실패(집계 전부 실패) 시 사과 후 done 종료(SPEC §4·§7 degrade).
 ALL_WORKERS_FAILED_TOKEN = (
-    "죄송합니다. 지금 데이터 조회가 원활하지 않아 분석을 완료하지 못했습니다. "
-    "잠시 후 다시 시도해 주세요."
+    "지금 데이터를 불러오는 중에 문제가 있어서 분석을 마무리하지 못했어요. "
+    "번거로우시겠지만 잠시 후 다시 한 번 요청해 주시겠어요?"
 )
 
 

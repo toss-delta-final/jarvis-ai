@@ -12,6 +12,12 @@
 ## [Unreleased]
 
 ### Added
+- **#634 관측 집계 스크립트 비용 축에 min/max·role 분해 추가** — `_cost_stats()`가 최소/최대
+  비용을 반환하도록 확장하고, 비용 롤업에 `role`(seller/member/guest)·`model`(fan-in
+  귀속)·`length`(`messageLength` 고정 버킷) 축을 신설했다. Markdown 비용 표에 최소/최대(USD)
+  열을 추가하고 그룹 라벨을 latency 표와 동일한 `dimension:group` 규약으로 통일했으며, CSV
+  metric에도 min/max를 포함했다. 버킷 경계는 `app/core/config.py`의 신규 튜너블
+  `observability_length_buckets`로 주입한다(실측 분포 전 추정치). 계약(api-spec) 무영향.
 - **#645 buyer `overallComment` 최종-view grounding**을 추가했다. B/C rerank 출력은 목록 전체
   `overallClaims`를 구조화해 보존하고, production C는 repurchase pinning·노출 보충/절단·니즈
   분할·BUY_ALL budget-set 계산 뒤의 실제 I-21 product groups에 대해 claim을 검증한 후 고정
@@ -81,9 +87,6 @@
   포함한다. 실제 human response는 포함하지 않으며 결과는 exploratory로만 해석한다.
 
 ### Fixed
-- **판매자 분석 대상 자동 등록이 pool 초기화 도중 취소될 때 pytest와 이벤트 루프 종료가
-  무기한 대기하던 결함을 고쳤다.** 부분 생성된 psycopg pool을 취소 경계에서 즉시 닫고,
-  공통 테스트 pool 정리 목록에도 분석 저장소를 포함했다.
 - **#639 — 추천 카드에서 사용자가 상품명의 유일 토큰을 지목했는데 LLM이 같은 허용 목록 안의
   다른 상품을 골라 오담기하던 결함을 고쳤다.** 추천 카드 표면에 한해 상품명과 발화를 NFKC +
   casefold 기반 정확 토큰으로 비교하고, 숫자 전용·1글자·담기 명령·장바구니 문맥 토큰을 제외한

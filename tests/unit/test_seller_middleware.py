@@ -133,7 +133,7 @@ def test_mask_output_preserves_normal_unicode_sequences(text: str) -> None:
 def test_mask_output_preserves_unicode_around_masked_secret() -> None:
     """마스킹 구간 앞뒤의 정상 시퀀스는 원문 그대로 보존한다."""
     text = "❤️ sk-abcdefgh\ufe0fijklmnop1234 㐂\U000e0100"
-    assert middleware.mask_output(text) == "❤️ [민감 정보 차단] 㐂\U000e0100"
+    assert middleware.mask_output(text) == "❤️ [민감한 정보라 가려드렸어요] 㐂\U000e0100"
 
 
 def test_streaming_output_guard_bounds_bearer_whitespace_prefix() -> None:
@@ -149,7 +149,7 @@ def test_streaming_output_guard_absorbs_selector_after_fixed_secret_match() -> N
     parts = guard.feed("번호 9️9️0️1️0️1️-1️2️3️4️5️6️7")
     parts.extend(guard.feed("️ 끝"))
     parts.extend(guard.flush())
-    assert "".join(parts) == "번호 [민감 정보 차단] 끝"
+    assert "".join(parts) == "번호 [민감한 정보라 가려드렸어요] 끝"
 
 
 def test_streaming_output_guard_masks_bearer_after_overlong_whitespace_prefix() -> None:

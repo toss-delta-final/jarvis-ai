@@ -79,6 +79,19 @@ def _models(value: object) -> list[str]:
     return list(dict.fromkeys(models)) or ["unknown"]
 
 
+def _length_bucket(value: object, boundaries: Sequence[int]) -> str:
+    """messageLength를 config 경계값 기준 버킷 라벨로 정규화한다."""
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        return "unknown"
+    ordered = sorted(boundaries)
+    lower = 0
+    for edge in ordered:
+        if value < edge:
+            return f"<{edge}" if lower == 0 else f"{lower}-{edge}"
+        lower = edge
+    return f"{lower}+"
+
+
 def _latency_stats(values: Sequence[float]) -> dict[str, int | float | None]:
     """지연 표본 수와 최근접 순위 p50/p95/p99를 반환한다."""
     return {
@@ -100,7 +113,7 @@ def _executed(record: dict[str, Any]) -> bool:
 
 
 def _cost_stats(records: Sequence[dict[str, Any]]) -> dict[str, int | float | bool | None]:
-    """숫자인 비용만 합산하고 실행 턴 대비 커버리지와 partial 상태를 보존한다."""
+    """숫자인 비용만 합산하고 실행 턴 대비 커버리지·최소/최대·partial 상태를 보존한다."""
     values = [
         number for record in records if (number := _number(record.get("costUsd"))) is not None
     ]
@@ -113,6 +126,8 @@ def _cost_stats(records: Sequence[dict[str, Any]]) -> dict[str, int | float | bo
         "coverage": sample_count / turn_count if turn_count else None,
         "total": total,
         "average": total / sample_count if total is not None else None,
+        "min": min(values) if values else None,
+        "max": max(values) if values else None,
         "partial": sample_count < turn_count
         or any(record.get("costUsdPartial") is True for record in records),
     }
@@ -153,6 +168,10 @@ def aggregate_lines(lines: Iterable[str]) -> dict[str, Any]:
     }
     overall_latency: dict[str, list[float]] = {"first_token": [], "total": []}
     lane_records: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    role_records: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    model_records: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    length_records: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    settings = get_settings()
 
     for record in records:
         role = _dimension(record.get("role"), {"seller", "member", "guest"})
@@ -160,6 +179,12 @@ def aggregate_lines(lines: Iterable[str]) -> dict[str, Any]:
         models = _models(record.get("model"))
         if _executed(record):
             lane_records[lane].append(record)
+            role_records[role].append(record)
+            length_records[
+                _length_bucket(record.get("messageLength"), settings.observability_length_buckets)
+            ].append(record)
+            for model in models:
+                model_records[model].append(record)
         for metric, field in (("first_token", "latencyFirstToken"), ("total", "latencyTotal")):
             value = _number(record.get(field))
             if value is None:
@@ -200,6 +225,13 @@ def aggregate_lines(lines: Iterable[str]) -> dict[str, Any]:
         "cost": {
             "overall": _cost_stats(executed_records),
             "lane": {lane: _cost_stats(items) for lane, items in sorted(lane_records.items())},
+            "role": {role: _cost_stats(items) for role, items in sorted(role_records.items())},
+            "model": {
+                model: _cost_stats(items) for model, items in sorted(model_records.items())
+            },
+            "length": {
+                bucket: _cost_stats(items) for bucket, items in sorted(length_records.items())
+            },
             # 비용 분모에서 뺀 미실행 턴 수(개요의 값과 동일한 계산). 숨기면 "왜 비용 턴 수가
             # 전체보다 적나"에 답할 수 없고, 조용히 빼면 분모 조작과 구분되지 않는다.
             "excluded_rejection_turns": not_executed_count,
@@ -344,17 +376,23 @@ def render_markdown(
             "",
             "## 비용",
             "",
-            "| 그룹 | 표본/전체 | 커버리지 | 합계(USD) | 평균(USD) | 상태 |",
-            "|---|---:|---:|---:|---:|---|",
+            "| 그룹 | 표본/전체 | 커버리지 | 합계(USD) | 평균(USD) | 최소(USD) | 최대(USD) | 상태 |",
+            "|---|---:|---:|---:|---:|---:|---:|---|",
         ]
     )
-    cost_groups = [("전체", result["cost"]["overall"]), *result["cost"]["lane"].items()]
+    cost_groups = [
+        ("전체", result["cost"]["overall"]),
+        *(("lane:" + lane, stats) for lane, stats in result["cost"]["lane"].items()),
+        *(("role:" + role, stats) for role, stats in result["cost"]["role"].items()),
+        *(("model:" + model, stats) for model, stats in result["cost"]["model"].items()),
+        *(("length:" + bucket, stats) for bucket, stats in result["cost"]["length"].items()),
+    ]
     for group, stats in cost_groups:
         status = "부분 집계(partial)" if stats["partial"] else "완전 집계"
         lines.append(
             f"| {group} | 비용 표본 {stats['sample_count']} / 전체 {stats['turn_count']} "
             f"({_percent(stats['coverage'])}) | {_percent(stats['coverage'])} | {_display(stats['total'])} | "
-            f"{_display(stats['average'])} | {status} |"
+            f"{_display(stats['average'])} | {_display(stats['min'])} | {_display(stats['max'])} | {status} |"
         )
     lines.extend(
         [
@@ -363,6 +401,9 @@ def render_markdown(
             f"{result['cost']['excluded_rejection_turns']}건(스트림 전 거부 등)은 LLM 을 호출하지 "
             f"않고 costUsd 0 을 싣기 때문에 제외했다 — 포함하면 쿼리당 비용이 0 쪽으로 희석된다. "
             f"degrade·error 율의 분모(전체 {result['total_turns']}턴)와 다르다.",
+            "",
+            "> 모델별 비용은 fan-in 귀속이다 — 한 턴이 여러 모델을 쓰면 턴 전체 비용이 각 모델 "
+            "그룹에 중복으로 들어가 모델별 합계가 전체보다 클 수 있다.",
             "",
             "## degrade",
             "",
@@ -438,8 +479,24 @@ def _csv_rows(
                 csv_group = f"{group}.{latency_name}"
                 for metric in ("n", "p50", "p95", "p99"):
                     rows.append(("latency", csv_group, metric, stats[metric]))
-    for group, stats in [("overall", result["cost"]["overall"]), *result["cost"]["lane"].items()]:
-        for metric in ("sample_count", "turn_count", "coverage", "total", "average", "partial"):
+    cost_csv_groups = [
+        ("overall", result["cost"]["overall"]),
+        *(("lane:" + lane, stats) for lane, stats in result["cost"]["lane"].items()),
+        *(("role:" + role, stats) for role, stats in result["cost"]["role"].items()),
+        *(("model:" + model, stats) for model, stats in result["cost"]["model"].items()),
+        *(("length:" + bucket, stats) for bucket, stats in result["cost"]["length"].items()),
+    ]
+    for group, stats in cost_csv_groups:
+        for metric in (
+            "sample_count",
+            "turn_count",
+            "coverage",
+            "total",
+            "average",
+            "min",
+            "max",
+            "partial",
+        ):
             rows.append(("cost", group, metric, stats[metric]))
     rows.append(
         ("cost", "all", "excluded_rejection_turns", result["cost"]["excluded_rejection_turns"])
