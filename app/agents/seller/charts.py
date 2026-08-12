@@ -470,6 +470,84 @@ _BUILDERS = {
 }
 
 
+# ── chart_facts — 해석 에이전트 입력·검증 재료 (이슈 #600, 09-CHART.md §2.3) ──────────
+#
+# "배수는 코드가 계산한다"(05 §1)를 차트에도 적용한다 — 좌표 60점을 주고 "추이를
+# 설명하라"고 하면 LLM 은 반드시 센다(그리고 센 값은 틀린다). aggregate 어휘(sum/avg/
+# none)를 그대로 따른다 — ChartSpec.aggregate 의 docstring 이 이미 "FE 헤더 숫자 분기의
+# 근거라 unit 으로 추측하게 두지 않는다"고 못 박았고, 해석도 같은 축을 쓴다(결정 84).
+
+
+@dataclass(frozen=True)
+class ChartFacts:
+    """`chart_facts(spec)` 산출 — 해석 에이전트 [코드 계산] 블록·chart_verify D2 근거 공용.
+
+    필드가 해당 차트에 의미가 없으면 None/빈 값이다(§2.3 표) — LLM 에게 "이 차트엔
+    합계가 없다"를 굳이 설명하지 않고 필드 부재로 표현한다. peak·trough·top3 의 좌표는
+    ChartPoint 와 같은 (x, y) 튜플 — x 는 버킷·상품 라벨 그대로다.
+    """
+
+    total: float | None  # aggregate=="sum" 일 때만
+    mean: float  # 항상
+    peak: tuple[str, float]  # 항상 — y 최댓값 1점
+    trough: tuple[str, float]  # 항상 — y 최솟값 1점
+    first: float | None  # aggregate!="none" AND chart_type=="line" 일 때만
+    last: float | None  # 〃
+    delta: float | None  # 〃 (last - first)
+    delta_pct: float | None  # 〃 AND first > 0 일 때만(0으로 나누지 않는다)
+    top3: tuple[tuple[str, float], ...]  # chart_type=="bar" 일 때만(y 내림차순 ≤3)
+    top1_share: float | None  # chart_type=="bar" AND aggregate=="sum" 일 때만(top1/total)
+    zero_points: int  # 항상 — y==0 인 점 개수(⚠️ 채운 0 포함, "실제 0"과 구분 못 함)
+
+
+def chart_facts(spec: ChartSpec) -> ChartFacts:
+    """`ChartSpec` 1개의 통계 산출 — 순수 함수(LLM·IO 없음), fixture 좌표로 테스트한다.
+
+    `no_data` 는 build_charts 단계에서 이미 걸러지므로 points 가 빈 스펙은 여기 오지
+    않는다는 전제다 — 방어적으로 빈 입력을 받아도 예외 대신 0 값을 반환한다.
+    """
+    points = spec.series[0].points if spec.series else []
+    if not points:
+        return ChartFacts(None, 0.0, ("", 0.0), ("", 0.0), None, None, None, None, (), None, 0)
+
+    ys = [p.y for p in points]
+    zero_points = sum(1 for y in ys if y == 0)
+    peak_point = max(points, key=lambda p: p.y)
+    trough_point = min(points, key=lambda p: p.y)
+    mean = sum(ys) / len(ys)
+    total = sum(ys) if spec.aggregate == "sum" else None
+
+    first = last = delta = delta_pct = None
+    if spec.aggregate != "none" and spec.chart_type == "line":
+        first = points[0].y
+        last = points[-1].y
+        delta = last - first
+        if first > 0:  # [#489/#197 규약과 동일 정신] 0 나눔 방지 — first==0 이면 값 자체를 안 만든다
+            delta_pct = (delta / first) * 100
+
+    top3: tuple[tuple[str, float], ...] = ()
+    top1_share: float | None = None
+    if spec.chart_type == "bar":
+        ranked = sorted(points, key=lambda p: p.y, reverse=True)[:3]
+        top3 = tuple((p.x, p.y) for p in ranked)
+        if spec.aggregate == "sum" and total:
+            top1_share = (ranked[0].y / total) * 100
+
+    return ChartFacts(
+        total=total,
+        mean=mean,
+        peak=(peak_point.x, peak_point.y),
+        trough=(trough_point.x, trough_point.y),
+        first=first,
+        last=last,
+        delta=delta,
+        delta_pct=delta_pct,
+        top3=top3,
+        top1_share=top1_share,
+        zero_points=zero_points,
+    )
+
+
 # ── 진입점 ────────────────────────────────────────────────────────────────────
 
 
