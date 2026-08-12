@@ -73,11 +73,22 @@ N=3은 screening, N=8×2도 exploratory confirmation이다. 두 run의 dataset/p
 
 ## Current decision (2026-08-12)
 
-- **Status:** `not tested`
-- **Primary:** live numerator/denominator 없음; API key preflight에서 provider 호출 전 중단;
-- **Guardrails:** deterministic dry-run에서 candidate ID 0, duplicate 0, validated 0/27, coverage 1.0;
-- **Operational:** live latency/token/cost 미측정;
-- **Limit:** dry-run은 validator 동작만 증명하며 실제 모델 개선을 증명하지 않음;
+- **Status:** `supported` — screening과 독립 confirmation 2회가 등록 gate를 통과함;
+- **Primary (C):** screening `0/80`, confirmation run 1 `0/212`, run 2 `0/208`;
+- **Comparison:** confirmation 합산 A `28/411` (6.81%), B `0/418`, C `0/420`;
+- **Guardrails:** 세 run 모두 out-of-candidate ID 0, duplicate 0, post-validation invalid 0,
+  unfilled cell 0. C coverage는 `0.988`, `0.981`, `0.963`으로 각 run의 A보다 낮지 않았음;
+- **Operational:** C p50/p95 latency는 screening `2663/4407ms`, run 1 `2912/4846ms`,
+  run 2 `2820/5438ms`. 전체 571 attempts 중 확인 가능한 사용량은 511,192 tokens,
+  $0.2392064. run 2의 A에서 사용량 미확정 length-limit parse 실패 1건이 별도 기록됐고
+  재시도로 표본을 충족함;
+- **Reproducibility:** git `90b72e6474913649f8a020d2924b3b4ec57c31e0`, dataset
+  `aa86ab23c1d5135d5c6f5b9fed66899c2d7f6f85f3b7489c8ab1af7d6648435a`, current prompt
+  `8654b0ce8c3c48acd5e2ce296752021f93c58a041ba5bfe0ff345abbcf976eef`, structured prompt
+  `a1516c9815f800350983aabbaec59474076e1441a6e306716aa946b3635ed9e0`, validator
+  `rerank-grounding-v1`로 동일함;
+- **Limit:** 평점·리뷰·후보군 상대가격 및 정확한 숫자 근거만 평가했다. B와 C가 모두 0이므로
+  live 결과만으로 validator의 추가 효과까지 분리해 주장하지 않음;
 - **Release claims:** C1~C4 unchanged; production default `current` 유지.
 
-실패 명령과 scrubbed 사유는 `baselines/20260812-not-tested/README.md`에 보존했다.
+초기 credential 부재 기록은 `baselines/20260812-not-tested/README.md`에 이력으로 보존했다.

@@ -1,0 +1,98 @@
+{
+  "arms": [
+    "current",
+    "prompt_only",
+    "validated"
+  ],
+  "failureCount": 0,
+  "fixtureVersion": "rerank-grounding-v1",
+  "invMismatchCount": {
+    "current": 6,
+    "prompt_only": 5,
+    "validated": 1
+  },
+  "latency": {
+    "current": {
+      "p50Ms": 2709,
+      "p95Ms": 4858
+    },
+    "prompt_only": {
+      "p50Ms": 2728,
+      "p95Ms": 4615
+    },
+    "validated": {
+      "p50Ms": 2663,
+      "p95Ms": 4407
+    }
+  },
+  "limits": [
+    "rating/review/relative-price와 정확한 숫자 주장만 자동 판정한다.",
+    "검색 관련성이나 전체 자연어 진실성을 증명하지 않는다.",
+    "dry-run은 실행기 검증이며 live 품질 근거가 아니다."
+  ],
+  "metrics": {
+    "current": {
+      "arm": "current",
+      "duplicateIdCount": 0,
+      "failureCount": 0,
+      "invalidStructuredEvidenceCount": 0,
+      "outOfCandidateIdCount": 0,
+      "successfulSampleCount": 30,
+      "unsupportedEvidence": {
+        "definition": {
+          "denominator": "유효 후보 ID와 함께 사용자에게 표시된 전체 rerank 항목 수",
+          "limit": "rating/review/relative-price와 정확한 숫자 주장만 측정",
+          "numerator": "표시 근거가 후보 tier와 충돌하거나, prompt-only 구조화 근거가 검증에 실패한 항목 수"
+        },
+        "denominator": 76,
+        "numerator": 6,
+        "rate": 0.07894736842105263
+      },
+      "validRankCoverage": 0.9382716049382716,
+      "validatorDowngradeCount": 0
+    },
+    "prompt_only": {
+      "arm": "prompt_only",
+      "duplicateIdCount": 0,
+      "failureCount": 0,
+      "invalidStructuredEvidenceCount": 0,
+      "outOfCandidateIdCount": 0,
+      "successfulSampleCount": 30,
+      "unsupportedEvidence": {
+        "definition": {
+          "denominator": "유효 후보 ID와 함께 사용자에게 표시된 전체 rerank 항목 수",
+          "limit": "rating/review/relative-price와 정확한 숫자 주장만 측정",
+          "numerator": "표시 근거가 후보 tier와 충돌하거나, prompt-only 구조화 근거가 검증에 실패한 항목 수"
+        },
+        "denominator": 78,
+        "numerator": 0,
+        "rate": 0.0
+      },
+      "validRankCoverage": 0.9629629629629629,
+      "validatorDowngradeCount": 0
+    },
+    "validated": {
+      "arm": "validated",
+      "duplicateIdCount": 0,
+      "failureCount": 0,
+      "invalidStructuredEvidenceCount": 0,
+      "outOfCandidateIdCount": 0,
+      "successfulSampleCount": 30,
+      "unsupportedEvidence": {
+        "definition": {
+          "denominator": "유효 후보 ID와 함께 사용자에게 표시된 전체 rerank 항목 수",
+          "limit": "rating/review/relative-price와 정확한 숫자 주장만 측정",
+          "numerator": "표시 근거가 후보 tier와 충돌하거나, prompt-only 구조화 근거가 검증에 실패한 항목 수"
+        },
+        "denominator": 80,
+        "numerator": 0,
+        "rate": 0.0
+      },
+      "validRankCoverage": 0.9876543209876543,
+      "validatorDowngradeCount": 0
+    }
+  },
+  "repeats": 3,
+  "status": "supported",
+  "unfilledCells": []
+}
