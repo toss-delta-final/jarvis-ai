@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 from weakref import WeakValueDictionary
@@ -185,6 +186,7 @@ class RerankResult:
 
     ranked: list[tuple[int, str]] = field(default_factory=list)  # (productId, rationale)
     overall_comment: str = ""
+    overall_claims: tuple[Mapping[str, object], ...] = ()
     grounding_decisions: list[GroundingDecision] = field(default_factory=list)
 
 

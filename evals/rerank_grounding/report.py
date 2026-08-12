@@ -75,6 +75,9 @@ def _status(*, run: ProbeRun, manifest: dict[str, Any], metrics: dict[str, ArmMe
         or validated.out_of_candidate_id_count != 0
         or validated.duplicate_id_count != 0
         or validated.invalid_structured_evidence_count != 0
+        or validated.detected_overall_claim_violation_rate != 0.0
+        or validated.overall_invalid_structured_claim_count != 0
+        or validated.supported_overall_claim_coverage is None
         or (
             coverage_floor is not None
             and (
@@ -100,6 +103,7 @@ def build_results(run: ProbeRun, manifest: dict[str, Any]) -> dict[str, Any]:
         "failureCount": len(run.failures()),
         "limits": [
             "rating/review/relative-price와 정확한 숫자 주장만 자동 판정한다.",
+            "overall comment는 등록된 표현군과 구조화 claim code만 자동 판정한다.",
             "검색 관련성이나 전체 자연어 진실성을 증명하지 않는다.",
             "dry-run은 실행기 검증이며 live 품질 근거가 아니다.",
         ],
@@ -135,6 +139,26 @@ def render_report(results: dict[str, Any], manifest: dict[str, Any]) -> str:
         )
     lines += [
         "",
+        "## Overall comment grounding",
+        "",
+        "| arm | detected violation 분자/분모 | rate | supported coverage | downgrade | invalid after validation |",
+        "|---|---:|---:|---:|---:|---:|",
+    ]
+    for arm in results["arms"]:
+        metric = results["metrics"].get(arm)
+        if metric is None:
+            continue
+        violation = metric["detectedOverallClaimViolation"]
+        coverage = metric["supportedOverallClaimCoverage"]
+        lines.append(
+            f"| `{arm}` | {violation['numerator']}/{violation['denominator']} | "
+            f"{violation['rate'] if violation['rate'] is not None else '-'} | "
+            f"{coverage['rate'] if coverage['rate'] is not None else '-'} | "
+            f"{metric['overallValidatorDowngradeCount']} | "
+            f"{metric['overallInvalidStructuredClaimCount']} |"
+        )
+    lines += [
+        "",
         "## Operational",
         "",
         f"- failures: {results['failureCount']}",
@@ -162,6 +186,12 @@ def _write_samples(path: Path, run: ProbeRun) -> None:
         "latencyMs",
         "rankedProductIds",
         "displayedRationales",
+        "rawOverallComment",
+        "rawOverallClaims",
+        "finalView",
+        "detectedOverallClaimCodes",
+        "overallGroundingDecision",
+        "renderedOverallComment",
         "groundingDecisions",
         "validatorDowngradeCount",
         "outOfCandidateIdCount",
@@ -187,6 +217,23 @@ def _write_samples(path: Path, run: ProbeRun) -> None:
                         "displayedRationales": json.dumps(
                             sample.displayed_rationales, ensure_ascii=False
                         ),
+                        "rawOverallComment": sample.raw_overall_comment,
+                        "rawOverallClaims": json.dumps(
+                            sample.raw_overall_claims, ensure_ascii=False
+                        ),
+                        "finalView": json.dumps(asdict(sample.final_view), ensure_ascii=False),
+                        "detectedOverallClaimCodes": json.dumps(
+                            sample.detected_overall_claim_codes, ensure_ascii=False
+                        ),
+                        "overallGroundingDecision": json.dumps(
+                            (
+                                asdict(sample.overall_grounding_decision)
+                                if sample.overall_grounding_decision is not None
+                                else None
+                            ),
+                            ensure_ascii=False,
+                        ),
+                        "renderedOverallComment": sample.displayed_overall_comment,
                         "groundingDecisions": json.dumps(
                             [asdict(decision) for decision in sample.grounding_decisions],
                             ensure_ascii=False,
