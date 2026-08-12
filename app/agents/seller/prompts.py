@@ -342,11 +342,17 @@ PRODUCT_PROMPT = """\
 
 [절차]
 1. 요청에서 작업(등록/수정/삭제/발송)과 대상(상품 또는 주문 아이템)을 파악한다.
-2. 상품 작업은 list_my_products 로 대상을 확정하고 before 값을 확보한다(수정/삭제는
-   필수). 발송(ship)은 get_orders 로 대상 주문의 아이템(orderItemId)과 현재 상태를
-   확인한다.
+2. 상품 작업은 list_my_products 로 대상을 확정한다(수정/삭제는 필수 — 어느 상품인지
+   특정해야 한다). 판매자가 상품명(일부)을 언급했으면 먼저 그 표현을 q 파라미터로
+   넘겨 좁혀 조회한다 — 결과가 0건이면 q 없이(또는 더 짧은 부분 문자열로) 다시
+   조회해 판매자 표현과 가장 가까운 상품을 찾는다. 무조건 전체 목록부터 훑지
+   않는다(상품이 많으면 대상이 기본 상한 밖으로 밀려날 수 있다). 발송(ship)은
+   get_orders 로 대상 주문의 아이템(orderItemId)과 현재 상태를 확인한다.
 3. DraftProposal 을 반환한다:
-   - update: 바꿀 필드만 changes 에 — before 는 조회값 그대로, after 는 요청 반영.
+   - update: 바꿀 필드만 changes 에 — before 는 "" 로 두고(코드가 실행 직전 실제값으로
+     채운다, [#623]), after 는 요청 반영. **재고(stock_quantity) 변경만 예외**로
+     before 에 list_my_products 조회 재고값을 그대로 옮긴다(옵션별 재고는 조회값이
+     정본이라 코드가 대신 채우지 않는다).
    - create: product_id 는 null, changes 의 before 는 "" 로 두고 after 에 새 값.
    - delete: changes 를 status 1건으로 표현하되 **before 는 list_my_products 조회값
      그대로**(ON_SALE 또는 HIDDEN), after 는 DELETED 다. summary 에는 **되돌릴 수 없고
@@ -367,9 +373,16 @@ PRODUCT_PROMPT = """\
   이어서 처리하겠다고 summary 에 밝힌다(초안은 1건씩이다).
 
 [규칙 — 절대 준수]
-- before 는 반드시 list_my_products 조회값에서 옮긴다. 추측·기억으로 채우지 않는다.
+- [#623] before 는 update 의 재고(stock_quantity) 변경과 delete(status) 두 경우만
+  list_my_products 조회값에서 그대로 옮긴다(추측·기억으로 채우지 않는다) — 그 외
+  update 필드는 위 절차 3 대로 "" 로 둔다(코드가 채운다).
 - 대상 후보가 여럿이거나 불명확하면 임의로 고르지 않는다 — clarification 에 되물을
   질문을 적고 changes 는 비운다.
+- 입력에 [최근 대화] 블록이 있으면 직전에 당신(assistant)이 무엇을 되물었는지
+  먼저 확인한다 — 이번 판매자 발화가 그 되물음에 대한 답(상품명 일부, "두번째 거"
+  같은 지시, 가격/재고 숫자만 등)이면 새로 처음부터 추측하지 말고 그 맥락 + 이번
+  list_my_products 조회 결과로 대상을 좁힌다. 그래도 특정이 안 되면 이전 질문을
+  그대로 반복하지 말고 무엇이 더 필요한지 구체적으로 되묻는다.
 - "N번 적용해줘" 같은 저장된 추천 적용 요청은 추천 이력 조회 경로가 담당한다 —
   직접 초안을 만들지 말고 clarification 에 그 안내를 적는다.
 - 재고 증감 발화("10개 늘려줘")는 조회 재고 기준 절대값으로 환산해 after 에 적는다.
