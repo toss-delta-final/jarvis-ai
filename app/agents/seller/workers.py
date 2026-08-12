@@ -198,7 +198,10 @@ GENERAL_TOOLS = [
 def build_general_agent(
     today: str, checkpointer: BaseCheckpointSaver | None = None
 ) -> CompiledStateGraph:
-    """일반 질문 에이전트 (해석 금지·calculate 강제·미지원 안내 — 자유 텍스트 응답).
+    """일반 질문 에이전트 (경량 해석 허용·calculate 강제·미지원 안내 — 자유 텍스트 응답, #650).
+
+    [#650] 단일 지표 증감·순위·임계값 비교 같은 경량 해석까지는 직접 답한다 — 원인
+    가설·복수 지표 교차·행동 추천은 여전히 금지(GENERAL_PROMPT_TEMPLATE 응답 원칙 1).
 
     분석 워커와 달리 response_format 을 강제하지 않는다 — 3단계에서 astream→token
     SSE 1차 배선 대상이다. planner 를 거치지 않는 레인이라 기간 환산을 프롬프트가
