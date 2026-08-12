@@ -34,6 +34,7 @@ from app.agents.seller.prompts import (
     ANALYSIS_JUDGE_PROMPT,
     BEHAVIOR_INTERPRET_PROMPT,
     BEHAVIOR_PROMPT,
+    CHART_INTERPRET_PROMPT,
     CHURN_INTERPRET_PROMPT,
     CHURN_PROMPT,
     CONVERSION_INTERPRET_PROMPT,
@@ -389,6 +390,23 @@ def build_graph_agent() -> CompiledStateGraph:
         response_format=ToolStrategy(ChartPlanSet),
         context_schema=SellerContext,
         middleware=[_model_usage_middleware("graph")],
+    )
+
+
+def build_chart_interpret_agent() -> CompiledStateGraph:
+    """차트 해석 에이전트 (smart tier · 도구 없음 · 자유 텍스트, 이슈 #600).
+
+    `build_report_agent`/`build_resident_report_agent`와 같은 모양(zero-tool·자유
+    텍스트)이지만 chart_only 턴 전용이라 완전히 분리한 상수·역할을 쓴다 — 입력은
+    좌표 전량 + `charts.chart_facts` 산출(`pipeline.format_chart_input`)뿐이고,
+    findings·보고서는 chart_only 턴에는 애초에 없다(run_graph 호출부 참조).
+    """
+    return create_agent(
+        model=init_seller_model("chart_interpret"),
+        tools=[],
+        system_prompt=CHART_INTERPRET_PROMPT,
+        context_schema=SellerContext,
+        middleware=[_model_usage_middleware("chart_interpret")],
     )
 
 

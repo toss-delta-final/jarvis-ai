@@ -412,3 +412,47 @@ def test_seller_eval_gate_fail_fast() -> None:
     with pytest.raises(ValidationError):
         Settings(_env_file=None, seller_cluster_stability_min=1.5)
     assert Settings(_env_file=None, seller_eval_null_days=28).seller_eval_null_days == 28
+
+
+# ── chart 해석 에이전트 (이슈 #600, 09-CHART.md §8) ────────────────────────────────
+
+
+def test_seller_chart_interpret_settings_defaults() -> None:
+    """§8 표의 신설 5종 기본값 — 킬스위치 true / 20s / 재작성 1회 / 800자 / 축 선언 25s."""
+    settings = Settings(_env_file=None)
+
+    assert settings.seller_chart_interpret_enabled is True
+    assert settings.seller_chart_interpret_timeout_s == 20.0
+    assert settings.seller_chart_interpret_max_retries == 1
+    assert settings.seller_chart_interpret_max_chars == 800
+    # [#600] graph(축 선언) 전용 타임아웃 — seller_worker_timeout_s(60s) 재사용을 그친다.
+    assert settings.seller_chart_agent_timeout_s == 25.0
+    # 재사용(신설 금지, §8 표) — C1이 그대로 쓰는 기존 #598 신설 항목.
+    assert settings.seller_report_causal_terms == ["때문에", "원인은", "그래서", "유발", "야기"]
+
+
+def test_seller_chart_forbidden_terms_default_covers_c4_four_groups() -> None:
+    """C4(chart_claims_bounded) 4묶음 — snapshot_trend/daily_bucket/bottom_rank/behavior_all."""
+    settings = Settings(_env_file=None)
+    terms = settings.seller_chart_forbidden_terms
+
+    assert set(terms) == {"snapshot_trend", "daily_bucket", "bottom_rank", "behavior_all"}
+    assert "추세" in terms["snapshot_trend"]
+    assert "일별" in terms["daily_bucket"]
+    assert "최저" in terms["bottom_rank"]
+    assert "전체 행동" in terms["behavior_all"]
+
+
+def test_seller_chart_forbidden_terms_survives_empty_env_string() -> None:
+    """deploy.yml 빈 문자열 함정 — seller_amount_bucket_map 과 같은 방어(NoDecode)."""
+    settings = Settings(_env_file=None, seller_chart_forbidden_terms="")
+    assert settings.seller_chart_forbidden_terms["snapshot_trend"] == [
+        "추세",
+        "증가",
+        "감소",
+        "늘었",
+        "줄었",
+        "상승",
+        "하락",
+        "이후",
+    ]

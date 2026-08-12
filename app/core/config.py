@@ -714,6 +714,47 @@ class Settings(BaseSettings):
     seller_tool_call_limit: int = 8  # ToolCallLimit 전역 한도(선택)
     seller_worker_timeout_s: float = 60.0  # 분석 워커 1종 실행 상한(3-3 팬아웃, §7 90s 목표 내)
 
+    # ── chart 레인 해석 에이전트 (이슈 #600, `09-CHART.md` §8) ────────────────────────
+    # 해석은 chart_only 턴에서 유일하게 새로 도는 LLM이다 — 문제가 생기면 false 하나로
+    # #504 시점 동작(고정 문구 3종)으로 되돌린다(§4 실패 규약).
+    seller_chart_interpret_enabled: bool = True
+    # 해석 1회 상한 — 워커 60s(seller_worker_timeout_s)를 쓰지 않는다. chart_only 턴은
+    # 대화형(stream_total_timeout_s=90s) 예산 안이라 배치 상한을 그대로 물려받으면
+    # §6.1의 budget 초과를 더 키운다.
+    seller_chart_interpret_timeout_s: float = 20.0
+    # 재작성 상한 — seller_report_max_retries(3)와 분리한다(결정 91: judge 없이 1회뿐).
+    seller_chart_interpret_max_retries: int = 1
+    # 해석문 길이 상한(자) — §2.6 "전체 6문장 이내"의 코드 측 근거(D-check).
+    seller_chart_interpret_max_chars: int = 800
+    # graph_agent(축 선언, ChartPlanSet) 전용 타임아웃 — 지금까지는 seller_worker_timeout_s
+    # (60s)를 재사용했는데, 해석이 추가되며 그 값이 §6.1 예산 초과의 절반을 차지한다.
+    # 축 선언은 findings·보고서·질문만 보고 좌표를 만들지 않아 워커보다 훨씬 가볍다.
+    seller_chart_agent_timeout_s: float = 25.0
+    # C4(chart_claims_bounded, §3.5) 금지 어휘 4묶음 — seller_report_causal_terms 와
+    # 같은 규약(과탐 시 목록만 조정). 판정 조건(어느 차트가 있을 때 검사하는지)은
+    # chart_verify.py 코드 소관 — 여기는 어휘 목록만.
+    seller_chart_forbidden_terms: Annotated[dict[str, list[str]], NoDecode] = Field(
+        default_factory=lambda: {
+            # C4-a — 스냅샷(aggregate=="none") 차트에 추세 어휘.
+            "snapshot_trend": [
+                "추세",
+                "증가",
+                "감소",
+                "늘었",
+                "줄었",
+                "상승",
+                "하락",
+                "이후",
+            ],
+            # C4-b — 버킷(3일/1주) 묶음 차트에 하루 단위 서술.
+            "daily_bucket": ["하루", "일별", "당일"],
+            # C4-c — 상위 N 절단 차트에서 하위 단정.
+            "bottom_rank": ["가장 적", "최저", "꼴찌", "가장 안 팔", "제일 안"],
+            # C4-d — 행동 유형별(4종) 차트를 "전체 행동"으로 서술.
+            "behavior_all": ["전체 행동", "모든 행동", "행동 전체"],
+        }
+    )
+
     # ── SOP 스텝 타임아웃 (이슈 #589, `OPS-RUNTIME.md` T-3 / `01-ARCHITECTURE.md` §4.4) ──
     # 상주 analysis 파이프라인(채팅 밖)의 스텝별 상한. 대화형 예산(90s)과 무관한 배치
     # 경로라 워커 타임아웃(60s)을 재사용하지 않고 스텝 성격별로 나눈다 — 초과 시
@@ -868,6 +909,7 @@ class Settings(BaseSettings):
         "seller_amount_bucket_map",
         "seller_customer_cluster_group_weights",
         "seller_customer_label_thresholds",
+        "seller_chart_forbidden_terms",
         mode="before",
     )
     @classmethod
