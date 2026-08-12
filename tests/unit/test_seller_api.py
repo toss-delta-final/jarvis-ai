@@ -750,7 +750,9 @@ def test_chart_keyword_does_not_bypass_image_product_lane(
 
     monkeypatch.setattr(seller_api, "run_analysis_pipeline", _must_not_run)
 
-    async def _fake_product_stream(request, context, *, request_id=None, pending=None):
+    async def _fake_product_stream(
+        request, context, *, request_id=None, pending=None, pending_unknown=False
+    ):
         yield seller_api._meta("product")
         yield seller_api._done("keep")
 
@@ -2063,3 +2065,92 @@ def test_general_stream_does_not_disclose_plain_vocabulary(
 
     texts = [e["data"]["text"] for e in events if e["type"] == "token"]
     assert texts == ["1,200,000원입니다."]
+
+
+# ── [#622 결정 — 이슈 ⑤] _ensure_draft_category 카테고리 복구 + preview note ──────
+
+
+def test_ensure_draft_category_revives_pending_category_on_modify_turn() -> None:
+    """수정 턴에서 에이전트가 카테고리를 비웠으면 이전 초안 값을 되살린다(① 경로)."""
+    from app.agents.seller import category_catalog, draft_session
+    from app.agents.seller.schemas import DraftChange, DraftProposal
+
+    category_id = category_catalog.all_entries()[0].id
+    pending = draft_session.PendingCreate(
+        draft_id="d-1",
+        image_urls=(),
+        analysis=None,
+        changes={"category": category_id, "name": "감귤청"},
+    )
+    proposal = DraftProposal(
+        op="create",
+        product_id=None,
+        changes=[DraftChange(field="price", before="", after="12900")],
+        summary="가격만 수정",
+    )
+
+    result, revived = asyncio.run(
+        seller_api._ensure_draft_category(
+            proposal, message="가격만 12900원으로 바꿔줘", analysis=None, pending=pending
+        )
+    )
+
+    assert revived is True
+    category_change = next(c for c in result.changes if c.field == "category")
+    assert category_change.after == category_id
+
+
+def test_ensure_draft_category_not_revived_when_agent_already_chose_valid_category() -> None:
+    """에이전트가 이미 유효한 카테고리를 골랐으면 되살릴 필요가 없다 — revived=False."""
+    from app.agents.seller import category_catalog, draft_session
+    from app.agents.seller.schemas import DraftChange, DraftProposal
+
+    entries = category_catalog.all_entries()
+    chosen_id, pending_id = entries[0].id, entries[1].id
+    pending = draft_session.PendingCreate(
+        draft_id="d-1", image_urls=(), analysis=None, changes={"category": pending_id}
+    )
+    proposal = DraftProposal(
+        op="create",
+        product_id=None,
+        changes=[DraftChange(field="category", before="", after=chosen_id)],
+        summary="새 상품 등록",
+    )
+
+    result, revived = asyncio.run(
+        seller_api._ensure_draft_category(
+            proposal, message="상품 등록해줘", analysis=None, pending=pending
+        )
+    )
+
+    assert revived is False
+    category_change = next(c for c in result.changes if c.field == "category")
+    assert category_change.after == chosen_id  # 되살리지 않고 에이전트 선택 유지
+
+
+def test_ensure_draft_category_not_revived_when_no_pending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """대기 중인 초안이 없으면(신규 등록 첫 턴 등) 되살릴 이전 값 자체가 없다."""
+    from app.agents.seller.schemas import DraftChange, DraftProposal
+
+    async def _no_match(message, *, hint=None):
+        return None
+
+    monkeypatch.setattr(seller_api.category_resolver, "resolve_category", _no_match)
+
+    proposal = DraftProposal(
+        op="create",
+        product_id=None,
+        changes=[DraftChange(field="price", before="", after="12900")],
+        summary="새 상품 등록",
+    )
+
+    result, revived = asyncio.run(
+        seller_api._ensure_draft_category(
+            proposal, message="아무 카테고리나", analysis=None, pending=None
+        )
+    )
+
+    assert revived is False
+    assert all(c.field != "category" for c in result.changes)

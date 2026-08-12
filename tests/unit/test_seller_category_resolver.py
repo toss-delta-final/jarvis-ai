@@ -152,32 +152,35 @@ def test_ensure_keeps_valid_agent_pick(catalog, monkeypatch) -> None:
     model = _FakeModel(category_resolver.CategoryPick(category_id="102"))
     _patch_model(monkeypatch, model)
     proposal = _proposal(DraftChange(field="category", before="", after="100"))
-    out = asyncio.run(
+    out, revived = asyncio.run(
         seller_api._ensure_draft_category(proposal, message="셔츠", analysis=None, pending=None)
     )
     assert _category_of(out) == "100"
     assert model.calls == []
+    assert revived is False  # 이미 유효한 값 — 되살릴 이전 초안이 없다
 
 
 def test_ensure_fills_missing_category_via_llm(catalog, monkeypatch) -> None:
     """에이전트가 카테고리를 비웠으면 폴백이 채운다 — 되묻기 전 마지막 기회."""
     _patch_model(monkeypatch, _FakeModel(category_resolver.CategoryPick(category_id="102")))
-    out = asyncio.run(
+    out, revived = asyncio.run(
         seller_api._ensure_draft_category(
             _proposal(), message="남자 티셔츠 등록해줘", analysis=None, pending=None
         )
     )
     assert _category_of(out) == "102"
+    assert revived is False  # LLM 폴백으로 채웠다 — 이전 초안 값 복구가 아니다
 
 
 def test_ensure_drops_out_of_snapshot_value(catalog, monkeypatch) -> None:
     """LLM 이 경로·이름을 적었고 폴백도 실패하면 그 값을 걷어낸다 — '누락' 안내로 간다."""
     _patch_model(monkeypatch, _FakeModel(category_resolver.CategoryPick(category_id="")))
     proposal = _proposal(DraftChange(field="category", before="", after="남성의류 > 셔츠"))
-    out = asyncio.run(
+    out, revived = asyncio.run(
         seller_api._ensure_draft_category(proposal, message="셔츠", analysis=None, pending=None)
     )
     assert _category_of(out) is None
+    assert revived is False
 
 
 def test_ensure_restores_pending_category_on_modify_turn(catalog, monkeypatch) -> None:
@@ -188,13 +191,14 @@ def test_ensure_restores_pending_category_on_modify_turn(catalog, monkeypatch) -
     model = _FakeModel(category_resolver.CategoryPick(category_id="102"))
     _patch_model(monkeypatch, model)
     pending = SimpleNamespace(changes={"category": "101"})
-    out = asyncio.run(
+    out, revived = asyncio.run(
         seller_api._ensure_draft_category(
             _proposal(), message="가격만 3만원으로 바꿔줘", analysis=None, pending=pending
         )
     )
     assert _category_of(out) == "101"
     assert model.calls == []  # 기존 값이 있으면 LLM 을 부르지 않는다
+    assert revived is True  # [#622] 이전 초안 값을 되살린 경로 — preview note 노출 대상
 
 
 def test_ensure_skips_non_create_ops(catalog, monkeypatch) -> None:
@@ -207,10 +211,11 @@ def test_ensure_skips_non_create_ops(catalog, monkeypatch) -> None:
         changes=[DraftChange(field="price", before="15000", after="12900")],
         summary="가격 인하",
     )
-    out = asyncio.run(
+    out, revived = asyncio.run(
         seller_api._ensure_draft_category(
             proposal, message="가격 내려줘", analysis=None, pending=None
         )
     )
     assert out is proposal
+    assert revived is False
     assert model.calls == []

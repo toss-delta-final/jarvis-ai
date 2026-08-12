@@ -225,6 +225,84 @@ def test_general_lane_budget_tracks_every_serial_term() -> None:
         Settings(_env_file=None, seller_checkpoint_connect_timeout_s=31.0)
 
 
+# ── 이슈 #621 — management/confirm 레인 직렬 예산 ────────────────────────────────
+
+
+def test_management_lane_budget_defaults_pass() -> None:
+    """기본값(이미지 82 / 텍스트수정 83)은 90s 캡 안에 들어온다."""
+    ok = Settings(_env_file=None)
+    downstream = 3 * ok.state_store_query_timeout_s
+    image_path = (
+        ok.state_store_query_timeout_s
+        + ok.seller_vision_timeout_s
+        + ok.seller_product_agent_timeout_s
+        + ok.seller_category_resolve_timeout_s
+        + downstream
+    )
+    text_edit_path = (
+        ok.state_store_query_timeout_s
+        + ok.seller_pending_gate_timeout_s
+        + ok.state_store_query_timeout_s
+        + ok.seller_route_timeout_s
+        + ok.seller_product_agent_timeout_s
+        + ok.seller_category_resolve_timeout_s
+        + downstream
+    )
+    assert max(image_path, text_edit_path) < ok.stream_total_timeout_s
+
+
+def test_management_lane_budget_rejects_over_cap_image_path() -> None:
+    """이미지 경로만 캡을 넘겨도 기동 실패 — vision 상한을 크게 올린다."""
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_vision_timeout_s=60.0)
+
+
+def test_management_lane_budget_rejects_over_cap_text_edit_path() -> None:
+    """텍스트 수정 경로만 캡을 넘겨도 기동 실패 — 라우팅 상한을 크게 올린다(이미지
+    경로는 라우팅을 거치지 않아 영향받지 않는다)."""
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_route_timeout_s=60.0)
+
+
+def test_management_lane_budget_boundary_is_strict() -> None:
+    """동률(>=)도 거절한다 — 어느 시계가 먼저 터질지 지터로 갈린다."""
+    ok = Settings(_env_file=None)
+    downstream = 3 * ok.state_store_query_timeout_s
+    text_edit_path = (
+        ok.state_store_query_timeout_s
+        + ok.seller_pending_gate_timeout_s
+        + ok.state_store_query_timeout_s
+        + ok.seller_route_timeout_s
+        + ok.seller_product_agent_timeout_s
+        + ok.seller_category_resolve_timeout_s
+        + downstream
+    )
+    boundary_route = ok.seller_route_timeout_s + (ok.stream_total_timeout_s - text_edit_path)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_route_timeout_s=boundary_route)
+
+
+def test_confirm_lane_budget_defaults_pass() -> None:
+    """기본값(3+45+3=51)은 90s 캡 안에 들어온다."""
+    ok = Settings(_env_file=None)
+    budget = 2 * ok.state_store_query_timeout_s + ok.seller_confirm_execute_timeout_s
+    assert budget < ok.stream_total_timeout_s
+
+
+def test_confirm_lane_budget_rejects_over_cap() -> None:
+    """seller_confirm_execute_timeout_s 를 크게 올리면 기동 실패."""
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_confirm_execute_timeout_s=90.0)
+
+
+def test_confirm_lane_budget_boundary_is_strict() -> None:
+    """동률(>=)도 거절한다."""
+    ok = Settings(_env_file=None)
+    boundary = ok.stream_total_timeout_s - 2 * ok.state_store_query_timeout_s
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_confirm_execute_timeout_s=boundary)
+
+
 # ── 고객 축 피처·군집 (이슈 #593, 03-FEATURES 2부 / 04-CLUSTERING §7) ──────────
 
 
