@@ -38,7 +38,13 @@ from app.agents.seller.pipeline import (
     format_rewrite_input,
     split_report_summary,
 )
-from app.agents.seller.schemas import AnalysisFinding, AnalysisType, RecommendationSet, ReportScore
+from app.agents.seller.schemas import (
+    AnalysisFinding,
+    AnalysisType,
+    RecommendationSet,
+    ReportScore,
+    draftable_recommendations,
+)
 from app.agents.seller.sop.assembly import build_sop
 from app.agents.seller.sop.context import ActionCandidate, AnalysisContext
 from app.agents.seller.sop.engine import run_sop
@@ -200,6 +206,9 @@ async def _run_resident_recommend(
     후보 생성기(design-598 §2 "이슈 12")가 아직 코드에 없으므로, `ctx.candidate_actions`
     가 항상 비어 있는 동안은 이 함수도 항상 빈 추천을 낸다 — 사용자 확인 결정 1
     ("과장 없음 방향으로 안전, 기능 저하는 정직하게 아는 채로 둔다")의 실행부다.
+
+    후보 생성기가 나중에 배선돼도 `draftable_recommendations` 로 changes 빈 추천을
+    걸러낸다 — 채팅 레인(orchestrator.run_recommend)과 동일한 최종 방어(#660).
     """
     if not candidates:
         return RecommendationSet(recommendations=[], summary="이번 주기에는 추천 후보가 없습니다.")
@@ -219,7 +228,10 @@ async def _run_resident_recommend(
         recommendations = result.get("structured_response")
         if not isinstance(recommendations, RecommendationSet):
             raise TypeError("상주 recommend 가 RecommendationSet 을 반환하지 않았다")
-        return recommendations
+        return RecommendationSet(
+            recommendations=draftable_recommendations(recommendations.recommendations),
+            summary=recommendations.summary,
+        )
     except Exception as exc:
         logger.warning("상주 recommend 실패(%r) — 추천 없이 계속", exc)
         return RecommendationSet(recommendations=[], summary="")

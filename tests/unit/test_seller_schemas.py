@@ -21,6 +21,7 @@ from app.agents.seller.schemas import (
     ChartSpec,
     DraftChange,
     DraftProposal,
+    draftable_recommendations,
     ProposedChange,
     RecommendationSet,
     ReportScore,
@@ -323,9 +324,30 @@ def test_recommendation_set_degrade_and_max_length() -> None:
     """빈 목록 degrade 는 허용, 5건 초과는 거부된다(max_length)."""
     assert RecommendationSet().recommendations == []
     one = ActionRecommendation(action_type="promotion", product_id=101, title="t", rationale="r")
-    assert one.changes == []  # promotion — 필드 변경 없는 유형은 changes 빈 목록
+    assert one.changes == []  # 스키마 자체는 빈 changes 를 여전히 허용(구조화 출력 실패 방지)
     with pytest.raises(ValidationError):
         RecommendationSet(recommendations=[one] * 6)
+
+
+def test_draftable_recommendations_filters_empty_changes() -> None:
+    """changes 빈 추천은 걸러지고, 순서는 그대로 보존된다(§6.3 'N번' 계약, #660)."""
+    empty = ActionRecommendation(
+        action_type="promotion", product_id=101, title="t1", rationale="r1"
+    )
+    with_changes = ActionRecommendation(
+        action_type="price_adjust",
+        product_id=102,
+        title="t2",
+        rationale="r2",
+        changes=[ProposedChange(field="price", after="9900")],
+    )
+    result = draftable_recommendations([empty, with_changes, empty])
+    assert result == [with_changes]
+
+
+def test_draftable_recommendations_empty_input() -> None:
+    """빈 입력은 빈 목록을 돌려준다(degrade 경로와 합류)."""
+    assert draftable_recommendations([]) == []
 
 
 # ── 2-7: DraftChange · DraftProposal ─────────────────────────────────────────

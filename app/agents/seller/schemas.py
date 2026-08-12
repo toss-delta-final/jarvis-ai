@@ -307,9 +307,26 @@ class ActionRecommendation(BaseModel):
     rationale: str = Field(description="근거 — 어떤 finding·수치에서 나온 추천인지")
     changes: list[ProposedChange] = Field(
         default_factory=list,
-        description="구체 변경 초안 — promotion 등 필드 변경이 아닌 유형은 빈 목록 허용",
+        description=(
+            "구체 변경 초안 — 반드시 채운다. promotion 등 필드 변경이 아닌 유형도 실행 "
+            "가능한 필드 변경(가격·노출 상태 등)으로 구체화한다. 비우면 §6.3 'N번 적용'이 "
+            "draft 로 바꿀 수 없어 저장 단계에서 걸러진다(draftable_recommendations, #660)"
+        ),
     )
     expected_effect: str = Field(default="", description="기대 효과 한 문장(선택)")
+
+
+def draftable_recommendations(
+    recommendations: list[ActionRecommendation],
+) -> list[ActionRecommendation]:
+    """changes 가 빈 추천을 걸러낸다.
+
+    §6.3 'N번 적용'(history.apply_recommendation)이 changes 없는 추천을 거부하므로
+    (history.py), 애초에 draft 로 바꿀 수 없는 추천은 저장·노출 전에 코드가 확실히
+    제거한다(프롬프트 준수에만 기대지 않는다, #660).
+    목록 순서(=rank/"N번")는 그대로 보존한다 — 필터링만 하고 재정렬하지 않는다.
+    """
+    return [item for item in recommendations if item.changes]
 
 
 # ── 2-7: DraftProposal (product_agent draft 생성 — 잠정 확정, 4단계 HITL 배선 시 조정 가능) ──

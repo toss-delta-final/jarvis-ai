@@ -52,6 +52,7 @@ from app.agents.seller.pipeline import (
     format_chart_rewrite_input,
     format_graph_input,
     format_judge_input,
+    format_recent_recommendations_block,
     format_recommend_input,
     format_report_input,
     format_rewrite_input,
@@ -72,6 +73,7 @@ from app.agents.seller.schemas import (
     RecommendationSet,
     ReportScore,
     RouteDecision,
+    draftable_recommendations,
 )
 from app.agents.seller.verifier import (
     run_deterministic_checks,
@@ -577,6 +579,33 @@ async def write_verified_report(
 # ── recommend + 파이프라인 통합 (3-5) — SPEC §2 REC·COMP ───────────────────────
 
 
+async def _load_recent_recommendations_block(context: SellerContext) -> str:
+    """다양성 지시용 최근 추천 이력 조회 — 실패해도 recommend 본 흐름을 막지 않는다(#660).
+
+    직전 N개 보고서(설정 `seller_recommend_history_lookback_reports`)에 저장된 추천을
+    보고서별로 모아 `format_recent_recommendations_block` 이 프롬프트 섹션으로 만든다.
+    N=0 이거나 조회 결과가 없으면 빈 문자열을 돌려준다(RECOMMEND_PROMPT 4번 지시 생략).
+    설정 필드 자체가 없는 낡은 Settings 스텁(테스트 등)도 여기서 흡수한다 — settings 조회를
+    포함해 전부 try 안에 두는 이유다.
+    """
+    try:
+        limit_reports = get_settings().seller_recommend_history_lookback_reports
+        if limit_reports <= 0:
+            return ""
+        reports = await analysis_store.list_reports(context.brand_id, limit=limit_reports)
+        records = []
+        for report_record in reports:
+            records.extend(
+                await analysis_store.list_recommendations_by_report(
+                    report_record.id, brand_id=context.brand_id
+                )
+            )
+        return format_recent_recommendations_block(records)
+    except Exception as exc:
+        logger.warning("최근 추천 이력 조회 실패(%r) — 다양성 지시 없이 계속", exc)
+        return ""
+
+
 async def run_recommend(
     findings: list[AnalysisFinding],
     report: str,
@@ -589,14 +618,24 @@ async def run_recommend(
     추천은 부가 가치다: LLM 장애·타임아웃·구조화 출력 실패(6건 초과
     ValidationError — 이월 C2 포함)가 나도 검증된 보고서는 그대로 나간다.
     빈 RecommendationSet 은 §6.3 조회 시 "해당 추천 없음" 경로로 자연 합류한다.
+
+    반환 전 `draftable_recommendations` 로 changes 빈 추천을 걸러낸다(#660) — 프롬프트가
+    지시를 어겨도 §6.3 'N번 적용'이 거부할 추천이 저장·노출되지 않게 코드가 최종 방어한다.
     """
     await emit(PROGRESS_TOKENS["recommend"])
     agent = build_recommend_agent()
+    recent_block = await _load_recent_recommendations_block(context)
     try:
         with trace_span("llm.seller.recommend", "llm", _llm_metadata("recommend")):
             result = await asyncio.wait_for(
                 agent.ainvoke(
-                    {"messages": [HumanMessage(content=format_recommend_input(findings, report))]},
+                    {
+                        "messages": [
+                            HumanMessage(
+                                content=format_recommend_input(findings, report, recent_block)
+                            )
+                        ]
+                    },
                     context=context,
                 ),
                 timeout=get_settings().seller_worker_timeout_s,
@@ -604,7 +643,10 @@ async def run_recommend(
         recommendations = result.get("structured_response")
         if not isinstance(recommendations, RecommendationSet):
             raise TypeError("recommend 가 RecommendationSet 을 반환하지 않았다")
-        return recommendations
+        return RecommendationSet(
+            recommendations=draftable_recommendations(recommendations.recommendations),
+            summary=recommendations.summary,
+        )
     except Exception as exc:
         logger.warning("recommend 실패(%r) — 추천 없이 계속(C2 degrade)", exc)
         return RecommendationSet(recommendations=[], summary="")

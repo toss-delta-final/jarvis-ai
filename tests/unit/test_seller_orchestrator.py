@@ -28,6 +28,7 @@ from app.agents.seller.schemas import (
     ChartSeries,
     ChartSet,
     ChartSpec,
+    ProposedChange,
     RecommendationSet,
     ReportScore,
 )
@@ -711,6 +712,7 @@ _REC_SET = RecommendationSet(
             product_id=101,
             title="감귤청 가격 10% 인하",
             rationale="42.1% 급락",
+            changes=[ProposedChange(field="price", after="12900")],
             expected_effect="전환율 회복",
         )
     ],
@@ -727,7 +729,9 @@ def test_run_recommend_happy(monkeypatch: pytest.MonkeyPatch) -> None:
 
     result = asyncio.run(orchestrator.run_recommend(_FINDINGS, _GROUNDED, _CTX, emit=emit))
 
-    assert result is _REC_SET
+    # [#660] changes 가 있는 추천은 draftable_recommendations 필터를 그대로 통과한다 —
+    # run_recommend 가 값은 같은 새 RecommendationSet 을 만들어 돌려주므로 값 비교로 확인한다.
+    assert result == _REC_SET
     assert tokens == ["개선 방안을 정리하고 있습니다…"]
     assert "[검증된 보고서]" in agent.received[0]
 
@@ -742,6 +746,27 @@ def test_run_recommend_failure_degrades_to_empty(monkeypatch: pytest.MonkeyPatch
     result = asyncio.run(orchestrator.run_recommend(_FINDINGS, _GROUNDED, _CTX, emit=emit))
 
     assert result.recommendations == []
+
+
+def test_run_recommend_filters_changes_empty_recommendations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """LLM 이 changes 빈 추천을 섞어 내도, 코드가 걸러낸 뒤 반환한다(§6.3 최종 방어, #660)."""
+    empty = ActionRecommendation(
+        action_type="promotion", product_id=103, title="빈 추천", rationale="근거"
+    )
+    mixed_set = RecommendationSet(
+        recommendations=[empty, *_REC_SET.recommendations], summary="1건만 draft 가능"
+    )
+    agent = _SeqAgent([{"structured_response": mixed_set}])
+    monkeypatch.setattr(orchestrator, "build_recommend_agent", lambda: agent)
+    monkeypatch.setattr(orchestrator, "get_settings", lambda: _settings())
+    _, emit = _collect_emit()
+
+    result = asyncio.run(orchestrator.run_recommend(_FINDINGS, _GROUNDED, _CTX, emit=emit))
+
+    assert result.recommendations == _REC_SET.recommendations
+    assert result.summary == "1건만 draft 가능"
 
 
 # ── graph (5단계, 이슈 #242 → #504 재설계) — 축 선언(LLM) + 좌표 조립(charts.py) ──
@@ -964,7 +989,8 @@ def test_pipeline_happy_path_composes_report_and_recommendations(
     assert result.text.startswith(_GROUNDED)
     assert "1번. 감귤청 가격 10% 인하" in result.text
     assert result.verified is not None and result.verified.passed is True
-    assert result.recommendations is _REC_SET
+    # [#660] run_recommend 이 draftable 필터를 거쳐 새 RecommendationSet 을 만들어 돌려준다.
+    assert result.recommendations == _REC_SET
     assert tokens == [
         "질문을 분석하고 있습니다…",
         "매출 이상 분석 중…",

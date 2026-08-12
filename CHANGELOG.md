@@ -12,6 +12,14 @@
 ## [Unreleased]
 
 ### Added
+- **#660 판매자 행동 추천 — draft 가능 형식 보장 + 회차 다양성.** `ActionRecommendation.changes`
+  가 빈 추천은 `draftable_recommendations`(schemas.py)로 채팅·상주 두 레인 모두에서 저장·노출
+  전에 걸러낸다 — §6.3 "N번 적용"이 changes 없는 추천을 거부해 왔던 것과의 어긋남을 코드로
+  최종 방어한다. `RECOMMEND_PROMPT`는 changes 를 1개 이상 요구하도록 절차를 바꿨고, 채팅 레인
+  `run_recommend`는 직전 N개 보고서(`seller_recommend_history_lookback_reports`, 기본 3)의
+  추천 이력을 조회해 "[최근 추천 이력]" 섹션으로 프롬프트에 덧붙여 같은 (상품, 유형) 조합의
+  반복 추천을 억제한다(근거 있으면 재추천 허용). 이력 조회 실패는 다양성 지시 없이 그대로
+  진행한다(추천은 부가 가치라는 기존 degrade 원칙 유지). "적용 UI"(승인 버튼)는 이번 범위 밖.
 - **#645 buyer `overallComment` 최종-view grounding**을 추가했다. B/C rerank 출력은 목록 전체
   `overallClaims`를 구조화해 보존하고, production C는 repurchase pinning·노출 보충/절단·니즈
   분할·BUY_ALL budget-set 계산 뒤의 실제 I-21 product groups에 대해 claim을 검증한 후 고정

@@ -33,6 +33,7 @@ if TYPE_CHECKING:
     # (`format_analysis_judge_input` 를 쓴다) 순환을 피한다(`sop.context` 는 `sop`
     # 패키지를 거치므로 런타임 임포트 시 위 체인이 되돈다). `from __future__ import
     # annotations` 라 타입 힌트는 런타임에 평가되지 않는다 — 정적 분석용으로만 필요하다.
+    from app.agents.seller.analysis_records import RecommendationRecord
     from app.agents.seller.sop.context import ActionCandidate
 
     # [#600] 이 모듈은 순수 계약이라 charts.py 를 런타임에 import 하지 않는다
@@ -370,9 +371,38 @@ def format_worker_retry_input(
     )
 
 
-def format_recommend_input(findings: list[AnalysisFinding], report: str) -> str:
-    """recommend 입력 — (1) 분석 결과 (2) 검증된 보고서 (RECOMMEND_PROMPT 입력 계약)."""
-    return f"[분석 결과]\n{format_findings_block(findings)}\n\n[검증된 보고서]\n{report}"
+def format_recommend_input(
+    findings: list[AnalysisFinding], report: str, recent_recommendations: str = ""
+) -> str:
+    """recommend 입력 — (1) 분석 결과 (2) 검증된 보고서 (3) 최근 추천 이력(선택).
+
+    (RECOMMEND_PROMPT 입력 계약, 3번째 섹션은 반복 추천 억제용 — #660.)
+    `recent_recommendations` 는 `format_recent_recommendations_block` 의 반환값을
+    그대로 받는다 — 빈 문자열이면 섹션 자체를 생략한다(호출부 조회 실패·이력 없음 공용).
+    """
+    base = f"[분석 결과]\n{format_findings_block(findings)}\n\n[검증된 보고서]\n{report}"
+    if not recent_recommendations:
+        return base
+    return f"{base}\n\n{recent_recommendations}"
+
+
+def format_recent_recommendations_block(records: Sequence[RecommendationRecord]) -> str:
+    """최근 추천 이력 포맷 — RECOMMEND_PROMPT 다양성 지시(4번)의 입력 재료(#660).
+
+    직전 보고서(들)에 실제로 저장됐던 추천만 대상이다(orchestrator 가 조회) — 빈 목록이면
+    빈 문자열을 돌려줘 `format_recommend_input` 이 섹션을 생략하게 한다.
+    """
+    if not records:
+        return ""
+    lines = [
+        f"- {record.action_type} · productId={record.product_ids[0] if record.product_ids else '?'}"
+        f" · {record.title}"
+        for record in records
+    ]
+    return (
+        "[최근 추천 이력 — 같은 (상품, 유형) 조합은 새로운 근거 없이 반복하지 않는다]\n"
+        + "\n".join(lines)
+    )
 
 
 def format_resident_recommend_input(candidates: list[ActionCandidate], report: str) -> str:

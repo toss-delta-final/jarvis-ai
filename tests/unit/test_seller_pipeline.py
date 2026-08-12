@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import datetime as dt
 from typing import get_args
+from uuid import uuid4
 
 import pytest
 
 from app.agents.seller import pipeline
+from app.agents.seller.analysis_records import RecommendationRecord
 from app.agents.seller.schemas import (
     ActionRecommendation,
     AnalysisFinding,
@@ -420,6 +422,49 @@ def test_format_recommend_input_contract() -> None:
     text = pipeline.format_recommend_input(findings, "검증 본문")
     assert "[분석 결과]" in text
     assert "[검증된 보고서]\n검증 본문" in text
+    assert "[최근 추천 이력" not in text  # 이력 없으면 섹션 자체가 생략된다
+
+
+def test_format_recommend_input_appends_recent_recommendations_section() -> None:
+    """recent_recommendations 가 있으면 입력 끝에 섹션이 덧붙는다(#660, 다양성 지시 4번 입력)."""
+    findings = [
+        AnalysisFinding(
+            analysis_type="conversion", summary="병목", evidence=["전환율 2.1%"], severity="warning"
+        )
+    ]
+    text = pipeline.format_recommend_input(findings, "검증 본문", "[최근 추천 이력]\n- 더미")
+    assert text.endswith("[최근 추천 이력]\n- 더미")
+    assert "[검증된 보고서]\n검증 본문" in text
+
+
+def _rec_record(**overrides: object) -> RecommendationRecord:
+    base: dict = {
+        "id": uuid4(),
+        "report_id": uuid4(),
+        "brand_id": 3,
+        "rank": 1,
+        "action_type": "price_adjust",
+        "product_ids": [101],
+        "title": "감귤청 가격 10% 인하",
+        "rationale": "42.1% 급락",
+    }
+    base.update(overrides)
+    return RecommendationRecord(**base)
+
+
+def test_format_recent_recommendations_block_empty() -> None:
+    """빈 이력은 빈 문자열 — format_recommend_input 이 섹션을 생략하게 하는 신호다."""
+    assert pipeline.format_recent_recommendations_block([]) == ""
+
+
+def test_format_recent_recommendations_block_lists_action_type_product_title() -> None:
+    """각 줄에 action_type·productId·title 이 들어간다(RECOMMEND_PROMPT 4번이 참조)."""
+    record = _rec_record()
+    text = pipeline.format_recent_recommendations_block([record])
+    assert "[최근 추천 이력" in text
+    assert "price_adjust" in text
+    assert "productId=101" in text
+    assert "감귤청 가격 10% 인하" in text
 
 
 def test_format_analysis_judge_input_contract() -> None:

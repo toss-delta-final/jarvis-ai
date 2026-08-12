@@ -682,6 +682,9 @@ class Settings(BaseSettings):
     seller_report_score_threshold: int = 21  # 보고서 검증 통과 점수(21/30)
     seller_report_max_retries: int = 3  # 검증 루프 상한
     seller_draft_ttl_minutes: int = 10  # HITL 미승인 draft 만료
+    # 채팅 레인 recommend 다양성 지시 — 직전 N개 보고서의 추천 이력을 프롬프트에
+    # 덧붙여 반복 추천을 억제한다(#660). 0 이면 이력 조회를 건너뛴다(기존 동작과 동일).
+    seller_recommend_history_lookback_reports: int = 3
     # ── 이미지 기반 상품 등록 초안 (#506, api-spec §3.2 v0.31.0) ─────────────────
     # imageUrls 요청 필드 상한 — MVP 는 1장(2장째 첨부는 FE 가 교체로 처리).
     seller_image_max_count: int = 1
