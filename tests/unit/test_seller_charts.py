@@ -18,8 +18,15 @@ from app.agents.seller.charts import (
     CHART_X_LABEL_MAX,
     ChartUnavailable,
     build_charts,
+    chart_facts,
 )
-from app.agents.seller.schemas import CHART_POINTS_MAX, ChartAxisPlan
+from app.agents.seller.schemas import (
+    CHART_POINTS_MAX,
+    ChartAxisPlan,
+    ChartPoint,
+    ChartSeries,
+    ChartSpec,
+)
 from app.schemas.spring import (
     BehaviorEventsResult,
     BehaviorProductRow,
@@ -381,3 +388,111 @@ def test_helper_messages_are_complete_sentences() -> None:
     assert seller_charts.agent_failed().reason == "agent_failed"
     assert seller_charts.source_failed().reason == "source_failed"
     assert isinstance(seller_charts.agent_failed(), ChartUnavailable)
+
+
+# ── chart_facts (이슈 #600, 09-CHART.md §2.3) — aggregate 어휘를 따르는 통계 ───────
+
+
+def _spec(
+    points: list[ChartPoint], *, chart_type: str = "line", aggregate: str = "sum"
+) -> ChartSpec:
+    return ChartSpec(
+        title="테스트 차트",
+        chart_type=chart_type,  # type: ignore[arg-type]
+        unit="COUNT",
+        aggregate=aggregate,  # type: ignore[arg-type]
+        series=[ChartSeries(label="값", points=points)],
+        summary="",
+    )
+
+
+def test_chart_facts_sum_line_has_total_and_delta() -> None:
+    """sum + line — total·mean·peak·trough·first→last·delta·delta_pct 전부 채워진다."""
+    spec = _spec(
+        [ChartPoint(x="07-01", y=100), ChartPoint(x="07-02", y=0), ChartPoint(x="07-03", y=300)],
+        chart_type="line",
+        aggregate="sum",
+    )
+    facts = chart_facts(spec)
+    assert facts.total == 400
+    assert facts.mean == pytest.approx(400 / 3)
+    assert facts.peak == ("07-03", 300)
+    assert facts.trough == ("07-02", 0)
+    assert facts.first == 100 and facts.last == 300
+    assert facts.delta == 200
+    assert facts.delta_pct == pytest.approx(200.0)
+    assert facts.zero_points == 1
+    assert facts.top3 == ()  # line 은 top3 대상이 아니다
+
+
+def test_chart_facts_delta_pct_none_when_first_is_zero() -> None:
+    """first==0 이면 delta_pct 를 만들지 않는다(0 나눔 금지, #489/#197 규약과 동일 정신)."""
+    spec = _spec(
+        [ChartPoint(x="07-01", y=0), ChartPoint(x="07-02", y=500)], chart_type="line"
+    )
+    facts = chart_facts(spec)
+    assert facts.delta == 500
+    assert facts.delta_pct is None
+
+
+def test_chart_facts_avg_rating_has_no_total() -> None:
+    """avg(평점) — 합계는 무의미해 만들지 않지만 평균·최고·최저는 만든다."""
+    spec = _spec(
+        [ChartPoint(x="감귤청", y=4.6), ChartPoint(x="한라봉", y=4.2)],
+        chart_type="bar",
+        aggregate="avg",
+    )
+    facts = chart_facts(spec)
+    assert facts.total is None
+    assert facts.mean == pytest.approx(4.4)
+    assert facts.peak == ("감귤청", 4.6)
+    assert facts.top3 == (("감귤청", 4.6), ("한라봉", 4.2))
+    assert facts.top1_share is None  # avg 는 top1_share 대상이 아니다(sum 전용)
+
+
+def test_chart_facts_snapshot_none_has_no_time_axis() -> None:
+    """none(가격·재고 스냅샷) — first→last·delta 는 시간 축이 아니라 만들지 않는다."""
+    spec = _spec(
+        [ChartPoint(x="감귤청", y=12000), ChartPoint(x="한라봉", y=15000)],
+        chart_type="bar",
+        aggregate="none",
+    )
+    facts = chart_facts(spec)
+    assert facts.total is None
+    assert facts.first is None and facts.last is None and facts.delta is None
+    assert facts.top3 == (("한라봉", 15000), ("감귤청", 12000))  # y 내림차순
+    assert facts.top1_share is None  # aggregate!="sum" 이라 대상 아님
+
+
+def test_chart_facts_top1_share_only_for_bar_and_sum() -> None:
+    """top1_share = top1/total — chart_type=bar AND aggregate=sum 일 때만."""
+    spec = _spec(
+        [ChartPoint(x="감귤청", y=75), ChartPoint(x="한라봉", y=25)],
+        chart_type="bar",
+        aggregate="sum",
+    )
+    facts = chart_facts(spec)
+    assert facts.total == 100
+    assert facts.top1_share == pytest.approx(75.0)
+
+
+def test_chart_facts_top3_caps_at_three_points() -> None:
+    """상위 3개까지만 — 4번째 이후는 top3 에 담기지 않는다."""
+    spec = _spec(
+        [ChartPoint(x=f"상품{i}", y=float(10 - i)) for i in range(5)],
+        chart_type="bar",
+        aggregate="sum",
+    )
+    facts = chart_facts(spec)
+    assert len(facts.top3) == 3
+    assert facts.top3[0] == ("상품0", 10)
+
+
+def test_chart_facts_empty_points_returns_safe_defaults() -> None:
+    """빈 points(방어적 입력) — 예외 대신 0/None 기본값을 반환한다."""
+    spec = _spec([], chart_type="line", aggregate="sum")
+    facts = chart_facts(spec)
+    assert facts.total is None
+    assert facts.mean == 0.0
+    assert facts.zero_points == 0
+    assert facts.top3 == ()

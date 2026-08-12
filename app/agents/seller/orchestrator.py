@@ -35,7 +35,7 @@ from typing import TYPE_CHECKING, Literal
 from langchain_core.messages import HumanMessage, ToolMessage
 from langgraph.graph.state import CompiledStateGraph
 
-from app.agents.seller import analysis_store, history
+from app.agents.seller import analysis_store, chart_verify, history
 from app.agents.seller import thread as seller_thread
 from app.agents.seller.analysis_records import ReportRecord, RecommendationRecord
 from app.agents.seller.context import SellerContext
@@ -48,6 +48,8 @@ from app.agents.seller.pipeline import (
     ResolvedPlan,
     compose_response,
     format_analysis_judge_input,
+    format_chart_input,
+    format_chart_rewrite_input,
     format_graph_input,
     format_judge_input,
     format_recommend_input,
@@ -80,6 +82,7 @@ from app.agents.seller.workers import (
     build_analysis_judge,
     build_analysis_planner,
     build_behavior_agent,
+    build_chart_interpret_agent,
     build_churn_agent,
     build_conversion_agent,
     build_graph_agent,
@@ -657,7 +660,10 @@ async def run_graph(
                     },
                     context=context,
                 ),
-                timeout=get_settings().seller_worker_timeout_s,
+                # [#600] 축 선언은 워커보다 훨씬 가볍다(findings·보고서·질문만 보고 좌표는
+                # 만들지 않는다) — seller_worker_timeout_s(60s) 재사용은 §6.1 예산 초과의
+                # 절반을 차지했다. 전용 타임아웃으로 분리한다(09-CHART.md §8).
+                timeout=get_settings().seller_chart_agent_timeout_s,
             )
         plans = result.get("structured_response")
         if not isinstance(plans, ChartPlanSet):
@@ -690,6 +696,82 @@ async def run_graph(
             "; ".join(item.reason for item in unavailable),
         )
     return charts, unavailable
+
+
+# ── chart 해석 (이슈 #600, 09-CHART.md §2·§3) — chart_only 턴의 고정 문구 3종을 대체 ──
+
+
+async def run_chart_interpret(
+    charts: ChartSet,
+    question: str,
+    resolved: ResolvedPlan,
+    context: SellerContext,
+) -> str | None:
+    """차트 해석 실행 — 성공 시 해석문, 실패/스킵/소진 시 None(호출부가 고정 문구 폴백).
+
+    호출부(run_resolved_pipeline)가 `charts.charts` truthy 일 때만 부른다 —
+    unavailable 만 있는 턴은 이 함수 자체를 호출하지 않는다(결정 92, LLM 0회).
+    재작성은 최대 1회(judge 없음, 결정 91 — 대화형 90s 예산 안에서 report 의 3회를
+    쓰지 않는다). 실패는 예외로 새지 않는다 — 차트는 이미 조립돼 있으므로 해석
+    실패가 차트를 죽이지 않는다(run_graph 의 "차트는 부가 가치" 규약을 한 겹 더
+    적용한 것).
+    """
+    settings = get_settings()
+    if not settings.seller_chart_interpret_enabled:
+        return None
+
+    chart_from = resolved.chart_from or resolved.date_from
+    chart_to = resolved.chart_to or resolved.date_to
+    facts = [seller_charts.chart_facts(spec) for spec in charts.charts]
+
+    agent = build_chart_interpret_agent()
+    max_attempts = settings.seller_chart_interpret_max_retries + 1
+    text = ""
+    feedback = ""
+
+    for attempt in range(1, max_attempts + 1):
+        message = (
+            format_chart_input(charts, facts, chart_from, chart_to, question)
+            if attempt == 1
+            else format_chart_rewrite_input(
+                charts, facts, chart_from, chart_to, question, text, feedback
+            )
+        )
+        try:
+            with trace_span(
+                "llm.seller.chart_interpret", "llm", _llm_metadata("chart_interpret")
+            ):
+                result = await asyncio.wait_for(
+                    agent.ainvoke(
+                        {"messages": [HumanMessage(content=message)]},
+                        context=context,
+                    ),
+                    timeout=settings.seller_chart_interpret_timeout_s,
+                )
+            text = _content_to_text(result["messages"][-1].content)
+        except Exception as exc:
+            logger.warning("차트 해석 %d회차 실패(%r) — 고정 문구로 폴백", attempt, exc)
+            return None
+
+        reasons: list[str] = []
+        if len(text) > settings.seller_chart_interpret_max_chars:
+            reasons.append(
+                f"해석문이 길이 상한({settings.seller_chart_interpret_max_chars}자)을"
+                " 넘었다 — 더 짧게 요약할 것(§2.6)"
+            )
+        reasons.extend(
+            chart_verify.run_chart_verification(
+                text, charts, facts, chart_from=chart_from, chart_to=chart_to
+            )
+        )
+        if not reasons:
+            return text
+
+        feedback = "\n".join(reasons)
+        logger.info("차트 해석 검증 미달 %d회차 — 사유 %d건", attempt, len(reasons))
+
+    logger.warning("차트 해석 검증 %d회 소진 — 고정 문구로 폴백(§4 실패 규약)", max_attempts)
+    return None
 
 
 @dataclass(frozen=True)
@@ -841,7 +923,10 @@ async def run_resolved_pipeline(
     if resolved.chart_only:
         charts, chart_unavailable = await run_graph([], "", question, resolved, context, emit=emit)
         if charts.charts:
-            text = "요청하신 그래프를 준비했습니다. 우측 패널에서 확인해 주세요."
+            # [#600] 해석 에이전트가 고정 문구 자리를 대체한다(결정 82) — 실패·스킵 시
+            # None 을 반환해 기존 고정 문구로 폴백한다(§4 실패 규약).
+            interpretation = await run_chart_interpret(charts, question, resolved, context)
+            text = interpretation or "요청하신 그래프를 준비했습니다. 우측 패널에서 확인해 주세요."
             if chart_unavailable:
                 text += "\n\n[차트 안내]\n" + "\n".join(item.message for item in chart_unavailable)
         elif chart_unavailable:

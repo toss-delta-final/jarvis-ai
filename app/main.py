@@ -3,7 +3,7 @@
 CORS 미들웨어(오리진은 설정 주입), MVP 라우터(chat/seller), GET /health 를 구성한다.
 FE 가 AI 서버를 다른 오리진에서 직접 호출하므로 CORS 가 앞단으로 이동했다 (api-spec §2.7 / C-11).
 
-[변경 2026-07-15] MVP 표면은 /chat, /seller/chat, /profile/me,
+[변경 2026-07-15] MVP 표면은 /chat, /seller/chat,
   /events/session-end, /health 로 확정. catalog/order 이벤트는 영구 미채택.
   - [완료] §2.9 스트림 수명주기(app/core/stream.py)·§2.8 레이트 리밋(app/core/ratelimit.py)·§2.5 오류 봉투(app/core/errors.py).
 
@@ -51,7 +51,7 @@ from app.agents.seller.analysis_store import ensure_schema as ensure_seller_anal
 from app.agents.seller.analysis_store import warm_pool as warm_seller_analysis_pool
 from app.agents.seller.checkpoint import close_checkpointer as close_seller_checkpointer
 from app.agents.seller.history import close_store as close_seller_history_store
-from app.api import chat, events, internal, profile, profile_graph, seller
+from app.api import chat, events, internal, profile_graph, seller
 from app.core.body_limit import BodySizeLimitMiddleware
 from app.core.clock import KST
 from app.core.conversation import close_store as close_conversation_store
@@ -301,13 +301,15 @@ def _warn_if_scripted_llm(settings: Settings) -> None:
     G1(config.py `_forbid_scripted_outside_local`)이 local/test 밖 기동 자체를 막지만, 그
     안에서도 "지금 이 서버가 가짜 응답을 낸다"는 사실을 로그로만 보고 켠 사람이 잊을 수 있다.
     운영 var 실수(deploy.yml `LLM_PROVIDER`)는 G1 이 기동 자체를 거부해 이 배너까지 갈 일이
-    없다 — deploy.yml 은 이 이슈에서 건드리지 않는다(§7 범위 밖, evals/benchmark/README.md 참조).
+    없다. local/test 전용 배포에서는 이 배너로 scripted 프로파일과 지연값을 확인한다.
     """
     if settings.llm_provider != "scripted":
         return
     logger.warning(
         "=" * 60
         + "\nSTUB LLM MODE — LLM_PROVIDER=scripted\n"
+        + f"SCRIPTED_LLM_MODE={settings.scripted_llm_mode} "
+        + f"delay_s={settings.scripted_llm_delay_s}\n"
         + "이 서버는 모든 LLM 호출에 결정론 가짜 응답을 낸다 — 실 모델 호출이 아니다.\n"
         + "운영 사용 금지: 사용자에게 정상 200 으로 가짜 추천/응답이 나간다(#438).\n"
         + "부하 테스트 전용(app_environment=local|test 에서만 기동 허용).\n"
@@ -383,7 +385,6 @@ def create_app() -> FastAPI:
     # MVP 라우터: 사용자 대면 chat / seller 만 등록한다.
     app.include_router(chat.router)
     app.include_router(seller.router)
-    app.include_router(profile.router)
     app.include_router(events.router)
     # Spring → AI 위임(레인 b) — I-22 홈 추천 랭킹(§3.7, #148)
     app.include_router(internal.router)

@@ -11,6 +11,31 @@
 - 관련: 파일/§/커밋
 ```
 
+## [2026-08-12] 같은 서버의 provider만 스텁으로 바꿔도 백그라운드 배치는 실 DB를 오염시킬 수 있다
+- 증상: 실제 EC2의 요청 처리 용량을 재려고 `APP_ENVIRONMENT=test`와
+  `LLM_PROVIDER=scripted`만 전환하려 했지만, 요청 트래픽과 무관한 I-17 스케줄러는 계속 돌아
+  결정론 가짜 enrichment를 실 카탈로그에 저장하고 cursor까지 전진시킬 수 있었다.
+- 원인: 부하 테스트 경계를 HTTP/SSE 요청 경로로만 보아 같은 프로세스의 scheduler·consumer처럼
+  독립적으로 외부 상태를 쓰는 백그라운드 경로를 함께 점검하지 않았다. provider 원복은 이미 쓴
+  데이터와 전진한 cursor를 되돌리지 못한다.
+- 규칙: 실제 인프라에서 fake provider를 켤 때는 진입 트래픽 차단만 확인하지 말고, 해당 provider를
+  공유하는 scheduler·queue consumer·batch·startup migration의 외부 쓰기를 전부 검색한다. fake
+  결과가 영속화될 경로는 테스트 모드에서 명시적으로 skip하거나 격리 DB를 사용하고, 원복은 설정
+  재배포뿐 아니라 배너 부재와 실제 model ID smoke까지 확인한다.
+- 관련: #641 `app/pipelines/scheduler.py::start_scheduler` · `DEPLOY.md`
+
+## [2026-08-12] 허용 목록 검사는 대상의 **소속**만 증명하고 사용자의 **지목**은 증명하지 않는다
+- 증상: `Septwolves 지갑 담아줘`에서 정답 5644와 오답 5695가 모두 `LAST_RECOMMENDATIONS`에
+  있어, LLM이 5695를 내도 기존 허용 ID 가드가 통과시켜 다른 상품이 실제 장바구니에 담겼다.
+- 원인: 목록 밖 ID를 차단하는 보안 경계와 목록 안에서 사용자가 어느 상품을 지목했는지 확인하는
+  귀속 경계를 같은 것으로 보았다. 전체 상품명 포함 규칙만 있어 브랜드·모델 같은 이름 일부는
+  확률적 선택에 남았고, 멤버십 검사는 그 오선택을 교정할 정보가 없었다.
+- 규칙: 사용자 지목에 따른 변경 작업은 `허용 집합 포함 여부`와 `발화가 그 항목을 유일하게
+  가리키는 근거`를 별도로 검증한다. 후자는 정확 토큰·표면 내 유일성·단일 대상·부정 없음이 모두
+  증명될 때만 결정론적으로 교정하고, 공통어·부분 문자열·다중 대상은 자동 선택하지 않는다.
+- 관련: #639 `app/agents/buyer/screen_reference.py::_unique_product_name_token_match` ·
+  `tests/unit/test_screen_context.py::test_reco_card_unique_name_token_overrides_wrong_llm_product`
+
 ## [2026-08-11] `date.today()`·naive `datetime.now()` 는 컨테이너 TZ 를 따른다 — 도메인 기준 시각에 쓰지 말 것
 - 증상: 판매자가 00~09 KST 사이에 "어제 매출" 을 물으면 **이틀 전** 데이터가 나갔다. 같은 응답의 `report.generatedAt` 은 KST 로 정상이라 로그만 보면 어긋난 곳을 짚기 어려웠다.
 - 원인: `generatedAt` 만 `_KST` 로 명시하고(#296), 기간 해석의 "오늘" 은 `date.today()` 로 남겨 뒀다. 운영 컨테이너 TZ 가 UTC 라 09시 이전에는 기준일이 KST 기준 하루 전이 되고, 거기서 "어제" 를 또 빼 이틀이 밀렸다. jarvis-back 은 `BackendApplication` 에서 JVM·DB 세션 TZ 를 `Asia/Seoul` 로 고정해 두어 **AI 만** 어긋나 있었다.

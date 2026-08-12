@@ -99,7 +99,7 @@ MVP 골격(인프라·구매자·판매자·프로필·배치)은 배선 완료�
 - [ ] 시맨틱 캐시 `question_cache` — **#122**
 - [ ] 차트 — **보류** (전달 계약 🔴, SPEC §12) — `chart_data_hint` 필드만 보존
 
-## 5. 프로필 파이프라인 (+ /profile/me)
+## 5. 프로필 파이프라인
 
 - [x] reader/builder/gate — 스텁 해소, 전부 구현
 - [x] reader — 압축 요약 로드 (LLM 0회, 게스트/신규는 None)
@@ -107,7 +107,6 @@ MVP 골격(인프라·구매자·판매자·프로필·배치)은 배선 완료�
 - [x] transient 격리 (session_context) — `store.py` 네임스페이스 분리
 - [x] 세션 종료 델타 → sleep-time consolidation 병합 — 공통 finalizer
 - [x] PostgresStore 네임스페이스 (profile/facts — 이슈 #33, pgvector 시맨틱 인덱스는 facts 전용. episodes 는 MVP 미구현·고도화 범위)
-- [x] `GET /profile/me` 라우터 등록 (§3.4)
 - [x] `POST /events/session-end` 수신 (§3.5, 멱등 — 이슈 #62/#64, C-8 해소)
 - [x] AI 내부 inactivity timeout 스케줄러 — 회원 발화 활동시각 DB upsert, 기본 10분/60초 bounded sweep, 재개 가능한 idle checkpoint·공통 finalizer·claim별 실패 복구 (이슈 #79)
 

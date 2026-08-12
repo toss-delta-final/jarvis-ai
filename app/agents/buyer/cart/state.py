@@ -22,7 +22,7 @@ from app.agents.buyer.cart.options import OptionHint
 from app.core import pg_store
 from app.core.config import get_settings
 from app.core.pg_resilience import BoundedLRUCache, run_with_query_timeout
-from app.schemas.spring import CartOption
+from app.schemas.spring import CartOption, RecommendationContext
 
 _NAMESPACE_ROOT = "buyer_cart_v2"
 _LAST_RECO_KEY = "last_reco"
@@ -34,7 +34,7 @@ _log = logging.getLogger(__name__)
 
 # last_reco 의 상품명(product.name 원본 컬럼 사본)은 pg-profile 에 저장하지 않는다 — CLAUDE.md
 # "AI Postgres 에는 AI 생성물만 저장, 상품 원본 컬럼 사본 금지"(PR #46 후속 리뷰). pg-profile 엔
-# productId(참조 식별자)만 영속하고, 이름은 decompose 프롬프트 문맥용으로만 쓰이므로 이 프로세스
+# productId(참조 식별자)와 추천 귀속 상관키만 영속하고, 이름은 decompose 프롬프트 문맥용으로만 쓰이므로 이 프로세스
 # 로컬 휘발성 캐시(thread key → {productId: name})에 둔다. 같은 프로세스 수명 동안에는 이름
 # disambiguation("파란 니트 담아줘")이 정상 동작하고, 재시작(캐시 소실) 후에는 pid 만 pg-profile
 # 에서 복원되어 이름은 "" 로 degrade 한다("그거 담아줘" pid 해소는 계속 작동).
@@ -70,6 +70,7 @@ class LastReco:
     items: list[tuple[int, str]]
     turn_count: int
     ordinal_span: int = 0
+    recommendation_contexts: dict[int, RecommendationContext] = field(default_factory=dict)
 
 
 @dataclass
@@ -105,6 +106,7 @@ class CartStateStore:
         items: list[tuple[int, str]],
         *,
         option_hints: dict[int, OptionHint] | None = None,
+        recommendation_contexts: dict[int, RecommendationContext] | None = None,
         ordinal_span: int | None = None,
     ) -> None:
         """이번 턴 추천을 **스레드 누적 목록에 합류**시킨다 (#118 — 담기 가드의 시간 축 보존).
@@ -141,10 +143,19 @@ class CartStateStore:
         밖이며, 여기서는 동작을 바꾸지 않는다.
         """
         cap = get_settings().last_reco_max
-        current = await self.get_last_reco(key)
+        current_state = await self.get_last_reco_state(key)
+        current = current_state.items
         fresh_ids = {pid for pid, _ in items}
         merged = items + [(pid, name) for pid, name in current if pid not in fresh_ids]
         capped = merged[: max(cap, len(items))]
+
+        # 추천 귀속은 원본 상품 사본이 아닌 I-21 상관키다. 구 행에는 이 키가 없으므로
+        # 롤링 배포 중에는 문맥 없이 안전하게 담기만 진행한다.
+        contexts = dict(current_state.recommendation_contexts)
+        if recommendation_contexts:
+            contexts.update(recommendation_contexts)
+        kept = {pid for pid, _ in capped}
+        contexts = {pid: context for pid, context in contexts.items() if pid in kept}
 
         # pg-profile 엔 productId 만 영속(상품명 사본 금지). 이름은 휘발성 캐시에만 둔다.
         await run_with_query_timeout(
@@ -158,6 +169,10 @@ class CartStateStore:
                     "turn_count": min(len(items), len(capped)),
                     # #571 — 표시 순서 = 저장 순서임이 증명된 경우에만 호출부가 채운다(0 = 모름).
                     "ordinal_span": ordinal_span if ordinal_span is not None else 0,
+                    "recommendation_contexts": {
+                        str(pid): context.model_dump(by_alias=True)
+                        for pid, context in contexts.items()
+                    },
                 },
             )
         )
@@ -171,7 +186,6 @@ class CartStateStore:
         for pid, name in capped:
             if name or pid not in names:
                 names[pid] = name
-        kept = {pid for pid, _ in capped}
         _last_reco_names[key] = {pid: name for pid, name in names.items() if pid in kept}
 
         # 옵션 힌트도 같은 규칙으로 병합한다(이슈 #455) — **키워드 인자 추가만**이라 기본값
@@ -236,7 +250,23 @@ class CartStateStore:
             and 0 <= raw_ordinal_span <= len(items)
         )
         ordinal_span = raw_ordinal_span if ordinal_span_usable else 0
-        return LastReco(items=items, turn_count=turn_count, ordinal_span=ordinal_span)
+        raw_contexts = item.value.get("recommendation_contexts")
+        contexts: dict[int, RecommendationContext] = {}
+        if isinstance(raw_contexts, dict):
+            valid_ids = {pid for pid, _ in items}
+            for raw_pid, raw_context in raw_contexts.items():
+                try:
+                    pid = int(raw_pid)
+                    if pid in valid_ids:
+                        contexts[pid] = RecommendationContext.model_validate(raw_context)
+                except (TypeError, ValueError):
+                    continue
+        return LastReco(
+            items=items,
+            turn_count=turn_count,
+            ordinal_span=ordinal_span,
+            recommendation_contexts=contexts,
+        )
 
     async def get_option_hint(self, key: str, product_id: int) -> OptionHint | None:
         """이슈 #455 — I-1 옵션 힌트 조회. 캐시 미스면 `None`(재시작·다중 인스턴스는 오늘 경로로

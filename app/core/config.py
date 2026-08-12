@@ -46,6 +46,7 @@ from app.schemas.recommendations import LIMIT_MAX as HOME_RECO_LIMIT_MAX
 from app.schemas.spring import LIST_MAX_PRODUCTS, MAX_LISTS
 
 LLMProvider = Literal["openai", "anthropic", "scripted"]
+ScriptedLLMMode = Literal["instant", "delayed"]
 # 검색 백엔드 선택(#101) — spring: Spring 위임만(방식1 이전 MVP, 운영 롤백), embedding_rerank:
 # Spring 전량 → pgvector 의미 재정렬(방식2, MVP 기본), vector: 방식1 오프라인 비교 전용
 # (운영 사용 금지, #32 미채택, C-17 기각).
@@ -276,6 +277,10 @@ class Settings(BaseSettings):
     # 부하 테스트를 비용 없이 돌린다. local/test 환경에서만 허용 — 아래 _forbid_scripted_outside_local
     # 이 그 밖의 환경에서 기동을 막는다.
     llm_provider: LLMProvider = "openai"
+    # scripted 부하 테스트 프로파일. instant 는 내부 처리량 상한, delayed 는 요청당 한 번의 비동기
+    # 대기로 오래 열린 SSE 연결을 재현한다. 사용자 실측 평균에 맞춰 기본 지연은 5초다.
+    scripted_llm_mode: ScriptedLLMMode = "instant"
+    scripted_llm_delay_s: float = Field(default=5.0, ge=0.0, le=60.0)
 
     # ── Anthropic 2-tier LLM (fast=haiku / smart=sonnet) ──
     anthropic_api_key: str = ""
@@ -733,6 +738,47 @@ class Settings(BaseSettings):
     # _require_management_lane_within_stream_cap)이 90s 캡 안에 들어오게 한다.
     seller_product_agent_timeout_s: float = 40.0
 
+    # ── chart 레인 해석 에이전트 (이슈 #600, `09-CHART.md` §8) ────────────────────────
+    # 해석은 chart_only 턴에서 유일하게 새로 도는 LLM이다 — 문제가 생기면 false 하나로
+    # #504 시점 동작(고정 문구 3종)으로 되돌린다(§4 실패 규약).
+    seller_chart_interpret_enabled: bool = True
+    # 해석 1회 상한 — 워커 60s(seller_worker_timeout_s)를 쓰지 않는다. chart_only 턴은
+    # 대화형(stream_total_timeout_s=90s) 예산 안이라 배치 상한을 그대로 물려받으면
+    # §6.1의 budget 초과를 더 키운다.
+    seller_chart_interpret_timeout_s: float = 20.0
+    # 재작성 상한 — seller_report_max_retries(3)와 분리한다(결정 91: judge 없이 1회뿐).
+    seller_chart_interpret_max_retries: int = 1
+    # 해석문 길이 상한(자) — §2.6 "전체 6문장 이내"의 코드 측 근거(D-check).
+    seller_chart_interpret_max_chars: int = 800
+    # graph_agent(축 선언, ChartPlanSet) 전용 타임아웃 — 지금까지는 seller_worker_timeout_s
+    # (60s)를 재사용했는데, 해석이 추가되며 그 값이 §6.1 예산 초과의 절반을 차지한다.
+    # 축 선언은 findings·보고서·질문만 보고 좌표를 만들지 않아 워커보다 훨씬 가볍다.
+    seller_chart_agent_timeout_s: float = 25.0
+    # C4(chart_claims_bounded, §3.5) 금지 어휘 4묶음 — seller_report_causal_terms 와
+    # 같은 규약(과탐 시 목록만 조정). 판정 조건(어느 차트가 있을 때 검사하는지)은
+    # chart_verify.py 코드 소관 — 여기는 어휘 목록만.
+    seller_chart_forbidden_terms: Annotated[dict[str, list[str]], NoDecode] = Field(
+        default_factory=lambda: {
+            # C4-a — 스냅샷(aggregate=="none") 차트에 추세 어휘.
+            "snapshot_trend": [
+                "추세",
+                "증가",
+                "감소",
+                "늘었",
+                "줄었",
+                "상승",
+                "하락",
+                "이후",
+            ],
+            # C4-b — 버킷(3일/1주) 묶음 차트에 하루 단위 서술.
+            "daily_bucket": ["하루", "일별", "당일"],
+            # C4-c — 상위 N 절단 차트에서 하위 단정.
+            "bottom_rank": ["가장 적", "최저", "꼴찌", "가장 안 팔", "제일 안"],
+            # C4-d — 행동 유형별(4종) 차트를 "전체 행동"으로 서술.
+            "behavior_all": ["전체 행동", "모든 행동", "행동 전체"],
+        }
+    )
+
     # ── SOP 스텝 타임아웃 (이슈 #589, `OPS-RUNTIME.md` T-3 / `01-ARCHITECTURE.md` §4.4) ──
     # 상주 analysis 파이프라인(채팅 밖)의 스텝별 상한. 대화형 예산(90s)과 무관한 배치
     # 경로라 워커 타임아웃(60s)을 재사용하지 않고 스텝 성격별로 나눈다 — 초과 시
@@ -875,9 +921,7 @@ class Settings(BaseSettings):
     # 2026-08-06: I-13 counts 4종 → 5종(removeFromCart 편입, 02-DATA-SOURCES §E4).
     # ⚠️ 어느 지표가 영향받는지는 튜너블이 아니라 계약 사실이라 코드 상수다
     # (sop/validate.BOUNDARY_AFFECTED_PREFIXES) — 여기는 날짜 목록만 둔다.
-    seller_comparison_boundary_dates: list[date] = Field(
-        default_factory=lambda: [date(2026, 8, 6)]
-    )
+    seller_comparison_boundary_dates: list[date] = Field(default_factory=lambda: [date(2026, 8, 6)])
     # 고객 피처 스냅샷 신선도 상한(시간). 초과분은 Hold 로 드러낼 뿐 재계산하지 않는다 —
     # 재계산은 I-38 재조회 + K-Means 재학습이라 load 스텝 소관이고, 검증 함수가 I/O 경계를
     # 넘으면 단위 테스트가 Spring/DB 스텁을 요구하게 된다(sop/compute 규약 승계).
@@ -887,6 +931,7 @@ class Settings(BaseSettings):
         "seller_amount_bucket_map",
         "seller_customer_cluster_group_weights",
         "seller_customer_label_thresholds",
+        "seller_chart_forbidden_terms",
         mode="before",
     )
     @classmethod
@@ -1014,6 +1059,11 @@ class Settings(BaseSettings):
     # "니즈별 근거 있는 추천"이 정작 니즈가 여러 개일 때 더 자주 깨지는 셈이다.
     # 기본값은 단일 목록 경로(expose_max=9)에서 종전 실효값 1500 과 정확히 같도록 잡았다
     # (960 + 60×9 = 1500) — 흔한 경로의 동작을 바꾸지 않으면서 다중 니즈만 넉넉해진다.
+    # [2026-08-12] 450-case A/B/C live 평가에서 등록된 unsupported reason이
+    # current 10.87% → validated 0%였고 추천 집합은 447/447 보존됐다. production graph는 C를
+    # 기본으로 쓰되 사고 시 RERANK_GROUNDING_ARM=current 한 줄로 A에 롤백한다. 평가 CLI의
+    # arm 기본값은 비교 기준 보존을 위해 이 설정과 별개로 current다.
+    rerank_grounding_arm: Literal["current", "prompt_only", "validated"] = "validated"
     rerank_max_tokens_base: int = Field(default=960, ge=0)  # overallComment·JSON 골격 몫
     rerank_max_tokens_per_item: int = Field(default=60, ge=1)  # {productId, rationale} 1건 몫
     llm_call_limit: int = 2
@@ -1028,7 +1078,9 @@ class Settings(BaseSettings):
     # rerank 프롬프트 버전 — LLM 순위가 실제로 관여한 경로(메인 rerank 성공)에서만
     # provenance `promptVersion` 에 실린다. degrade·프로필 벡터·홈 경로는 LLM 순위가 아니라
     # `null`.
-    rerank_prompt_version: str = "rerank-v1"
+    # 구조화 grounding prompt의 provenance 버전. current 롤백은 graph가 legacy `rerank-v1`을
+    # 기록해 RERANK_GROUNDING_ARM 한 줄만 바꿔도 실제 prompt와 관측값이 함께 되돌아간다.
+    rerank_prompt_version: str = "rerank-grounding-v1"
     # provenance 로그 한 줄의 방어 상한 — 자연 상한은 계약 MAX_LISTS(10) × LIST_MAX_PRODUCTS(9)
     # = 90 이지만, 별도 방어선을 둬 초과분은 조용히 버리지 않고 `itemsTruncated=true` 로
     # 표시한다(silent cap 금지, 저장소 관례).
@@ -2364,8 +2416,8 @@ class Settings(BaseSettings):
     degrade_alert_min_samples: int = Field(default=50, ge=0)
 
     # ── 레이트 리밋 (api-spec §2.8, 토큰 sub 스코프, 인메모리·단일 인스턴스 전제) ──
-    rate_limit_per_min: int = 10
-    rate_limit_per_hour: int = 100
+    rate_limit_per_min: int = Field(default=10, gt=0)
+    rate_limit_per_hour: int = Field(default=100, gt=0)
     # IP 백스톱 배수 — 토큰 sub 스코프를 회전 우회해도 클라이언트 IP 상한으로 남용 차단.
     # NAT 뒤 다수 정상 사용자 오탐을 줄이려 sub 상한보다 관대하게 둔다.
     rate_limit_host_multiplier: int = 5

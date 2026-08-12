@@ -1,7 +1,7 @@
-"""프로필 파이프라인 (이슈 #6, SPEC-PROFILE-001) — reader·gate·builder·엔드포인트·멱등·transient.
+"""프로필 파이프라인 (이슈 #6, SPEC-PROFILE-001) — reader·gate·builder·멱등·transient.
 
-LLM(델타·consolidation)은 주입형 fake 로 구동(라이브 Anthropic 불필요). GET /profile/me·
-POST /events/session-end 는 TestClient. 저장소는 pg-profile BaseStore(테스트는 InMemoryStore,
+LLM(델타·consolidation)은 주입형 fake 로 구동(라이브 Anthropic 불필요). POST /events/session-end 는
+TestClient. 저장소는 pg-profile BaseStore(테스트는 InMemoryStore,
 conftest reset — 이슈 #33).
 """
 
@@ -183,21 +183,6 @@ def test_is_remember_command() -> None:
     )  # 명령+질문 혼합도 인식
     assert not is_remember_command("이거 안 잊게 기억해줘야 할 것 같아")  # 활용형(줘야) 제외
     assert not is_remember_command("기억해줘도 상관없어")  # 활용형(줘도) 제외
-
-
-async def test_profile_me_preserves_registered_and_removes_invalid_unicode() -> None:
-    """프로필 HTTP 경계는 정상 VS·IVS를 보존하고 비정상 은닉 payload만 제거한다."""
-    store = await get_profile_store()
-    await store.set_summary(
-        "322",
-        "# 취향 ❤️\n- A\ufe0fB\U000e0061 㐂\U000e0100",
-        "2026-07-20T09:00:00+00:00",
-    )
-
-    response = client.get("/profile/me", headers=_member_bearer("322"))
-
-    assert response.status_code == 200
-    assert response.json()["markdown"] == "# 취향 ❤️\n- AB 㐂\U000e0100"
 
 
 # ─────────── builder (델타·consolidation) ───────────
@@ -569,45 +554,6 @@ async def test_consolidate_respects_char_cap(monkeypatch: pytest.MonkeyPatch) ->
     assert len(summary.markdown) == 10
 
 
-# ─────────── GET /profile/me ───────────
-
-
-def test_profile_me_guest_exists_false() -> None:
-    r = client.get("/profile/me")  # 무토큰 dev 게스트
-    assert r.status_code == 200
-    assert r.json()["exists"] is False
-
-
-def test_profile_me_member_no_profile() -> None:
-    r = client.get("/profile/me", headers=_member_bearer("321"))
-    assert r.status_code == 200
-    body = r.json()
-    assert body["exists"] is False and body["markdown"] is None
-
-
-async def test_profile_me_member_with_profile_camelcase() -> None:
-    store = await get_profile_store()
-    await store.set_summary("321", "# 취향\n- 무선이어폰", "2026-07-20T09:00:00+00:00")
-    r = client.get("/profile/me", headers=_member_bearer("321"))
-    body = r.json()
-    assert body["exists"] is True
-    assert body["userId"] == "321"  # camelCase
-    assert "무선이어폰" in body["markdown"]
-    assert body["generatedAt"].startswith("2026")  # camelCase
-
-
-async def test_profile_me_strips_unsafe_llm_markdown() -> None:
-    """LLM 생성 프로필 markdown 은 HTTP 응답 신뢰경계를 넘기 전에 정제된다."""
-    store = await get_profile_store()
-    await store.set_summary(
-        "322", "# 취향\x1b[31m\n- 무선이어폰\u200b\u202e", "2026-07-20T09:00:00+00:00"
-    )
-
-    body = client.get("/profile/me", headers=_member_bearer("322")).json()
-
-    assert body["markdown"] == "# 취향[31m\n- 무선이어폰"
-
-
 # ─────────── POST /events/session-end ───────────
 
 
@@ -761,11 +707,11 @@ async def test_session_end_degrades_without_llm() -> None:
     assert await store.get_session_ctx(conversation_key("55", "s")) != []
 
 
-# ─────────── e2e (채팅 transient → 세션종료 → 조회) ───────────
+# ─────────── e2e (채팅 transient → 세션종료 → 저장) ───────────
 
 
 async def test_end_to_end_profile_from_chat(monkeypatch: pytest.MonkeyPatch, buyer_fakes) -> None:
-    """회원 채팅 → 세션 종료 → 프로필 생성 → GET /profile/me 노출."""
+    """회원 채팅 → 세션 종료 → 프로필 생성."""
     import app.agents.profile.finalizer as profile_finalizer
 
     monkeypatch.setattr(profile_finalizer, "get_llm", lambda: _ProfileLLM())
@@ -781,9 +727,9 @@ async def test_end_to_end_profile_from_chat(monkeypatch: pytest.MonkeyPatch, buy
     assert await store.get_session_ctx(conversation_key("888", "e2e"))  # 버퍼에 쌓임
     # 세션 종료 → 델타·consolidation
     client.post("/events/session-end", json={"userId": 888, "sessionId": "e2e"})
-    # 조회
-    body = client.get("/profile/me", headers=hdr).json()
-    assert body["exists"] is True and "무선이어폰" in body["markdown"]
+    store = await get_profile_store()
+    summary = await store.get_summary("888")
+    assert summary is not None and "무선이어폰" in summary.markdown
 
 
 def test_session_end_rejects_oversized_session_id() -> None:

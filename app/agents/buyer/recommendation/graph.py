@@ -79,6 +79,7 @@ from app.schemas.spring import (
     RecoReason,
     LIST_LABEL_MAX_LEN,
     MAX_LISTS,
+    RecommendationContext,
     RecommendationListEntry,
     RecommendationPush,
     SpringProduct,
@@ -1051,6 +1052,13 @@ async def stream_recommendation(
                     await cart_store.set_last_reco(
                         thread_key,
                         [(pid, exposed_names.get(pid, "")) for pid in exposed],
+                        recommendation_contexts={
+                            pid: RecommendationContext(
+                                recommendation_request_id=profile_recommendation_request_id,
+                                list_id=profile_entry.list_id,
+                            )
+                            for pid in exposed
+                        },
                         # #571 — 프로필 벡터 경로는 항상 목록 1개(`exposed`)라 표시 순서 = 저장
                         # 순서가 성립한다.
                         ordinal_span=len(exposed),
@@ -2113,6 +2121,10 @@ async def stream_recommendation(
                     # [#132] 사용자가 평점을 명시했는지 — 무평점 후보의 근거문 고지 지시를 켠다.
                     # 완화가 적용됐으면 `effective_filters` 가 그 결과라 표시-실제가 어긋나지 않는다.
                     rating_min_requested=effective_filters.rating_min is not None,
+                    # 450-case A/B/C 실측으로 선택한 production arm. rerank()의 직접 호출 기본값과
+                    # 평가 CLI 기본 A는 유지하고 graph 경계에서만 C를 활성화한다. 운영 롤백은
+                    # RERANK_GROUNDING_ARM=current로 코드 변경 없이 수행한다.
+                    grounding_arm=settings.rerank_grounding_arm,
                 )
             ranked_ids = [pid for pid, _ in rr.ranked]
             # [이슈 #140] provenance rankSource 판정용 스냅샷 — pin 을 얹기 **전**의 rerank
@@ -2686,7 +2698,15 @@ async def stream_recommendation(
             recommendation_request_id=recommendation_request_id,
             surface="chat",
             pipeline="search_rerank",
-            prompt_version=None if rerank_degraded else settings.rerank_prompt_version,
+            prompt_version=(
+                None
+                if rerank_degraded
+                else (
+                    "rerank-v1"
+                    if settings.rerank_grounding_arm == "current"
+                    else settings.rerank_prompt_version
+                )
+            ),
             ranker_model=None if rerank_degraded else resolve_model_id(settings, "smart"),
             personalized=bool(profile),
             deterministic=True,
@@ -2711,6 +2731,14 @@ async def stream_recommendation(
                 thread_key,
                 [(pid, name_by_id.get(pid, "")) for pid in ranked_ids],
                 option_hints=option_hints,
+                recommendation_contexts={
+                    product_id: RecommendationContext(
+                        recommendation_request_id=recommendation_request_id,
+                        list_id=entry.list_id,
+                    )
+                    for entry in push.lists
+                    for product_id in entry.product_ids
+                },
                 # #571 — 표시 순서 = 저장 순서는 목록이 정확히 1개일 때만 성립한다(BUY_ALL 은
                 # 세트 간 중복이 dedup 로 접혀 화면 칸 수와 저장 건수가 어긋나고, 다목록 PICK_ONE
                 # 은 화면이 섹션으로 쪼개져 전역 순번이 정의되지 않는다 — §2 결정 2).

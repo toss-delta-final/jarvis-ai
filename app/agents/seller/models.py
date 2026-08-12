@@ -98,6 +98,11 @@ SellerRole = Literal[
     # [#598] 워커 4종의 ctx-표 기반 interpret 스텝 — 채팅 레인 워커 역할("worker")과
     # 분리한다. 도구 호출 없는 zero-tool 호출이라 관측·로그를 워커 레인과 구분해 둔다.
     "interpret",
+    # [#600] chart_only 턴의 차트 해석 에이전트 — graph(축 선언)와도, interpret(#598
+    # 상주 워커)와도 분리한다. zero-tool·자유 텍스트라 report 와 형태는 같지만, 관측·
+    # 타임아웃(seller_chart_interpret_timeout_s)을 report 레인과 독립적으로 조정하기
+    # 위해 별도 역할로 둔다.
+    "chart_interpret",
 ]
 
 # SPEC §8 표의 코드화 — 판매자 전 역할 smart(2026-07-29, 품질 우선 전환).
@@ -127,6 +132,10 @@ ROLE_TIER: dict[SellerRole, ModelTier] = {
     "resident_report": "smart",
     "resident_recommend": "smart",
     "interpret": "smart",
+    # [#600] 해석도 전 역할 smart 정책을 따른다 — 좌표 근거를 벗어나면 D2/C4/period_grounded
+    # 가 잡지만, 애초에 형식·발화 금지를 지키는 산출이 재작성 루프(1회뿐, judge 없음)의
+    # 성공률을 좌우한다(09-CHART §3.6).
+    "chart_interpret": "smart",
 }
 
 

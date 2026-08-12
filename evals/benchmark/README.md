@@ -60,8 +60,27 @@ BENCH_AUTH_TOKEN=... uv run python -m evals.benchmark.runner \
 결정론 스텁(`app/core/llm_scripted.py::LoadTestLLM`)이 LLM을 대신해 이 러너를 비용 없이 돌릴 수
 있다.
 
+지연 없는 `instant` 프로파일은 내부 처리량 상한을 잰다.
+
 ```bash
-LLM_PROVIDER=scripted APP_ENVIRONMENT=local uv run uvicorn app.main:app --reload
+LLM_PROVIDER=scripted \
+APP_ENVIRONMENT=local \
+SCRIPTED_LLM_MODE=instant \
+uv run uvicorn app.main:app --reload
+```
+
+사용자 첫 응답 실측 평균을 보수적으로 5초로 반올림한 `delayed` 프로파일은 요청당 한 번
+비동기로 5초를 기다린다. 한 buyer 요청 안에서 decompose·rerank 등 LLM 호출이 여러 번 생겨도
+5초가 호출마다 누적되지 않는다. 이 프로파일은 실제처럼 SSE 연결이 오래 열린 동안의 동시 연결,
+메모리, ALB timeout을 재기 위한 것이다. 5초는 **추가 대기값**이므로 실제 종단 시간은 여기에
+FastAPI·DB·Spring 처리시간을 더한 값이다.
+
+```bash
+LLM_PROVIDER=scripted \
+APP_ENVIRONMENT=local \
+SCRIPTED_LLM_MODE=delayed \
+SCRIPTED_LLM_DELAY_S=5.0 \
+uv run uvicorn app.main:app --reload
 ```
 
 ```bash
@@ -77,9 +96,11 @@ uv run python -m evals.benchmark.runner \
 
 **운영에서는 절대 켜지지 않는다** — `app_environment`가 `local`/`test`가 아니면 기동 자체가
 `ValueError`로 실패한다(config.py `_forbid_scripted_outside_local`, G1). `deploy.yml`은
-`LLM_PROVIDER`·`APP_ENVIRONMENT`를 이미 운영 vars로 주입하므로, 운영 var에 실수로
-`scripted`가 들어가도 이 가드가 컨테이너 기동을 막는다 — `deploy.yml` 자체는 이 이슈에서
-건드리지 않는다. 기동 시 로그에 "STUB LLM MODE" 경고 배너가 남고(`app/main.py`), 서버 로그의
+`LLM_PROVIDER`·`APP_ENVIRONMENT`와 scripted 프로파일·부하 테스트 rate limit을 GitHub Variables에서
+EC2 env로 전달한다. 운영 환경에 실수로 `scripted`가 들어가면 가드가 컨테이너 기동을 막는다.
+test 환경에서 scripted를 명시적으로 켠 동안에는 I-17 카탈로그 enrichment job도 등록하지 않아
+결정론 가짜 생성물이 실 카탈로그와 cursor를 오염시키지 않는다(`app/pipelines/scheduler.py`).
+기동 시 로그에 "STUB LLM MODE" 경고 배너가 남고(`app/main.py`), 서버 로그의
 `chat_request.model_ids`에 `scripted-stub-fast`/`scripted-stub-smart`가 실려 `--server-log`로
 조인한 보고서 최상단에 "STUB LLM MODE" 경고가 자동으로 붙는다(`report.py::render_markdown`).
 `--server-log`가 없으면 스텁 여부를 추정하지 않고 "LLM 모드 미확인"만 남긴다.
@@ -99,7 +120,14 @@ uv run python -m evals.benchmark.runner \
 
 **스텁 모드 p95를 실 LLM p95인 것처럼 인용하면 이 문서 상단의 정직성 규약 위반이다.** 실
 LLM 비용 격자는 이 모드로 대신할 수 없다 — LLM 미포함 병목만 비용 없이 반복 측정하는 용도로만
-쓴다.
+쓴다. 특히 `delayed`는 대기시간과 SSE 연결 수명만 근사하며, 실제 provider 네트워크·connection
+pool·429·토큰 생성 편차는 재현하지 않는다. 두 프로파일은 기동 배너의
+`SCRIPTED_LLM_MODE=<mode> delay_s=<seconds>`로 구분한다.
+
+동일 EC2를 쓸 때는 실제 사용자 트래픽을 먼저 차단하고, 테스트 전 GitHub Variables 값을 기록한다.
+테스트가 끝나면 `APP_ENVIRONMENT`, `LLM_PROVIDER`, `SCRIPTED_LLM_*`, `RATE_LIMIT_*`를 모두 원복해
+재배포한 뒤 `STUB LLM MODE` 배너가 사라지고 smoke 요청의 `chat_request.model_ids`가 실제 provider
+모델인지 확인해야 한다. 상세 체크리스트는 `DEPLOY.md`의 "부하 테스트 전용 scripted 모드"를 따른다.
 
 ### 첫 무료 baseline (2026-08-09) — `baselines/20260809T014442747650Z-local-stub-spring`
 
