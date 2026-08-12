@@ -704,8 +704,15 @@ class Settings(BaseSettings):
     # 초안 대기 게이트(수정/승인안내/취소/딴주제 분류) LLM 상한 — 실패 시 일반 흐름 폴백.
     seller_pending_gate_timeout_s: float = 8.0
     # 4-2 HITL 실행(hitl.py): confirm 시점 I-9 재조회(stale 검증)의 페이지 순회 상한 —
-    # I-9 에 productId 필터가 없어 목록을 넘겨가며 찾는다(페이지 크기 = seller_list_default_limit).
+    # I-9 에 productId 필터가 없어 목록을 넘겨가며 찾는다.
     seller_draft_lookup_max_pages: int = 10
+    # [이슈 #622] _find_product 전용 페이지 크기 — seller_list_default_limit(20)과
+    # 의도적으로 분리한다. 그 설정은 list_my_products 챗봇 도구의 기본 응답 건수도
+    # 겸하므로(컨텍스트 폭주 방지, 594행 주석), 여기서 200으로 올리면 LLM 에게 매
+    # 조회마다 상품 200건이 텍스트로 실린다. BE I-9 의 limit 상한이 200
+    # (@Min(1) @Max(200), InternalSellerController) 이라 그 값을 그대로 쓴다 —
+    # seller_draft_lookup_max_pages(10)와 곱하면 2,000건까지 커버한다.
+    seller_draft_lookup_page_size: int = 200
     # PostgresSaver(pg-profile) 초기 연결 대기 상한 — 초과 시 dev 는 InMemory 폴백.
     seller_checkpoint_connect_timeout_s: float = 5.0
     # [이슈 #621] confirm resume(hitl.confirm_draft, gate 커밋 뒤 execute 실행) 상한 —

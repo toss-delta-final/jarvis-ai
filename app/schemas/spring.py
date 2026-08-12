@@ -1059,9 +1059,16 @@ class SellerProductRow(CamelModel):
 
 
 class SellerProductList(CamelModel):
-    """I-9 GET /internal/seller/{brandId}/products 응답."""
+    """I-9 GET /internal/seller/{brandId}/products 응답.
+
+    [이슈 #622] `total`(필터 적용 전체 건수)은 BE 가 이미 내려주고 있었다
+    (`SellerProductInternalListResponse{rows, total}`) — 이 모델에 필드가 없어
+    pydantic 이 조용히 버렸을 뿐이다. `hitl._find_product` 가 페이지 순회 종료를
+    정확히 판단하는 데 쓴다(상한 도달 vs 진짜 끝).
+    """
 
     rows: list[SellerProductRow] = Field(default_factory=list)
+    total: int = 0
 
 
 # ── I-10/I-11/I-12 상품 쓰기 (§4.5, product_agent 전용, HITL 승인 후 호출) ──
