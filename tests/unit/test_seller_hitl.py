@@ -1105,6 +1105,25 @@ def test_quantity_mode_rejects_per_option_intent(monkeypatch) -> None:
     assert spring.write_calls() == []
 
 
+def test_quantity_mode_rejects_optioned_product_even_without_option_name(monkeypatch) -> None:
+    """[#624] 옵션 상품은 option_name 이 없어도 quantity 모드에서 막는다.
+
+    이전엔 이 경로가 그대로 stockQuantity 정수로 나가 BE 가 optionId=null 재고 행을
+    찾다가(옵션 상품엔 그런 행이 없음) 422 INVALID_STOCK 을 던졌다 — 승인 이후에야
+    터지고 안내도 "옵션 변경 레이스"로 잘못 나갔다. 승인 전에 걸러야 한다.
+    """
+    _stock_mode(monkeypatch, "quantity")
+    spring = _StubSpring(rows=[_OPTIONED_ROW])
+    set_spring_client(spring)
+    record = _record(
+        changes=[DraftChange(field="stock_quantity", before="5", after="10")],
+        summary="재고 10건",
+    )
+    outcome = _run_confirm(record)
+    assert outcome.status == "stale"
+    assert spring.write_calls() == []
+
+
 def test_stocks_mode_update_resolves_option_name(monkeypatch) -> None:
     """stocks 모드 I-11 — option_name 을 confirm 시점 I-9 stocks 로 optionId 해소."""
     _stock_mode(monkeypatch, "stocks")
@@ -1295,6 +1314,27 @@ def test_update_invalid_stock_stops_without_success_report(monkeypatch) -> None:
     outcome = _run_confirm(record)
     assert outcome.status == "stale"
     assert "옵션이 변경되어" in outcome.text
+    assert "반영했습니다" not in outcome.text
+
+
+def test_update_invalid_stock_quantity_mode_message_does_not_claim_race(monkeypatch) -> None:
+    """[#624] quantity 모드의 INVALID_STOCK 은 "옵션 변경 레이스"로 단정하지 않는다.
+
+    quantity 모드에는 옵션 상품을 사전 차단하는 가드가 없던 시절의 잔재 문구였다 —
+    이제 hitl 이 옵션 상품을 이미 걸러내므로, 그래도 여기 도달했다면 원인을 안다고
+    잘못 안내하지 않는다. stocks 모드 문구(옵션 레이스)와는 달라야 한다.
+    """
+    _stock_mode(monkeypatch, "quantity")
+    spring = _StubSpring()  # 옵션 없는 기본 _ROW — 사전 차단 가드를 우회해 실제 BE 거부만 검증
+    spring.update_error = InvalidStock("INVALID_STOCK")
+    set_spring_client(spring)
+    record = _record(
+        changes=[DraftChange(field="stock_quantity", before="100", after="80")],
+        summary="재고 80건",
+    )
+    outcome = _run_confirm(record)
+    assert outcome.status == "stale"
+    assert "옵션이 변경되어" not in outcome.text
     assert "반영했습니다" not in outcome.text
 
 
