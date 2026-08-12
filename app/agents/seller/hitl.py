@@ -429,6 +429,13 @@ def _build_update_patch(
     옵션 지정 재고 발화(option_name)나 재고 change 복수 건은 반영할 곳이 없다 —
     조용히 합계로 뭉개면 "보여준 것 ≠ 실행하는 것"이므로 반영하지 않고 안내한다.
 
+    [#624] 옵션명이 안 실려도 **그 상품 자체가 옵션 상품이면** 마찬가지로 막는다.
+    이 모드에서는 stock_quantity 정수 하나가 그대로 BE 에 나가고, BE 는 이걸
+    optionId=null 재고 행으로 환산해 찾는다(SellerProductUpdateRequest.resolvedStocks
+    실측) — 옵션 상품에는 그 행이 없어 422 INVALID_STOCK 이 난다. 옵션이 하나뿐이라
+    LLM 이 option_name 을 안 적었거나, 판매자가 옵션을 특정하지 않고 말한 경우가
+    이 경로로 새어나갔었다(초안엔 "정상"으로 보이고 confirm 시점에야 터졌다).
+
     stocks 모드(PR B 이후): 재고 change 마다 option_name 을 confirm 시점의 I-9
     stocks 로 해소해 stocks[{optionId, quantity}] 부분 수정으로 보낸다. 배열에 실린
     옵션만 갱신된다(05 §I-11). 해소 실패·중복 옵션은 실행하지 않고 되묻는다 —
@@ -441,12 +448,13 @@ def _build_update_patch(
     other_fields = {c.field: _typed_after(c) for c in changes if c.field != "stock_quantity"}
 
     if get_settings().seller_stock_wire_mode != "stocks":
-        if any(c.option_name for c in stock_changes) or len(stock_changes) > 1:
-            return None, (
-                "옵션별 재고 반영은 재고 시스템 전환 후에 열립니다. 지금은 상품 전체 "
-                "재고 수량 하나만 바꿀 수 있어 반영을 중단했습니다."
-            )
         if stock_changes:
+            has_options = any(s.option_id is not None for s in row.stocks)
+            if has_options or any(c.option_name for c in stock_changes) or len(stock_changes) > 1:
+                return None, (
+                    "옵션별 재고 반영은 재고 시스템 전환 후에 열립니다. 지금은 상품 전체 "
+                    "재고 수량 하나만 바꿀 수 있어 반영을 중단했습니다."
+                )
             other_fields["stock_quantity"] = _typed_after(stock_changes[0])
         return ProductUpdate(**other_fields), None
 
@@ -785,13 +793,24 @@ async def _execute_draft(record: DraftRecord) -> tuple[str, str]:
             "삭제는 되돌릴 수 없으니 같은 상품이 필요하시면 새로 등록해 주세요.",
         )
     except InvalidStock:
-        # [#524] hitl 이 음수·타 상품 옵션을 모두 선차단하므로, 여기 오는 건 confirm
-        # 시점 I-9 재조회와 이 PATCH 사이에 옵션이 삭제·변경된 레이스뿐이다. 같은 초안을
-        # 다시 보내도 결과가 같으므로 재confirm 이 아니라 **재조회 후 새 초안**을 권한다.
+        # [#624] quantity 모드는 _build_update_patch 가 옵션 상품 재고 change 를 이미
+        # 선차단하므로(위 has_options 가드), "옵션 변경 레이스"라고 단정할 근거가 없다
+        # — 재조회 직후 옵션이 새로 생기는 등 더 좁은 레이스이거나 계약 불일치일 수
+        # 있어, 원인을 안다고 잘못 안내하지 않는다. stocks 모드는 hitl 이 음수·타 상품
+        # 옵션·미해소 옵션명을 이미 선차단하므로(#524) 여기 오는 건 confirm 시점 I-9
+        # 재조회와 이 PATCH 사이 옵션 삭제·변경 레이스뿐이라 기존 안내를 유지한다.
+        # 같은 초안을 다시 보내도 결과가 같으므로 재confirm 이 아니라
+        # **재조회 후 새 초안**을 권한다.
+        if get_settings().seller_stock_wire_mode == "stocks":
+            return (
+                "stale",
+                "재고를 반영하는 사이에 상품 옵션이 변경되어 반영을 중단했습니다. "
+                f"{_STALE_RETRY_GUIDE}",
+            )
         return (
             "stale",
-            "재고를 반영하는 사이에 상품 옵션이 변경되어 반영을 중단했습니다. "
-            f"{_STALE_RETRY_GUIDE}",
+            "재고 변경이 서버에서 거부되어 반영을 중단했습니다. "
+            f"재고를 다시 확인해 말씀해 주세요. {_STALE_RETRY_GUIDE}",
         )
     except InvalidPrice:
         # [#620] validate_draft 가 row 를 받았으면 price/originalPrice 를 이미

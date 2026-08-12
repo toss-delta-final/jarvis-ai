@@ -13,6 +13,7 @@ from app.agents.seller.prompts import (
     ABUSE_PROMPT,
     ANALYSIS_JUDGE_PROMPT,
     BEHAVIOR_PROMPT,
+    CHART_INTERPRET_PROMPT,
     CHURN_PROMPT,
     CONVERSION_PROMPT,
     GENERAL_PROMPT_TEMPLATE,
@@ -40,6 +41,7 @@ from app.agents.seller.workers import (
     build_analysis_judge,
     build_analysis_planner,
     build_behavior_agent,
+    build_chart_interpret_agent,
     build_churn_agent,
     build_conversion_agent,
     build_general_agent,
@@ -239,10 +241,11 @@ def test_general_lane_does_not_bind_permanent_stub() -> None:
 
 
 def test_general_prompt_principles() -> None:
-    """확정 3원칙 — 해석 금지·calculate 강제·미지원 안내 + today 주입 슬롯."""
+    """확정 원칙 — 경량 해석만 허용(#650)·calculate 강제·미지원 안내 + today 주입 슬롯."""
     prompt = GENERAL_PROMPT_TEMPLATE.format(today="2026-07-18")
     assert "2026-07-18" in prompt  # today 주입(대화 맥락 — 기간 환산용이 아니다)
-    assert "해석 금지" in prompt
+    assert "경량 해석만 허용" in prompt
+    assert "원인 가설" in prompt  # 원인 규명·복수 지표 교차는 여전히 금지
     assert "calculate" in prompt
     assert "암산·추정 금지" in prompt
     assert "미지원 안내" in prompt
@@ -422,6 +425,7 @@ def test_pipeline_builders_compile() -> None:
         build_recommend_agent,
         build_analysis_judge,
         build_graph_agent,
+        build_chart_interpret_agent,
     ):
         assert hasattr(builder(), "ainvoke")
 
@@ -434,6 +438,16 @@ def test_graph_prompt_principles() -> None:
     assert "rating" in GRAPH_PROMPT and "behavior_type" in GRAPH_PROMPT
     assert '"other"' in GRAPH_PROMPT  # 지원 밖 요청은 임의 대체 없이 other 선언
     assert "charts=[]" in GRAPH_PROMPT  # 억지 차트 금지
+
+
+def test_chart_interpret_prompt_principles() -> None:
+    """chart_interpret(이슈 #600) — L0 인과 금지·발화 금지 6종·[코드 계산] 인용·6문장 이내."""
+    assert "[코드 계산]" in CHART_INTERPRET_PROMPT
+    assert "인과 어휘 금지" in CHART_INTERPRET_PROMPT
+    assert "완곡하게 낮춘 인과 표현" in CHART_INTERPRET_PROMPT  # L2 도 금지(L0 — 06 서술과 구분)
+    assert "전체 행동" in CHART_INTERPRET_PROMPT  # C4-d 형제 규칙(행동 4종)
+    assert "6문장 이내" in CHART_INTERPRET_PROMPT
+    assert "제목" not in CHART_INTERPRET_PROMPT or "제목은 쓰지 않는다" in CHART_INTERPRET_PROMPT
 
 
 def test_planner_prompt_comparison_vocabulary() -> None:

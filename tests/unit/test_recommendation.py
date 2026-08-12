@@ -5538,6 +5538,63 @@ class _CapturingLLM:
         )
 
 
+class _DecomposePromptLLM:
+    """decompose의 system/user 프롬프트만 기록하고 유효한 general JSON을 반환한다."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    async def complete(self, *, system, user, **kwargs):
+        del kwargs
+        self.calls.append((system, user))
+        return json.dumps({"intent": "general", "reply": "답변", "filters": {}})
+
+
+async def test_decompose_conversation_memory_is_untrusted_json_before_current_message() -> None:
+    from app.agents.buyer.recommendation.decompose import decompose
+
+    llm = _DecomposePromptLLM()
+    await decompose(
+        llm,
+        query="지금 질문이 최우선이야",
+        prior_filters=None,
+        profile_summary=None,
+        tier="fast",
+        recent_conversation=[{"user": "이전 질문", "assistant": "이전 답변"}],
+        situation_memory={"topic": "제주 여행", "openQuestions": ["숙소는?"]},
+    )
+
+    [(system, user)] = llm.calls
+    assert "비신뢰 데이터" in system
+    assert "현재 USER_MESSAGE" in system
+    assert 'RECENT_CONVERSATION: [{"user": "이전 질문"' in user
+    assert 'SITUATION_MEMORY: {"topic": "제주 여행"' in user
+    assert user.endswith("USER_MESSAGE: 지금 질문이 최우선이야")
+
+
+async def test_decompose_none_memory_keeps_existing_prompt_byte_identical() -> None:
+    from app.agents.buyer.recommendation.decompose import decompose
+
+    baseline = _DecomposePromptLLM()
+    explicit_none = _DecomposePromptLLM()
+    kwargs = {
+        "query": "같은 질문",
+        "prior_filters": None,
+        "profile_summary": None,
+        "tier": "fast",
+    }
+
+    await decompose(baseline, **kwargs)
+    await decompose(
+        explicit_none,
+        **kwargs,
+        recent_conversation=None,
+        situation_memory=None,
+    )
+
+    assert baseline.calls == explicit_none.calls
+
+
 def _cands(n: int) -> list:
     from app.schemas.spring import SpringProduct
 
