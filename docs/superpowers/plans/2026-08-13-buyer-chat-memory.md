@@ -179,15 +179,17 @@
 
   `CHANGELOG.md`의 Unreleased에 같은 방 bounded memory, fail-open compaction, cache-aware cost measurement를 한글로 기록한다.
 
-- [ ] **Step 4: 정적 검사와 전체 테스트**
+- [x] **Step 4: 정적 검사와 전체 테스트**
 
   Run: `uv run ruff check app tests evals`
 
-  Run: `uv run pytest -q`
+  Run: `uv run pytest -q -o faulthandler_timeout=60`
 
-  Run: `uv run pre-commit run --all-files`
+  Run: `uv run pre-commit run --from-ref origin/dev --to-ref HEAD`
 
-  Expected: 모든 명령 exit code 0.
+  Result: ruff 통과, pytest `7163 passed, 229 deselected`(132.80초), 변경 범위 pre-commit 통과.
+  저장소 전체 `--all-files`는 이 브랜치 밖의 기존 포맷 드리프트 65개를 변경하므로 기준점 대비
+  변경 파일 검사로 범위를 고정한다.
 
 - [ ] **Step 5: 커밋과 푸시**
 

@@ -35,13 +35,16 @@ class PriceBook:
         entry = self.entries.get(model)
         if entry is None or input_tokens is None or output_tokens is None:
             return None
+        input_price = float(entry["inPer1k"])
+        cached_input_price = float(entry.get("cachedInPer1k", input_price))
+        cache_write_price = float(entry.get("cacheWritePer1k", input_price))
         cached = min(max(cached_input_tokens, 0), input_tokens)
         cache_write = min(max(cache_write_tokens, 0), input_tokens - cached)
         uncached = input_tokens - cached - cache_write
         return (
-            uncached * float(entry["inPer1k"])
-            + cached * float(entry["cachedInPer1k"])
-            + cache_write * float(entry["cacheWritePer1k"])
+            uncached * input_price
+            + cached * cached_input_price
+            + cache_write * cache_write_price
             + output_tokens * float(entry["outPer1k"])
         ) / 1000
 
