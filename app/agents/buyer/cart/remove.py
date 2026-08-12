@@ -297,6 +297,7 @@ async def stream_cart_remove(
     get_cart_fn=None,
     delete_fn=None,
     observer=None,
+    chat_session_id: str | None = None,
 ) -> AsyncIterator[str]:
     """삭제 서브그래프. 항목마다 `action`(CART_REMOVED/CART_REMOVE_FAILED)을 내고 `done` 1회로 끝난다."""
     get_cart_fn = get_cart_fn or spring_client.get_cart
@@ -350,7 +351,10 @@ async def stream_cart_remove(
     for item in targets:
         name = _display_name(item)
         try:
-            await delete_fn(item.cart_item_id, user_id=user_id, guest_id=guest_id)
+            delete_kwargs = {"user_id": user_id, "guest_id": guest_id}
+            if chat_session_id is not None:
+                delete_kwargs["chat_session_id"] = chat_session_id
+            await delete_fn(item.cart_item_id, **delete_kwargs)
         except CartItemNotFound:
             # [확정 2026-08-05] 404 를 성공 안내로 종료하는 것은 정본 권고안 — 사용자가 보기엔
             # "빼려던 게 이미 빠져 있다"는 실패가 아니라 원하는 상태에 도달한 것이다.

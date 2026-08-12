@@ -3,7 +3,7 @@
 CORS 미들웨어(오리진은 설정 주입), MVP 라우터(chat/seller), GET /health 를 구성한다.
 FE 가 AI 서버를 다른 오리진에서 직접 호출하므로 CORS 가 앞단으로 이동했다 (api-spec §2.7 / C-11).
 
-[변경 2026-07-15] MVP 표면은 /chat, /seller/chat, /profile/me,
+[변경 2026-07-15] MVP 표면은 /chat, /seller/chat,
   /events/session-end, /health 로 확정. catalog/order 이벤트는 영구 미채택.
   - [완료] §2.9 스트림 수명주기(app/core/stream.py)·§2.8 레이트 리밋(app/core/ratelimit.py)·§2.5 오류 봉투(app/core/errors.py).
 
@@ -51,7 +51,7 @@ from app.agents.seller.analysis_store import ensure_schema as ensure_seller_anal
 from app.agents.seller.analysis_store import warm_pool as warm_seller_analysis_pool
 from app.agents.seller.checkpoint import close_checkpointer as close_seller_checkpointer
 from app.agents.seller.history import close_store as close_seller_history_store
-from app.api import chat, events, internal, profile, profile_graph, seller
+from app.api import chat, events, internal, profile_graph, seller
 from app.core.body_limit import BodySizeLimitMiddleware
 from app.core.clock import KST
 from app.core.conversation import close_store as close_conversation_store
@@ -383,7 +383,6 @@ def create_app() -> FastAPI:
     # MVP 라우터: 사용자 대면 chat / seller 만 등록한다.
     app.include_router(chat.router)
     app.include_router(seller.router)
-    app.include_router(profile.router)
     app.include_router(events.router)
     # Spring → AI 위임(레인 b) — I-22 홈 추천 랭킹(§3.7, #148)
     app.include_router(internal.router)

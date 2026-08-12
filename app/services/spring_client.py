@@ -1092,6 +1092,8 @@ async def add_to_cart(request: AddToCartRequest) -> AddToCartResult:
     CART_STOCK_INSUFFICIENT→CartStockInsufficient(availableStock), VALIDATION_ERROR(합산>99)→
     CartQuantityExceeded, 404→CartProductNotFound, 그 외→CartError.
     """
+    if (request.user_id is None) == (request.guest_id is None):
+        raise CartError("add_to_cart 신원 body 는 정확히 하나여야 함")
     try:
         with _spring_span("add_to_cart", "POST") as span:
             async with _client() as client:
@@ -1188,7 +1190,11 @@ def _envelope_success_false(resp: httpx.Response) -> bool:
 
 
 async def delete_cart_item(
-    cart_item_id: int, *, user_id: int | None = None, guest_id: str | None = None
+    cart_item_id: int,
+    *,
+    user_id: int | None = None,
+    guest_id: str | None = None,
+    chat_session_id: str | None = None,
 ) -> None:
     """장바구니 삭제 — I-24(확정 2026-08-05) DELETE /internal/cart/items/{cartItemId}.
 
@@ -1202,6 +1208,8 @@ async def delete_cart_item(
     두 번째 호출도 404). **[라운드 23]** code 가 다르거나 본문을 못 읽는 404(엔드포인트 미배포로
     나는 라우트 없음 404 포함)는 CartItemNotFound 가 아니라 CartError 다 — 그렇지 않으면 상위가
     "이미 빠져 있어요"(성공 안내)로 오인해 거짓 성공을 낸다.
+    chat_session_id는 선택 query이며, 있으면 Spring이 `chat:{sessionId}` sentinel로 챗봇 삭제
+    이벤트를 server-side 적재한다.
     400(path 숫자 아님·신원 query 오류)·403 AUTH_FORBIDDEN(소유자 불일치, 전용 예외 없음)·500·
     도달 불가·미상 코드 → CartError(기존 담기와 같은 낙성처).
     """
@@ -1215,6 +1223,8 @@ async def delete_cart_item(
         params["userId"] = user_id
     if guest_id is not None:
         params["guestId"] = guest_id
+    if chat_session_id is not None:
+        params["chatSessionId"] = chat_session_id
 
     try:
         with _spring_span("delete_cart_item", "DELETE") as span:
@@ -1679,9 +1689,7 @@ class SpringClient:
                     raise mapped(f"{code}: {method} {path}") from exc
             status = exc.response.status_code
             exc_cls = SpringRejected if 400 <= status < 500 else SpringUnavailableError
-            raise exc_cls(
-                f"Spring 콜백 오류 응답({status}): {method} {path}"
-            ) from exc
+            raise exc_cls(f"Spring 콜백 오류 응답({status}): {method} {path}") from exc
         except httpx.HTTPError as exc:
             raise SpringUnavailableError(f"Spring 콜백 실패: {method} {path} ({exc})") from exc
 
@@ -1923,9 +1931,7 @@ class SpringClient:
                         "statusClass": _failure_status_class(cause),
                     },
                 )
-                await asyncio.sleep(
-                    settings.seller_customer_features_retry_backoff_s * attempt
-                )
+                await asyncio.sleep(settings.seller_customer_features_retry_backoff_s * attempt)
         raise SpringUnavailableError(  # pragma: no cover — 루프가 항상 return/raise 함
             f"get_customer_features: retries 소진(brand_id={brand_id})"
         )
