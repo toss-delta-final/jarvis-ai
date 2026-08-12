@@ -74,6 +74,24 @@ async def test_missing_google_key_skips_only_i17_but_keeps_idle_job(monkeypatch)
     assert scheduler.get_job(sched_mod._SESSION_CONTEXT_JOB_ID) is not None
 
 
+async def test_scripted_provider_skips_i17_but_keeps_lifecycle_jobs(monkeypatch, caplog):
+    """scripted 부하 테스트가 실 카탈로그 enrichment를 가짜 값으로 덮어쓰면 안 된다."""
+    settings = Settings(
+        _env_file=None,
+        app_environment="test",
+        llm_provider="scripted",
+        google_api_key="test-key",
+    )
+    monkeypatch.setattr(sched_mod, "get_settings", lambda: settings)
+
+    scheduler = sched_mod.start_scheduler()
+
+    assert scheduler.get_job(sched_mod._I17_JOB_ID) is None
+    assert scheduler.get_job(sched_mod._SESSION_CONTEXT_JOB_ID) is not None
+    assert scheduler.get_job(sched_mod._CONVERSATION_RETENTION_JOB_ID) is not None
+    assert "scripted LLM" in caplog.text
+
+
 async def test_start_scheduler_registers_conversation_retention_job_by_default(monkeypatch):
     settings = Settings(
         _env_file=None, google_api_key="", conversation_retention_sweep_interval_s=456.0
