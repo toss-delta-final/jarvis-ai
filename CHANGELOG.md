@@ -45,6 +45,11 @@
   포함한다. 실제 human response는 포함하지 않으며 결과는 exploratory로만 해석한다.
 
 ### Fixed
+- **#639 — 추천 카드에서 사용자가 상품명의 유일 토큰을 지목했는데 LLM이 같은 허용 목록 안의
+  다른 상품을 골라 오담기하던 결함을 고쳤다.** 추천 카드 표면에 한해 상품명과 발화를 NFKC +
+  casefold 기반 정확 토큰으로 비교하고, 숫자 전용·1글자·담기 명령·장바구니 문맥 토큰을 제외한
+  뒤 유일 토큰들이 정확히 한 상품만 가리킬 때 그 ID로 교정한다. 공통 토큰, 부분 문자열, 서로
+  다른 상품의 유일 토큰 동시 언급, 부정·대조 표현은 기존 LLM 경로에 양보한다. 계약 변경 없음.
 - **#635 — 챗봇 장바구니 담기·삭제에 현재 `chatSessionId`를 전달하고, 추천 카드에서 해소한 담기에는 `recommendationContext{recommendationRequestId,listId}`를 함께 보낸다** (api-spec §4.1·§4.12, v0.33.1). Spring이 `chat:{sessionId}` sentinel로 행동 이벤트를 서버 측 적재하고 추천→담기 귀속을 검증할 수 있게 한다. 신원 0개/2개 `400 VALIDATION_ERROR`와 동시 경합 `409 RESOURCE_CONFLICT`도 계약 사본에 현행화했다.
 
 ### Removed

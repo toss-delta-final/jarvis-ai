@@ -473,9 +473,9 @@ def test_a_flood_of_huge_screen_text_does_not_error_and_stays_fast(
     )
     elapsed = time.perf_counter() - started
     assert parsed.screen is not None  # 400 이 아니다 — screen 자체는 살아 있다(관대 유효성)
-    assert elapsed < 5.0, (
-        f"극단적으로 느려짐(하드 캡이 빠졌을 가능성 — 수정 전 실측 25.02s) — {elapsed:.3f}s"
-    )
+    assert (
+        elapsed < 5.0
+    ), f"극단적으로 느려짐(하드 캡이 빠졌을 가능성 — 수정 전 실측 25.02s) — {elapsed:.3f}s"
 
 
 def test_filters_lookup_never_iterates_the_raw_mapping() -> None:
@@ -2648,6 +2648,124 @@ async def test_reco_card_full_name_mention_is_confirmed_by_code(
     assert added["product_id"] == 801  # LLM 산출(802) 이 아니라 이름이 지목한 카드
 
 
+async def test_reco_card_unique_name_token_overrides_wrong_llm_product(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[#639] 상품명 일부의 유일 토큰 지목은 목록 안 LLM 오답보다 우선한다.
+
+    운영에서 ``Septwolves 지갑 담아줘``의 정답은 5644였지만, LLM이 같은 허용 목록 안의 5695를
+    골라 가드가 막지 못했다. 이 테스트는 LLM이 실제 오답을 내도 Spring 요청에 5644가 실리는
+    사용자 관측 결과를 고정한다.
+    """
+    import app.services.spring_client as sc
+
+    added: dict = {}
+
+    async def fake_add(req):  # noqa: ANN001
+        added["product_id"] = req.product_id
+        return AddToCartResult(success=True, cart_item_id=639)
+
+    monkeypatch.setattr(sc, "add_to_cart", fake_add)
+    monkeypatch.setattr(sc, "get_cart", _empty_cart_view())
+
+    request = BuyerChatRequest.model_validate(
+        _buyer_payload(message="Septwolves 지갑 담아줘", threadId="t-reco-unique-name-token")
+    )
+    cart_store = await get_cart_store()
+    await cart_store.set_last_reco(
+        await _thread_key(request, _member()),
+        [
+            (5656, "지갑 통장지갑 양지사"),
+            (4583, "양지사 통장지갑 지갑류 통장정리 통장 동지갑 정리"),
+            (5643, "남성 소가죽 반지갑 남자 지갑 카드동전수납 학생지갑"),
+            (5642, "남성 지퍼 반지갑 중지갑 명함 카드 동전 지갑 남자"),
+            (5644, "W06 남성지갑 명품 천연가죽 남자 반지갑 카드 학생 septwolves"),
+            (5654, "에스티 도장케이스 도장집 가죽 도장지갑 파우치 보관함 인감도장 고급"),
+            (4570, "지갑 머니클립 카드홀더 다용도 통장지갑 보관 초경량 파우치 가방 케이스"),
+            (4560, "한손 소가죽 지퍼 남성 카드지갑 동전"),
+            (
+                5647,
+                "데일리 프리미엄 클래식 남성 가죽 지갑 모던 네추럴 고급 카드홀더 스타일 반지갑 10종",
+            ),
+            (5645, "남자반지갑,남성,수제,소가죽,미니,슬림,선물,두리공방"),
+            (
+                5650,
+                "남자 반지갑 카드 지폐 동전 중지갑 슬림 고급 미니 학생 얇은 지폐 명품 수제 가죽 PU 남성용 지갑",
+            ),
+            (5696, "루이까또즈미니지갑 ST2SD11P"),
+            (5695, "구찌 썸머블프여성 GG 마몬트 지퍼 장지갑 443123 DTD1T 1000 24FW"),
+            (5698, "[명품] 인트레치아토 133945 V0016 8806 블랙 카드지갑"),
+        ],
+    )
+    llm = FakeLLM(decompose={"intent": "cart_add", "cart": {"productId": 5695, "quantity": 1}})
+
+    events = await _collect(_run_buyer_turn(request, _member(), llm=llm))
+
+    action = next(e for e in events if e["type"] == "action")["data"]
+    assert action["type"] == "CART_ADDED"
+    assert added["product_id"] == 5644
+
+
+@pytest.mark.parametrize(
+    ("message", "expected_product_id"),
+    [
+        pytest.param("Septwolves 지갑 담아줘", 5644, id="casefolded-unique-token"),
+        pytest.param("지갑 담아줘", None, id="common-token"),
+        pytest.param("남성 지갑 담아줘", None, id="multiple-common-tokens"),
+        pytest.param("Septwolves 구찌 지갑 담아줘", None, id="conflicting-unique-tokens"),
+        pytest.param("wolf 지갑 담아줘", None, id="substring-is-not-a-token"),
+        pytest.param("1000 지갑 담아줘", None, id="numeric-token"),
+        pytest.param("Septwolves 말고 구찌 지갑 담아줘", None, id="negated-token"),
+    ],
+)
+def test_reco_card_unique_name_token_safety_boundaries(
+    message: str, expected_product_id: int | None
+) -> None:
+    """[#639] 정확 토큰·표면 유일성·단일 상품을 모두 만족할 때만 코드가 확정한다."""
+    products = [
+        (5656, "지갑 통장지갑 양지사"),
+        (4583, "양지사 통장지갑 지갑류 통장정리 통장 동지갑 정리"),
+        (5643, "남성 소가죽 반지갑 남자 지갑 카드동전수납 학생지갑"),
+        (5642, "남성 지퍼 반지갑 중지갑 명함 카드 동전 지갑 남자"),
+        (5644, "W06 남성지갑 명품 천연가죽 남자 반지갑 카드 학생 septwolves"),
+        (5695, "구찌 썸머블프여성 GG 마몬트 지퍼 장지갑 443123 DTD1T 1000 24FW"),
+    ]
+
+    resolved = _resolve(
+        message,
+        products,
+        columns=None,
+        positional_order_verified=True,
+        name_confirmation_enabled=True,
+    )
+
+    if expected_product_id is None:
+        assert resolved is None
+    else:
+        assert resolved is not None
+        assert resolved.product_id == expected_product_id
+        assert resolved.reason == "screen_unique_name_token_match"
+
+
+def test_reco_card_command_token_in_a_product_name_is_not_a_selection_signal() -> None:
+    """상품명에 지시문 같은 토큰이 있어도 모든 담기 발화가 그 상품을 가리킨 것으로 보지 않는다."""
+    products = [
+        (5656, "지갑 통장지갑 양지사"),
+        (4583, "양지사 지갑 정리"),
+        (7777, "담아줘 특별상품"),
+    ]
+
+    resolved = _resolve(
+        "지갑 담아줘",
+        products,
+        columns=None,
+        positional_order_verified=True,
+        name_confirmation_enabled=True,
+    )
+
+    assert resolved is None
+
+
 async def test_reco_card_name_mention_with_negation_defers_to_llm(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2945,13 +3063,13 @@ def test_reco_resolution_is_always_within_allowed_and_products() -> None:
             continue
         assert resolved is not None, f"{message!r}: 규칙이 발동해야 하는데 아무 것도 안 함(None)"
         if expected == "reask":
-            assert resolved.product_id is None, (
-                f"{message!r}: 되물음을 기대했는데 확정됨: {resolved!r}"
-            )
+            assert (
+                resolved.product_id is None
+            ), f"{message!r}: 되물음을 기대했는데 확정됨: {resolved!r}"
             continue
-        assert resolved.product_id == expected_pid, (
-            f"{message!r}: productId {expected_pid} 를 기대했는데 {resolved!r}"
-        )
+        assert (
+            resolved.product_id == expected_pid
+        ), f"{message!r}: productId {expected_pid} 를 기대했는데 {resolved!r}"
         assert resolved.product_id in allowed
         assert resolved.product_id in {pid for pid, _ in products}
         confirmed += 1
