@@ -28,10 +28,25 @@ from evals.rerank_grounding.runner import run_probe
 def test_fixture_loads_unique_case_ids_and_declared_test_types() -> None:
     fixture = load_fixture(DEFAULT_FIXTURE_PATH)
 
-    assert fixture.fixture_version == "rerank-grounding-v1"
-    assert len(fixture.cases) == 10
-    assert len({case.case_id for case in fixture.cases}) == 10
+    assert DEFAULT_FIXTURE_PATH.name == "rerank_grounding_v2.json"
+    assert fixture.fixture_version == "rerank-grounding-v2"
+    assert len(fixture.cases) == 22
+    assert len({case.case_id for case in fixture.cases}) == 22
     assert {case.test_type for case in fixture.cases} == {"MFT", "INV", "DIR"}
+    assert all(case.final_view.product_groups for case in fixture.cases)
+    assert all(
+        set(case.overall_oracle.allowed_claim_codes)
+        | set(case.overall_oracle.forbidden_claim_codes)
+        == {
+            "TOP_REVIEW_COUNT",
+            "ALL_RATING_HIGH",
+            "ALL_WITHIN_TOTAL_BUDGET",
+            "NO_VERIFIABLE_OVERALL_CLAIM",
+            "POPULARITY_TOP",
+            "VALUE_FOR_MONEY_TOP",
+        }
+        for case in fixture.cases
+    )
 
 
 def test_fixture_hash_is_raw_file_sha256() -> None:
@@ -51,6 +66,85 @@ def _write_duplicate_fixture(tmp_path: Path) -> Path:
 def test_duplicate_case_id_is_rejected(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="duplicate caseId"):
         load_fixture(_write_duplicate_fixture(tmp_path))
+
+
+def _mutated_fixture(tmp_path: Path, mutate) -> Path:  # noqa: ANN001
+    source = json.loads(DEFAULT_FIXTURE_PATH.read_text(encoding="utf-8"))
+    mutate(source["cases"][0])
+    path = tmp_path / "mutated.json"
+    path.write_text(json.dumps(source, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (lambda case: case["finalView"].__setitem__("listType", "CART"), "unknown listType"),
+        (
+            lambda case: case["finalView"].__setitem__("totalBudget", True),
+            "totalBudget must be an integer or null",
+        ),
+        (
+            lambda case: case["finalView"].__setitem__("productGroups", []),
+            "productGroups must be a non-empty list",
+        ),
+        (
+            lambda case: case["finalView"].__setitem__("productGroups", [[999999]]),
+            "finalView productId is not a candidate",
+        ),
+        (
+            lambda case: case["finalView"].__setitem__("productGroups", [[101, 101]]),
+            "duplicate productId in finalView group",
+        ),
+        (
+            lambda case: case["overallOracle"]["allowedOverallClaims"].append("UNKNOWN"),
+            "unknown overall oracle claim",
+        ),
+        (
+            lambda case: case["overallOracle"]["forbiddenOverallClaims"].append(
+                case["overallOracle"]["allowedOverallClaims"][0]
+            ),
+            "overall oracle claim overlap",
+        ),
+    ],
+)
+def test_v2_final_view_and_oracle_shape_is_strict(tmp_path: Path, mutate, message: str) -> None:  # noqa: ANN001
+    with pytest.raises(ValueError, match=message):
+        load_fixture(_mutated_fixture(tmp_path, mutate))
+
+
+def test_v2_oracle_cannot_contradict_raw_final_view(tmp_path: Path) -> None:
+    def _contradict(case: dict[str, object]) -> None:
+        oracle = case["overallOracle"]
+        assert isinstance(oracle, dict)
+        allowed = oracle["allowedOverallClaims"]
+        forbidden = oracle["forbiddenOverallClaims"]
+        assert isinstance(allowed, list) and isinstance(forbidden, list)
+        code = forbidden.pop(0)
+        allowed.append(code)
+
+    with pytest.raises(ValueError, match="overall oracle contradicts raw facts"):
+        load_fixture(_mutated_fixture(tmp_path, _contradict))
+
+
+def test_v2_contains_all_required_overall_claim_cases() -> None:
+    fixture = load_fixture(DEFAULT_FIXTURE_PATH)
+    case_ids = {case.case_id for case in fixture.cases}
+
+    assert {
+        "overall_top_review_unique",
+        "overall_top_review_tie",
+        "overall_top_review_missing",
+        "overall_all_rating_high",
+        "overall_all_rating_unrated",
+        "overall_rating_final_subset",
+        "overall_budget_single_group",
+        "overall_budget_multiple_groups",
+        "overall_budget_exceeded",
+        "overall_budget_missing_price",
+        "overall_budget_pick_one",
+        "overall_unsupported_superlatives",
+    } <= case_ids
 
 
 def test_inv_pairs_change_only_the_declared_mutation() -> None:

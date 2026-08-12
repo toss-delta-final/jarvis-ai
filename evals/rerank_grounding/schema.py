@@ -8,10 +8,27 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
 
+from app.agents.buyer.recommendation.overall_comment_grounding import (
+    FinalRecommendationView,
+    validate_and_render_overall_comment,
+)
+from app.core.config import Settings
+from app.schemas.spring import SpringProduct
+
 TestType = Literal["MFT", "INV", "DIR"]
 MutationField = Literal["candidateName", "profileSummary"]
 
-DEFAULT_FIXTURE_PATH = Path(__file__).with_name("fixtures") / "rerank_grounding_v1.json"
+DEFAULT_FIXTURE_PATH = Path(__file__).with_name("fixtures") / "rerank_grounding_v2.json"
+
+_SUPPORTED_OVERALL_CODES = {
+    "TOP_REVIEW_COUNT",
+    "ALL_RATING_HIGH",
+    "ALL_WITHIN_TOTAL_BUDGET",
+    "NO_VERIFIABLE_OVERALL_CLAIM",
+}
+_FORBIDDEN_ONLY_OVERALL_CODES = {"POPULARITY_TOP", "VALUE_FOR_MONEY_TOP"}
+_ALL_OVERALL_ORACLE_CODES = _SUPPORTED_OVERALL_CODES | _FORBIDDEN_ONLY_OVERALL_CODES
+_ORACLE_SETTINGS = Settings.model_construct(rating_tier_good=4.0)
 
 
 @dataclass(frozen=True)
@@ -26,6 +43,26 @@ class CandidateFixture:
 
 
 @dataclass(frozen=True)
+class FinalViewFixture:
+    list_type: Literal["PICK_ONE", "BUY_ALL"]
+    total_budget: int | None
+    product_groups: tuple[tuple[int, ...], ...]
+
+    def as_final_view(self) -> FinalRecommendationView:
+        return FinalRecommendationView(
+            list_type=self.list_type,
+            total_budget=self.total_budget,
+            product_groups=self.product_groups,
+        )
+
+
+@dataclass(frozen=True)
+class OverallOracle:
+    allowed_claim_codes: tuple[str, ...]
+    forbidden_claim_codes: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class GroundingCase:
     case_id: str
     test_type: TestType
@@ -36,6 +73,8 @@ class GroundingCase:
     candidates: tuple[CandidateFixture, ...]
     need_of: dict[int, str] | None
     per_need: int | None
+    final_view: FinalViewFixture
+    overall_oracle: OverallOracle
 
 
 @dataclass(frozen=True)
@@ -115,6 +154,139 @@ def _need_of(payload: object, candidate_ids: set[int]) -> dict[int, str] | None:
     return result
 
 
+def _final_view(payload: object, candidate_ids: set[int]) -> FinalViewFixture:
+    if not isinstance(payload, dict):
+        raise ValueError("finalView must be an object")
+    list_type = payload.get("listType")
+    if list_type not in {"PICK_ONE", "BUY_ALL"}:
+        raise ValueError(f"unknown listType: {list_type}")
+    total_budget = _nullable_int(payload, "totalBudget")
+    if list_type == "PICK_ONE" and total_budget is not None:
+        raise ValueError("PICK_ONE finalView totalBudget must be null")
+    raw_groups = payload.get("productGroups")
+    if not isinstance(raw_groups, list) or not raw_groups:
+        raise ValueError("productGroups must be a non-empty list")
+    groups: list[tuple[int, ...]] = []
+    for raw_group in raw_groups:
+        if not isinstance(raw_group, list) or not raw_group:
+            raise ValueError("finalView group must be a non-empty list")
+        if not all(
+            isinstance(product_id, int) and not isinstance(product_id, bool)
+            for product_id in raw_group
+        ):
+            raise ValueError("finalView productId must be an integer")
+        if len(raw_group) != len(set(raw_group)):
+            raise ValueError("duplicate productId in finalView group")
+        for product_id in raw_group:
+            if product_id not in candidate_ids:
+                raise ValueError(f"finalView productId is not a candidate: {product_id}")
+        groups.append(tuple(raw_group))
+    return FinalViewFixture(
+        list_type=list_type,
+        total_budget=total_budget,
+        product_groups=tuple(groups),
+    )
+
+
+def _claim_list(payload: dict[str, object], key: str) -> tuple[str, ...]:
+    value = payload.get(key)
+    if not isinstance(value, list) or not all(isinstance(code, str) for code in value):
+        raise ValueError(f"{key} must be a claim-code list")
+    if len(value) != len(set(value)):
+        raise ValueError(f"duplicate claim in {key}")
+    unknown = set(value) - _ALL_OVERALL_ORACLE_CODES
+    if unknown:
+        raise ValueError(f"unknown overall oracle claim: {sorted(unknown)}")
+    return tuple(value)
+
+
+def _overall_oracle(payload: object) -> OverallOracle:
+    if not isinstance(payload, dict):
+        raise ValueError("overallOracle must be an object")
+    allowed = _claim_list(payload, "allowedOverallClaims")
+    forbidden = _claim_list(payload, "forbiddenOverallClaims")
+    if set(allowed) & set(forbidden):
+        raise ValueError("overall oracle claim overlap")
+    if set(allowed) | set(forbidden) != _ALL_OVERALL_ORACLE_CODES:
+        raise ValueError("overall oracle must classify every registered claim")
+    if set(allowed) & _FORBIDDEN_ONLY_OVERALL_CODES:
+        raise ValueError("overall oracle contradicts raw facts")
+    return OverallOracle(allowed_claim_codes=allowed, forbidden_claim_codes=forbidden)
+
+
+def _canonical_proposal(code: str, final_view: FinalViewFixture) -> dict[str, object]:
+    final_ids = list(
+        dict.fromkeys(product_id for group in final_view.product_groups for product_id in group)
+    )
+    if code == "TOP_REVIEW_COUNT":
+        return {
+            "claimCode": code,
+            "scope": "FINAL_EXPOSED_PRODUCTS",
+            "subjectProductIds": final_ids[:1],
+            "evidenceFields": ["reviewCount"],
+        }
+    if code == "ALL_RATING_HIGH":
+        return {
+            "claimCode": code,
+            "scope": "FINAL_EXPOSED_PRODUCTS",
+            "subjectProductIds": final_ids,
+            "evidenceFields": ["ratingLevel"],
+        }
+    if code == "ALL_WITHIN_TOTAL_BUDGET":
+        return {
+            "claimCode": code,
+            "scope": "FINAL_RECOMMENDATION_LISTS",
+            "subjectProductIds": final_ids,
+            "evidenceFields": ["price", "totalBudget"],
+        }
+    if code == "NO_VERIFIABLE_OVERALL_CLAIM":
+        return {
+            "claimCode": code,
+            "scope": "FINAL_EXPOSED_PRODUCTS",
+            "subjectProductIds": [],
+            "evidenceFields": [],
+        }
+    return {
+        "claimCode": code,
+        "scope": "FINAL_EXPOSED_PRODUCTS",
+        "subjectProductIds": final_ids[:1],
+        "evidenceFields": [],
+    }
+
+
+def _validate_overall_oracle(
+    *,
+    case_id: str,
+    candidates: tuple[CandidateFixture, ...],
+    final_view: FinalViewFixture,
+    oracle: OverallOracle,
+) -> None:
+    products_by_id = {
+        candidate.product_id: SpringProduct(
+            product_id=candidate.product_id,
+            name=candidate.name,
+            price=candidate.price,
+            rating=candidate.rating,
+            review_count=candidate.review_count,
+            category=candidate.category_name,
+            brand=candidate.brand,
+        )
+        for candidate in candidates
+    }
+    actually_supported: set[str] = set()
+    for code in _ALL_OVERALL_ORACLE_CODES:
+        decision = validate_and_render_overall_comment(
+            [_canonical_proposal(code, final_view)],
+            final_view=final_view.as_final_view(),
+            products_by_id=products_by_id,
+            settings=_ORACLE_SETTINGS,
+        )
+        if code in decision.supported_claim_codes:
+            actually_supported.add(code)
+    if set(oracle.allowed_claim_codes) != actually_supported:
+        raise ValueError(f"overall oracle contradicts raw facts: {case_id}")
+
+
 def _case(payload: object) -> GroundingCase:
     if not isinstance(payload, dict):
         raise ValueError("case must be an object")
@@ -142,8 +314,17 @@ def _case(payload: object) -> GroundingCase:
         raise ValueError("needOf and perNeed must be provided together")
     if per_need is not None and per_need <= 0:
         raise ValueError("perNeed must be positive")
+    final_view = _final_view(payload.get("finalView"), set(candidate_ids))
+    overall_oracle = _overall_oracle(payload.get("overallOracle"))
+    case_id = _required_string(payload, "caseId")
+    _validate_overall_oracle(
+        case_id=case_id,
+        candidates=candidates,
+        final_view=final_view,
+        oracle=overall_oracle,
+    )
     return GroundingCase(
-        case_id=_required_string(payload, "caseId"),
+        case_id=case_id,
         test_type=test_type,
         pair_id=pair_id,
         mutation_field=mutation_field,
@@ -152,6 +333,8 @@ def _case(payload: object) -> GroundingCase:
         candidates=candidates,
         need_of=need_of,
         per_need=per_need,
+        final_view=final_view,
+        overall_oracle=overall_oracle,
     )
 
 
