@@ -4005,12 +4005,22 @@
 - 원인: 두 겹이 겹쳤다.
   1. **상류** — psycopg_pool 의 async 빌드는 `CLIENT_EXCEPTIONS = (Exception, asyncio.CancelledError)` 이고(`pool_async.py`), `AsyncConnectionPool.worker()` 가 `await task.run()` 을 그걸로 감싼다. 그래서 유지보수 태스크를 **실행 중인** 워커를 취소하면 `CancelledError` 가 삼켜지고 워커는 `await q.get()` 으로 되돌아간다 — 불사 태스크가 된다. `_cancel_all_tasks()` 는 태스크 목록을 **한 번만** 취소하고 무기한 gather 로 기다리므로 그대로 교착한다. 워커가 큐에 park 중이면 정상 취소돼 죽는다 — 그래서 간헐적이었다.
   2. **우리 코드** — pg 모듈 6곳(`processed_events`·`session_activity`·`conversation`·`pg_store`·`profile/store`·`session_context`)이 sync 리셋터에서 await 할 수 없다는 이유로 풀 close 를 "다음 async 진입"으로 미룬다. 그래서 매 테스트가 **살아 있는 풀**(워커 3 + 스케줄러)을 곧 파괴될 루프에 남겼다. 창을 만든 건 우리고, 그 창을 교착으로 바꾼 건 상류다.
+- 후속 재발(2026-08-13, #653): 새 `seller/analysis_store` 풀을 공통 close 목록과 teardown
+  matrix에 등록하지 않은 채 `TestClient` portal에서 fire-and-forget 초기화했다. `pool.open()` 중
+  portal이 취소되자 부분 생성된 worker가 남아 전체 pytest가 6%에서 15분 이상 멈췄다. 새 풀
+  모듈은 기존 close 규약을 코드만 복사하는 것으로 끝나지 않고 **공통 수명주기 목록까지 함께
+  확장해야 한다**.
 - 규칙:
   1. **비동기 리소스는 자기를 만든 이벤트 루프 안에서 닫는다.** "다음 호출에서 정리"는 그 다음 호출이 *같은 루프*라는 보장이 있을 때만 성립한다 — pytest-asyncio(테스트마다 새 루프)·`TestClient`(자체 portal 루프)에서는 성립하지 않는다. sync 리셋터에 정리를 미뤘다면 **짝이 되는 async close 를 함께 만들고** teardown 훅에 배선한다.
   2. **간헐적 hang 은 타이밍 문제가 아니라 대개 "취소 불응 태스크" 문제다.** `faulthandler` 는 스레드만 덤프하니 asyncio 는 안 보인다. `asyncio.runners._cancel_all_tasks` 를 감싸 워치독 스레드로 `all_tasks()` + `task.cancelling()`/`_fut_waiter` 를 덤프하면 한 방에 나온다. **관측 코드가 타이밍을 바꾸면 재현이 사라진다** — `asyncio.wait(timeout=...)` 을 끼우자 15회 내내 통과했다. 진단 도구는 루프에 타이머를 추가하지 않는 형태로 만든다.
   3. `cancelling() > 0` 인데 `done() == False` 이고 `_fut_waiter` 가 **새 PENDING future** 면, 취소가 전달됐다가 삼켜지고 재대기에 들어갔다는 뜻이다. 라이브러리의 `except` 절이 `CancelledError` 를 포함하는지 먼저 grep 한다.
   4. 죽은 루프에 묶인 풀을 살아 있는 루프에서 닫으려 하면 실패하고 워커 코루틴만 미회수로 GC 돼 `PytestUnraisableExceptionWarning` 이 뜬다. **정리 훅은 "이 루프에 묶인 것"으로 범위를 좁힌다**(`asyncio.all_tasks()` 에 `pool-*` 태스크가 있는지로 판정).
-- 관련: #208, `tests/conftest.py::close_pg_pools_on_loop`, `tests/unit/test_pool_worker_cancellation.py`, `tests/integration/test_pg_pool_loop_teardown.py`
+  5. 새 `AsyncConnectionPool` 모듈의 완료 조건에는 `close_pool`, 공통 teardown 목록, loop teardown
+     matrix, 초기화 취소 회귀 테스트가 모두 포함된다. 유닛 경로의 부수적 fire-and-forget 훅은
+     no-op으로 주입해 로컬 PostgreSQL 상태와 분리한다.
+- 관련: #208, #653, `tests/conftest.py::close_pg_pools_on_loop`,
+  `tests/unit/test_pool_worker_cancellation.py`, `tests/unit/test_seller_analysis_store.py`,
+  `tests/integration/test_pg_pool_loop_teardown.py`
 
 ## [2026-07-31] 계약에 필드가 있다고 필요한 건 아니다 — "누가 만드나" 전에 "왜 있나"를 묻는다
 

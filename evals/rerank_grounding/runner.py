@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from time import perf_counter
 
+from app.agents.buyer.recommendation.overall_comment_grounding import (
+    FinalRecommendationView,
+    OverallGroundingDecision,
+    validate_and_render_overall_comment,
+)
 from app.agents.buyer.recommendation.rerank import rerank
 from app.agents.buyer.recommendation.rerank_grounding import (
     CandidateGroundingFacts,
@@ -15,10 +20,11 @@ from app.agents.buyer.recommendation.rerank_grounding import (
     GroundingDecision,
 )
 from app.agents.buyer.recommendation.state import extract_json
+from app.core.config import get_settings
 from app.core.llm import LLMClient
 from app.schemas.spring import SpringProduct
 from evals.model_eval.budget import BudgetExceeded
-from evals.rerank_grounding.metrics import MetricItem, MetricSample
+from evals.rerank_grounding.metrics import MetricItem, MetricSample, detect_overall_claims
 from evals.rerank_grounding.schema import FixtureSet, GroundingCase
 
 _IDENTIFIER_RE = re.compile(r"\b(org|proj|user|sk)-[A-Za-z0-9_-]{6,}")
@@ -67,6 +73,14 @@ class Sample:
     ranked_product_ids: tuple[int, ...]
     displayed_rationales: tuple[str, ...]
     raw_response: str
+    raw_overall_comment: str
+    raw_overall_claims: tuple[Mapping[str, object], ...]
+    final_view: FinalRecommendationView
+    displayed_overall_comment: str
+    detected_overall_claim_codes: tuple[str, ...]
+    overall_grounding_decision: OverallGroundingDecision | None
+    allowed_overall_claim_codes: tuple[str, ...]
+    forbidden_overall_claim_codes: tuple[str, ...]
     grounding_decisions: tuple[GroundingDecision, ...]
     metric_items: tuple[MetricItem, ...]
     validator_downgrade_count: int
@@ -84,6 +98,27 @@ class Sample:
             arm=self.arm,
             items=self.metric_items,
             candidate_count=self.candidate_count,
+            displayed_overall_comment=self.displayed_overall_comment,
+            requested_overall_claim_codes=(
+                self.overall_grounding_decision.requested_claim_codes
+                if self.overall_grounding_decision is not None
+                else ()
+            ),
+            supported_overall_claim_codes=(
+                self.overall_grounding_decision.supported_claim_codes
+                if self.overall_grounding_decision is not None
+                else ()
+            ),
+            overall_validator_downgraded=bool(
+                self.overall_grounding_decision and self.overall_grounding_decision.downgraded
+            ),
+            overall_failure_reasons=(
+                self.overall_grounding_decision.failure_reasons
+                if self.overall_grounding_decision is not None
+                else ()
+            ),
+            allowed_overall_claim_codes=self.allowed_overall_claim_codes,
+            forbidden_overall_claim_codes=self.forbidden_overall_claim_codes,
             out_of_candidate_id_count=self.out_of_candidate_id_count,
             duplicate_id_count=self.duplicate_id_count,
             failure_type=self.failure_type,
@@ -206,11 +241,12 @@ async def _run_attempt(
     expose_max: int,
 ) -> Sample:
     capture = _CaptureLLM(llm)
+    products = _products(case)
     started = perf_counter()
     result = await rerank(
         capture,
         query=case.query,
-        candidates=_products(case),
+        candidates=products,
         profile_summary=case.profile_summary,
         tier="smart",
         expose_max=min(expose_max, len(case.candidates)),
@@ -237,6 +273,18 @@ async def _run_attempt(
     )
     candidate_ids = {candidate.product_id for candidate in case.candidates}
     out_of_candidate, duplicates = _raw_id_counts(capture.raw_response, candidate_ids)
+    final_view = case.final_view.as_final_view()
+    overall_grounding_decision = None
+    displayed_overall_comment = result.overall_comment
+    if arm != "current":
+        overall_grounding_decision = validate_and_render_overall_comment(
+            result.overall_claims,
+            final_view=final_view,
+            products_by_id={product.product_id: product for product in products},
+            settings=get_settings(),
+        )
+        if arm == "validated":
+            displayed_overall_comment = overall_grounding_decision.rendered_comment
     return Sample(
         case_id=case.case_id,
         test_type=case.test_type,
@@ -247,6 +295,14 @@ async def _run_attempt(
         ranked_product_ids=tuple(product_id for product_id, _ in result.ranked),
         displayed_rationales=tuple(rationale for _, rationale in result.ranked),
         raw_response=capture.raw_response,
+        raw_overall_comment=result.overall_comment,
+        raw_overall_claims=result.overall_claims,
+        final_view=final_view,
+        displayed_overall_comment=displayed_overall_comment,
+        detected_overall_claim_codes=detect_overall_claims(displayed_overall_comment),
+        overall_grounding_decision=overall_grounding_decision,
+        allowed_overall_claim_codes=case.overall_oracle.allowed_claim_codes,
+        forbidden_overall_claim_codes=case.overall_oracle.forbidden_claim_codes,
         grounding_decisions=tuple(result.grounding_decisions),
         metric_items=metric_items,
         validator_downgrade_count=sum(

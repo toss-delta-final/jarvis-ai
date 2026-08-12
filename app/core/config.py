@@ -25,7 +25,12 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 # 모델 단가표 기본값의 단일 출처(#437) — model_pricing 은 최상단에서 config 를 import 하지
 # 않으므로 여기서 최상단 import 해도 순환이 생기지 않는다.
-from app.core.model_pricing import DEFAULT_MODEL_PRICE_IN_PER_1K, DEFAULT_MODEL_PRICE_OUT_PER_1K
+from app.core.model_pricing import (
+    DEFAULT_MODEL_PRICE_CACHE_WRITE_PER_1K,
+    DEFAULT_MODEL_PRICE_CACHED_IN_PER_1K,
+    DEFAULT_MODEL_PRICE_IN_PER_1K,
+    DEFAULT_MODEL_PRICE_OUT_PER_1K,
+)
 
 # 고객 피처 스펙의 단일 출처(#593) — 기본값을 여기서 다시 적으면 스냅샷 각인과 코드가
 # 조용히 어긋난다. features/spec.py 는 math 만 import 하는 상수 모듈이고 그 패키지
@@ -312,11 +317,23 @@ class Settings(BaseSettings):
     model_price_in_per_1k: Annotated[dict[str, float], NoDecode] = Field(
         default_factory=lambda: dict(DEFAULT_MODEL_PRICE_IN_PER_1K)
     )
+    model_price_cached_in_per_1k: Annotated[dict[str, float], NoDecode] = Field(
+        default_factory=lambda: dict(DEFAULT_MODEL_PRICE_CACHED_IN_PER_1K)
+    )
+    model_price_cache_write_per_1k: Annotated[dict[str, float], NoDecode] = Field(
+        default_factory=lambda: dict(DEFAULT_MODEL_PRICE_CACHE_WRITE_PER_1K)
+    )
     model_price_out_per_1k: Annotated[dict[str, float], NoDecode] = Field(
         default_factory=lambda: dict(DEFAULT_MODEL_PRICE_OUT_PER_1K)
     )
 
-    @field_validator("model_price_in_per_1k", "model_price_out_per_1k", mode="before")
+    @field_validator(
+        "model_price_in_per_1k",
+        "model_price_cached_in_per_1k",
+        "model_price_cache_write_per_1k",
+        "model_price_out_per_1k",
+        mode="before",
+    )
     @classmethod
     def _empty_model_price_table_uses_default(cls, value: object, info) -> object:
         # deploy.yml 은 미설정 vars 를 빈 문자열로 env 파일에 쓴다. 우리가 운영자에게 이 두
@@ -2401,6 +2418,15 @@ class Settings(BaseSettings):
     # 단일 호출 실측 p95는 4.3s다. 이 값을 올릴 때는 구매자 상한과의 관계도 함께 검토한다.
     llm_timeout_s: float = 30.0
     llm_max_retries: int = 1
+    # 같은 구매자 채팅방의 선택적 계층형 메모리(#653). 프롬프트에 실리는 원문·상황 요약과
+    # 별도 압축 호출을 각각 유계로 둔다. 비활성화하면 기존 무기억 동작으로 즉시 돌아간다.
+    buyer_memory_enabled: bool = True
+    buyer_memory_recent_turns: int = Field(default=3, ge=1, le=10)
+    buyer_memory_recent_token_cap: int = Field(default=1_000, ge=64, le=8_000)
+    buyer_memory_situation_token_cap: int = Field(default=400, ge=64, le=2_000)
+    buyer_memory_compaction_trigger_tokens: int = Field(default=1_200, ge=1, le=20_000)
+    buyer_memory_compaction_input_token_cap: int = Field(default=4_000, ge=64, le=20_000)
+    buyer_memory_compaction_max_tokens: int = Field(default=256, ge=32, le=2_000)
 
     # ── 관측 집계 SLO·degrade 알림 (scripts/aggregate_observability.py 주입, EVAL-OBS §3.3·§5) ──
     # 런타임 동작을 바꾸지 않는 **집계 리포트 전용 목표치**다. 위의 스트림 상한은 "언제 끊나"이고

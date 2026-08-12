@@ -2069,6 +2069,10 @@ async def test_expand_notice_lists_deduped_mids_and_toggle(monkeypatch: pytest.M
     """[테스트 10] 고지 문구가 확장 leaf 의 중복 제거된 중분류로 조립되고,
     `category_expand_notice_enabled=False` 면 종전 문구 그대로다(고지 미발신)."""
 
+    # 이 테스트는 확장 고지와 legacy 모델 코멘트가 별도 token인지 본다. C는 모델 코멘트를
+    # 결정론 템플릿으로 대체하므로 A rollback으로 기존 문자열 관찰 범위를 고정한다.
+    monkeypatch.setattr(get_settings(), "rerank_grounding_arm", "current")
+
     async def _search(filters, exclude_product_ids=None):
         return _res(101)
 

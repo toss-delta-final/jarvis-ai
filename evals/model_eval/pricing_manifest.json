@@ -2,17 +2,21 @@
   "entries": [
     {
       "effectiveDate": "2025-08-07",
+      "cacheWritePer1k": 0.00005,
+      "cachedInPer1k": 0.000005,
       "inPer1k": 0.00005,
       "model": "gpt-5-nano",
       "outPer1k": 0.0004,
       "source": "https://developers.openai.com/api/docs/models/gpt-5-nano"
     },
     {
-      "effectiveDate": "2026-07-30",
+      "effectiveDate": "2026-08-13",
+      "cacheWritePer1k": 0.00025,
+      "cachedInPer1k": 0.00002,
       "inPer1k": 0.0002,
       "model": "gpt-5.6-luna",
       "outPer1k": 0.0012,
-      "source": "https://openai.com/index/advancing-the-price-performance-frontier-with-gpt-5-6/"
+      "source": "https://developers.openai.com/api/docs/models/gpt-5.6-luna"
     }
   ],
   "version": "1"

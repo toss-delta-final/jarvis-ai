@@ -28,8 +28,14 @@ def _supported_reason(candidate: dict[str, object]) -> tuple[str, list[str], str
 class ScriptedGroundingLLM:
     """Derive deterministic outputs from the actual candidates sent by rerank."""
 
-    def __init__(self, *, invalid_evidence: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        invalid_evidence: bool = False,
+        invalid_overall: bool = False,
+    ) -> None:
         self.invalid_evidence = invalid_evidence
+        self.invalid_overall = invalid_overall
 
     async def complete(
         self,
@@ -66,7 +72,43 @@ class ScriptedGroundingLLM:
             if structured:
                 item.update({"reasonCode": code, "evidenceFields": fields})
             ranked.append(item)
-        return json.dumps(
-            {"ranked": ranked, "overallComment": "조건에 맞춰 골라봤어요"},
-            ensure_ascii=False,
-        )
+        payload: dict[str, object] = {
+            "ranked": ranked,
+            "overallComment": "조건에 맞춰 골라봤어요",
+        }
+        if structured:
+            product_ids = [
+                candidate["productId"]
+                for candidate in candidates
+                if isinstance(candidate.get("productId"), int)
+            ]
+            if self.invalid_overall:
+                payload["overallClaims"] = [
+                    {
+                        "claimCode": "POPULARITY_TOP",
+                        "scope": "FINAL_EXPOSED_PRODUCTS",
+                        "subjectProductIds": product_ids[:1],
+                        "evidenceFields": [],
+                    }
+                ]
+            elif product_ids and all(
+                candidate.get("ratingLevel") in {"높음", "매우높음"} for candidate in candidates
+            ):
+                payload["overallClaims"] = [
+                    {
+                        "claimCode": "ALL_RATING_HIGH",
+                        "scope": "FINAL_EXPOSED_PRODUCTS",
+                        "subjectProductIds": product_ids,
+                        "evidenceFields": ["ratingLevel"],
+                    }
+                ]
+            else:
+                payload["overallClaims"] = [
+                    {
+                        "claimCode": "NO_VERIFIABLE_OVERALL_CLAIM",
+                        "scope": "FINAL_EXPOSED_PRODUCTS",
+                        "subjectProductIds": [],
+                        "evidenceFields": [],
+                    }
+                ]
+        return json.dumps(payload, ensure_ascii=False)

@@ -18,6 +18,24 @@
   열을 추가하고 그룹 라벨을 latency 표와 동일한 `dimension:group` 규약으로 통일했으며, CSV
   metric에도 min/max를 포함했다. 버킷 경계는 `app/core/config.py`의 신규 튜너블
   `observability_length_buckets`로 주입한다(실측 분포 전 추정치). 계약(api-spec) 무영향.
+- **#645 buyer `overallComment` 최종-view grounding**을 추가했다. B/C rerank 출력은 목록 전체
+  `overallClaims`를 구조화해 보존하고, production C는 repurchase pinning·노출 보충/절단·니즈
+  분할·BUY_ALL budget-set 계산 뒤의 실제 I-21 product groups에 대해 claim을 검증한 후 고정
+  template만 노출한다. 지원 범위는 raw `reviewCount` 최댓값, 전 상품 high rating, 각 BUY_ALL
+  조합의 총예산 충족이며, 정본 metric이 없는 popularity/value-for-money 최상급은 중립 문구로
+  강등한다. fixture v2는 기존 10 case와 overall 전용 12 case의 allowed/forbidden oracle을 raw
+  데이터로 재검산하고, A bounded detector·B/C 구조화 정확도·coverage·downgrade·지연·token·비용
+  artifact를 기록한다. 기존 #632 A 표본 재채점은 등록 표현 11건 중 위반 1건(9.09%)이었다.
+  현재 worktree에는 live provider credential이 없어 새 N=3 및 N=8×2는 `not tested`로 남았으며,
+  deterministic smoke만으로 병합 품질을 주장하지 않는다. `RERANK_GROUNDING_ARM=current`는 상품별
+  근거와 전체 코멘트를 함께 기존 A로 되돌리고 Spring/CH-5/SSE wire 계약은 바뀌지 않는다.
+- **#653 — 구매자 채팅에 같은 방 전용 계층형 메모리와 캐시 인지 비용 계측을 추가했다.**
+  최근 대화는 최대 3쌍·1,000 추정 토큰, 상황 요약은 400 추정 토큰으로 제한하고, 밀려난
+  고가치 대화가 1,200 추정 토큰 이상일 때만 다음 턴용 요약을 비동기로 갱신한다. 새 방에는
+  기존 취향 프로필만 전달하며 자유대화 상황은 전달하지 않고, 옵션 답변·action-only 턴과
+  메모리 저장 장애는 기존 응답 경로를 그대로 유지한다. 요청 로그는 공급자 actual usage의
+  캐시 읽기·쓰기 토큰과 메모리 압축 비용을 원문 없이 분리 기록한다. API·SSE·DB 스키마와
+  LangGraph 그래프 구조는 변경하지 않았다.
 - **#638 구매자 adversarial 데이터셋에 rerank grounding A/B/C 평가 연결**을 추가했다.
   `--arms all`로 현행·구조화 prompt-only·validator 표시 결과를 같은 case에서 기록하며, B와 C는
   같은 구조화 LLM 응답을 공유해 validator 효과가 모델 표본 차이에 섞이지 않는다. 평가 runner의

@@ -382,7 +382,7 @@ def test_compose_response_chart_requested_but_missing_appends_notice() -> None:
     """요청했는데 차트가 없으면(graph 실패·G1 전건 드랍) 그 경우만 안내한다(D-5)."""
     text = pipeline.compose_response("본문", RecommendationSet(), None, chart_requested=True)
     assert "[차트 안내]" in text
-    assert "요청하신 차트를 만들지 못했습니다" in text
+    assert "요청하신 차트는 이번엔 만들어 드리지 못했어요" in text
 
     empty_charts_text = pipeline.compose_response(
         "본문", RecommendationSet(), ChartSet(charts=[]), chart_requested=True
@@ -591,7 +591,7 @@ def test_progress_token_stages() -> None:
         "recommend",
         "graph",
     }
-    assert pipeline.ALL_WORKERS_FAILED_TOKEN.startswith("죄송합니다")
+    assert pipeline.ALL_WORKERS_FAILED_TOKEN.startswith("지금 데이터를 불러오는 중에")
 
 
 # ── split_report_summary (이슈 #296 — report SSE summary 분리, §5.1 규칙) ────────

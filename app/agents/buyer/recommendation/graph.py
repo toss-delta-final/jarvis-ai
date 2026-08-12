@@ -28,6 +28,10 @@ from app.agents.buyer.recommendation.no_condition import (
     rank_by_profile,
     within_budget,
 )
+from app.agents.buyer.recommendation.overall_comment_grounding import (
+    FinalRecommendationView,
+    validate_and_render_overall_comment,
+)
 from app.agents.buyer.recommendation.search_guard import (
     is_category_mapping_dropped,
     is_popular_fallback_safe,
@@ -2100,6 +2104,8 @@ async def stream_recommendation(
         if settings.progress_events_enabled:
             yield progress_frame("reranking", settings.progress_reranking_message)
         rerank_degraded = False
+        raw_overall_comment = ""
+        raw_overall_claims = ()
         # [이슈 #140] rerank 실패 시엔 §2 판정 규칙상 전 항목 search_order 로 분류되므로
         # 빈 집합으로 충분하다 — 성공 경로에서만 아래 스냅샷으로 채워진다.
         rerank_ranked_ids: set[int] = set()
@@ -2132,7 +2138,8 @@ async def stream_recommendation(
             # 있어 오분류된다(§2 판정 방법).
             rerank_ranked_ids = set(ranked_ids)
             reason_by_id = dict(rr.ranked)  # 상품별 근거(§4.2) — (productId, rationale) 튜플 → 맵
-            comment = _strip_unsafe(rr.overall_comment)
+            raw_overall_comment = rr.overall_comment
+            raw_overall_claims = rr.overall_claims
         except LLMError:
             rerank_degraded = True
             if trace := current_request_trace():
@@ -2143,7 +2150,7 @@ async def stream_recommendation(
             # 평상시와 구분되지 않아 개인화·근거가 통째로 사라진 사실이 사용자에게 가려졌다.
             # config 값은 운영자 주입이라 소스 리터럴이 아니다 — 정상 경로(rr.overall_comment)와
             # 같은 _strip_unsafe 정제를 받는다.
-            comment = _strip_unsafe(settings.rerank_fallback_notice)
+            raw_overall_comment = settings.rerank_fallback_notice
 
         # [#120 PR#230 리뷰] 지목 상품 고정 — rerank 는 relevance 로 expose_max 개만 고르고 "이건 반드시"
         # 라는 고정 수단이 없어(need_of/per_need 는 니즈 분할용), exact 제외·상한 절단을 다 통과한
@@ -2293,6 +2300,26 @@ async def stream_recommendation(
     finally:
         _cancel_priority_task(priority_task)
 
+    overall_grounding_decision = None
+    if not rerank_degraded and settings.rerank_grounding_arm == "validated":
+        final_view = FinalRecommendationView(
+            list_type="BUY_ALL" if plan is not None else "PICK_ONE",
+            total_budget=decision.total_budget if plan is not None else None,
+            product_groups=(
+                tuple(tuple(item.product_ids) for item in plan.sets)
+                if plan is not None
+                else tuple(tuple(group) for _leg, group in exposed_groups)
+            ),
+        )
+        overall_grounding_decision = validate_and_render_overall_comment(
+            raw_overall_claims,
+            final_view=final_view,
+            products_by_id={product.product_id: product for product in candidates},
+            settings=settings,
+        )
+        raw_overall_comment = overall_grounding_decision.rendered_comment
+    comment = _strip_unsafe(raw_overall_comment)
+
     # [#101 #8] 관측성 — 파이프라인 후보 깔때기를 한 줄 구조화 로그로 남긴다(recall 손실·자원 진단).
     # received(수신) → after_dedup(최근구매 제외 후) → compressed(embedding_rerank_limit 절단 후)
     # → final(노출). 임베딩 재정렬 degrade 사유는 backend(_log.warning), rerank degrade 는 여기서.
@@ -2355,6 +2382,19 @@ async def stream_recommendation(
             # 범위 밖 leg 방어·두 제외 경로(dropped_legs·limited_legs)를 순수 헬퍼로 뽑았다
             # (_need_priority_required_dropped 참조) — 근거·불변식 설명도 그쪽 docstring 에 있다.
             "need_priority_required_dropped": _need_priority_required_dropped(priorities, plan),
+            "overall_supported_claim_codes": (
+                list(overall_grounding_decision.supported_claim_codes)
+                if overall_grounding_decision is not None
+                else []
+            ),
+            "overall_claim_downgraded": bool(
+                overall_grounding_decision and overall_grounding_decision.downgraded
+            ),
+            "overall_claim_failure_reasons": (
+                list(overall_grounding_decision.failure_reasons)
+                if overall_grounding_decision is not None
+                else []
+            ),
         },
     )
 
