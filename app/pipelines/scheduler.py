@@ -20,9 +20,11 @@ import asyncio
 import logging
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
 from app.agents.buyer.session_state import get_legacy_gc_counters, run_legacy_gc_batch
+from app.agents.seller.analysis.daily_batch import run_daily_batch, run_weekly_batch
 from app.core.config import get_settings
 from app.core.conversation import get_conversation_store
 from app.core.session_lifecycle import (
@@ -34,8 +36,35 @@ _log = logging.getLogger(__name__)
 _I17_JOB_ID = "i17_incremental_pull"
 _SESSION_CONTEXT_JOB_ID = "session_context_sweep"
 _CONVERSATION_RETENTION_JOB_ID = "conversation_retention_sweep"
+_SELLER_ANALYSIS_DAILY_JOB_ID = "seller_analysis_daily"
+_SELLER_ANALYSIS_WEEKLY_JOB_ID = "seller_analysis_weekly"
 # 하위 호환 — 기존 내부 테스트/운영 도구가 참조하던 이름.
 _JOB_ID = _I17_JOB_ID
+
+
+async def _run_seller_daily_batch() -> None:
+    """무인 일일 배치 잡(#601) — 실패를 삼켜 스케줄러 프로세스를 지키고, 다음 주기가 이어받는다.
+
+    `run_daily_batch` 내부가 브랜드 단위로 이미 격리돼 있으므로(하나 실패해도 나머지는
+    계속) 여기서 잡는 예외는 브랜드 루프 밖(예: `list_active_targets` 자체 실패) 뿐이다.
+    """
+    try:
+        await run_daily_batch()
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 - job 실패 격리, 다음 KST 00:20 주기가 재개
+        _log.exception("무인 일일 배치(seller_analysis_daily) 실패 — 다음 주기 재개")
+
+
+async def _run_seller_weekly_batch() -> None:
+    """무인 주간 배치 잡(#601) — 실패를 삼켜 스케줄러 프로세스를 지킨다."""
+    try:
+        await run_weekly_batch()
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 - job 실패 격리, 다음 주 재개
+        _log.exception("무인 주간 배치(seller_analysis_weekly) 실패 — 다음 주기 재개")
+
 
 _scheduler: AsyncIOScheduler | None = None
 
@@ -181,6 +210,30 @@ def start_scheduler() -> AsyncIOScheduler:
             max_instances=1,
             coalesce=True,
         )
+    # [이슈 #601] 무인 판매자 분석 — 시각 고정 실행이라 IntervalTrigger가 아니라
+    # CronTrigger가 필요하다(10-TRIGGER.md §2 결정 95). timezone을 **명시**한다 —
+    # CronTrigger(hour=0, minute=20)만 쓰면 컨테이너 TZ(보통 UTC) 기준이 되어 KST 09:20에
+    # 도는 사고가 난다(그 §2의 실측 경고와 동일).
+    scheduler.add_job(
+        _run_seller_daily_batch,
+        CronTrigger.from_crontab(
+            settings.seller_analysis_daily_cron, timezone=settings.seller_analysis_cron_timezone
+        ),
+        id=_SELLER_ANALYSIS_DAILY_JOB_ID,
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        _run_seller_weekly_batch,
+        CronTrigger.from_crontab(
+            settings.seller_analysis_weekly_cron, timezone=settings.seller_analysis_cron_timezone
+        ),
+        id=_SELLER_ANALYSIS_WEEKLY_JOB_ID,
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
     if settings.google_api_key and settings.llm_provider != "scripted":
         scheduler.add_job(
             _run_incremental_batch,

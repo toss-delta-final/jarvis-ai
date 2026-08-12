@@ -49,7 +49,9 @@ async def test_start_scheduler_is_idempotent(monkeypatch):
     second = sched_mod.start_scheduler()
 
     assert first is second
-    assert len(first.get_jobs()) == 3  # i17 + session_context_sweep + conversation_retention_sweep
+    # i17 + session_context_sweep + conversation_retention_sweep
+    # + [#601] seller_analysis_daily + seller_analysis_weekly
+    assert len(first.get_jobs()) == 5
 
 
 async def test_stop_scheduler_allows_fresh_restart(monkeypatch):

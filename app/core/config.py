@@ -20,6 +20,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Literal, NamedTuple
 
+from apscheduler.triggers.cron import CronTrigger
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
@@ -987,6 +988,40 @@ class Settings(BaseSettings):
     )
     # report_md 길이 상한(자) — 상주 보고서 L2(3000자 이내) 완료 조건의 코드 측 근거.
     seller_report_max_chars: int = Field(default=3000, gt=0)
+
+    # ── 판매자 무인 배치 — 스캔 배선 + 스케줄러 체인 + 배치 정리 + 수동 실행 (이슈 #601) ──
+    # 10-TRIGGER.md §5.1~5.2 결정 95·100: 잡을 2개(스냅샷/스캔)로 쪼개지 않고 브랜드 1개당
+    # "스냅샷 → 스캔 → (열리면 심층 분석) → 정리"를 한 체인으로 묶는다. 시각은 KST 고정
+    # (`CronTrigger(..., timezone=...)` 명시 — 컨테이너 TZ 에 기대지 않는다, 결정 95).
+    seller_analysis_daily_cron: str = "20 0 * * *"  # KST 00:20 — 전날 23:5x 집계 반영 여유
+    seller_analysis_weekly_cron: str = "0 5 * * 1"  # KST 월요일 05:00 — 신호 무관 주간 정기
+    seller_analysis_cron_timezone: str = "Asia/Seoul"
+    # 티어2 킬스위치 — false 면 티어1이 열려도 티어2(추가 Spring 조회)를 생략한다.
+    seller_trigger_tier2_enabled: bool = True
+    # I-38 스냅샷 조회 창(일) — 고객 축 30일(10-TRIGGER.md §5.3, 브랜드 축 7일과 다른 축).
+    seller_snapshot_period_days: int = Field(default=30, ge=1)
+    # 브랜드 순회 동시성 상한 — Spring 부하 억제. 예시 계산(§5.1 "브랜드당 600초·3 병렬·
+    # 10 브랜드 ≈ 32분")의 그 3이다.
+    seller_batch_concurrency: int = Field(default=3, ge=1)
+    # 브랜드 1개의 배치 체인 총 예산(스냅샷+스캔+심층 분석). 초과분은 그 밤은 실패로 남기고
+    # 다음 배치(24시간 뒤)가 이어받는다 — 브랜드 단위 격리(OPS-RUNTIME F-8과 같은 원칙).
+    seller_batch_brand_timeout_s: float = Field(default=900.0, gt=0)
+    # F-9 일 상한 — 오늘 이미 이만큼 보고서를 만들었으면 신호가 있어도 심층 분석을
+    # 생략한다(analysis_store.count_reports_today 가 이미 있었으나 소비처가 없었다).
+    seller_report_daily_cap: int = Field(default=1, ge=1)
+
+    # ── 판매자 무인 배치 정리 (08-PERSISTENCE.md §5·§8, 결정 62·63·68) ───────────────
+    # draft/대화 checkpoint 는 seller-draft:/seller-chat: thread_id 접두어로만 범위를
+    # 좁혀 지운다(다른 도메인 thread 무접촉). 삭제 기준은 checkpoint.py 참조.
+    seller_draft_retention_hours: int = Field(default=48, ge=1)
+    seller_thread_retention_days: int = Field(default=30, ge=1)
+    # proposed → expired 전이 기준(일) — applied·superseded 는 건드리지 않는다.
+    seller_rec_expire_days: int = Field(default=14, ge=1)
+    # 성과 측정 정의 각인 — 이 이슈(#601)는 측정 자체를 구현하지 않는다(placeholder, PR
+    # 설명 참조). 값만 먼저 등록해 뒤 이슈가 같은 키를 쓰게 한다(08 §8 신설 목록).
+    seller_outcome_spec_version: str = "oc_v1"
+    # 정리 배치 1회 삭제 행 수 상한 — 락 보유 시간 억제(추천 만료 UPDATE 에 적용).
+    seller_cleanup_batch_size: int = Field(default=1000, ge=1)
 
     # ── 판매자 대화 스레드 (thread.py — checkpointer 기반 멀티턴 누적) ──
     # supervisor/planner 입력 주입 상한: 최근 턴(user+assistant 쌍) 수와 메시지당 절단.
@@ -3791,6 +3826,26 @@ class Settings(BaseSettings):
             raise ValueError("SELLER_DB_WRITE_RETRIES must be non-negative")
         if self.seller_analysis_target_ttl_days <= 0:
             raise ValueError("SELLER_ANALYSIS_TARGET_TTL_DAYS must be positive")
+        # 무인 배치(#601) — 브랜드 1개 예산이 심층 분석 1브랜치 예산(worker+judge+재실행+judge,
+        # seller_branch_deadline_s)보다 짧으면 resident.run_analysis 가 끝나기 전에
+        # asyncio.wait_for 가 그 브랜드를 통째로 잘라 매일 밤 조용히 실패한다.
+        if self.seller_batch_brand_timeout_s < self.seller_branch_deadline_s:
+            raise ValueError(
+                "SELLER_BATCH_BRAND_TIMEOUT_S 는 SELLER_BRANCH_DEADLINE_S 이상이어야 합니다"
+                f" (batch={self.seller_batch_brand_timeout_s},"
+                f" branch_deadline={self.seller_branch_deadline_s})"
+            )
+        try:
+            CronTrigger.from_crontab(
+                self.seller_analysis_daily_cron, timezone=self.seller_analysis_cron_timezone
+            )
+            CronTrigger.from_crontab(
+                self.seller_analysis_weekly_cron, timezone=self.seller_analysis_cron_timezone
+            )
+        except Exception as exc:
+            raise ValueError(
+                f"SELLER_ANALYSIS_DAILY_CRON/SELLER_ANALYSIS_WEEKLY_CRON 파싱 실패 ({exc})"
+            ) from exc
         # 고객 축 피처·군집(#593) — 스냅샷에 각인되는 정의라, 어긋난 채 기동해 다른
         # 정의로 만든 숫자를 나중에 비교하는 사고를 부팅 시점에 막는다(04 §6.2).
         if tuple(self.seller_cluster_input_keys) != CLUSTER_INPUT_KEYS:
