@@ -14,6 +14,24 @@
 
 ### Added
 
+- **#600 — chart 레인 해석 에이전트** (와이어 변경 없음 — `report.text` 내용만 바뀐다).
+  `chart_only` 턴의 고정 문구 3종("요청하신 그래프를 준비했습니다…" 등)을 좌표 기반
+  해석문으로 대체한다. 좌표를 세거나 나누는 건 여전히 코드다 — `charts.chart_facts`가
+  합계·평균·최고/최저·처음→끝·상위3·y=0 개수를 `aggregate`(sum/avg/none) 어휘를 따라
+  미리 계산하고, LLM은 그 값만 인용한다. 검증은 신규 검사를 최소로 둔다: 좌표·
+  chart_facts를 합성 finding에 실어 기존 D1~D3(`verifier.run_deterministic_checks`)에
+  그대로 태우고, C1(`check_cause_hedged`)·V2-d(기간 인용)도 무접촉 재사용한다. 신설은
+  C4(`chart_verify.check_chart_claims_bounded` — 스냅샷 추세·하루 단위 서술·하위 단정·
+  "전체 행동" 서술 4종 차단)와 차트 전용 인과 L0 보강(완화어가 있어도 인과 단정 어휘를
+  전면 차단 — C1 재사용만으로는 완화어가 있으면 근거 없이도 통과하는 사각이 있어 보강)
+  뿐이다. 재작성은 최대 1회(judge 없음, 대화형 90s 예산 안). 실패/타임아웃/
+  `seller_chart_interpret_enabled=false`는 전부 기존 고정 문구로 폴백 — 차트는 해석
+  실패로 죽지 않는다. `verifier.py`·`schemas.py`·`api/seller.py`·FE 전부 무접촉.
+  신설 Settings 5종(`seller_chart_interpret_enabled`·`_timeout_s`·`_max_retries`·
+  `_max_chars`·`_forbidden_terms`) + `seller_chart_agent_timeout_s`(graph 축 선언 전용
+  타임아웃 분리 — 기존엔 `seller_worker_timeout_s`(60s)를 재사용해 §6.1 예산 초과의
+  절반을 차지했다).
+
 - **#541 — `draft.preview{}` 카테고리 2칸 표기** (api-spec-seller §6.1, v0.31.3-seller).
   `preview.categoryMajor`("패션의류/잡화")·`categorySubPath`("남성의류 > 셔츠/남방")
   **추가 전용** 2키(11 → 13). 판매자 카테고리는 대분류 / 중·소분류 **두 칸**으로 정해지는데
