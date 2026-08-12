@@ -682,6 +682,16 @@ class Settings(BaseSettings):
     seller_report_score_threshold: int = 21  # 보고서 검증 통과 점수(21/30)
     seller_report_max_retries: int = 3  # 검증 루프 상한
     seller_draft_ttl_minutes: int = 10  # HITL 미승인 draft 만료
+    # ── 상품 변경 시 저성과(최근 N일 판매량) 참고 문구 (이슈 #659) ────────────────
+    # 문구가 판매자에게 그대로 나가므로 즉시 끌 수 있어야 한다(seller_rule_cards_enabled
+    # 와 동일 이유의 킬스위치).
+    seller_low_sales_alert_enabled: bool = True
+    # I-13 조회 기간(일). 트리거 스캔의 seller_scan_baseline_days(브랜드 축 "직전 7일")
+    # 와 같은 7 이지만 축이 다르다 — 이 값은 상품 1건 단위 참고 문구 전용이다.
+    seller_low_sales_window_days: int = Field(default=7, ge=1)
+    # 이 값 이하이면 저성과로 판정 — 실 판매량 분포 실측 전 잠정 기본값이다(값 미정,
+    # seller_analysis_write_timeout_s 의 "실측 전 잠정치, 운영 로그로 조정" 관용과 동일).
+    seller_low_sales_quantity_threshold: int = Field(default=3, ge=0)
     # ── 이미지 기반 상품 등록 초안 (#506, api-spec §3.2 v0.31.0) ─────────────────
     # imageUrls 요청 필드 상한 — MVP 는 1장(2장째 첨부는 FE 가 교체로 처리).
     seller_image_max_count: int = 1

@@ -41,6 +41,7 @@ from pydantic import BaseModel, Field
 from app.agents.seller import category_catalog
 from app.agents.seller import checkpoint as seller_checkpoint
 from app.agents.seller import analysis_store
+from app.agents.seller import low_sales
 from app.agents.seller.schemas import DraftChange, DraftProposal
 from app.agents.seller.stock_options import resolve_stock_option
 from app.core.config import get_settings
@@ -832,9 +833,13 @@ async def _execute_draft(record: DraftRecord) -> tuple[str, str]:
             f"이미 요청하신 값으로 되어 있어 바뀐 내용이 없습니다 (productId={updated.product_id}).",
         )
     summary_part = f" {record.summary}" if record.summary else ""
+    # [#659] 반영 완료 안내에 저성과(최근 N일 판매량) 참고 문구를 덧붙인다 — 신규 API·
+    # 필드 없이 기존 자유 텍스트 안내에 얹는다(soft-fail, 조회 실패 시 빈 문자열).
+    low_sales_text = await low_sales.low_sales_note(client, record.brand_id, record.product_id)
     return (
         "executed",
-        f"변경을 반영했습니다 (productId={updated.product_id}).{summary_part}{stock_note}",
+        f"변경을 반영했습니다 (productId={updated.product_id})."
+        f"{summary_part}{stock_note}{low_sales_text}",
     )
 
 
