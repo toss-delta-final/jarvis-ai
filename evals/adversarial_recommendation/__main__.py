@@ -7,20 +7,47 @@ import asyncio
 from pathlib import Path
 import sys
 
+from app.agents.buyer.recommendation.rerank_grounding import GroundingArm
 from evals.adversarial_recommendation.generator import load_cases
 from evals.adversarial_recommendation.report import write_run_artifacts
-from evals.adversarial_recommendation.runner import AdversarialBuyerRunner, build_live_runner
+from evals.adversarial_recommendation.runner import (
+    AdversarialBuyerRunner,
+    build_live_runner,
+    derive_validated_execution,
+)
 from evals.adversarial_recommendation.scoring import score_results
+
+_ARMS: tuple[GroundingArm, ...] = ("current", "prompt_only", "validated")
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("scripted", "live"), default="scripted")
+    parser.add_argument(
+        "--arms",
+        default="current",
+        help="current,prompt_only,validated 또는 all (기본: current)",
+    )
     parser.add_argument("--out", type=Path, required=True)
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument("--case-ids", help="comma-separated caseId 목록")
     selection.add_argument("--case-limit", type=int)
     return parser
+
+
+def _parse_arms(raw: str) -> tuple[GroundingArm, ...]:
+    if raw == "all":
+        return _ARMS
+    values = [value.strip() for value in raw.split(",") if value.strip()]
+    if not values:
+        raise ValueError("--arms에 하나 이상의 arm이 필요합니다")
+    if len(values) != len(set(values)):
+        raise ValueError("--arms에 중복 arm을 지정할 수 없습니다")
+    unknown = [value for value in values if value not in _ARMS]
+    if unknown:
+        raise ValueError(f"알 수 없는 grounding arm: {unknown}")
+    selected = set(values)
+    return tuple(arm for arm in _ARMS if arm in selected)
 
 
 def _select_cases(cases, *, case_ids: str | None, case_limit: int | None):  # noqa: ANN001
@@ -41,17 +68,54 @@ def _select_cases(cases, *, case_ids: str | None, case_limit: int | None):  # no
 
 async def _run(args: argparse.Namespace, *, command: list[str]) -> dict:
     cases = _select_cases(load_cases(), case_ids=args.case_ids, case_limit=args.case_limit)
-    runner = build_live_runner() if args.mode == "live" else AdversarialBuyerRunner(mode="scripted")
-    executions = [await runner.run(case) for case in cases]
-    results = score_results(cases, executions, mode=args.mode)
+    arms = _parse_arms(args.arms)
+    executions_by_arm: dict[GroundingArm, list[dict]] = {}
+    model_configs: dict[str, dict] = {}
+    shared_decisions = {}
+    decision_sources: dict[str, GroundingArm] = {}
+    for arm in arms:
+        if arm == "validated" and "prompt_only" in executions_by_arm:
+            executions_by_arm[arm] = [
+                derive_validated_execution(execution)
+                for execution in executions_by_arm["prompt_only"]
+            ]
+            model_configs[arm] = {
+                **model_configs["prompt_only"],
+                "derivedFromArm": "prompt_only",
+            }
+            continue
+        runner = (
+            build_live_runner(grounding_arm=arm)
+            if args.mode == "live"
+            else AdversarialBuyerRunner(mode="scripted", grounding_arm=arm)
+        )
+        executions_by_arm[arm] = [
+            await runner.run(
+                case,
+                decision_override=shared_decisions.get(case.case_id),
+                decompose_source_arm=decision_sources.get(case.case_id),
+            )
+            for case in cases
+        ]
+        for case_id, decision in runner.decompose_decisions.items():
+            if case_id not in shared_decisions:
+                shared_decisions[case_id] = decision
+                decision_sources[case_id] = arm
+        model_configs[arm] = runner.model_config
+    results = [
+        result
+        for arm in arms
+        for result in score_results(cases, executions_by_arm[arm], mode=args.mode)
+    ]
     return write_run_artifacts(
         args.out,
         cases=cases,
         results=results,
         mode=args.mode,
-        model_config=runner.model_config,
+        model_config={"byArm": model_configs},
         command=command,
         effective_settings=runner.settings.model_dump(by_alias=True, mode="json"),
+        arms=arms,
     )
 
 
@@ -61,6 +125,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"output directory already exists: {args.out}")
         return 2
     try:
+        args.arms = ",".join(_parse_arms(args.arms))
         command = [
             sys.executable,
             "-m",

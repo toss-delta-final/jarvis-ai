@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import math
+from copy import deepcopy
 from contextlib import ExitStack
+from dataclasses import asdict
 from time import perf_counter
 from typing import Any, Literal
 from unittest.mock import patch
@@ -12,7 +14,13 @@ from unittest.mock import patch
 import httpx
 
 from app.agents.buyer.recommendation.decompose import decompose
+import app.agents.buyer.recommendation.graph as recommendation_graph
 from app.agents.buyer.recommendation.graph import stream_recommendation
+from app.agents.buyer.recommendation.rerank_grounding import (
+    GroundingArm,
+    NEUTRAL_RATIONALE,
+)
+from app.agents.buyer.recommendation.state import RouteDecision
 from app.core.auth import Identity
 from app.core.config import Settings, get_settings
 from app.core.llm import LLMClient, get_llm, resolve_provider_model
@@ -24,6 +32,52 @@ from evals.model_eval.recording import RecordingLLM
 
 RunMode = Literal["scripted", "live"]
 _INTERNAL_TOKEN = "adversarial-eval-internal-token"
+
+
+def _replace_rendered_reasons(body: object, rendered: dict[int, str]) -> None:
+    if not isinstance(body, dict):
+        return
+    lists = body.get("lists")
+    if not isinstance(lists, list):
+        return
+    for entry in lists:
+        if not isinstance(entry, dict) or not isinstance(entry.get("reasons"), list):
+            continue
+        for reason in entry["reasons"]:
+            if not isinstance(reason, dict):
+                continue
+            product_id = reason.get("productId")
+            if isinstance(product_id, int) and product_id in rendered:
+                reason["reason"] = rendered[product_id]
+
+
+def derive_validated_execution(prompt_only: dict[str, Any]) -> dict[str, Any]:
+    """Derive C from B so validator lift is not confounded by another LLM call."""
+    if prompt_only.get("groundingArm") != "prompt_only":
+        raise ValueError("validated derivation requires a prompt_only execution")
+    validated = deepcopy(prompt_only)
+    rendered = {
+        int(decision["productId"]): str(decision["renderedRationale"])
+        for decision in validated.get("groundingDecisions", [])
+        if isinstance(decision, dict)
+        and isinstance(decision.get("productId"), int)
+        and isinstance(decision.get("renderedRationale"), str)
+    }
+    reasons = validated.get("reasons")
+    if isinstance(reasons, dict):
+        for product_id, rationale in rendered.items():
+            key = str(product_id)
+            if key in reasons:
+                reasons[key] = rationale
+    _replace_rendered_reasons(validated.get("pushBody"), rendered)
+    for request in validated.get("requests", []):
+        if isinstance(request, dict) and request.get("path") == "/internal/recommendations":
+            _replace_rendered_reasons(request.get("body"), rendered)
+    validated["groundingArm"] = "validated"
+    validated["derivedFromArm"] = "prompt_only"
+    validated["providerCalls"] = []
+    validated["latencyMs"] = None
+    return validated
 
 
 def _normalized(value: object) -> str:
@@ -168,21 +222,30 @@ class ScriptedCaseLLM:
         max_tokens: int = 1024,
         json_output: bool = True,
     ) -> str:
-        del system, max_tokens, json_output
+        del max_tokens, json_output
         if tier == "fast":
             payload = self._decompose
         else:
             marker = "CANDIDATES: "
             raw_candidates = user.split(marker, 1)[1] if marker in user else "[]"
             candidates = json.loads(raw_candidates)
+            structured = "reasonCode" in system and "evidenceFields" in system
+            ranked = []
+            for candidate in candidates:
+                item = {
+                    "productId": candidate["productId"],
+                    "rationale": (NEUTRAL_RATIONALE if structured else "후보 데이터 기반 추천"),
+                }
+                if structured:
+                    item.update(
+                        {
+                            "reasonCode": "NO_VERIFIABLE_EVIDENCE",
+                            "evidenceFields": [],
+                        }
+                    )
+                ranked.append(item)
             payload = {
-                "ranked": [
-                    {
-                        "productId": candidate["productId"],
-                        "rationale": "후보 데이터 기반 추천",
-                    }
-                    for candidate in candidates
-                ],
+                "ranked": ranked,
                 "overallComment": "후보 데이터 기반 결과입니다.",
             }
         self.calls.append({"tier": tier, "error": None})
@@ -211,6 +274,7 @@ class AdversarialBuyerRunner:
         llm: LLMClient | None = None,
         settings: Settings | None = None,
         model_config: dict[str, Any] | None = None,
+        grounding_arm: GroundingArm = "current",
     ) -> None:
         if mode == "live" and llm is None:
             raise ValueError("live mode에는 LLM client가 필요합니다")
@@ -223,8 +287,16 @@ class AdversarialBuyerRunner:
             search_backend="spring",
         )
         self.model_config = model_config or {"provider": mode, "searchBackend": "spring"}
+        self.grounding_arm = grounding_arm
+        self.decompose_decisions: dict[str, RouteDecision] = {}
 
-    async def run(self, case: EvalCase) -> dict[str, Any]:
+    async def run(
+        self,
+        case: EvalCase,
+        *,
+        decision_override: RouteDecision | None = None,
+        decompose_source_arm: GroundingArm | None = None,
+    ) -> dict[str, Any]:
         started = perf_counter()
         llm = ScriptedCaseLLM(case) if self.mode == "scripted" else self.llm
         assert llm is not None
@@ -235,7 +307,16 @@ class AdversarialBuyerRunner:
         token_text: list[str] = []
         errors: list[dict[str, Any]] = []
         extracted_filters: dict[str, Any] = {}
+        grounding_decisions: list[dict[str, Any]] = []
         failure_reason: str | None = None
+
+        original_rerank = recommendation_graph.rerank
+
+        async def _rerank_with_arm(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+            kwargs["grounding_arm"] = self.grounding_arm
+            result = await original_rerank(*args, **kwargs)
+            grounding_decisions.extend(asdict(decision) for decision in result.grounding_decisions)
+            return result
 
         def _client(*, timeout: float | None = None) -> httpx.AsyncClient:
             return httpx.AsyncClient(
@@ -260,16 +341,21 @@ class AdversarialBuyerRunner:
 
         try:
             request = BuyerChatRequest.model_validate(case.user_request)
-            decision = await decompose(
-                llm,
-                query=request.message,
-                prior_filters=None,
-                profile_summary=None,
-                tier="fast",
-                category_fanout_max=self.settings.category_fanout_max,
-                repurchase_max=self.settings.dedup_repurchase_max,
-                screen=request.screen,
+            decision = (
+                deepcopy(decision_override)
+                if decision_override is not None
+                else await decompose(
+                    llm,
+                    query=request.message,
+                    prior_filters=None,
+                    profile_summary=None,
+                    tier="fast",
+                    category_fanout_max=self.settings.category_fanout_max,
+                    repurchase_max=self.settings.dedup_repurchase_max,
+                    screen=request.screen,
+                )
             )
+            self.decompose_decisions[case.case_id] = deepcopy(decision)
             extracted_filters = decision.filters.model_dump(by_alias=True, exclude_none=True)
             if decision.intent != "recommend":
                 failure_reason = f"nonRecommendIntent:{decision.intent}"
@@ -281,6 +367,7 @@ class AdversarialBuyerRunner:
                         "app.agents.buyer.recommendation.rerank.get_settings",
                         return_value=self.settings,
                     ),
+                    patch.object(recommendation_graph, "rerank", _rerank_with_arm),
                 )
                 with ExitStack() as stack:
                     for active_patch in patches:
@@ -314,6 +401,21 @@ class AdversarialBuyerRunner:
         return {
             "caseId": case.case_id,
             "mode": self.mode,
+            "groundingArm": self.grounding_arm,
+            "decomposeSourceArm": decompose_source_arm,
+            "groundingDecisions": [
+                {
+                    "productId": decision["product_id"],
+                    "requestedReasonCode": decision["requested_reason_code"],
+                    "evidenceFields": decision["evidence_fields"],
+                    "modelRationale": decision["model_rationale"],
+                    "renderedRationale": decision["rendered_rationale"],
+                    "supported": decision["supported"],
+                    "downgraded": decision["downgraded"],
+                    "failureReason": decision["failure_reason"],
+                }
+                for decision in grounding_decisions
+            ],
             "rankedProductIds": transport.ranked_product_ids,
             "reasons": transport.reasons,
             "pushBody": transport.push_body,
@@ -331,7 +433,7 @@ class AdversarialBuyerRunner:
         }
 
 
-def build_live_runner() -> AdversarialBuyerRunner:
+def build_live_runner(*, grounding_arm: GroundingArm = "current") -> AdversarialBuyerRunner:
     """현재 배포 설정의 provider/model로 고정-candidate live runner를 만든다."""
     runtime = get_settings()
     delegate = get_llm()
@@ -363,5 +465,9 @@ def build_live_runner() -> AdversarialBuyerRunner:
         },
     }
     return AdversarialBuyerRunner(
-        mode="live", llm=llm, settings=settings, model_config=model_config
+        mode="live",
+        llm=llm,
+        settings=settings,
+        model_config=model_config,
+        grounding_arm=grounding_arm,
     )

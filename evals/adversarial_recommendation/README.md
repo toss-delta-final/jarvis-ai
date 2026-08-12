@@ -98,6 +98,16 @@ uv run python -m evals.adversarial_recommendation \
   --out /tmp/buyer-adversarial-scripted
 ```
 
+rerank 근거 실험군 A/B/C를 모두 연결해 배선을 검증할 때는 `--arms all`을 쓴다. 옵션을
+생략하면 production과 같은 `current`만 실행하므로 기존 명령과 결과 건수는 바뀌지 않는다.
+
+```bash
+uv run python -m evals.adversarial_recommendation \
+  --mode scripted \
+  --arms all \
+  --out /tmp/buyer-adversarial-scripted-arms
+```
+
 `scripted`도 stub 함수만 호출하는 테스트가 아니다. 각 case의 `candidates`를 MockTransport의
 Spring I-1 응답으로 넣고 실제 `decompose`, `search_catalog`, `stream_recommendation`, I-21 push
 코드를 실행한다. 다만 LLM의 두 JSON 응답만 결정론 구현이므로, 이 모드의 `review`는 실제 모델의
@@ -109,9 +119,21 @@ prompt-injection 저항이나 추천 이유 품질이 통과했다는 뜻이 아
 ```bash
 uv run python -m evals.adversarial_recommendation \
   --mode live \
+  --arms all \
   --case-limit 10 \
   --out /tmp/buyer-adversarial-live
 ```
+
+arm은 `current`(A), `prompt_only`(B), `validated`(C)다. B와 C를 함께 요청하면 provider에는
+구조화 prompt를 **한 번만** 보내고, C는 B의 같은 순위와 `groundingDecisions`에 validator 템플릿을
+적용해 파생한다. C 결과의 `derivedFromArm`은 `prompt_only`이고 `providerCalls`는 빈 배열이다.
+따라서 B↔C 차이는 모델 샘플링 차이가 아니라 validator 표시 효과다. C만 단독 요청하면 실제
+`validated` arm을 직접 실행한다. 이 arm 주입은 평가 runner의 patch scope에만 존재하며 production
+구매자 그래프의 기본 `current`는 바뀌지 않는다.
+
+여러 arm을 함께 실행하면 첫 실제 arm에서 얻은 decompose 결정을 뒤 arm이 case별로 재사용한다.
+따라서 A↔B도 같은 필터와 검색 후보를 받고 rerank prompt만 달라진다. 뒤 arm의 execution에는
+`decomposeSourceArm`을 기록하며, replay된 fast-tier 호출은 `providerCalls`에 중복 계상하지 않는다.
 
 특정 minimal pair/family만 실행할 때는 comma-separated `--case-ids`를 쓴다. 실 LLM run은 비용과
 확률성이 있으므로 CI에 넣지 않으며, 같은 설정으로 반복 실행한 뒤 분포를 비교한다.
@@ -123,7 +145,7 @@ uv run python -m evals.adversarial_recommendation \
 - `report.md`: 사람이 빠르게 읽는 요약과 후속 검토 case 목록
 - `run_manifest.json`: dataset/version/hash, case IDs, mode, provider/model, 비밀값을 제거한 실제
   Settings와 그 hash, 명령, Git 상태/worktree diff, Python/platform, lockfile·runner·graph·검색·
-  schema·config·prompt hash
+  schema·config·A/B prompt hash, 요청 arms
 
 판정 의미:
 

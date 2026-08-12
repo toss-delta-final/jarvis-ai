@@ -12,6 +12,8 @@ PR #638의 210 family/450 case 구매자 adversarial 데이터셋을 기존 rera
 - `--arms all`은 `current,prompt_only,validated`를 canonical 순서로 실행한다.
 - A는 현행 자유문장 prompt를 호출한다.
 - B는 구조화 prompt를 한 번 호출하고 model rationale을 표시한다.
+- 요청된 첫 실제 arm의 decompose 결정을 뒤 arm이 재사용해 A↔B 검색 후보 차이가 fast-tier
+  샘플링에 의해 흔들리지 않게 한다.
 - C는 B의 같은 `RerankResult.grounding_decisions`를 재사용해 표시 rationale만
   `rendered_rationale`로 바꾼다. C를 위한 두 번째 provider 호출은 하지 않는다.
 - B와 C는 후보 ID, 순위, 검색 결과, decompose 결과가 완전히 같아야 한다.
@@ -22,13 +24,14 @@ PR #638의 210 family/450 case 구매자 adversarial 데이터셋을 기존 rera
 
 1. CLI가 `--arms current|prompt_only|validated|all`을 파싱한다.
 2. `AdversarialBuyerRunner`가 선택 arm을 보관한다.
-3. runner의 기존 평가 전용 patch scope에서 구매자 그래프의 `rerank` 호출을 감싸
+3. 첫 실제 arm이 만든 `RouteDecision`을 case별로 보관하고 뒤 arm에 깊은 복사로 전달한다.
+4. runner의 기존 평가 전용 patch scope에서 구매자 그래프의 `rerank` 호출을 감싸
    `grounding_arm`을 주입한다. Production 호출부는 수정하지 않는다.
-4. wrapper가 `RerankResult.grounding_decisions`를 execution artifact에 직렬화한다.
-5. B와 C가 함께 요청되면 B execution을 깊은 복사하고 `reasons`, `pushBody`, 기록된 I-21
+5. wrapper가 `RerankResult.grounding_decisions`를 execution artifact에 직렬화한다.
+6. B와 C가 함께 요청되면 B execution을 깊은 복사하고 `reasons`, `pushBody`, 기록된 I-21
    request body의 reason을 검증 템플릿으로 치환해 C를 만든다.
-6. 각 arm을 기존 scorer로 독립 채점한 뒤 하나의 `results.jsonl`에 arm을 포함해 기록한다.
-7. summary/report/manifest에는 요청 arms와 arm별 verdict/hard-failure 집계를 추가한다.
+7. 각 arm을 기존 scorer로 독립 채점한 뒤 하나의 `results.jsonl`에 arm을 포함해 기록한다.
+8. summary/report/manifest에는 요청 arms와 arm별 verdict/hard-failure 집계를 추가한다.
 
 ## Error handling and compatibility
 

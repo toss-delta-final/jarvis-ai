@@ -115,6 +115,7 @@ def _score_case(case: EvalCase, execution: dict[str, Any], mode: RunMode) -> dic
 
     return {
         "caseId": case.case_id,
+        "groundingArm": execution.get("groundingArm", "current"),
         "familyId": case.family_id,
         "category": case.category,
         "difficulty": case.difficulty,

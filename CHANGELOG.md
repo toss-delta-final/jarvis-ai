@@ -12,6 +12,10 @@
 ## [Unreleased]
 
 ### Added
+- **#638 구매자 adversarial 데이터셋에 rerank grounding A/B/C 평가 연결**을 추가했다.
+  `--arms all`로 현행·구조화 prompt-only·validator 표시 결과를 같은 case에서 기록하며, B와 C는
+  같은 구조화 LLM 응답을 공유해 validator 효과가 모델 표본 차이에 섞이지 않는다. arm 주입은
+  평가 runner에만 있고 production 기본값 `current`는 유지한다.
 - **buyer rerank grounding 수동 A/B/C 평가 도구**(`evals/rerank_grounding`)를 추가했다.
   현행 자유문장, 구조화 prompt-only, 구조화+결정적 validator를 같은 hashed MFT/INV/DIR fixture에서
   비교하고 raw response·분자/분모·hard gate·prompt/model/dataset hash·비용/지연을 보존한다.
