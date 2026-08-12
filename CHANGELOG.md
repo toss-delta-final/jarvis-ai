@@ -12,6 +12,15 @@
 ## [Unreleased]
 
 ### Added
+- **#631 — 구매자 rerank 순위 계산을 `current`·`structured`·`hybrid` arm으로 선택할 수 있게 했다.**
+  기본 `RERANK_RANKING_ARM=current`는 기존 LLM 순위·파서·fallback을 그대로 유지하고,
+  `structured`는 LLM의 제한된 intent/need/profile 점수를 결정론적 `4:2:1` 합산과 명시적
+  tie-break로 정렬한다. `hybrid`는 원래 search rank와 scored rank를 설정 가능한 RRF
+  (`RERANK_RRF_ALPHA`, `RERANK_RRF_K`)로 결합하며, 프로필이 없으면 profile 점수를 0으로
+  강제한다. 순위 arm은 기존 `RERANK_GROUNDING_ARM`과 독립적으로 선택·롤백할 수 있다. 같은
+  provider 응답을 공유하는 paired A/B/C runner와 nDCG@10·순위 안정성·fallback/무결성·비용
+  artifact도 추가했다. scripted dry-run은 harness 재현성만 검증했으며, 초기 가중치와 RRF
+  설정의 품질 개선은 live paired 평가 전까지 `not-tested`다. API·SSE wire 계약 변경 없음.
 - **#634 관측 집계 스크립트 비용 축에 min/max·role 분해 추가** — `_cost_stats()`가 최소/최대
   비용을 반환하도록 확장하고, 비용 롤업에 `role`(seller/member/guest)·`model`(fan-in
   귀속)·`length`(`messageLength` 고정 버킷) 축을 신설했다. Markdown 비용 표에 최소/최대(USD)

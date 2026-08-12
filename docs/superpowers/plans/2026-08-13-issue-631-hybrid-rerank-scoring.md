@@ -64,7 +64,7 @@ baseline 실패가 feature 변경 전부터 재현되면 해당 출력과 commit
 - Produces: `compute_scored_ranking(candidate_ids, raw_evaluations, *, arm, profile_available, alpha, k, search_rank_by_id=None) -> RankingComputation`
 - Consumes: only standard-library collection/dataclass/typing APIs.
 
-- [ ] **Step 1: Write failing tests for valid rubric ordering and bounded personalization**
+- [x] **Step 1: Write failing tests for valid rubric ordering and bounded personalization**
 
 ```python
 def test_structured_uses_421_rubric_and_profile_only_breaks_equal_query_fit() -> None:
@@ -85,13 +85,13 @@ def test_structured_uses_421_rubric_and_profile_only_breaks_equal_query_fit() ->
     assert [row.rubric_score for row in result.decisions] == [22, 23, 19]
 ```
 
-- [ ] **Step 2: Run the focused tests and confirm import failure**
+- [x] **Step 2: Run the focused tests and confirm import failure**
 
 Run: `uv run pytest tests/unit/test_rerank_scoring.py -q`
 
 Expected: collection fails because `rerank_scoring` does not exist.
 
-- [ ] **Step 3: Add immutable decision types and exact validation helpers**
+- [x] **Step 3: Add immutable decision types and exact validation helpers**
 
 ```python
 RankingArm = Literal["current", "structured", "hybrid"]
@@ -129,7 +129,7 @@ class RankingComputation:
 
 Validation helpers must reject bool IDs/scores, duplicate candidate IDs, invalid arm, invalid alpha/k, out-of-range scores and non-list `raw_evaluations`. Candidate search ranks are 1-based.
 
-- [ ] **Step 4: Add failing tests for malformed and partial evaluations**
+- [x] **Step 4: Add failing tests for malformed and partial evaluations**
 
 Cover these exact outcomes:
 
@@ -223,11 +223,11 @@ def test_profile_absence_requires_zero_profile_fit() -> None:
 
 Assertions must inspect `score_valid`, `fallback_reason`, ordered IDs and the absence of foreign IDs.
 
-- [ ] **Step 5: Implement partial recovery and deterministic LLM ranks**
+- [x] **Step 5: Implement partial recovery and deterministic LLM ranks**
 
 Use one occurrence-count pass before accepting evaluation rows. A duplicated product gets no trusted model item and a `duplicate_evaluation` fallback. Missing, duplicate and invalid-score products sort after all valid scored products by `searchRank`, then `productId`. If no valid score exists, raise `ScoringSchemaError("scored rerank has no valid evaluations")`.
 
-- [ ] **Step 6: Add failing RRF and explicit search-rank tests**
+- [x] **Step 6: Add failing RRF and explicit search-rank tests**
 
 ```python
 def test_hybrid_combines_one_based_search_and_llm_ranks() -> None:
@@ -263,11 +263,11 @@ def test_prompt_permutation_does_not_change_explicit_search_ranks() -> None:
     assert {row.product_id: row.search_rank for row in result.decisions} == {101: 1, 102: 2}
 ```
 
-- [ ] **Step 7: Implement RRF and final deterministic ordering**
+- [x] **Step 7: Implement RRF and final deterministic ordering**
 
 For profile absence compute `effective_alpha = alpha + (1 - alpha) * (1 / 23)`. Final ordering is `-final_score`, `search_rank`, `product_id`. Structured ordering uses `llm_rank`. Return decisions in original candidate/search-rank order so diagnostics are stable; `ordered_product_ids` carries final order.
 
-- [ ] **Step 8: Run focused tests, Ruff and commit**
+- [x] **Step 8: Run focused tests, Ruff and commit**
 
 ```bash
 uv run pytest tests/unit/test_rerank_scoring.py -q
@@ -303,7 +303,7 @@ Not-tested: Production graph and live provider behavior"
 - Produces: `Settings.rerank_scoring_prompt_version = "rerank-scoring-v1"`
 - Produces: `RerankResult.ranking_decisions: list[RankingDecision]`.
 
-- [ ] **Step 1: Write failing configuration tests**
+- [x] **Step 1: Write failing configuration tests**
 
 ```python
 def test_rerank_ranking_defaults_to_current_and_validates_hybrid_config(monkeypatch) -> None:
@@ -323,13 +323,13 @@ def test_rerank_ranking_defaults_to_current_and_validates_hybrid_config(monkeypa
         Settings(_env_file=None, rerank_rrf_k=0)
 ```
 
-- [ ] **Step 2: Run the test and confirm missing fields**
+- [x] **Step 2: Run the test and confirm missing fields**
 
 Run: `uv run pytest tests/unit/test_config.py::test_rerank_ranking_defaults_to_current_and_validates_hybrid_config -q`
 
 Expected: FAIL because the Settings fields do not exist.
 
-- [ ] **Step 3: Add Settings, environment documentation and result field**
+- [x] **Step 3: Add Settings, environment documentation and result field**
 
 Add the four Settings fields next to grounding config, document the independent axes in `.env.example`, and import `RankingDecision` under `TYPE_CHECKING` in `state.py`.
 
@@ -343,11 +343,11 @@ class RerankResult:
     ranking_decisions: list[RankingDecision] = field(default_factory=list)
 ```
 
-- [ ] **Step 4: Add a default-result regression test**
+- [x] **Step 4: Add a default-result regression test**
 
 Assert `RerankResult().ranking_decisions == []` and existing fields remain unchanged.
 
-- [ ] **Step 5: Run tests, Ruff and commit**
+- [x] **Step 5: Run tests, Ruff and commit**
 
 ```bash
 uv run pytest tests/unit/test_config.py tests/unit/test_rerank_scoring.py -q
@@ -378,7 +378,7 @@ Not-tested: Graph wiring and live evaluation"
 - Produces: `_SYSTEM_STRUCTURED_SCORING` with `evaluations`, existing grounding fields and overall claims.
 - Extends the existing keyword-only `rerank` API with `ranking_arm: RankingArm = "current"`, `rrf_alpha: float = 0.65`, `rrf_k: int = 60`, and `search_rank_by_id: Mapping[int, int] | None = None`.
 
-- [ ] **Step 1: Lock the legacy current path before editing**
+- [x] **Step 1: Lock the legacy current path before editing**
 
 Add a fake LLM that captures `system`, `user`, and `max_tokens`, then assert:
 
@@ -409,7 +409,7 @@ assert llm.max_tokens == settings.rerank_max_tokens_base + settings.rerank_max_t
 
 This test must exercise an existing grounding arm so the new ranking branch cannot silently replace #632 prompt behavior.
 
-- [ ] **Step 2: Run legacy and new integration tests to establish red/green boundaries**
+- [x] **Step 2: Run legacy and new integration tests to establish red/green boundaries**
 
 ```bash
 uv run pytest tests/unit/test_rerank_grounding.py -q
@@ -418,11 +418,11 @@ uv run pytest tests/unit/test_rerank_scoring_integration.py -q
 
 Expected: existing grounding tests pass; new tests fail on missing `ranking_arm` and prompt.
 
-- [ ] **Step 3: Add the scored prompt contract**
+- [x] **Step 3: Add the scored prompt contract**
 
 The prompt must require exactly one evaluation for every candidate and declare integer ranges. It must retain current `reasonCode`, `evidenceFields`, `rationale`, `overallComment`, and `overallClaims` rules. When no profile is present it must explicitly require `profileFit=0`.
 
-- [ ] **Step 4: Add failing structured/hybrid response tests**
+- [x] **Step 4: Add failing structured/hybrid response tests**
 
 Cover:
 
@@ -482,7 +482,7 @@ async def test_explicit_search_rank_survives_prompt_candidate_permutation() -> N
 
 In the same test file define `_scored_payload` to emit the full `evaluations`/grounding/overall shape and `_call_scored` to build `SpringProduct` objects for the supplied IDs, capture the fake LLM call and return `(RerankResult, fake_llm)`.
 
-- [ ] **Step 5: Implement scored parsing and rationale assembly**
+- [x] **Step 5: Implement scored parsing and rationale assembly**
 
 Branch before prompt selection:
 
@@ -504,11 +504,11 @@ After `extract_json`, current keeps the existing `ranked` loop unchanged. Scored
 
 Return computation decisions through `RerankResult.ranking_decisions`.
 
-- [ ] **Step 6: Preserve overall claims and final-list validation input**
+- [x] **Step 6: Preserve overall claims and final-list validation input**
 
 For scored prompt with `grounding_arm=prompt_only|validated`, preserve raw `overallClaims` with existing `_parse_overall_claims`. `grounding_arm=current` continues to omit structured claims. Assert malformed claims still reach the #657 validator exactly as current structured grounding does.
 
-- [ ] **Step 7: Run focused regression, Ruff and commit**
+- [x] **Step 7: Run focused regression, Ruff and commit**
 
 ```bash
 uv run pytest tests/unit/test_rerank_grounding.py tests/unit/test_rerank_scoring.py tests/unit/test_rerank_scoring_integration.py -q
@@ -540,7 +540,7 @@ Not-tested: Production graph selection and full goldenset evaluation"
 - Produces: graph call arguments `ranking_arm`, `rrf_alpha`, `rrf_k`.
 - Produces: prompt provenance mapping: legacy current/current=`rerank-v1`; current/structured-grounding=`rerank-grounding-v1`; scored ranking=`rerank-scoring-v1`; degraded=`None`.
 
-- [ ] **Step 1: Write failing graph wiring tests**
+- [x] **Step 1: Write failing graph wiring tests**
 
 Patch graph-level `rerank` and capture kwargs:
 
@@ -555,7 +555,7 @@ assert observed == [{
 
 Parametrize settings with `structured` and `hybrid` to prove production can select each arm without changing grounding.
 
-- [ ] **Step 2: Add prompt provenance tests for all boundaries**
+- [x] **Step 2: Add prompt provenance tests for all boundaries**
 
 Parametrize:
 
@@ -570,11 +570,11 @@ Parametrize:
 
 Keep degraded rerank `promptVersion is None`.
 
-- [ ] **Step 3: Wire Settings and trace metadata**
+- [x] **Step 3: Wire Settings and trace metadata**
 
 Pass all four arm/tuner values explicitly at the graph boundary. Add `rankingArm` to the rerank trace span attributes without adding it to the external response. Refactor prompt version selection into a small pure helper if the nested expression would otherwise grow.
 
-- [ ] **Step 4: Lock full and partial fallback behavior**
+- [x] **Step 4: Lock full and partial fallback behavior**
 
 Add graph-level tests proving:
 
@@ -584,7 +584,7 @@ Add graph-level tests proving:
 - final pushed IDs remain a subset of candidate IDs;
 - grounding-invalid rationale does not alter pushed IDs.
 
-- [ ] **Step 5: Run graph/provenance regressions and commit**
+- [x] **Step 5: Run graph/provenance regressions and commit**
 
 ```bash
 uv run pytest tests/unit/test_fanout.py tests/unit/test_reco_provenance_140.py tests/unit/test_recommendation.py -q
@@ -620,7 +620,7 @@ Not-tested: Live model quality and full repository regression"
 - Produces: `run_probe(llm: LLMClient, *, cases: tuple[GoldenCase, ...], fixtures: EvaluationFixtures, arms: tuple[str, ...], repeats: int, attempt_multiplier: int, order_seeds: tuple[int, ...]) -> RankingProbeRun`.
 - Produces: `ReplayLLM` that returns captured structured raw output without provider calls.
 
-- [ ] **Step 1: Write failing fixture conversion tests**
+- [x] **Step 1: Write failing fixture conversion tests**
 
 For a goldenset case, assert the runner:
 
@@ -631,7 +631,7 @@ For a goldenset case, assert the runner:
 - derives case-specific profile markdown for member personas;
 - records original `searchRank` before candidate prompt permutation.
 
-- [ ] **Step 2: Implement read-only case input construction**
+- [x] **Step 2: Implement read-only case input construction**
 
 Create `RankingCaseInput` with exact fields:
 
@@ -651,7 +651,7 @@ class RankingCaseInput:
 
 Do not open sealed holdout labels in the default runner; default split is `dev`.
 
-- [ ] **Step 3: Write failing B/C raw-sharing tests**
+- [x] **Step 3: Write failing B/C raw-sharing tests**
 
 Use a counting fake provider and assert one scored provider call produces both arms:
 
@@ -673,11 +673,11 @@ assert result["hybrid"].provider_called is False
 
 The hybrid arm must call `rerank()` with `ReplayLLM(raw)` and the same `search_rank_by_id`, not duplicate ranking logic in eval code.
 
-- [ ] **Step 4: Add deterministic current/structured/hybrid samples**
+- [x] **Step 4: Add deterministic current/structured/hybrid samples**
 
 `ScriptedScoringLLM` must distinguish the legacy/current prompt from scored prompt and return valid existing grounding fields. It must expose a switch for duplicate, missing, out-of-range, and out-of-candidate rows so failure metrics are testable without network calls.
 
-- [ ] **Step 5: Add permutation and stability tests**
+- [x] **Step 5: Add permutation and stability tests**
 
 For seeds `(11, 29, 47)` assert:
 
@@ -686,11 +686,11 @@ For seeds `(11, 29, 47)` assert:
 - explicit `searchRank` remains unchanged;
 - each sample records `rankedProductIds`, top-3 IDs, top-1, latency, raw hash, decisions and fallback counts.
 
-- [ ] **Step 6: Implement bounded attempts and failure separation**
+- [x] **Step 6: Implement bounded attempts and failure separation**
 
 Follow `evals/rerank_grounding/runner.py`: requested successful repeats are filled up to `attempt_multiplier`; provider/parser failures are stored separately and never converted to zero-quality samples. Record candidate order seed, case ID, arm, repeat, attempt and failure type.
 
-- [ ] **Step 7: Run eval-runner tests, Ruff and commit**
+- [x] **Step 7: Run eval-runner tests, Ruff and commit**
 
 ```bash
 uv run pytest tests/eval/test_rerank_scoring_runner.py -q
@@ -725,7 +725,7 @@ Not-tested: Live provider execution and report artifact generation"
 - Produces: raw `samples.csv`, `failures.csv`, `results.json`, `run_manifest.json`, `report.md`.
 - Produces: `main(argv: list[str] | None = None) -> int`.
 
-- [ ] **Step 1: Write failing metric tests with explicit numerators and denominators**
+- [x] **Step 1: Write failing metric tests with explicit numerators and denominators**
 
 Cover:
 
@@ -768,13 +768,13 @@ The test module defines `_probe_run_with_case_scores`, `_probe_run_for_rankings`
 
 Use SciPy only through the already installed dependency. If fewer than two common ranked IDs exist, rank correlation is `None` with an explicit denominator reason.
 
-- [ ] **Step 2: Implement A/B/C and stability metrics**
+- [x] **Step 2: Implement A/B/C and stability metrics**
 
 Primary comparison is A→C nDCG@10 paired case delta with fixed seed, 2000 bootstrap resamples and 95% confidence. Also emit A→B and B→C. Verdict values are exactly `supported|inconclusive|regressed|not-tested`.
 
 Safety output includes counts/rates for hard constraint violations, foreign IDs, duplicate IDs, invalid score rows, evaluated coverage, partial fallback and full fallback. Efficiency output includes p50/p95 latency, input/output tokens and cost or a non-empty unknown reason.
 
-- [ ] **Step 3: Write failing artifact regeneration tests**
+- [x] **Step 3: Write failing artifact regeneration tests**
 
 Assert a scripted run writes exactly the five artifact files, report values can be reconstructed from `samples.csv` and `failures.csv`, and manifest includes:
 
@@ -786,11 +786,11 @@ alpha, k, componentWeights, groundingArm, budget
 
 Mixed dataset hash, prompt hash or model config must raise `ValueError` before comparison.
 
-- [ ] **Step 4: Implement report and immutable output behavior**
+- [x] **Step 4: Implement report and immutable output behavior**
 
 Refuse an existing output directory. Serialize JSON with sorted keys and stable newlines. Preserve raw provider response hashes and decision rows, but do not write secrets or unsanitized profile text. README must document dry-run, live-run, case filtering, budget and reproduction commands.
 
-- [ ] **Step 5: Add CLI dry-run and argument validation tests**
+- [x] **Step 5: Add CLI dry-run and argument validation tests**
 
 Support:
 
@@ -809,7 +809,7 @@ Support:
 
 Dry-run uses `ScriptedScoringLLM` and emits `not-tested`. Live mode uses the repository LLM factory/RecordingLLM and budget controls already used by model eval; credentials or usage absence must be reported, not replaced with zero.
 
-- [ ] **Step 6: Run eval tests, scripted smoke and commit**
+- [x] **Step 6: Run eval tests, scripted smoke and commit**
 
 ```bash
 uv run pytest tests/eval/test_rerank_scoring_runner.py -q
@@ -841,11 +841,11 @@ Not-tested: Full live goldenset run"
 - Consumes: all prior tasks.
 - Produces: final evidence summary and a clean feature branch.
 
-- [ ] **Step 1: Add an evidence-bounded changelog entry**
+- [x] **Step 1: Add an evidence-bounded changelog entry**
 
 State that ranking arms are selectable, default remains `current`, grounding remains independent, hybrid uses config-backed RRF and the evaluation harness exists. Do not claim quality improvement unless a live run with CI supports it.
 
-- [ ] **Step 2: Run the targeted feature suite**
+- [x] **Step 2: Run the targeted feature suite**
 
 ```bash
 uv run pytest \
@@ -859,7 +859,7 @@ uv run pytest \
   tests/eval/test_rerank_scoring_runner.py -q
 ```
 
-- [ ] **Step 3: Run repository static checks and pre-commit exactly as installed**
+- [x] **Step 3: Run repository static checks and pre-commit exactly as installed**
 
 ```bash
 uv run ruff check .
@@ -868,17 +868,23 @@ git diff --name-only -z origin/dev...HEAD | xargs -0 uv run pre-commit run --fil
 git diff --check
 ```
 
+Verification (2026-08-13): `ruff check .` and diff-scoped pre-commit passed. Repository-wide
+`ruff format --check .` reported 57 pre-existing `origin/dev` files; none is in this feature's
+changed Python set, whose `ruff-format` hook passed. The unrelated baseline files were not rewritten.
+
 Read all outputs. If a hook auto-fixes a file, rerun the affected tests and the hook before committing.
 
-- [ ] **Step 4: Run the broader regression suite**
+- [x] **Step 4: Run the broader regression suite**
 
 ```bash
 uv run pytest -q
 ```
 
+Verification (2026-08-13): `7332 passed, 229 deselected, 2 warnings in 119.68s`.
+
 If environment-dependent auth/PostgreSQL tests or a known hang recur, record exact node IDs and fresh output; do not count them as passed and do not hide them behind deselection unless the repository's documented command already specifies that selection.
 
-- [ ] **Step 5: Inspect branch scope and commit final docs**
+- [x] **Step 5: Inspect branch scope and commit final docs**
 
 ```bash
 git status --short
@@ -896,7 +902,7 @@ Tested: targeted feature suite, Ruff, pre-commit, diff check, and broader pytest
 Not-tested: Production traffic and sealed holdout unless separately reported"
 ```
 
-- [ ] **Step 6: Re-run final status checks after the commit**
+- [x] **Step 6: Re-run final status checks after the commit**
 
 ```bash
 git status --short --branch
