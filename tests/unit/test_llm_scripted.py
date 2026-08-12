@@ -12,8 +12,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -52,6 +54,55 @@ def test_scripted_allowed_in_local_and_test(env: str) -> None:
     assert settings.llm_provider == "scripted"
 
 
+def test_scripted_delay_settings_default_to_instant_five_seconds() -> None:
+    settings = _settings()
+    assert settings.scripted_llm_mode == "instant"
+    assert settings.scripted_llm_delay_s == 5.0
+
+
+def test_scripted_delay_settings_accept_delayed_mode() -> None:
+    settings = _settings(scripted_llm_mode="delayed", scripted_llm_delay_s=5.0)
+    assert settings.scripted_llm_mode == "delayed"
+    assert settings.scripted_llm_delay_s == 5.0
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "field_name"),
+    [
+        ({"scripted_llm_mode": "random"}, "scripted_llm_mode"),
+        ({"scripted_llm_delay_s": -0.1}, "scripted_llm_delay_s"),
+    ],
+)
+def test_scripted_delay_settings_reject_invalid_values(
+    kwargs: dict[str, object], field_name: str
+) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        _settings(**kwargs)
+    assert field_name in str(exc_info.value)
+
+
+@pytest.mark.parametrize("field_name", ["rate_limit_per_min", "rate_limit_per_hour"])
+@pytest.mark.parametrize("value", [0, -1])
+def test_loadtest_rate_limits_must_be_positive(field_name: str, value: int) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        _settings(**{field_name: value})
+    assert field_name in str(exc_info.value)
+
+
+def test_deploy_workflow_wires_scripted_profiles_and_loadtest_rate_limits() -> None:
+    workflow = (Path(__file__).parents[2] / ".github/workflows/deploy.yml").read_text(
+        encoding="utf-8"
+    )
+    for name in (
+        "SCRIPTED_LLM_MODE",
+        "SCRIPTED_LLM_DELAY_S",
+        "RATE_LIMIT_PER_MIN",
+        "RATE_LIMIT_PER_HOUR",
+    ):
+        assert f"{name}=${{{{ vars.{name} }}}}" in workflow
+        assert name in workflow.split("sed -i -E", maxsplit=1)[1]
+
+
 @pytest.mark.parametrize("provider", ["openai", "anthropic"])
 @pytest.mark.parametrize("env", ["local", "test", "staging", "production"])
 def test_non_scripted_providers_are_never_blocked_by_g1(provider: str, env: str) -> None:
@@ -65,10 +116,18 @@ def test_non_scripted_providers_are_never_blocked_by_g1(provider: str, env: str)
 def test_startup_banner_warns_on_scripted(caplog: pytest.LogCaptureFixture) -> None:
     import app.main as main_mod
 
-    settings = _settings(llm_provider="scripted", app_environment="test")
+    settings = _settings(
+        llm_provider="scripted",
+        app_environment="test",
+        scripted_llm_mode="delayed",
+        scripted_llm_delay_s=5.0,
+    )
     with caplog.at_level(logging.WARNING, logger="app.main"):
         main_mod._warn_if_scripted_llm(settings)
     assert any("STUB LLM MODE" in record.message for record in caplog.records)
+    assert any(
+        "SCRIPTED_LLM_MODE=delayed delay_s=5.0" in record.message for record in caplog.records
+    )
 
 
 @pytest.mark.parametrize("provider", ["openai", "anthropic"])
@@ -100,6 +159,96 @@ def test_get_llm_scripted_needs_no_api_key(monkeypatch: pytest.MonkeyPatch) -> N
     result = get_llm()
     assert isinstance(result, LoadTestLLM)
     assert result is not None
+
+
+def test_get_llm_wires_scripted_delay_profile(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        llm_mod,
+        "get_settings",
+        lambda: _settings(
+            llm_provider="scripted",
+            app_environment="test",
+            scripted_llm_mode="delayed",
+            scripted_llm_delay_s=5.0,
+        ),
+    )
+
+    result = get_llm()
+
+    assert isinstance(result, LoadTestLLM)
+    assert result.mode == "delayed"
+    assert result.delay_s == 5.0
+
+
+async def test_loadtest_llm_instant_mode_never_sleeps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.agents.buyer.recommendation.decompose as decompose_mod
+
+    sleeps: list[float] = []
+
+    async def record_sleep(delay_s: float) -> None:
+        sleeps.append(delay_s)
+
+    monkeypatch.setattr(asyncio, "sleep", record_sleep)
+    llm = LoadTestLLM(mode="instant", delay_s=5.0)
+
+    await llm.complete(system=decompose_mod._SYSTEM, user="USER_MESSAGE: 이어폰", tier="fast")
+
+    assert sleeps == []
+
+
+async def test_loadtest_llm_delayed_mode_sleeps_five_seconds_once_per_instance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.agents.buyer.recommendation.decompose as decompose_mod
+
+    sleeps: list[float] = []
+
+    async def record_sleep(delay_s: float) -> None:
+        sleeps.append(delay_s)
+
+    monkeypatch.setattr(asyncio, "sleep", record_sleep)
+    llm = LoadTestLLM(mode="delayed", delay_s=5.0)
+
+    await llm.complete(system=decompose_mod._SYSTEM, user="USER_MESSAGE: 이어폰", tier="fast")
+    await llm.complete(system=decompose_mod._SYSTEM, user="USER_MESSAGE: 헤드폰", tier="fast")
+
+    assert sleeps == [5.0]
+
+
+async def test_loadtest_llm_delayed_mode_sleeps_once_for_concurrent_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.agents.buyer.recommendation.decompose as decompose_mod
+
+    sleeps: list[float] = []
+    release_sleep = asyncio.Event()
+    original_sleep = asyncio.sleep
+
+    async def record_sleep(delay_s: float) -> None:
+        sleeps.append(delay_s)
+        await release_sleep.wait()
+
+    monkeypatch.setattr(asyncio, "sleep", record_sleep)
+    llm = LoadTestLLM(mode="delayed", delay_s=5.0)
+
+    first = asyncio.create_task(
+        llm.complete(system=decompose_mod._SYSTEM, user="USER_MESSAGE: 이어폰", tier="fast")
+    )
+    while not sleeps:
+        await original_sleep(0)
+    second = asyncio.create_task(
+        llm.complete(system=decompose_mod._SYSTEM, user="USER_MESSAGE: 헤드폰", tier="fast")
+    )
+    await original_sleep(0)
+
+    assert not first.done()
+    assert not second.done()
+    release_sleep.set()
+    await asyncio.gather(first, second)
+
+    assert sleeps == [5.0]
 
 
 # ─────────── D5 — 판매자 레인은 무료 모드 밖(#438 R2 F3) ───────────

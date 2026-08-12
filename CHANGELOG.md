@@ -20,6 +20,16 @@
   현행 자유문장, 구조화 prompt-only, 구조화+결정적 validator를 같은 hashed MFT/INV/DIR fixture에서
   비교하고 raw response·분자/분모·hard gate·prompt/model/dataset hash·비용/지연을 보존한다.
   사람 평가는 제외하며 production 승격 근거와 별도로 탐색적 결과를 보존한다.
+- **#641 — 실제 LLM 비용 없이 배포 EC2의 두 성능 경계를 분리 측정하는 scripted 부하 테스트
+  프로파일**을 추가했다. `SCRIPTED_LLM_MODE=instant`는 기존 결정론 응답을 지연 없이 돌려
+  FastAPI·DB·Spring의 처리량 상한을 재고, `delayed`는 요청별 `LoadTestLLM` 인스턴스에서
+  기본 5초의 비동기 대기를 한 번만 적용해 오래 열린 SSE 연결의 동시성·메모리·timeout을
+  측정한다. decompose·rerank 호출마다 지연이 중복되지 않으며, 기동 배너가 프로파일과 지연값을
+  명시한다. GitHub Actions 배포는 scripted 설정과 테스트용 rate-limit 변수를 EC2 env 파일로
+  전달하되 미등록/빈 값은 제거해 기존 코드 기본값을 보존하고, rate-limit은 양수만 허용한다.
+  scripted 중에는 I-17 카탈로그 enrichment 배치를 차단해 가짜 생성물의 실 DB 저장을 막는다.
+  구매자 추천 외 레인, 실제 provider
+  네트워크·429·토큰 편차와 k6 부하 발생기는 범위 밖이며 API/SSE 계약 변경은 없다.
 - **#637 — 구매자 추천 adversarial/behavioral 평가 데이터셋**을 추가했다. 실제
   `BuyerChatRequest`와 Spring I-1 `SpringProduct` wire schema를 사용하는 7개 failure mode별
   30 family(총 210 family, 450 minimal-mutation case)를 결정론적으로 생성한다. 숫자 oracle,
@@ -53,6 +63,11 @@
   포함한다. 실제 human response는 포함하지 않으며 결과는 exploratory로만 해석한다.
 
 ### Fixed
+- **#639 — 추천 카드에서 사용자가 상품명의 유일 토큰을 지목했는데 LLM이 같은 허용 목록 안의
+  다른 상품을 골라 오담기하던 결함을 고쳤다.** 추천 카드 표면에 한해 상품명과 발화를 NFKC +
+  casefold 기반 정확 토큰으로 비교하고, 숫자 전용·1글자·담기 명령·장바구니 문맥 토큰을 제외한
+  뒤 유일 토큰들이 정확히 한 상품만 가리킬 때 그 ID로 교정한다. 공통 토큰, 부분 문자열, 서로
+  다른 상품의 유일 토큰 동시 언급, 부정·대조 표현은 기존 LLM 경로에 양보한다. 계약 변경 없음.
 - **#635 — 챗봇 장바구니 담기·삭제에 현재 `chatSessionId`를 전달하고, 추천 카드에서 해소한 담기에는 `recommendationContext{recommendationRequestId,listId}`를 함께 보낸다** (api-spec §4.1·§4.12, v0.33.1). Spring이 `chat:{sessionId}` sentinel로 행동 이벤트를 서버 측 적재하고 추천→담기 귀속을 검증할 수 있게 한다. 신원 0개/2개 `400 VALIDATION_ERROR`와 동시 경합 `409 RESOURCE_CONFLICT`도 계약 사본에 현행화했다.
 
 ### Removed
