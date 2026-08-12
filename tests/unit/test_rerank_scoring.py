@@ -337,3 +337,13 @@ def test_non_list_evaluations_are_rejected() -> None:
             alpha=0.65,
             k=60,
         )
+
+
+def test_rerank_result_defaults_to_no_ranking_diagnostics() -> None:
+    from app.agents.buyer.recommendation.state import RerankResult
+
+    result = RerankResult()
+
+    assert result.ranked == []
+    assert result.grounding_decisions == []
+    assert result.ranking_decisions == []

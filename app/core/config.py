@@ -1081,6 +1081,11 @@ class Settings(BaseSettings):
     # 기본으로 쓰되 사고 시 RERANK_GROUNDING_ARM=current 한 줄로 A에 롤백한다. 평가 CLI의
     # arm 기본값은 비교 기준 보존을 위해 이 설정과 별개로 current다.
     rerank_grounding_arm: Literal["current", "prompt_only", "validated"] = "validated"
+    # [#631] grounding과 독립적인 순위 계산 arm. 구현·평가 가능성과 production 채택을 분리하려고
+    # 기본은 기존 LLM ranked 배열을 그대로 쓰는 current다. structured/hybrid는 명시 opt-in이다.
+    rerank_ranking_arm: Literal["current", "structured", "hybrid"] = "current"
+    rerank_rrf_alpha: float = Field(default=0.65, ge=0.0, le=1.0)
+    rerank_rrf_k: int = Field(default=60, gt=0)
     rerank_max_tokens_base: int = Field(default=960, ge=0)  # overallComment·JSON 골격 몫
     rerank_max_tokens_per_item: int = Field(default=60, ge=1)  # {productId, rationale} 1건 몫
     llm_call_limit: int = 2
@@ -1098,6 +1103,7 @@ class Settings(BaseSettings):
     # 구조화 grounding prompt의 provenance 버전. current 롤백은 graph가 legacy `rerank-v1`을
     # 기록해 RERANK_GROUNDING_ARM 한 줄만 바꿔도 실제 prompt와 관측값이 함께 되돌아간다.
     rerank_prompt_version: str = "rerank-grounding-v1"
+    rerank_scoring_prompt_version: str = "rerank-scoring-v1"
     # provenance 로그 한 줄의 방어 상한 — 자연 상한은 계약 MAX_LISTS(10) × LIST_MAX_PRODUCTS(9)
     # = 90 이지만, 별도 방어선을 둬 초과분은 조용히 버리지 않고 `itemsTruncated=true` 로
     # 표시한다(silent cap 금지, 저장소 관례).

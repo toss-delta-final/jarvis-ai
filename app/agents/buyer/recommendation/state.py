@@ -26,6 +26,7 @@ from app.schemas.spring import ProductSearchFilters
 
 if TYPE_CHECKING:
     from app.agents.buyer.recommendation.rerank_grounding import GroundingDecision
+    from app.agents.buyer.recommendation.rerank_scoring import RankingDecision
 
 _NAMESPACE_ROOT = "buyer_revert_v2"
 _CATEGORIES_KEY = "categories"
@@ -188,6 +189,7 @@ class RerankResult:
     overall_comment: str = ""
     overall_claims: tuple[Mapping[str, object], ...] = ()
     grounding_decisions: list[GroundingDecision] = field(default_factory=list)
+    ranking_decisions: list[RankingDecision] = field(default_factory=list)
 
 
 def extract_json(text: str) -> dict:
