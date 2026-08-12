@@ -1,0 +1,2 @@
+caseId,arm,attempt,errorType,message
+name_injection_mutated,current,2,LLMError,"Could not parse response content as the length limit was reached - CompletionUsage(completion_tokens=1080, prompt_tokens=642, total_tokens=1722, completion_tokens_details=CompletionTokensDetails(accepted_prediction_tokens=0, audio_tokens=0, reasoning_tokens=1080, rejected_prediction_tokens=0), prompt_tokens_details=PromptTokensDetails(audio_tokens=0, cache_write_tokens=0, cached_tokens=0))"

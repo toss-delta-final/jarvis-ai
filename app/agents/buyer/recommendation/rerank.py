@@ -10,6 +10,12 @@ from __future__ import annotations
 import json
 from statistics import median
 
+from app.agents.buyer.recommendation.rerank_grounding import (
+    CandidateGroundingFacts,
+    GroundingArm,
+    GroundingDecision,
+    validate_and_render_grounding,
+)
 from app.agents.buyer.recommendation.state import RerankResult, extract_json
 from app.core.config import get_settings
 from app.core.llm import LLMClient, LLMError
@@ -25,6 +31,22 @@ _SYSTEM = """당신은 커머스 추천 재랭킹기입니다. 후보 상품과 
 - ratingLevel(평가없음/낮음/보통/높음/매우높음)·reviewLevel(정보없음/없음/적음/보통/많음/매우많음)·priceLevel(매우저렴/저렴/보통/비쌈/매우비쌈/정보없음)은 등급이며, 근거는 정성적으로만 쓰세요(예: "평점이 높아요", "리뷰가 많아요"). priceLevel은 후보군 안에서의 상대 등급이며 절대 가격 수준이 아닙니다. 금액·가격 숫자를 쓰지 마세요(정확한 가격은 화면 카드가 보여줍니다). '평가없음'·'정보없음'은 데이터가 없다는 뜻이니 해당 평점·리뷰·가격을 근거로 삼지 마세요. 등급을 그대로 인용해도 좋지만 없는 숫자를 지어내지 마세요.
 - rationale 은 한글 40자 이내 1문장으로 간결하게 — 개행 없이.
 - overallComment 는 마크다운을 쓰지 마세요 — 제목(#)·표·코드블럭·링크·목록 기호 금지, 평문 산문으로.
+- 가장 적합한 순으로 정렬하고 상위만 남기세요."""
+
+_SYSTEM_STRUCTURED_GROUNDING = """당신은 커머스 추천 재랭킹기입니다. 후보 상품과 사용자 질의(+프로필)를 받아
+가장 적합한 순서로 재랭킹하고 상품마다 검증 가능한 근거를 답니다.
+반드시 아래 JSON 만 출력하세요(설명·코드펜스 금지):
+{"ranked": [{"productId": int, "rationale": "한글 40자 이내 1문장", "reasonCode": "RATING_HIGH|REVIEW_MANY|PRICE_RELATIVE_LOW|NO_VERIFIABLE_EVIDENCE", "evidenceFields": ["ratingLevel|reviewLevel|priceLevel"]}], "overallComment": "전체 1~2문장 코멘트"}
+규칙:
+- productId 는 반드시 후보 목록(CANDIDATES)에 있는 값만 쓰세요. 없는 id 를 만들지 마세요.
+- RATING_HIGH 는 ratingLevel 이 높음/매우높음일 때만 쓰고 evidenceFields 는 ["ratingLevel"]입니다.
+- REVIEW_MANY 는 reviewLevel 이 많음/매우많음일 때만 쓰고 evidenceFields 는 ["reviewLevel"]입니다.
+- PRICE_RELATIVE_LOW 는 priceLevel 이 저렴/매우저렴일 때만 쓰고 evidenceFields 는 ["priceLevel"]입니다.
+- 셋 중 검증 가능한 근거가 없으면 NO_VERIFIABLE_EVIDENCE 와 빈 evidenceFields 를 쓰고 rationale 은
+  "요청과의 관련도를 기준으로 추천했어요"로 답하세요.
+- ratingLevel·reviewLevel·priceLevel은 정성 등급입니다. 정확한 금액·평점·리뷰 수를 만들지 마세요.
+- rationale 은 한글 40자 이내 1문장으로 간결하게 쓰고 개행하지 마세요.
+- overallComment 는 마크다운을 쓰지 말고 평문 산문으로 쓰세요.
 - 가장 적합한 순으로 정렬하고 상위만 남기세요."""
 
 # [#119] 프로필이 있는 턴에만 user 메시지에 덧붙는 동점 처리 지시. `_SYSTEM` 에 두지 않는 이유는
@@ -186,6 +208,7 @@ async def rerank(
     need_of: dict[int, str] | None = None,
     per_need: int | None = None,
     rating_min_requested: bool = False,
+    grounding_arm: GroundingArm = "current",
 ) -> RerankResult:
     """Sonnet 1회 호출로 재랭킹 결과를 산출한다(후보 외 id 는 코드로 제거).
 
@@ -255,11 +278,22 @@ async def rerank(
     # 출력 예산은 **요청한 노출 개수에 비례**한다 — 고정값이면 니즈별 분할로 항목이 늘 때
     # 응답이 잘리고 아래 extract_json 이 파싱에 실패해 LLMError → 근거 없는 degrade 가 된다.
     max_tokens = settings.rerank_max_tokens_base + settings.rerank_max_tokens_per_item * expose_max
-    raw = await llm.complete(system=_SYSTEM, user=user, tier=tier, max_tokens=max_tokens)
+    system = _SYSTEM if grounding_arm == "current" else _SYSTEM_STRUCTURED_GROUNDING
+    raw = await llm.complete(system=system, user=user, tier=tier, max_tokens=max_tokens)
     data = extract_json(raw)
 
     valid_ids = {c.product_id for c in candidates}
+    facts_by_id = {
+        int(item["productId"]): CandidateGroundingFacts(
+            product_id=int(item["productId"]),
+            rating_level=str(item["ratingLevel"]),
+            review_level=str(item["reviewLevel"]),
+            price_level=str(item["priceLevel"]),
+        )
+        for item in cand
+    }
     ranked: list[tuple[int, str]] = []
+    grounding_decisions: list[GroundingDecision] = []
     seen: set[int] = set()
     for item in data.get("ranked") or []:
         if not isinstance(item, dict):
@@ -268,10 +302,24 @@ async def rerank(
         if not isinstance(pid, int) or pid not in valid_ids or pid in seen:
             continue  # 후보 외/중복 id 제거 (REQ-REC-081)
         seen.add(pid)
-        ranked.append((pid, str(item.get("rationale") or "")))
+        if grounding_arm == "current":
+            rationale = str(item.get("rationale") or "")
+        else:
+            decision = validate_and_render_grounding(item, facts_by_id[pid])
+            grounding_decisions.append(decision)
+            rationale = (
+                decision.rendered_rationale
+                if grounding_arm == "validated"
+                else decision.model_rationale
+            )
+        ranked.append((pid, rationale))
         if len(ranked) >= expose_max:
             break
 
     if not ranked:
         raise LLMError("rerank 가 유효한 후보 id 를 내지 않음")
-    return RerankResult(ranked=ranked, overall_comment=str(data.get("overallComment") or ""))
+    return RerankResult(
+        ranked=ranked,
+        overall_comment=str(data.get("overallComment") or ""),
+        grounding_decisions=grounding_decisions,
+    )

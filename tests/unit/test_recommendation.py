@@ -18,6 +18,7 @@ from langgraph.store.memory import InMemoryStore
 
 from app.agents.buyer.graph import get_thread_store, run_buyer_turn as _production_run_buyer_turn
 from app.agents.buyer.recommendation import graph as recommendation_graph
+from app.agents.buyer.recommendation.rerank_grounding import NEUTRAL_RATIONALE
 from app.agents.buyer.recommendation.state import RepurchaseStore
 from app.agents.buyer.session_state import context_thread_key
 from app.api.deps import buyer_owner_id
@@ -160,9 +161,10 @@ async def test_happy_path_pipeline() -> None:
     assert entry.product_ids[:2] == [101, 102]
     assert set(entry.product_ids) <= {101, 102, 103}
 
-    # reasons — rerank rationale 있는 상품만(101,102). expose_min 보충 103 은 근거 없어 제외(이슈 #61).
+    # Production C는 legacy fake에 구조화 metadata가 없으면 후보·순위는 보존하고 reason만
+    # 중립 템플릿으로 강등한다. expose_min 보충 103은 rerank 항목이 아니라 reason에서 제외된다.
     reasons = {r.product_id: r.reason for r in entry.reasons}
-    assert reasons == {101: "가성비가 좋아요", 102: "음질이 우수해요"}
+    assert reasons == {101: NEUTRAL_RATIONALE, 102: NEUTRAL_RATIONALE}
 
     done = next(e for e in events if e["type"] == "done")["data"]
     assert done["finishReason"] == "stop"
@@ -1216,8 +1218,10 @@ async def test_overall_comment_sanitized_without_reason_length_cap() -> None:
     assert len(token) > settings.reason_max_len  # overall_comment 에 reason 캡을 재사용하지 않음
 
 
-async def test_recommendation_boundaries_apply_unicode_sequence_policy() -> None:
+async def test_recommendation_boundaries_apply_unicode_sequence_policy(monkeypatch) -> None:
     """Spring reason과 SSE 총평이 같은 등록 보존·비정상 제거 정책을 따른다."""
+    # 모델 자유 reason 자체의 Unicode 경계 테스트라 C 템플릿으로 덮지 않고 A rollback을 쓴다.
+    monkeypatch.setattr(get_settings(), "rerank_grounding_arm", "current")
     push = _RecordingPush()
     llm = FakeLLM(
         rerank={

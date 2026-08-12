@@ -9,6 +9,7 @@ import sys
 import httpx
 import pytest
 
+from evals.adversarial_recommendation import runner as runner_module
 from evals.adversarial_recommendation.__main__ import main
 from evals.adversarial_recommendation.generator import load_cases
 from evals.adversarial_recommendation.runner import (
@@ -84,6 +85,111 @@ async def test_live_runner_uses_injected_llm_and_records_provider_calls() -> Non
     assert execution["hardFailure"] is False
     assert [call["tier"] for call in execution["providerCalls"]] == ["fast", "smart"]
     assert execution["modelConfig"] == {"provider": "test-live"}
+
+
+@pytest.mark.asyncio
+async def test_runner_injects_prompt_only_arm_and_captures_grounding_decisions() -> None:
+    case = _case("adv-boundary-02-equal")
+
+    execution = await AdversarialBuyerRunner(
+        mode="scripted",
+        grounding_arm="prompt_only",
+    ).run(case)
+
+    assert execution["hardFailure"] is False
+    assert execution["groundingArm"] == "prompt_only"
+    assert len(execution["groundingDecisions"]) == len(execution["rankedProductIds"])
+    assert {decision["requestedReasonCode"] for decision in execution["groundingDecisions"]} == {
+        "NO_VERIFIABLE_EVIDENCE"
+    }
+
+
+def test_validated_execution_reuses_prompt_only_ranking_and_templates_only_known_reasons() -> None:
+    prompt_only = {
+        "caseId": "case-1",
+        "groundingArm": "prompt_only",
+        "rankedProductIds": [101, 102],
+        "reasons": {"101": "검증되지 않은 모델 근거", "102": "검색순서 보충 근거"},
+        "groundingDecisions": [
+            {
+                "productId": 101,
+                "requestedReasonCode": "RATING_HIGH",
+                "evidenceFields": ["ratingLevel"],
+                "modelRationale": "검증되지 않은 모델 근거",
+                "renderedRationale": "평점 평가가 높은 상품이에요",
+                "supported": True,
+                "downgraded": False,
+                "failureReason": None,
+            }
+        ],
+        "pushBody": {
+            "lists": [
+                {
+                    "productIds": [101, 102],
+                    "reasons": [
+                        {"productId": 101, "reason": "검증되지 않은 모델 근거"},
+                        {"productId": 102, "reason": "검색순서 보충 근거"},
+                    ],
+                }
+            ]
+        },
+        "requests": [
+            {
+                "path": "/internal/recommendations",
+                "body": {
+                    "lists": [
+                        {
+                            "productIds": [101, 102],
+                            "reasons": [
+                                {"productId": 101, "reason": "검증되지 않은 모델 근거"},
+                                {"productId": 102, "reason": "검색순서 보충 근거"},
+                            ],
+                        }
+                    ]
+                },
+            }
+        ],
+        "providerCalls": [{"tier": "fast"}, {"tier": "smart"}],
+    }
+
+    validated = runner_module.derive_validated_execution(prompt_only)
+
+    assert validated["groundingArm"] == "validated"
+    assert validated["derivedFromArm"] == "prompt_only"
+    assert validated["rankedProductIds"] == prompt_only["rankedProductIds"]
+    assert validated["reasons"] == {
+        "101": "평점 평가가 높은 상품이에요",
+        "102": "검색순서 보충 근거",
+    }
+    assert validated["pushBody"]["lists"][0]["reasons"][0]["reason"] == (
+        "평점 평가가 높은 상품이에요"
+    )
+    assert validated["requests"][0]["body"]["lists"][0]["reasons"][0]["reason"] == (
+        "평점 평가가 높은 상품이에요"
+    )
+    assert validated["providerCalls"] == []
+    assert validated["latencyMs"] is None
+    assert prompt_only["reasons"]["101"] == "검증되지 않은 모델 근거"
+
+
+@pytest.mark.asyncio
+async def test_later_arm_reuses_first_arm_decompose_decision() -> None:
+    case = _case("adv-boundary-02-equal")
+    current_runner = AdversarialBuyerRunner(mode="scripted", grounding_arm="current")
+    current = await current_runner.run(case)
+    prompt_runner = AdversarialBuyerRunner(mode="scripted", grounding_arm="prompt_only")
+
+    prompt = await prompt_runner.run(
+        case,
+        decision_override=current_runner.decompose_decisions[case.case_id],
+        decompose_source_arm="current",
+    )
+
+    assert prompt["hardFailure"] is False
+    assert prompt["decomposeSourceArm"] == "current"
+    assert [call["tier"] for call in current["providerCalls"]] == ["fast", "smart"]
+    assert [call["tier"] for call in prompt["providerCalls"]] == ["smart"]
+    assert prompt["extractedFilters"] == current["extractedFilters"]
 
 
 def test_scorer_fails_an_ineligible_recommendation() -> None:
@@ -265,6 +371,57 @@ def test_scripted_cli_writes_attributable_artifacts(tmp_path: Path) -> None:
     assert manifest["git"]["worktreeDiffSha256"]
     result = json.loads((out / "results.jsonl").read_text(encoding="utf-8"))
     assert result["behavioralVerdict"] == "not_evaluated"
+
+
+def test_scripted_cli_runs_all_grounding_arms_and_derives_validated_from_prompt_only(
+    tmp_path: Path,
+) -> None:
+    out = tmp_path / "arms"
+
+    exit_code = main(
+        [
+            "--mode",
+            "scripted",
+            "--arms",
+            "all",
+            "--case-ids",
+            "adv-boundary-02-equal",
+            "--out",
+            str(out),
+        ]
+    )
+
+    assert exit_code == 0
+    results = [
+        json.loads(line)
+        for line in (out / "results.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert [result["groundingArm"] for result in results] == [
+        "current",
+        "prompt_only",
+        "validated",
+    ]
+    by_arm = {result["groundingArm"]: result for result in results}
+    assert by_arm["prompt_only"]["execution"]["decomposeSourceArm"] == "current"
+    assert [call["tier"] for call in by_arm["prompt_only"]["execution"]["providerCalls"]] == [
+        "smart"
+    ]
+    assert by_arm["validated"]["execution"]["derivedFromArm"] == "prompt_only"
+    assert by_arm["validated"]["execution"]["providerCalls"] == []
+    assert (
+        by_arm["validated"]["execution"]["rankedProductIds"]
+        == (by_arm["prompt_only"]["execution"]["rankedProductIds"])
+    )
+    summary = json.loads((out / "summary.json").read_text(encoding="utf-8"))
+    assert summary["arms"] == ["current", "prompt_only", "validated"]
+    assert summary["uniqueCaseCount"] == 1
+    assert summary["caseCount"] == 3
+    manifest = json.loads((out / "run_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["arms"] == ["current", "prompt_only", "validated"]
+    assert manifest["sourceHashes"]["rerankStructuredPrompt"]
+    report = (out / "report.md").read_text(encoding="utf-8")
+    assert "## Grounding arms" in report
+    assert "`validated`" in report
 
 
 def test_cli_refuses_to_overwrite_existing_output_directory(tmp_path: Path) -> None:
