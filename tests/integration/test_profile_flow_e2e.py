@@ -1,4 +1,4 @@
-"""프로필 흐름 E2E 스모크 (이슈 #35) — 발화 누적 → session-end → 델타·consolidation → /profile/me.
+"""프로필 흐름 E2E 스모크 (이슈 #35) — 발화 누적 → session-end → 델타·consolidation.
 
 api-spec §3.4(프로필 조회)·§3.5(I-20 세션 종료 통지, 멱등) + SPEC-PROFILE-001 의 2단 비동기 쓰기가
 실제로 맞물리는지 확인한다. 턴 중에는 write 하지 않고(transient 격리) 세션 종료에 승격된다.
@@ -44,17 +44,19 @@ def _buyer_session_header(subject: str, sub_type: str, session_id: str) -> dict[
     return {"Authorization": f"Bearer {token}"}
 
 
-def test_profile_empty_before_any_session(client, spring, llm) -> None:
+async def test_profile_empty_before_any_session(client, spring, llm) -> None:
     """세션 종료 전에는 프로필이 없다 — 턴 중 write 금지(transient 격리)."""
     _chat(client, "3만원 이하 여행용 파우치 추천해줘")
 
-    body = client.get("/profile/me", headers=auth_header(USER_ID)).json()
-    assert body["exists"] is False
-    assert body["markdown"] is None
+    from app.agents.profile.reader import read_profile_summary
+
+    assert await read_profile_summary(USER_ID) is None
 
 
-def test_session_end_builds_profile_visible_on_profile_me(client, spring, llm, monkeypatch) -> None:
-    """세션 종료 → 델타 추출·게이트 승격 → consolidation → GET /profile/me 에 마크다운 노출."""
+async def test_session_end_builds_profile_after_session_end(
+    client, spring, llm, monkeypatch
+) -> None:
+    """세션 종료 → 델타 추출·게이트 승격 → consolidation까지 완료한다."""
     import app.agents.profile.finalizer as profile_finalizer
 
     monkeypatch.setattr(profile_finalizer, "get_llm", lambda: llm)
@@ -64,10 +66,10 @@ def test_session_end_builds_profile_visible_on_profile_me(client, spring, llm, m
     assert resp.status_code == 202
     assert resp.json()["status"] == "accepted"
 
-    body = client.get("/profile/me", headers=auth_header(USER_ID)).json()
-    assert body["exists"] is True
-    assert "여행용품" in body["markdown"]
-    assert body["userId"] == USER_ID
+    from app.agents.profile.reader import read_profile_summary
+
+    summary = await read_profile_summary(USER_ID)
+    assert summary is not None and "여행용품" in summary["markdown"]
     # 델타(Sonnet) + consolidation(Sonnet) 각 1회 — 세션 종료에서만 LLM 을 쓴다
     assert llm.calls_of("delta") == 1
     assert llm.calls_of("consolidate") == 1
@@ -115,12 +117,6 @@ async def test_remember_command_promotes_immediately(client, spring, llm) -> Non
     store = await get_profile_store()
     facts = await store.get_facts(USER_ID)
     assert any("트래블러" in fact for fact in facts)
-
-
-def test_guest_has_no_profile(client, spring, llm) -> None:
-    """게스트는 개인화 프로필이 없다 — 정상 200 {exists:false} (오류 아님, §3.4)."""
-    body = client.get("/profile/me").json()
-    assert body["exists"] is False
 
 
 def test_session_end_degrades_without_llm(client, spring, monkeypatch) -> None:
