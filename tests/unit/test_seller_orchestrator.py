@@ -1037,7 +1037,7 @@ def test_pipeline_scope_refusal_short_circuits(monkeypatch: pytest.MonkeyPatch) 
     )
 
     assert result.kind == "refused"
-    assert "제공할 수 없습니다" in result.text
+    assert "도와드리기 어려운 영역" in result.text
     assert tokens == []  # planner 진입 전 차단
 
 
