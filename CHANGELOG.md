@@ -12,6 +12,12 @@
 ## [Unreleased]
 
 ### Added
+- **#637 — 구매자 추천 adversarial/behavioral 평가 데이터셋**을 추가했다. 실제
+  `BuyerChatRequest`와 Spring I-1 `SpringProduct` wire schema를 사용하는 7개 failure mode별
+  30 family(총 210 family, 450 minimal-mutation case)를 결정론적으로 생성한다. 숫자 oracle,
+  family 불변식, unintended mutation, 경계 contrast를 validator가 검사하며, 고정 seed로
+  category별 20%를 층화 추출한 42 family 직접 재검토 기록도 함께 검증한다. 판매자 경로와
+  임의 schema는 포함하지 않는다.
 - **#585 — 판매자 분석 저장 계층: DDL 5테이블 + 리포지토리 + targets 자동 등록 훅**을 추가했다
   (OPS-RUNTIME.md §1.3~§1.7, 결정 71·72·80·110~112). `db/profile/init/05_seller_analysis.sql`에
   `seller_analysis_targets`·`snapshots`·`reports`·`recommendations`·`outcomes` 5테이블을 신설하고,

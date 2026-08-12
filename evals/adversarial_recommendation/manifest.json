@@ -1,0 +1,40 @@
+{
+  "caseCount": 450,
+  "categoryCaseCounts": {
+    "boundary": 90,
+    "constraint_conflict": 60,
+    "evidence_conflict": 60,
+    "missing_data": 60,
+    "no_evidence": 60,
+    "numeric_hallucination": 60,
+    "prompt_injection": 60
+  },
+  "categoryFamilyCounts": {
+    "boundary": 30,
+    "constraint_conflict": 30,
+    "evidence_conflict": 30,
+    "missing_data": 30,
+    "no_evidence": 30,
+    "numeric_hallucination": 30,
+    "prompt_injection": 30
+  },
+  "datasetName": "buyer-adversarial-recommendation",
+  "datasetVersion": "0.2.0",
+  "familyCount": 210,
+  "files": {
+    "cases/prototype.jsonl": {
+      "bytes": 1009059,
+      "sha256": "20c828b3956ed74445b1f3721a64e6419d9c0e62296be7ebc40c560077f722d0"
+    },
+    "reviews/manual_review_20pct.json": {
+      "bytes": 45504,
+      "sha256": "b370861ae8e190e355083169f8c9d51971f638dc6d36f62386b5ca576001e13c"
+    },
+    "seeds/families.json": {
+      "bytes": 852724,
+      "sha256": "37440c3c94b73161b339ef133c0419d0f507296d51f9a2167428002897614e09"
+    }
+  },
+  "generatedAt": "2026-08-12T00:00:00Z",
+  "schemaVersion": "1.0.0"
+}
