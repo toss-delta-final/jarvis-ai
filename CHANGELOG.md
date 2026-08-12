@@ -12,6 +12,12 @@
 ## [Unreleased]
 
 ### Added
+- **#634 관측 집계 스크립트 비용 축에 min/max·role 분해 추가** — `_cost_stats()`가 최소/최대
+  비용을 반환하도록 확장하고, 비용 롤업에 `role`(seller/member/guest)·`model`(fan-in
+  귀속)·`length`(`messageLength` 고정 버킷) 축을 신설했다. Markdown 비용 표에 최소/최대(USD)
+  열을 추가하고 그룹 라벨을 latency 표와 동일한 `dimension:group` 규약으로 통일했으며, CSV
+  metric에도 min/max를 포함했다. 버킷 경계는 `app/core/config.py`의 신규 튜너블
+  `observability_length_buckets`로 주입한다(실측 분포 전 추정치). 계약(api-spec) 무영향.
 - **#645 buyer `overallComment` 최종-view grounding**을 추가했다. B/C rerank 출력은 목록 전체
   `overallClaims`를 구조화해 보존하고, production C는 repurchase pinning·노출 보충/절단·니즈
   분할·BUY_ALL budget-set 계산 뒤의 실제 I-21 product groups에 대해 claim을 검증한 후 고정
@@ -81,9 +87,6 @@
   포함한다. 실제 human response는 포함하지 않으며 결과는 exploratory로만 해석한다.
 
 ### Fixed
-- **판매자 분석 대상 자동 등록이 pool 초기화 도중 취소될 때 pytest와 이벤트 루프 종료가
-  무기한 대기하던 결함을 고쳤다.** 부분 생성된 psycopg pool을 취소 경계에서 즉시 닫고,
-  공통 테스트 pool 정리 목록에도 분석 저장소를 포함했다.
 - **#639 — 추천 카드에서 사용자가 상품명의 유일 토큰을 지목했는데 LLM이 같은 허용 목록 안의
   다른 상품을 골라 오담기하던 결함을 고쳤다.** 추천 카드 표면에 한해 상품명과 발화를 NFKC +
   casefold 기반 정확 토큰으로 비교하고, 숫자 전용·1글자·담기 명령·장바구니 문맥 토큰을 제외한
@@ -95,15 +98,6 @@
 - **#635 — 구 `GET /profile/me` HTTP 조회 표면을 제거했다.** 라우터·응답 스키마·OpenAPI·회귀 테스트와 공개 문서를 함께 정리했으며, 프로필 요약 reader는 추천 경로 내부 소비로 유지한다.
 
 ### Changed
-- **판매자 챗봇 응답 전반의 말투를 "친절한 비서" 톤으로 개선했다.** `GENERAL_PROMPT_TEMPLATE`·
-  `REPORT_PROMPT`·`RESIDENT_REPORT_PROMPT`·`PRODUCT_PROMPT`·`RECOMMEND_PROMPT`·
-  `RESIDENT_RECOMMEND_PROMPT`(`prompts.py`)에 문체 규칙을 추가·보강하고, `vision.py`의 이미지
-  분석 결과(상품명·요약·설명) 품질 기준을 구체화했다. 채팅 화면이 실제 렌더링하는 서식(줄바꿈·
-  목록·**굵게** 3종, 표·헤딩 미지원)을 프롬프트에 명시해 지원하지 않는 마크다운 기호가 그대로
-  노출되는 걸 막았다. 아울러 `hitl.py`·`history.py`·`middleware.py`·`pipeline.py`·
-  `draft_lifecycle.py`의 하드코딩된 완료·오류 메시지 40여 곳을 "~습니다" 단정형에서
-  "~해요/~드릴게요" 구어체로 바꾸고, 내부 productId·orderItemId·enum 값 노출을 줄이고 실패
-  시 다음 행동 안내를 추가했다. 계약(api-spec) 변경 없음 — 순수 텍스트 수정이다.
 - **#650 — 판매자 general 레인에 경량 해석 허용 범위를 추가했다.** 단일 지표 증감·순위·
   임계값 비교(예: "지난주보다 늘었다", "가장 많이 이탈한 단계")까지는 general 이 직접
   답한다 — 원인 가설·복수 지표 교차·행동 추천은 여전히 금지이며, 필요하면 기존과 동일하게

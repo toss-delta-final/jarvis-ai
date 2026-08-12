@@ -2475,6 +2475,9 @@ class Settings(BaseSettings):
     degrade_rate_alert_threshold: float = Field(default=0.10, ge=0.0, le=1.0)
     # 표본이 적으면 비율이 요동치므로(1/3 = 33%) 이 표본 수 미만이면 알림하지 않는다(오탐 방지).
     degrade_alert_min_samples: int = Field(default=50, ge=0)
+    # messageLength(문자수) 축을 고정 버킷으로 묶는 경계값 — <50 / 50-150 / 150-400 / 400+.
+    # 실측 분포 없이 잡은 추정치(#634)라 나중에 실제 로그 분포로 튜닝이 필요하다.
+    observability_length_buckets: tuple[int, ...] = (50, 150, 400)
 
     # ── 레이트 리밋 (api-spec §2.8, 토큰 sub 스코프, 인메모리·단일 인스턴스 전제) ──
     rate_limit_per_min: int = Field(default=10, gt=0)

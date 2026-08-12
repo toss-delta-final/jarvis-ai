@@ -120,6 +120,10 @@ def test_openapi_surface_is_exactly_mvp() -> None:
     assert paths == {
         "/chat",
         "/seller/chat",
+        # [#599] R-1/R-2 판매자 분석 보고서 조회 — GET 목록(reports)·상세(reports/{report_id}).
+        # SSE 레인(`/seller/chat`)과 별개로, 배치가 저장해 둔 보고서를 조회 전용으로 읽는다.
+        "/seller/reports",
+        "/seller/reports/{report_id}",
         "/health",
         "/events/session-end",
         "/events/session-claim",

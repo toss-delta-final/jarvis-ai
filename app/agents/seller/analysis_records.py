@@ -74,6 +74,11 @@ class ReportRecord(BaseModel):
     summary: str
     report_md: str
     segments: Any = Field(default_factory=list)
+    # 이슈 #599 — `schemas.AnalysisFinding` 목록(snake_case). S-4 report 이벤트와 같은
+    # 형식이라 채팅과 R-2 가 조립기(`api/seller._report_payload`)를 공유한다.
+    # 조회 시 report_md 를 파싱해 만들지 않고 생성 시점에 코드가 합성해 저장한다 —
+    # 완료 조건이 "페이지가 본문 파싱 없이" 그릴 수 있는 구조를 요구한다.
+    findings: Any = Field(default_factory=list)
     holds: Any = Field(default_factory=list)
     verified: bool
     score_total: int | None = None
