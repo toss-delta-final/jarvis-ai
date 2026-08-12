@@ -23,6 +23,7 @@ from app.agents.buyer.recommendation.state import reset_repurchase_store, reset_
 from app.agents.profile import graph_journal, processed_events, session_activity
 from app.agents.profile import store as profile_store_module
 from app.agents.profile.store import reset_profile_store
+from app.agents.seller import analysis_store
 from app.core import conversation as conversation_module
 from app.core import pg_store
 from app.core.conversation import reset_store
@@ -102,6 +103,7 @@ async def close_pg_pools_on_loop() -> None:
     (tests/integration/test_pg_pool_loop_teardown.py 가 누락을 잡는다).
     """
     for close in (
+        analysis_store.close_pool,
         processed_events.close_pool,
         session_activity.close_pool,
         graph_journal.close_pool,

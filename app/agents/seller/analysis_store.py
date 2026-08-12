@@ -182,6 +182,16 @@ async def _get_pool() -> AsyncConnectionPool | None:
                 )
                 await _run_ddl(pool)
                 _pool = pool
+            except asyncio.CancelledError:
+                # targets 자동 등록은 fire-and-forget이라 요청/테스트 portal 종료와 함께
+                # pool.open() 도중 취소될 수 있다. 방금 만든 풀을 닫지 않으면 psycopg worker가
+                # 취소를 삼키고 이벤트 루프 teardown을 영원히 막는다(#208과 같은 실패 형태).
+                if pool is not None:
+                    try:
+                        await pool.close()
+                    except Exception:
+                        pass
+                raise
             except Exception as exc:
                 if pool is not None:
                     try:
@@ -427,7 +437,10 @@ async def _write(run: Callable[[AsyncConnection], Awaitable[_T]]) -> _T | None:
         try:
             async with pool.connection(timeout=settings.state_store_query_timeout_s) as conn:
                 async with conn.transaction():
-                    await conn.execute("SET LOCAL statement_timeout = %s", (write_timeout_ms,))
+                    await conn.execute(
+                        "SELECT set_config('statement_timeout', %s, true)",
+                        (str(write_timeout_ms),),
+                    )
                     return await run(conn)
         except Exception as exc:
             if attempt + 1 >= attempts or not is_state_store_unavailable(exc):
@@ -466,7 +479,8 @@ async def _register_quietly(context: SellerContext) -> None:
         await register_target(context.brand_id, context.seller_id)
     except Exception:  # noqa: BLE001 - 등록 실패가 판매자 응답을 죽이면 안 된다
         logger.warning(
-            "seller_analysis_target_register_failed brand_id=%s", context.brand_id, exc_info=True
+            "seller analysis target register failed code=SELLER_ANALYSIS_TARGET_REGISTER_FAILED",
+            exc_info=True,
         )
 
 
