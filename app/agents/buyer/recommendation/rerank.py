@@ -36,7 +36,7 @@ _SYSTEM = """당신은 커머스 추천 재랭킹기입니다. 후보 상품과 
 _SYSTEM_STRUCTURED_GROUNDING = """당신은 커머스 추천 재랭킹기입니다. 후보 상품과 사용자 질의(+프로필)를 받아
 가장 적합한 순서로 재랭킹하고 상품마다 검증 가능한 근거를 답니다.
 반드시 아래 JSON 만 출력하세요(설명·코드펜스 금지):
-{"ranked": [{"productId": int, "rationale": "한글 40자 이내 1문장", "reasonCode": "RATING_HIGH|REVIEW_MANY|PRICE_RELATIVE_LOW|NO_VERIFIABLE_EVIDENCE", "evidenceFields": ["ratingLevel|reviewLevel|priceLevel"]}], "overallComment": "전체 1~2문장 코멘트"}
+{"ranked": [{"productId": int, "rationale": "한글 40자 이내 1문장", "reasonCode": "RATING_HIGH|REVIEW_MANY|PRICE_RELATIVE_LOW|NO_VERIFIABLE_EVIDENCE", "evidenceFields": ["ratingLevel|reviewLevel|priceLevel"]}], "overallComment": "전체 1~2문장 코멘트", "overallClaims": [{"claimCode": "TOP_REVIEW_COUNT|ALL_RATING_HIGH|ALL_WITHIN_TOTAL_BUDGET|NO_VERIFIABLE_OVERALL_CLAIM", "scope": "FINAL_EXPOSED_PRODUCTS|FINAL_RECOMMENDATION_LISTS", "subjectProductIds": [int], "evidenceFields": ["reviewCount|ratingLevel|price|totalBudget"]}]}
 규칙:
 - productId 는 반드시 후보 목록(CANDIDATES)에 있는 값만 쓰세요. 없는 id 를 만들지 마세요.
 - RATING_HIGH 는 ratingLevel 이 높음/매우높음일 때만 쓰고 evidenceFields 는 ["ratingLevel"]입니다.
@@ -47,6 +47,16 @@ _SYSTEM_STRUCTURED_GROUNDING = """당신은 커머스 추천 재랭킹기입니�
 - ratingLevel·reviewLevel·priceLevel은 정성 등급입니다. 정확한 금액·평점·리뷰 수를 만들지 마세요.
 - rationale 은 한글 40자 이내 1문장으로 간결하게 쓰고 개행하지 마세요.
 - overallComment 는 마크다운을 쓰지 말고 평문 산문으로 쓰세요.
+- overallClaims 는 전체 코멘트의 검증 가능한 주장만 최대 2개 제안하세요.
+- TOP_REVIEW_COUNT 는 첫 추천 상품 하나를 subjectProductIds 로 쓰고 scope 는
+  FINAL_EXPOSED_PRODUCTS, evidenceFields 는 ["reviewCount"]로 쓰세요.
+- ALL_RATING_HIGH 는 추천한 모든 상품을 subjectProductIds 로 쓰고 scope 는
+  FINAL_EXPOSED_PRODUCTS, evidenceFields 는 ["ratingLevel"]로 쓰세요.
+- ALL_WITHIN_TOTAL_BUDGET 는 최종 추천 조합 전체를 subjectProductIds 로 쓰고 scope 는
+  FINAL_RECOMMENDATION_LISTS, evidenceFields 는 ["price", "totalBudget"]로 쓰세요.
+- 인기·가성비처럼 CANDIDATES 필드로 증명할 수 없는 최상급을 제안하지 마세요.
+- 검증 가능한 전체 주장이 없으면 NO_VERIFIABLE_OVERALL_CLAIM, FINAL_EXPOSED_PRODUCTS,
+  빈 subjectProductIds, 빈 evidenceFields 한 건만 쓰세요.
 - 가장 적합한 순으로 정렬하고 상위만 남기세요."""
 
 # [#119] 프로필이 있는 턴에만 user 메시지에 덧붙는 동점 처리 지시. `_SYSTEM` 에 두지 않는 이유는
@@ -197,6 +207,22 @@ def _price_medians(
     return [medians[key] for key in keys]
 
 
+def _parse_overall_claims(
+    data: dict[str, object], grounding_arm: GroundingArm
+) -> tuple[dict[str, object], ...]:
+    """Preserve B/C proposals, including malformed values for downstream audit."""
+
+    if grounding_arm == "current" or "overallClaims" not in data:
+        return ()
+    raw_claims = data["overallClaims"]
+    if not isinstance(raw_claims, list):
+        return ({"__invalidShape": raw_claims},)
+    return tuple(
+        dict(value) if isinstance(value, dict) else {"__invalidShape": value}
+        for value in raw_claims
+    )
+
+
 async def rerank(
     llm: LLMClient,
     *,
@@ -321,5 +347,6 @@ async def rerank(
     return RerankResult(
         ranked=ranked,
         overall_comment=str(data.get("overallComment") or ""),
+        overall_claims=_parse_overall_claims(data, grounding_arm),
         grounding_decisions=grounding_decisions,
     )

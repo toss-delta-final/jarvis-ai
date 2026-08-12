@@ -175,9 +175,18 @@ def test_malformed_evidence_downgrades_safely(item: dict[str, object], failure_r
     assert decision.failure_reason == failure_reason
 
 
+_MISSING = object()
+
+
 class _StructuredLLM:
-    def __init__(self, ranked: list[dict[str, object]]) -> None:
+    def __init__(
+        self,
+        ranked: list[dict[str, object]],
+        *,
+        overall_claims: object = _MISSING,
+    ) -> None:
         self.ranked = ranked
+        self.overall_claims = overall_claims
         self.systems: list[str] = []
 
     async def complete(
@@ -190,9 +199,13 @@ class _StructuredLLM:
         json_output: bool = True,
     ) -> str:
         self.systems.append(system)
-        return json.dumps(
-            {"ranked": self.ranked, "overallComment": "골라봤어요"}, ensure_ascii=False
-        )
+        payload: dict[str, object] = {
+            "ranked": self.ranked,
+            "overallComment": "골라봤어요",
+        }
+        if self.overall_claims is not _MISSING:
+            payload["overallClaims"] = self.overall_claims
+        return json.dumps(payload, ensure_ascii=False)
 
 
 async def _call_rerank(
@@ -240,6 +253,8 @@ async def test_current_arm_keeps_legacy_prompt_and_rationale() -> None:
     assert llm.systems == [_SYSTEM]
     assert result.ranked == [(101, "legacy")]
     assert result.grounding_decisions == []
+    assert result.overall_claims == ()
+    assert "overallClaims" not in _SYSTEM
 
 
 async def test_prompt_only_preserves_model_rationale_when_metadata_is_invalid() -> None:
@@ -330,5 +345,70 @@ async def test_structured_prompt_declares_exact_grounding_contract() -> None:
         "NO_VERIFIABLE_EVIDENCE",
         "rationale",
         "후보 목록(CANDIDATES)",
+        "overallClaims",
+        "TOP_REVIEW_COUNT",
+        "ALL_RATING_HIGH",
+        "ALL_WITHIN_TOTAL_BUDGET",
+        "NO_VERIFIABLE_OVERALL_CLAIM",
+        "scope",
+        "subjectProductIds",
     ):
         assert value in _SYSTEM_STRUCTURED_GROUNDING
+
+
+@pytest.mark.parametrize("grounding_arm", ["prompt_only", "validated"])
+async def test_structured_arms_preserve_raw_overall_claims(grounding_arm: str) -> None:
+    proposal = {
+        "claimCode": "ALL_RATING_HIGH",
+        "scope": "FINAL_EXPOSED_PRODUCTS",
+        "subjectProductIds": [101],
+        "evidenceFields": ["ratingLevel"],
+    }
+    llm = _StructuredLLM(
+        [
+            {
+                "productId": 101,
+                "rationale": "평점이 높아요",
+                "reasonCode": "RATING_HIGH",
+                "evidenceFields": ["ratingLevel"],
+            }
+        ],
+        overall_claims=[proposal],
+    )
+
+    result = await _call_rerank(
+        llm,
+        grounding_arm=grounding_arm,
+        rating=4.8,
+        review_count=10,
+    )
+
+    assert result.overall_claims == (proposal,)
+    assert result.overall_comment == "골라봤어요"
+
+
+@pytest.mark.parametrize(
+    ("raw_claims", "sentinel_value"),
+    [
+        ("not-an-array", "not-an-array"),
+        (["not-an-object"], "not-an-object"),
+    ],
+)
+async def test_structured_arms_preserve_invalid_overall_shape_for_validator(
+    raw_claims: object, sentinel_value: object
+) -> None:
+    llm = _StructuredLLM(
+        [
+            {
+                "productId": 101,
+                "rationale": "중립",
+                "reasonCode": "NO_VERIFIABLE_EVIDENCE",
+                "evidenceFields": [],
+            }
+        ],
+        overall_claims=raw_claims,
+    )
+
+    result = await _call_rerank(llm, grounding_arm="validated")
+
+    assert result.overall_claims == ({"__invalidShape": sentinel_value},)
