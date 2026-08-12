@@ -18,6 +18,7 @@ from langgraph.store.memory import InMemoryStore
 
 from app.agents.buyer.graph import get_thread_store, run_buyer_turn as _production_run_buyer_turn
 from app.agents.buyer.recommendation import graph as recommendation_graph
+from app.agents.buyer.recommendation.overall_comment_grounding import NEUTRAL_OVERALL_COMMENT
 from app.agents.buyer.recommendation.rerank_grounding import NEUTRAL_RATIONALE
 from app.agents.buyer.recommendation.state import RepurchaseStore
 from app.agents.buyer.session_state import context_thread_key
@@ -413,7 +414,9 @@ def test_degrade_notice_cannot_be_disabled_by_empty_value() -> None:
     assert Settings(_env_file=None, dedup_skipped_notice="").dedup_skipped_notice == ""
 
 
-async def test_overall_comment_markdown_collapses_to_one_line() -> None:
+async def test_overall_comment_markdown_collapses_to_one_line(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """[이슈 #570] LLM overallComment 가 `## 제목\\n| a | b |` 처럼 마크다운·개행을 실어도
     실제 token.text 는 개행 0개인 한 줄로 나간다 — `_strip_unsafe` 가 **공백류(개행 포함)만**
     단일 공백으로 접을 뿐, `#`·`|`·`-` 같은 문법 문자 자체는 지우지 않는다는 것도 함께 못 박는다
@@ -422,6 +425,7 @@ async def test_overall_comment_markdown_collapses_to_one_line() -> None:
     방식 두 번째 불릿(LLM 자유 문장은 프롬프트로만 금지하고 결정론적으로 보장하지 않는다)의
     근거가 되는 회귀다.
     """
+    monkeypatch.setattr(get_settings(), "rerank_grounding_arm", "current")
     events = await _collect(
         run_buyer_turn(
             _req(),
@@ -1191,9 +1195,12 @@ async def test_reason_sanitized_and_capped_before_push() -> None:
     assert len(sent) <= settings.reason_max_len  # 안전 상한 이내
 
 
-async def test_overall_comment_sanitized_without_reason_length_cap() -> None:
+async def test_overall_comment_sanitized_without_reason_length_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """overall_comment 는 SSE 직전 위험 문자만 제거하고 reason 전용 길이 캡은 적용하지 않는다."""
     settings = get_settings()
+    monkeypatch.setattr(settings, "rerank_grounding_arm", "current")
     comment = "추천\n총평\u200b\u202e " + ("가" * (settings.reason_max_len + 20))
     llm = FakeLLM(
         rerank={
@@ -1216,6 +1223,147 @@ async def test_overall_comment_sanitized_without_reason_length_cap() -> None:
     assert token.startswith("추천 총평 ")
     assert "\n" not in token and "\u200b" not in token and "\u202e" not in token
     assert len(token) > settings.reason_max_len  # overall_comment 에 reason 캡을 재사용하지 않음
+
+
+async def test_validated_overall_comment_uses_final_view_template(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = get_settings()
+    monkeypatch.setattr(settings, "rerank_grounding_arm", "validated")
+    monkeypatch.setattr(settings, "expose_min", 2)
+    monkeypatch.setattr(settings, "expose_max", 2)
+    products = [
+        SpringProduct(product_id=101, name="A", price=10_000, rating=4.8, review_count=20),
+        SpringProduct(product_id=102, name="B", price=12_000, rating=4.5, review_count=10),
+    ]
+    model_comment = "모델 자유문장은 노출되면 안 돼요"
+    events = await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=FakeLLM(
+                rerank={
+                    "ranked": [
+                        {
+                            "productId": 101,
+                            "rationale": "평점이 높아요",
+                            "reasonCode": "RATING_HIGH",
+                            "evidenceFields": ["ratingLevel"],
+                        },
+                        {
+                            "productId": 102,
+                            "rationale": "평점이 높아요",
+                            "reasonCode": "RATING_HIGH",
+                            "evidenceFields": ["ratingLevel"],
+                        },
+                    ],
+                    "overallComment": model_comment,
+                    "overallClaims": [
+                        {
+                            "claimCode": "ALL_RATING_HIGH",
+                            "scope": "FINAL_EXPOSED_PRODUCTS",
+                            "subjectProductIds": [101, 102],
+                            "evidenceFields": ["ratingLevel"],
+                        }
+                    ],
+                }
+            ),
+            search=_make_search(products),
+            push_fn=_RecordingPush(),
+        )
+    )
+
+    texts = [event["data"]["text"] for event in events if event["type"] == "token"]
+    assert "평점 정보가 높은 상품들만 골랐어요." in texts
+    assert all(model_comment not in text for text in texts)
+
+
+async def test_validated_overall_comment_checks_post_fill_products(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = get_settings()
+    monkeypatch.setattr(settings, "rerank_grounding_arm", "validated")
+    monkeypatch.setattr(settings, "expose_min", 3)
+    monkeypatch.setattr(settings, "expose_max", 3)
+    push = _RecordingPush()
+    products = [
+        SpringProduct(product_id=101, name="A", rating=4.8, review_count=20),
+        SpringProduct(product_id=102, name="B", rating=4.5, review_count=10),
+        SpringProduct(product_id=103, name="C", rating=3.0, review_count=5),
+    ]
+    events = await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=FakeLLM(
+                rerank={
+                    "ranked": [
+                        {
+                            "productId": 101,
+                            "rationale": "평점이 높아요",
+                            "reasonCode": "RATING_HIGH",
+                            "evidenceFields": ["ratingLevel"],
+                        },
+                        {
+                            "productId": 102,
+                            "rationale": "평점이 높아요",
+                            "reasonCode": "RATING_HIGH",
+                            "evidenceFields": ["ratingLevel"],
+                        },
+                    ],
+                    "overallComment": "모두 평점이 높아요",
+                    "overallClaims": [
+                        {
+                            "claimCode": "ALL_RATING_HIGH",
+                            "scope": "FINAL_EXPOSED_PRODUCTS",
+                            "subjectProductIds": [101, 102],
+                            "evidenceFields": ["ratingLevel"],
+                        }
+                    ],
+                }
+            ),
+            search=_make_search(products),
+            push_fn=push,
+        )
+    )
+
+    assert _only_list(push.pushes[0]).product_ids == [101, 102, 103]
+    texts = [event["data"]["text"] for event in events if event["type"] == "token"]
+    assert NEUTRAL_OVERALL_COMMENT in texts
+    assert all("모두 평점이 높아요" not in text for text in texts)
+
+
+@pytest.mark.parametrize("arm", ["current", "prompt_only"])
+async def test_non_validated_arms_keep_model_overall_comment(
+    monkeypatch: pytest.MonkeyPatch, arm: str
+) -> None:
+    monkeypatch.setattr(get_settings(), "rerank_grounding_arm", arm)
+    model_comment = f"{arm} 모델 코멘트"
+    events = await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=FakeLLM(
+                rerank={
+                    "ranked": [
+                        {
+                            "productId": 101,
+                            "rationale": "근거",
+                            "reasonCode": "NO_VERIFIABLE_EVIDENCE",
+                            "evidenceFields": [],
+                        }
+                    ],
+                    "overallComment": model_comment,
+                    "overallClaims": [],
+                }
+            ),
+            search=_make_search(DEFAULT_PRODUCTS),
+            push_fn=_RecordingPush(),
+        )
+    )
+
+    texts = [event["data"]["text"] for event in events if event["type"] == "token"]
+    assert model_comment in texts
 
 
 async def test_recommendation_boundaries_apply_unicode_sequence_policy(monkeypatch) -> None:
@@ -3916,15 +4064,16 @@ async def test_recommendation_repurchase_survives_rerank_omission(
     절단만 막고 여기를 두면 exact 제외·상한 절단을 다 통과하고도 최종 노출에서 조용히 빠진다.
     """
     _fix_now(monkeypatch)
+    monkeypatch.setattr(get_settings(), "rerank_grounding_arm", "validated")
     monkeypatch.setattr(get_settings(), "expose_min", 1)
     monkeypatch.setattr(get_settings(), "expose_max", 2)
     monkeypatch.setattr(
         _sc_mod, "get_recent_purchases", _purchases_cat((101, "음향가전", "무선 이어폰"))
     )
     products = [
-        _prod(101, "음향가전", "무선 이어폰"),
-        _prod(201, "음향가전", "유선 이어폰"),
-        _prod(202, "음향가전", "헤드폰"),
+        _prod(101, "음향가전", "무선 이어폰").model_copy(update={"review_count": 10}),
+        _prod(201, "음향가전", "유선 이어폰").model_copy(update={"review_count": 10}),
+        _prod(202, "음향가전", "헤드폰").model_copy(update={"review_count": 10}),
     ]
     push = _RecordingPush()
     llm = FakeLLM(
@@ -3941,12 +4090,23 @@ async def test_recommendation_repurchase_survives_rerank_omission(
                 {"productId": 202, "rationale": "음질이 우수해요"},
             ],
             "overallComment": "추천이에요",
+            "overallClaims": [
+                {
+                    "claimCode": "ALL_RATING_HIGH",
+                    "scope": "FINAL_EXPOSED_PRODUCTS",
+                    "subjectProductIds": [201, 202],
+                    "evidenceFields": ["ratingLevel"],
+                }
+            ],
         },
     )
-    await _collect(
+    events = await _collect(
         run_buyer_turn(_req(), _member_num(), llm=llm, search=_make_search(products), push_fn=push)
     )
     assert 101 in _only_list(push.pushes[0]).product_ids
+    texts = [event["data"]["text"] for event in events if event["type"] == "token"]
+    assert NEUTRAL_OVERALL_COMMENT in texts
+    assert "추천이에요" not in texts
 
 
 async def test_recommendation_repurchase_pin_stays_in_its_fanout_need(
@@ -4068,6 +4228,14 @@ async def test_buy_all_budget_builds_top_k_sets_from_wider_candidate_pools(
                 {"productId": 21, "rationale": "호환돼요"},
             ],
             "overallComment": "세트 추천이에요",
+            "overallClaims": [
+                {
+                    "claimCode": "ALL_WITHIN_TOTAL_BUDGET",
+                    "scope": "FINAL_RECOMMENDATION_LISTS",
+                    "subjectProductIds": [13, 23, 11, 21],
+                    "evidenceFields": ["price", "totalBudget"],
+                }
+            ],
         },
     )
     events = await _collect(
@@ -4091,6 +4259,9 @@ async def test_buy_all_budget_builds_top_k_sets_from_wider_candidate_pools(
     assert len({item.list_id for item in sent.lists}) == len(sent.lists)
     ready = next(event for event in events if event["type"] == "products.ready")
     assert ready["data"]["listIds"] == [item.list_id for item in sent.lists]
+    texts = [event["data"]["text"] for event in events if event["type"] == "token"]
+    assert "각 추천 조합이 모두 예산 안에 들어와요." in texts
+    assert "세트 추천이에요" not in texts
 
 
 async def test_buy_all_pool_keeps_cheap_candidate_below_relevance_cutoff(
