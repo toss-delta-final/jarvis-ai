@@ -32,6 +32,8 @@ class ModelPriceEntry(NamedTuple):
 
     model: str
     in_per_1k: float
+    cached_in_per_1k: float
+    cache_write_per_1k: float
     out_per_1k: float
     effective_date: str
     source: str
@@ -43,6 +45,9 @@ DEFAULT_MODEL_PRICES: tuple[ModelPriceEntry, ...] = (
     ModelPriceEntry(
         model="gpt-5-nano",
         in_per_1k=0.00005,
+        cached_in_per_1k=0.000005,
+        # GPT-5 nano 문서는 별도 쓰기 단가를 명시하지 않으므로 일반 입력과 같은 보수적 단가.
+        cache_write_per_1k=0.00005,
         out_per_1k=0.0004,
         effective_date="2025-08-07",
         source="https://developers.openai.com/api/docs/models/gpt-5-nano",
@@ -50,9 +55,11 @@ DEFAULT_MODEL_PRICES: tuple[ModelPriceEntry, ...] = (
     ModelPriceEntry(
         model="gpt-5.6-luna",
         in_per_1k=0.0002,
+        cached_in_per_1k=0.00002,
+        cache_write_per_1k=0.00025,
         out_per_1k=0.0012,
-        effective_date="2026-07-30",
-        source="https://openai.com/index/advancing-the-price-performance-frontier-with-gpt-5-6/",
+        effective_date="2026-08-13",
+        source="https://developers.openai.com/api/docs/models/gpt-5.6-luna",
     ),
 )
 
@@ -61,6 +68,12 @@ DEFAULT_MODEL_PRICE_IN_PER_1K: dict[str, float] = {
 }
 DEFAULT_MODEL_PRICE_OUT_PER_1K: dict[str, float] = {
     entry.model: entry.out_per_1k for entry in DEFAULT_MODEL_PRICES
+}
+DEFAULT_MODEL_PRICE_CACHED_IN_PER_1K: dict[str, float] = {
+    entry.model: entry.cached_in_per_1k for entry in DEFAULT_MODEL_PRICES
+}
+DEFAULT_MODEL_PRICE_CACHE_WRITE_PER_1K: dict[str, float] = {
+    entry.model: entry.cache_write_per_1k for entry in DEFAULT_MODEL_PRICES
 }
 
 # 기본표 기준일 — 항목 중 가장 최근 effective_date 에서 파생한다(항목 추가 시 자동으로
@@ -101,6 +114,8 @@ def log_model_price_table_status(settings: Settings) -> None:
 
         defaults_in_use = (
             settings.model_price_in_per_1k == DEFAULT_MODEL_PRICE_IN_PER_1K
+            and settings.model_price_cached_in_per_1k == DEFAULT_MODEL_PRICE_CACHED_IN_PER_1K
+            and settings.model_price_cache_write_per_1k == DEFAULT_MODEL_PRICE_CACHE_WRITE_PER_1K
             and settings.model_price_out_per_1k == DEFAULT_MODEL_PRICE_OUT_PER_1K
         )
         if defaults_in_use:
