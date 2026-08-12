@@ -1362,8 +1362,11 @@ async def test_case3_pushes_one_list_per_need() -> None:
     assert ready["listIds"] == [entry.list_id for entry in sent.lists]
 
 
-async def test_case3_reasons_are_scoped_to_their_list() -> None:
+async def test_case3_reasons_are_scoped_to_their_list(monkeypatch) -> None:
     """근거는 그 상품이 속한 목록에만 실린다 — 목록 간 reason 누수 금지(§4.2 productId 키잉)."""
+    # 이 테스트는 서로 다른 legacy reason의 목록 귀속을 보는 것이 목적이다. Production C의
+    # 템플릿 렌더링은 별도 grounding 테스트가 맡으므로 A rollback으로 문자열을 보존한다.
+    monkeypatch.setattr(get_settings(), "rerank_grounding_arm", "current")
     push = _RecordingPush()
     llm = _needs_llm(
         [
@@ -1537,6 +1540,28 @@ async def test_case3_split_does_not_add_llm_calls() -> None:
     tiers = [tier for tier, _ in llm.calls]
     assert tiers.count("smart") == 1, "rerank(smart)는 니즈 수와 무관하게 1회"
     assert tiers.count("fast") == 1, "decompose(fast)도 1회 — 전개는 이 턴에 트리거되지 않았다"
+
+
+async def test_production_graph_passes_validated_grounding_arm(monkeypatch) -> None:
+    from app.agents.buyer.recommendation import graph as recommendation_graph
+
+    observed: list[str | None] = []
+    real_rerank = recommendation_graph.rerank
+
+    async def _spy(llm, **kwargs):
+        observed.append(kwargs.get("grounding_arm"))
+        # 이 테스트의 legacy fake 응답을 파싱할 수 있게 호출 관찰 뒤 A로 돌린다. C의 출력
+        # 검증 자체는 test_rerank_grounding.py가 구조화 응답으로 별도 고정한다.
+        kwargs["grounding_arm"] = "current"
+        return await real_rerank(llm, **kwargs)
+
+    monkeypatch.setattr(recommendation_graph, "rerank", _spy)
+    await _run_case3(
+        _needs_llm([{"productId": 101, "rationale": "a"}]),
+        _RecordingPush(),
+    )
+
+    assert observed == ["validated"]
 
 
 async def test_case3_budget_counts_only_needs_with_candidates(monkeypatch) -> None:

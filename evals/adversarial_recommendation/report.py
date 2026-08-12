@@ -21,6 +21,7 @@ from typing import Any
 from evals.adversarial_recommendation.generator import CASES_PATH, MANIFEST_PATH
 from evals.adversarial_recommendation.runner import RunMode
 from evals.adversarial_recommendation.schema import EvalCase
+from app.agents.buyer.recommendation.rerank_grounding import GroundingArm
 
 _ROOT = Path(__file__).resolve().parents[2]
 
@@ -76,6 +77,9 @@ def _source_hashes() -> dict[str, str]:
         "recordingLlm": _file_sha256(_ROOT / "evals/model_eval/recording.py"),
         "decomposePrompt": _sha256_bytes(decompose_module._SYSTEM.encode()),
         "rerankPrompt": _sha256_bytes(rerank_module._SYSTEM.encode()),
+        "rerankStructuredPrompt": _sha256_bytes(
+            rerank_module._SYSTEM_STRUCTURED_GROUNDING.encode()
+        ),
     }
 
 
@@ -130,6 +134,20 @@ def build_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
         by_category[result["category"]][result["verdict"]] += 1
     return {
         "caseCount": len(results),
+        "uniqueCaseCount": len({result["caseId"] for result in results}),
+        "arms": list(dict.fromkeys(result.get("groundingArm", "current") for result in results)),
+        "armVerdictCounts": {
+            arm: dict(
+                sorted(
+                    Counter(
+                        result["verdict"]
+                        for result in results
+                        if result.get("groundingArm", "current") == arm
+                    ).items()
+                )
+            )
+            for arm in dict.fromkeys(result.get("groundingArm", "current") for result in results)
+        },
         "verdictCounts": dict(sorted(Counter(result["verdict"] for result in results).items())),
         "automaticVerdictCounts": dict(
             sorted(Counter(result["automaticVerdict"] for result in results).items())
@@ -164,6 +182,10 @@ def _report(summary: dict[str, Any], mode: RunMode) -> str:
                 "",
             ]
         )
+    lines.extend(["## Grounding arms", ""])
+    for arm, counts in summary["armVerdictCounts"].items():
+        lines.append(f"- `{arm}`: {json.dumps(counts, ensure_ascii=False, sort_keys=True)}")
+    lines.append("")
     lines.extend(["## Category verdicts", ""])
     for category, counts in summary["categoryVerdictCounts"].items():
         lines.append(f"- `{category}`: {json.dumps(counts, ensure_ascii=False, sort_keys=True)}")
@@ -183,6 +205,7 @@ def write_run_artifacts(
     model_config: dict[str, Any],
     command: list[str],
     effective_settings: dict[str, Any],
+    arms: tuple[GroundingArm, ...] = ("current",),
 ) -> dict[str, Any]:
     """임시 sibling에서 완성한 네 산출물을 새 output directory로 원자 publish한다."""
     if out_dir.exists():
@@ -195,6 +218,7 @@ def write_run_artifacts(
     run_manifest = {
         "runAt": datetime.now(timezone.utc).isoformat(),
         "mode": mode,
+        "arms": list(arms),
         "datasetName": dataset_manifest["datasetName"],
         "datasetVersion": dataset_manifest["datasetVersion"],
         "datasetSha256": hashlib.sha256(CASES_PATH.read_bytes()).hexdigest(),
