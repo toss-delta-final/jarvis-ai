@@ -37,10 +37,14 @@ def _chat(
     session: str = "sess-e2e",
     thread: str = "th-e2e",
     headers=None,
+    screen=None,
 ):
+    payload = {"sessionId": session, "threadId": thread, "message": message}
+    if screen is not None:
+        payload["screen"] = screen
     return client.post(
         "/chat",
-        json={"sessionId": session, "threadId": thread, "message": message},
+        json=payload,
         headers=headers or {},
     )
 
@@ -519,6 +523,42 @@ def test_cart_add_flow_reaches_spring(client, spring, llm) -> None:
     # 신원은 JWT sub 유래 — 본문 userId 는 AI 가 도출한 값(§2.3·§4.1)
     assert add[0]["body"]["userId"] == 42
     assert add[0]["body"]["productId"] == 102
+
+
+def test_recommendation_grid_coordinate_reaches_spring_with_resolved_product(
+    client, spring, llm
+) -> None:
+    """추천 ID 재전송 없이 chat columns와 서버 추천 순서로 좌표를 확정한다."""
+    session = "sess-reco-coordinate"
+    thread = "th-reco-coordinate"
+    _chat(client, session=session, thread=thread, headers=auth_header())
+
+    llm._decompose = {
+        "intent": "cart_add",
+        "reply": "",
+        "case": 2,
+        "semanticQuery": "",
+        "filters": {},
+        # 기본 추천 순서는 102 → 101. LLM이 첫 상품을 내도 1행 2열이 두 번째로 덮어써야 한다.
+        "cart": {"productId": 102, "quantity": 1},
+    }
+    response = _chat(
+        client,
+        "1번째 줄 2번째 상품 담아줘",
+        session=session,
+        thread=thread,
+        headers=auth_header(),
+        screen={"pageType": "chat", "columns": 2},
+    )
+    assert response.status_code == 200
+
+    events = parse_sse(response.text)
+    action = first_of(events, "action")
+    assert action is not None and action["type"] == "CART_ADDED"
+
+    add = spring.requests_to("/internal/cart/items")
+    assert len(add) == 1
+    assert add[0]["body"]["productId"] == 101
 
 
 def test_cart_view_flow_reads_spring(client, spring, llm) -> None:
