@@ -894,6 +894,12 @@ Full dev screening then ran all 68 eligible MFT cases with seeds `11,29,47` on c
 `evals/rerank_scoring/baselines/20260813-dev-mft68-live-n3/`. This promotes structured only to a
 sealed-holdout candidate and rejects the initial hybrid setting; it does not switch production.
 
+The frozen structured candidate was then evaluated once through `unseal_holdout_labels()` at commit
+`a01dae74`. The 19 ranking-capable holdout cases produced mean ΔnDCG@10 `+0.0575` with 95% CI
+`[-0.0385,+0.1696]` (8 improved / 6 tied / 5 regressed), so the release verdict is `inconclusive` and
+production remains `current`. Aggregate evidence is under
+`evals/rerank_scoring/releases/20260813-holdout-structured-n3/`; raw relevance rows were not duplicated.
+
 If environment-dependent auth/PostgreSQL tests or a known hang recur, record exact node IDs and fresh output; do not count them as passed and do not hide them behind deselection unless the repository's documented command already specifies that selection.
 
 - [x] **Step 5: Inspect branch scope and commit final docs**

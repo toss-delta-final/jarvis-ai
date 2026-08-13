@@ -26,8 +26,10 @@
   `[+0.0801,+0.1702]`, 개선/동률/악화 47/8/13), 초기 hybrid `alpha=0.65`는 `-0.2470`
   (`[-0.3410,-0.1499]`)이었다. 세 arm의 hard-constraint 위반은 0건이었고 scored 204표본 중
   partial fallback 2건, foreign row 1건이 있었다. 따라서 hybrid 0.65는 기각하고 structured는
-  holdout 후보로만 남기며 production 기본은 별도 승인 전까지 `current`다. API·SSE wire 계약
-  변경 없음.
+  고정 후보로 sealed holdout을 한 번 평가했다. Holdout 순위 19건×3 seeds에서는 structured가
+  `+0.0575`, CI `[-0.0385,+0.1696]`로 방향은 양수였지만 `inconclusive`였으므로 release gate를
+  통과하지 못했다. Holdout 재튜닝·재실행 없이 production 기본은 `current`로 유지한다. API·SSE
+  wire 계약 변경 없음.
 - **#634 관측 집계 스크립트 비용 축에 min/max·role 분해 추가** — `_cost_stats()`가 최소/최대
   비용을 반환하도록 확장하고, 비용 롤업에 `role`(seller/member/guest)·`model`(fan-in
   귀속)·`length`(`messageLength` 고정 버킷) 축을 신설했다. Markdown 비용 표에 최소/최대(USD)

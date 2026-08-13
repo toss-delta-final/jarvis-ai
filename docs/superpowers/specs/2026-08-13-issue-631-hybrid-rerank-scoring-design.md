@@ -399,6 +399,11 @@ A는 기존 prompt 계약이 다르므로 별도 호출하되 같은 dataset, ca
 `[-0.3410,-0.1499]`였다. 이는 structured를 sealed holdout 후보로 올리는 dev 근거이며 production
 기본 전환 근거는 아니다. 같은 dev 응답으로 관찰한 낮은 alpha 후보는 holdout 전에 고정해야 한다.
 
+고정 structured 후보를 candidate commit `a01dae74`에서 공식 unseal API로 한 번 평가한 결과,
+holdout 순위 19 case의 평균 ΔnDCG@10은 `+0.0575`, 95% CI는 `[-0.0385,+0.1696]`였다. CI가 0을
+포함하므로 release 판정은 `inconclusive`이며 production 기본을 변경하지 않는다. 결과 확인 뒤
+holdout으로 가중치·prompt·arm을 다시 튜닝하거나 두 번째 후보를 실행하지 않는다.
+
 ## 위험과 완화
 
 - **LLM component가 여전히 주관적임**: 제한된 정수 범위, 검색 fusion, paired 평가로 영향력을 제한한다.

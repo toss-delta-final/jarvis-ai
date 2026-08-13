@@ -50,6 +50,11 @@ Structured/hybrid는 204/204 표본이 생성됐으며 동일 raw response hash�
 sealed holdout이나 production 승격 결과가 아니다. 초기 RRF 0.65는 기각 대상이고, dev에서 찾은
 낮은 alpha 후보를 같은 dev 결과로 확정하면 안 된다.
 
+Sealed holdout은 candidate commit `a01dae74`의 structured를 고정해 한 번만 열었다. 순위 가능한
+19개 case×3 seeds에서 current 대비 평균 ΔnDCG@10은 `+0.0575`, 95% CI는
+`[-0.0385,+0.1696]`로 `inconclusive`였다. Production 기본은 current로 유지한다. Label을
+복제하지 않은 aggregate와 감사 정보는 `releases/20260813-holdout-structured-n3/`에 있다.
+
 `samples.csv`는 후보 permutation, 원래 search rank를 담은 decision, raw response hash,
 fallback/무결성 카운트를 보존한다. profile 원문이나 credential은 기록하지 않는다.
 `results.json`은 두 CSV에서 다시 계산할 수 있으며, 데이터셋·prompt·model provenance가
