@@ -6,6 +6,8 @@
 - `report.html` — 편집 가능한 보고서 원본
 - `report.css` — A4 인쇄 스타일과 한글 글꼴 설정
 - `최종_보고서_완성본.pdf` — 제출용 PDF
+- `../presentation/2026-08-13-evaluation-metrics-final.md` — 발표 평가·성능 파트 4페이지 구성,
+  테스트셋 설계, #631 미병합 결과와 비용 단가 주의사항
 
 ## 요구 환경
 
