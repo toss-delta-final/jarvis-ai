@@ -1,0 +1,82 @@
+{
+  "analysis": {
+    "bootstrapSamples": 10000,
+    "bootstrapSeed": 631200,
+    "unit": "caseId"
+  },
+  "attemptMultiplier": 3,
+  "budget": {
+    "budgetExceeded": false,
+    "budgetExceededReason": null,
+    "callCount": 204,
+    "costGateStatus": "unknown",
+    "limits": {
+      "maxCalls": 620,
+      "maxCostUsd": 10.0,
+      "maxTotalTokens": 30000000
+    },
+    "tokenGateStatus": "passed",
+    "totalCostUsd": 0.0,
+    "totalTokens": 508474,
+    "unknownCostCallCount": 204,
+    "unknownTokenCallCount": 0
+  },
+  "commitSha": "20b848df31f2fe92e1071cde0f2276502052e369",
+  "concurrency": 1,
+  "dirty": true,
+  "evidenceStatus": "exploratory",
+  "failureAttemptCount": 0,
+  "hashes": {
+    "config": "63665c3a3b7d982ca7d65a4410c54c03c3a9de9ae96679f058f32c46fefaa8e2",
+    "datasetManifest": "14ee60588ccfa06d251675d523f82d67259475395c74299326aa1b735abd82ac",
+    "fixtures": {
+      "catalog_snapshot.json": "f98539b2d8d2fea60c586cf31499ecf9187ae815d389dd3f1312f05f3fec840d",
+      "purchase_history.json": "d4203b8d31ef2bbc4c46d5bff6e1eb672c189ffc449299a898eaeb9adf687e3b",
+      "search_responses.json": "31de711d4458d33d325d29959652d15b12e0496f3ba3890257a6efa2cb16fef1"
+    },
+    "prompts": {
+      "decompose": "249eeb2aea100838301b5c5f2f2a628f8d99e9cd34909e6e5086a0625cc00887",
+      "rerank": "04967b8dd7de376daf4f2b9d02362efc4c9e15fa8f0aa7b07e7a3f334f8aee7b"
+    },
+    "uvLock": "bc79d52c10d7cefba24d91d30408e0777ed75ae64d738e047d74bb325437ec9c"
+  },
+  "image": null,
+  "judge": {
+    "mappingSeed": 631200,
+    "model": "gpt-5.6-sol",
+    "positionSwap": true,
+    "promptSha256": "62b8cfba8fbf9b9a58d86cef7fcb7f02327e9b1fe5da1a6997e4c2e623e25e2b",
+    "provider": "openai",
+    "sameAsSourceGenerationModel": false,
+    "tier": "smart"
+  },
+  "pacer": {
+    "acquireCount": 204,
+    "estimatedTokensPerCall": 3900,
+    "maxRpm": 7,
+    "maxTpm": 30000,
+    "maxWaitS": 16.158,
+    "totalWaitS": 658.092,
+    "waitCount": 160,
+    "windowS": 60.0
+  },
+  "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+  "pythonVersion": "3.12.3",
+  "run": {
+    "command": "uv run python -m evals.rerank_scoring.judge_cli --source-dir evals/rerank_scoring/baselines/20260813-holdout-v2-draft-current-structured-n3 --dataset-root evals/rerank_holdout_v2/dataset --case-ids rh2-adversarial-0001,rh2-adversarial-0007,rh2-adversarial-0013,rh2-budget_multi-0003,rh2-budget_multi-0009,rh2-budget_multi-0015,rh2-budget_multi-0021,rh2-budget_multi-0027,rh2-budget_multi-0033,rh2-budget_multi-0039,rh2-general-0005,rh2-general-0011,rh2-general-0017,rh2-general-0023,rh2-general-0029,rh2-general-0035,rh2-general-0041,rh2-general-0047,rh2-long_tail-0005,rh2-long_tail-0011,rh2-long_tail-0017,rh2-long_tail-0023,rh2-personalization-0005,rh2-personalization-0011,rh2-personalization-0017,rh2-personalization-0023,rh2-personalization-0029,rh2-personalization-0035,rh2-personalization-0041,rh2-personalization-0047,rh2-repurchase-0005,rh2-repurchase-0011,rh2-repurchase-0017,rh2-repurchase-0023 --judge-tier smart --judge-model gpt-5.6-sol --attempt-multiplier 3 --concurrency 1 --max-calls 620 --max-cost-usd 10 --rpm 7 --tpm 30000 --out evals/rerank_scoring/baselines/20260813-holdout-v2-blind-judge-gpt-5.6-sol-shards/shard-01",
+    "runId": "274b651c-33e8-4041-88d5-129f4fb777d7",
+    "timestamp": "2026-08-13T03:57:18.331168+00:00"
+  },
+  "schemaVersion": "rerank-blind-run-v1",
+  "seed": 631200,
+  "source": {
+    "caseCount": 34,
+    "datasetHash": "4fa52e596f97c60c2b067c0ca6b30345ed574fcb7ad67acb67009b344a49f87b",
+    "datasetManifestSha256": "bbf50ee539654518d25301fc99ea8681e68faedda461cd9b0ec438efebf798d6",
+    "directory": "evals/rerank_scoring/baselines/20260813-holdout-v2-draft-current-structured-n3",
+    "generationModel": "gpt-5.6-luna",
+    "generationProvider": "openai",
+    "pairCount": 102,
+    "samplesSha256": "fb20c2c79fde79f7282bd496b8689c25473185a19cc702373a91dd84879a7f3e"
+  }
+}

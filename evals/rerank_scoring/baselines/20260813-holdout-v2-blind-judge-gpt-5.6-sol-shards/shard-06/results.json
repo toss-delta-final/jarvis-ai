@@ -1,0 +1,307 @@
+{
+  "artifacts": {
+    "coordinatorMappingSha256": "6d5c8688c183e1916a7fa139f63a38461709547a8199a2562a10ef94f70c1e97",
+    "datasetManifestSha256": "bbf50ee539654518d25301fc99ea8681e68faedda461cd9b0ec438efebf798d6",
+    "failuresSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "judgePromptSha256": "62b8cfba8fbf9b9a58d86cef7fcb7f02327e9b1fe5da1a6997e4c2e623e25e2b",
+    "judgeResponsesSha256": "e8c8bdabb71b62c587a693e2652087af9207362bdc1ac844a8f4c16a2f6d2bdd",
+    "presentationsSha256": "a8fca645bd3675e91428936faf708854280072f083c630761f31a79959c335ae",
+    "runManifestSha256": "5c426251368d42cd9876819d3432fa7543d5703c53e2a3b2a3b78380cf3f74f3",
+    "sourceSamplesSha256": "fb20c2c79fde79f7282bd496b8689c25473185a19cc702373a91dd84879a7f3e"
+  },
+  "caseClusteredPreferenceShare": {
+    "bootstrapSamples": 10000,
+    "bootstrapSeed": 631200,
+    "ci95": [
+      0.0625,
+      0.2552083333333333
+    ],
+    "eligibleCaseCount": 32,
+    "unit": "caseId",
+    "value": 0.15104166666666666
+  },
+  "caseOutcomes": {
+    "current": 26,
+    "incomplete": 0,
+    "structured": 2,
+    "tie": 4,
+    "unstable": 1
+  },
+  "caveat": "Exploratory synthetic judge evidence; not confirmatory population superiority.",
+  "coverage": {
+    "completePairs": 99,
+    "completedPresentations": 198,
+    "failedPresentations": 0,
+    "incompletePairs": 0,
+    "plannedPairs": 99,
+    "plannedPresentations": 198
+  },
+  "decisive": {
+    "currentWins": 72,
+    "denominator": 78,
+    "structuredWinRate": 0.07692307692307693,
+    "structuredWins": 6
+  },
+  "meanConfidence": 0.9148989898989899,
+  "pairOutcomes": {
+    "current": 72,
+    "structured": 6,
+    "tie": 10,
+    "unstable": 11
+  },
+  "positionBias": {
+    "displaySelectionCounts": {
+      "A": 82,
+      "B": 94,
+      "tie": 22
+    },
+    "sameDisplaySideRate": 0.09090909090909091,
+    "sameSideASelections": 2,
+    "sameSideBSelections": 7
+  },
+  "schemaVersion": "rerank-blind-analysis-v1",
+  "slices": {
+    "adversarial": {
+      "completePairs": 6,
+      "decisive": {
+        "currentWins": 6,
+        "denominator": 6,
+        "structuredWinRate": 0.0,
+        "structuredWins": 0
+      },
+      "pairOutcomes": {
+        "current": 6,
+        "structured": 0,
+        "tie": 0,
+        "unstable": 0
+      }
+    },
+    "brand_and_budget": {
+      "completePairs": 9,
+      "decisive": {
+        "currentWins": 8,
+        "denominator": 8,
+        "structuredWinRate": 0.0,
+        "structuredWins": 0
+      },
+      "pairOutcomes": {
+        "current": 8,
+        "structured": 0,
+        "tie": 1,
+        "unstable": 0
+      }
+    },
+    "budget": {
+      "completePairs": 12,
+      "decisive": {
+        "currentWins": 3,
+        "denominator": 3,
+        "structuredWinRate": 0.0,
+        "structuredWins": 0
+      },
+      "pairOutcomes": {
+        "current": 3,
+        "structured": 0,
+        "tie": 9,
+        "unstable": 0
+      }
+    },
+    "budget_multi": {
+      "completePairs": 21,
+      "decisive": {
+        "currentWins": 11,
+        "denominator": 11,
+        "structuredWinRate": 0.0,
+        "structuredWins": 0
+      },
+      "pairOutcomes": {
+        "current": 11,
+        "structured": 0,
+        "tie": 10,
+        "unstable": 0
+      }
+    },
+    "category_intent": {
+      "completePairs": 24,
+      "decisive": {
+        "currentWins": 18,
+        "denominator": 21,
+        "structuredWinRate": 0.14285714285714285,
+        "structuredWins": 3
+      },
+      "pairOutcomes": {
+        "current": 18,
+        "structured": 3,
+        "tie": 0,
+        "unstable": 3
+      }
+    },
+    "conflicting_preference": {
+      "completePairs": 6,
+      "decisive": {
+        "currentWins": 6,
+        "denominator": 6,
+        "structuredWinRate": 0.0,
+        "structuredWins": 0
+      },
+      "pairOutcomes": {
+        "current": 6,
+        "structured": 0,
+        "tie": 0,
+        "unstable": 0
+      }
+    },
+    "general": {
+      "completePairs": 24,
+      "decisive": {
+        "currentWins": 18,
+        "denominator": 21,
+        "structuredWinRate": 0.14285714285714285,
+        "structuredWins": 3
+      },
+      "pairOutcomes": {
+        "current": 18,
+        "structured": 3,
+        "tie": 0,
+        "unstable": 3
+      }
+    },
+    "guest": {
+      "completePairs": 51,
+      "decisive": {
+        "currentWins": 36,
+        "denominator": 39,
+        "structuredWinRate": 0.07692307692307693,
+        "structuredWins": 3
+      },
+      "pairOutcomes": {
+        "current": 36,
+        "structured": 3,
+        "tie": 9,
+        "unstable": 3
+      }
+    },
+    "long_tail": {
+      "completePairs": 12,
+      "decisive": {
+        "currentWins": 12,
+        "denominator": 12,
+        "structuredWinRate": 0.0,
+        "structuredWins": 0
+      },
+      "pairOutcomes": {
+        "current": 12,
+        "structured": 0,
+        "tie": 0,
+        "unstable": 0
+      }
+    },
+    "member": {
+      "completePairs": 48,
+      "decisive": {
+        "currentWins": 36,
+        "denominator": 39,
+        "structuredWinRate": 0.07692307692307693,
+        "structuredWins": 3
+      },
+      "pairOutcomes": {
+        "current": 36,
+        "structured": 3,
+        "tie": 1,
+        "unstable": 8
+      }
+    },
+    "personalization": {
+      "completePairs": 24,
+      "decisive": {
+        "currentWins": 17,
+        "denominator": 19,
+        "structuredWinRate": 0.10526315789473684,
+        "structuredWins": 2
+      },
+      "pairOutcomes": {
+        "current": 17,
+        "structured": 2,
+        "tie": 0,
+        "unstable": 5
+      }
+    },
+    "preference_helpful": {
+      "completePairs": 12,
+      "decisive": {
+        "currentWins": 9,
+        "denominator": 9,
+        "structuredWinRate": 0.0,
+        "structuredWins": 0
+      },
+      "pairOutcomes": {
+        "current": 9,
+        "structured": 0,
+        "tie": 0,
+        "unstable": 3
+      }
+    },
+    "profile_overreach": {
+      "completePairs": 12,
+      "decisive": {
+        "currentWins": 8,
+        "denominator": 10,
+        "structuredWinRate": 0.2,
+        "structuredWins": 2
+      },
+      "pairOutcomes": {
+        "current": 8,
+        "structured": 2,
+        "tie": 0,
+        "unstable": 2
+      }
+    },
+    "repurchase": {
+      "completePairs": 12,
+      "decisive": {
+        "currentWins": 8,
+        "denominator": 9,
+        "structuredWinRate": 0.1111111111111111,
+        "structuredWins": 1
+      },
+      "pairOutcomes": {
+        "current": 8,
+        "structured": 1,
+        "tie": 0,
+        "unstable": 3
+      }
+    },
+    "similar_to_purchase": {
+      "completePairs": 12,
+      "decisive": {
+        "currentWins": 8,
+        "denominator": 9,
+        "structuredWinRate": 0.1111111111111111,
+        "structuredWins": 1
+      },
+      "pairOutcomes": {
+        "current": 8,
+        "structured": 1,
+        "tie": 0,
+        "unstable": 3
+      }
+    },
+    "sparse_category": {
+      "completePairs": 12,
+      "decisive": {
+        "currentWins": 12,
+        "denominator": 12,
+        "structuredWinRate": 0.0,
+        "structuredWins": 0
+      },
+      "pairOutcomes": {
+        "current": 12,
+        "structured": 0,
+        "tie": 0,
+        "unstable": 0
+      }
+    }
+  },
+  "status": "exploratory",
+  "swapConsistencyRate": 0.8888888888888888
+}

@@ -148,6 +148,44 @@ uv run python -m evals.rerank_scoring.judge_merge_cli \
 이 평가는 arm identity와 위치 편향을 줄이지만 여전히 synthetic judge 기반 exploratory evidence다.
 사람 blind review나 production A/B를 대체하지 않고 confirmatory 우월성을 주장하지 않는다.
 
+### 보존된 200-case blind-judge baseline
+
+`baselines/20260813-holdout-v2-blind-judge-gpt-5.6-sol/`은 위 200-case live output을
+`gpt-5.6-sol`로 판정한 merge 결과다. 원래 ranking 생성 모델은 `gpt-5.6-luna`라 judge와 다르다.
+599 pair를 A/B와 B/A로 평가한 1,198 presentation이 모두 성공했고, arm identity·draft label·score는
+judge 입력에 없었다.
+
+| swap-stable 결과 | pair 수 |
+|---|---:|
+| current 승 | 466 |
+| structured 승 | 49 |
+| stable tie | 31 |
+| position-swap unstable | 53 |
+
+Swap consistency는 `0.9115`이고 structured decisive 승률은 `49 / 515 = 0.0951`이다. Stable
+tie를 0.5로 두고 case ID를 cluster bootstrap한 structured preference share는 `0.1344`, 95% CI는
+`[0.0972, 0.1734]`였다(유효 case 199). case 다수결도 current 167, structured 15, tie 17,
+unstable 1이었다. 표시 위치 선택은 A 549, B 576, tie 73으로 한쪽 label 쏠림보다 실제 arm
+역매핑 차이가 훨씬 컸다.
+
+이 결과는 앞의 heuristic-label nDCG와 정반대다. 저장된 출력의 길이를 별도 재계산하면 current는
+평균 `3.73`개, structured는 평균 `7.80`개를 노출했다. Current 승 466 pair 중 447개에서
+structured가 더 길었고, 410개에서는 current 상품 집합이 structured 안에 모두 들어 있었다
+(157개는 current 전체가 structured의 정확한 prefix). Judge 설명도 반복해서 structured 하위권의
+다른 카테고리·조건 위반·저관련 상품을 패인으로 지목했다. 즉 draft nDCG는 관련 상품을 찾고
+정렬하는 개선을 포착했지만, 관련 상품 뒤에 붙은 저점수 tail의 사용자-facing precision 손실을
+거의 벌하지 못했다.
+
+따라서 이 branch의 structured 기본 전환을 “전체 품질이 더 좋다”는 확정 결론으로 취급하면 안
+된다. 다음 구현 gate는 structured 점수의 노출 cutoff/최소 적합도 또는 current와 동일한 선택
+단계를 분리 평가하는 것이다. 그 뒤 같은 blind protocol과 사람 blind review를 다시 통과해야 한다.
+이번 결과만으로 자동 롤백하거나 confirmatory 우월성을 주장하지는 않는다.
+
+총 1,198 call과 3,026,409 token이 기록됐다. `gpt-5.6-sol` 단가는 현재 committed pricing
+manifest에 없어 1,198 call 모두 cost coverage가 unknown이며, `totalCostUsd=0`을 실제 비용 0으로
+해석하면 안 된다. 정확한 shard artifact와 mapping은
+`baselines/20260813-holdout-v2-blind-judge-gpt-5.6-sol-shards/`에 보존한다.
+
 ## 결과 재계산
 
 아래 명령은 두 raw CSV와 manifest만으로 저장된 `results.json`을 재계산한다. dry-run이면
