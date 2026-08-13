@@ -1,0 +1,16 @@
+{
+  "aliasNote": "Existing judge builder structured slot was used only internally as a code_assisted alias; public presentations contain no arm identity.",
+  "apiJudgeCalls": 0,
+  "judge": "fresh-context Codex GPT-5.6 Sol agents",
+  "mappingSeed": 631201,
+  "pairedCaseCount": 170,
+  "positionSwap": true,
+  "presentationCount": 340,
+  "schemaVersion": "rerank-codex-blind-input-v1",
+  "sourceArms": [
+    "current",
+    "code_assisted"
+  ],
+  "sourceCaseCount": 180,
+  "sourceDirectory": "artifacts/rerank-scoring/current-code-assisted-180-seed11-v2"
+}

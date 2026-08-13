@@ -1,0 +1,77 @@
+{
+  "analysis": {
+    "bootstrapSamples": 10000,
+    "bootstrapSeed": 631200,
+    "unit": "caseId"
+  },
+  "budget": {
+    "callCount": 1198,
+    "totalCostUsd": 0.0,
+    "totalTokens": 3026409,
+    "unknownCostCallCount": 1198,
+    "unknownTokenCallCount": 0
+  },
+  "commitSha": "20b848df31f2fe92e1071cde0f2276502052e369",
+  "dirty": true,
+  "evidenceStatus": "exploratory",
+  "failureAttemptCount": 0,
+  "hashes": {
+    "config": "63665c3a3b7d982ca7d65a4410c54c03c3a9de9ae96679f058f32c46fefaa8e2",
+    "datasetManifest": "14ee60588ccfa06d251675d523f82d67259475395c74299326aa1b735abd82ac",
+    "fixtures": {
+      "catalog_snapshot.json": "f98539b2d8d2fea60c586cf31499ecf9187ae815d389dd3f1312f05f3fec840d",
+      "purchase_history.json": "d4203b8d31ef2bbc4c46d5bff6e1eb672c189ffc449299a898eaeb9adf687e3b",
+      "search_responses.json": "31de711d4458d33d325d29959652d15b12e0496f3ba3890257a6efa2cb16fef1"
+    },
+    "prompts": {
+      "decompose": "249eeb2aea100838301b5c5f2f2a628f8d99e9cd34909e6e5086a0625cc00887",
+      "rerank": "04967b8dd7de376daf4f2b9d02362efc4c9e15fa8f0aa7b07e7a3f334f8aee7b"
+    },
+    "uvLock": "bc79d52c10d7cefba24d91d30408e0777ed75ae64d738e047d74bb325437ec9c"
+  },
+  "image": null,
+  "judge": {
+    "mappingSeed": 631200,
+    "model": "gpt-5.6-sol",
+    "positionSwap": true,
+    "promptSha256": "62b8cfba8fbf9b9a58d86cef7fcb7f02327e9b1fe5da1a6997e4c2e623e25e2b",
+    "provider": "openai",
+    "sameAsSourceGenerationModel": false,
+    "tier": "smart"
+  },
+  "merge": {
+    "combinedInputSha256": "bb82a29dca9c6a5ad28328a97071e562b626e679c8a400acad379ae28e498f39",
+    "shardCount": 6,
+    "shardManifestSha256": {
+      "evals/rerank_scoring/baselines/20260813-holdout-v2-blind-judge-gpt-5.6-sol-shards/shard-01": "f885c4ecc0cbe280d717dbe60c5a98e2d051d261525fc7f35928d5f5c3779bb7",
+      "evals/rerank_scoring/baselines/20260813-holdout-v2-blind-judge-gpt-5.6-sol-shards/shard-02": "e967f8e92104bc1071b1b081d94b276bf899845c8787e5e1a44f215d525e1f7b",
+      "evals/rerank_scoring/baselines/20260813-holdout-v2-blind-judge-gpt-5.6-sol-shards/shard-03": "49a03a9b5628f7ce7f1bb7f1eed0ca7af6f2bc63f5a1dea1af89be3caa340631",
+      "evals/rerank_scoring/baselines/20260813-holdout-v2-blind-judge-gpt-5.6-sol-shards/shard-04": "1d25cd7e8b8e11b9926fb686bfd69d91dbcb70224e3076f716107d4b58e2f0d1",
+      "evals/rerank_scoring/baselines/20260813-holdout-v2-blind-judge-gpt-5.6-sol-shards/shard-05": "8d1abca5790a4ecf9f6c9508e60d34296f5205d4b53eec7e83e74d4b540d500b",
+      "evals/rerank_scoring/baselines/20260813-holdout-v2-blind-judge-gpt-5.6-sol-shards/shard-06": "5c426251368d42cd9876819d3432fa7543d5703c53e2a3b2a3b78380cf3f74f3"
+    }
+  },
+  "pacer": {
+    "scope": "per-shard",
+    "shardCount": 6
+  },
+  "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+  "pythonVersion": "3.12.3",
+  "run": {
+    "command": "uv run python -m evals.rerank_scoring.judge_merge_cli --shards evals/rerank_scoring/baselines/20260813-holdout-v2-blind-judge-gpt-5.6-sol-shards/shard-01,evals/rerank_scoring/baselines/20260813-holdout-v2-blind-judge-gpt-5.6-sol-shards/shard-02,evals/rerank_scoring/baselines/20260813-holdout-v2-blind-judge-gpt-5.6-sol-shards/shard-03,evals/rerank_scoring/baselines/20260813-holdout-v2-blind-judge-gpt-5.6-sol-shards/shard-04,evals/rerank_scoring/baselines/20260813-holdout-v2-blind-judge-gpt-5.6-sol-shards/shard-05,evals/rerank_scoring/baselines/20260813-holdout-v2-blind-judge-gpt-5.6-sol-shards/shard-06 --out evals/rerank_scoring/baselines/20260813-holdout-v2-blind-judge-gpt-5.6-sol",
+    "runId": "cccba2db-7d7a-480d-bf94-13bf42919084",
+    "timestamp": "2026-08-13T03:57:28.444036+00:00"
+  },
+  "schemaVersion": "rerank-blind-merged-run-v1",
+  "seed": 631200,
+  "source": {
+    "caseCount": 200,
+    "datasetHash": "4fa52e596f97c60c2b067c0ca6b30345ed574fcb7ad67acb67009b344a49f87b",
+    "datasetManifestSha256": "bbf50ee539654518d25301fc99ea8681e68faedda461cd9b0ec438efebf798d6",
+    "directory": "evals/rerank_scoring/baselines/20260813-holdout-v2-draft-current-structured-n3",
+    "generationModel": "gpt-5.6-luna",
+    "generationProvider": "openai",
+    "pairCount": 599,
+    "samplesSha256": "fb20c2c79fde79f7282bd496b8689c25473185a19cc702373a91dd84879a7f3e"
+  }
+}

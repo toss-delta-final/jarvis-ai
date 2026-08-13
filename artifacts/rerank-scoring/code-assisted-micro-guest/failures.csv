@@ -1,0 +1,2 @@
+caseId,arm,orderSeed,repeat,attempt,errorType,message,fullFallback
+rh2-general-0001,code_assisted,11,0,1,LLMError,code-assisted rerank has no valid selections,true

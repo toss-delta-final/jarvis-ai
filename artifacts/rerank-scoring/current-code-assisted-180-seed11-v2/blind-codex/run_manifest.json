@@ -1,0 +1,34 @@
+{
+  "aliasNote": "Existing judge builder structured slot was used only internally as a code_assisted alias; public presentations contain no arm identity.",
+  "apiJudgeCalls": 0,
+  "bootstrapSamples": 10000,
+  "bootstrapSeed": 631201,
+  "completedPresentationCount": 340,
+  "failureCount": 0,
+  "judge": "fresh-context Codex GPT-5.6 Sol agents",
+  "mappingSeed": 631201,
+  "pairedCaseCount": 170,
+  "positionSwap": true,
+  "presentationCount": 340,
+  "schemaVersion": "rerank-codex-blind-input-v1",
+  "sourceArms": [
+    "current",
+    "code_assisted"
+  ],
+  "sourceCaseCount": 180,
+  "sourceDirectory": "artifacts/rerank-scoring/current-code-assisted-180-seed11-v2",
+  "verdictFiles": [
+    "verdicts/o0-shard-01.jsonl",
+    "verdicts/o0-shard-02.jsonl",
+    "verdicts/o0-shard-03.jsonl",
+    "verdicts/o0-shard-04.jsonl",
+    "verdicts/o0-shard-05.jsonl",
+    "verdicts/o0-shard-06.jsonl",
+    "verdicts/o1-shard-01.jsonl",
+    "verdicts/o1-shard-02.jsonl",
+    "verdicts/o1-shard-03.jsonl",
+    "verdicts/o1-shard-04.jsonl",
+    "verdicts/o1-shard-05.jsonl",
+    "verdicts/o1-shard-06.jsonl"
+  ]
+}

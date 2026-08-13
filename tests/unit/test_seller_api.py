@@ -1736,7 +1736,12 @@ def test_product_route_draft_is_confirmable(monkeypatch: pytest.MonkeyPatch) -> 
 
 def test_apply_message_short_circuits_without_llm(monkeypatch: pytest.MonkeyPatch) -> None:
     """①.5 적용 선판정 — 라우팅·LLM 없이 적용 레인(4-3). 이력 없음 → 되묻기 token."""
+
+    async def _no_reports(brand_id, *, limit, before=None):
+        return []
+
     monkeypatch.setattr(seller_api, "route_question", _no_route)
+    monkeypatch.setattr(seller_api.analysis_store, "list_reports", _no_reports)
 
     events = _collect_seller(_request("1번 적용해줘"))
 

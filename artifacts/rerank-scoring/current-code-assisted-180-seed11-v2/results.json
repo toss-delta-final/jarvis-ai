@@ -1,0 +1,1404 @@
+{
+  "arms": [
+    "current",
+    "code_assisted"
+  ],
+  "comparisons": {
+    "currentToCodeAssisted": {
+      "baselineArm": "current",
+      "bootstrapCi95": {
+        "high": -0.1032817704033684,
+        "low": -0.1902150550685125
+      },
+      "caseDeltas": [
+        {
+          "baseline": 0.4692787260227565,
+          "caseId": "rh2-adversarial-0001",
+          "current": 1.0,
+          "delta": 0.5307212739772436
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-adversarial-0002",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.6131471927654584,
+          "caseId": "rh2-adversarial-0005",
+          "current": 1.0,
+          "delta": 0.38685280723454163
+        },
+        {
+          "baseline": 0.6131471927654584,
+          "caseId": "rh2-adversarial-0006",
+          "current": 1.0,
+          "delta": 0.38685280723454163
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-adversarial-0007",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-adversarial-0008",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-adversarial-0010",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.6131471927654584,
+          "caseId": "rh2-adversarial-0011",
+          "current": 1.0,
+          "delta": 0.38685280723454163
+        },
+        {
+          "baseline": 0.6131471927654584,
+          "caseId": "rh2-adversarial-0012",
+          "current": 1.0,
+          "delta": 0.38685280723454163
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-adversarial-0013",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-adversarial-0014",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.6366824387328316,
+          "caseId": "rh2-adversarial-0015",
+          "current": 0.9558295932317544,
+          "delta": 0.31914715449892284
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-adversarial-0016",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.7653606369886218,
+          "caseId": "rh2-budget_multi-0001",
+          "current": 1.0,
+          "delta": 0.23463936301137822
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0002",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0003",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0004",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0005",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0006",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.6131471927654584,
+          "caseId": "rh2-budget_multi-0007",
+          "current": 1.0,
+          "delta": 0.38685280723454163
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0008",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0010",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.7653606369886218,
+          "caseId": "rh2-budget_multi-0011",
+          "current": 0.7653606369886218,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0013",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0014",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.6131471927654584,
+          "caseId": "rh2-budget_multi-0015",
+          "current": 0.6131471927654584,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0017",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0018",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0019",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0020",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0021",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0022",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0024",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0025",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0026",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0027",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0029",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.6131471927654584,
+          "caseId": "rh2-budget_multi-0030",
+          "current": 1.0,
+          "delta": 0.38685280723454163
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0031",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0032",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0034",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0035",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0036",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0037",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0038",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.7653606369886218,
+          "caseId": "rh2-budget_multi-0039",
+          "current": 1.0,
+          "delta": 0.23463936301137822
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0040",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.3764290720714305,
+          "caseId": "rh2-general-0001",
+          "current": 0.3797234786375678,
+          "delta": 0.0032944065661372757
+        },
+        {
+          "baseline": 0.8318724637288825,
+          "caseId": "rh2-general-0002",
+          "current": 0.8318724637288825,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.75369761125927,
+          "caseId": "rh2-general-0003",
+          "current": 0.6096199500078984,
+          "delta": -0.14407766125137167
+        },
+        {
+          "baseline": 0.8048099750039491,
+          "caseId": "rh2-general-0004",
+          "current": 0.6096199500078984,
+          "delta": -0.19519002499605076
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-general-0005",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.6366824387328316,
+          "caseId": "rh2-general-0006",
+          "current": 0.0,
+          "delta": -0.6366824387328316
+        },
+        {
+          "baseline": 0.3903800499921017,
+          "caseId": "rh2-general-0007",
+          "current": 0.0,
+          "delta": -0.3903800499921017
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-general-0009",
+          "current": 0.4692787260227565,
+          "delta": -0.5307212739772436
+        },
+        {
+          "baseline": 0.7877020569606369,
+          "caseId": "rh2-general-0010",
+          "current": 0.3903800499921017,
+          "delta": -0.3973220069685352
+        },
+        {
+          "baseline": 0.3903800499921017,
+          "caseId": "rh2-general-0011",
+          "current": 0.3903800499921017,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.9047172294870752,
+          "caseId": "rh2-general-0012",
+          "current": 0.0,
+          "delta": -0.9047172294870752
+        },
+        {
+          "baseline": 0.3903800499921017,
+          "caseId": "rh2-general-0013",
+          "current": 0.3903800499921017,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.36331756126716835,
+          "caseId": "rh2-general-0015",
+          "current": 0.0,
+          "delta": -0.36331756126716835
+        },
+        {
+          "baseline": 0.4852658227346317,
+          "caseId": "rh2-general-0016",
+          "current": 0.5883300173403989,
+          "delta": 0.10306419460576721
+        },
+        {
+          "baseline": 0.13012668333070057,
+          "caseId": "rh2-general-0017",
+          "current": 0.0,
+          "delta": -0.13012668333070057
+        },
+        {
+          "baseline": 0.24630238874072996,
+          "caseId": "rh2-general-0018",
+          "current": 0.3903800499921017,
+          "delta": 0.14407766125137172
+        },
+        {
+          "baseline": 0.5307212739772436,
+          "caseId": "rh2-general-0019",
+          "current": 0.0,
+          "delta": -0.5307212739772436
+        },
+        {
+          "baseline": 0.9709286432396581,
+          "caseId": "rh2-general-0021",
+          "current": 0.3903800499921017,
+          "delta": -0.5805485932475565
+        },
+        {
+          "baseline": 0.5585075862632192,
+          "caseId": "rh2-general-0022",
+          "current": 0.4414924137367808,
+          "delta": -0.1170151725264384
+        },
+        {
+          "baseline": 0.3191471544989228,
+          "caseId": "rh2-general-0024",
+          "current": 0.5724250321999882,
+          "delta": 0.2532778777010654
+        },
+        {
+          "baseline": 0.3191471544989228,
+          "caseId": "rh2-general-0025",
+          "current": 0.0,
+          "delta": -0.3191471544989228
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-general-0026",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.8318724637288825,
+          "caseId": "rh2-general-0027",
+          "current": 0.0,
+          "delta": -0.8318724637288825
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-general-0029",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.3973220069685352,
+          "caseId": "rh2-general-0030",
+          "current": 0.0,
+          "delta": -0.3973220069685352
+        },
+        {
+          "baseline": 0.24630238874072996,
+          "caseId": "rh2-general-0031",
+          "current": 0.24630238874072996,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.6366824387328316,
+          "caseId": "rh2-general-0032",
+          "current": 0.3903800499921017,
+          "delta": -0.2463023887407299
+        },
+        {
+          "baseline": 0.592512031964586,
+          "caseId": "rh2-general-0033",
+          "current": 0.24630238874072996,
+          "delta": -0.34620964322385606
+        },
+        {
+          "baseline": 0.5585075862632192,
+          "caseId": "rh2-general-0034",
+          "current": 0.3903800499921017,
+          "delta": -0.16812753627111748
+        },
+        {
+          "baseline": 0.544556608342548,
+          "caseId": "rh2-general-0035",
+          "current": 0.0,
+          "delta": -0.544556608342548
+        },
+        {
+          "baseline": 0.9558295932317544,
+          "caseId": "rh2-general-0036",
+          "current": 0.3903800499921017,
+          "delta": -0.5654495432396527
+        },
+        {
+          "baseline": 0.5413996682199069,
+          "caseId": "rh2-general-0037",
+          "current": 0.3903800499921017,
+          "delta": -0.15101961822780524
+        },
+        {
+          "baseline": 0.6595629128335778,
+          "caseId": "rh2-general-0038",
+          "current": 0.3903800499921017,
+          "delta": -0.26918286284147613
+        },
+        {
+          "baseline": 0.40759190249500804,
+          "caseId": "rh2-general-0039",
+          "current": 0.3903800499921017,
+          "delta": -0.017211852502906355
+        },
+        {
+          "baseline": 0.3191471544989228,
+          "caseId": "rh2-general-0040",
+          "current": 0.0,
+          "delta": -0.3191471544989228
+        },
+        {
+          "baseline": 0.75369761125927,
+          "caseId": "rh2-general-0041",
+          "current": 0.6366824387328316,
+          "delta": -0.11701517252643845
+        },
+        {
+          "baseline": 0.9267582364714125,
+          "caseId": "rh2-general-0042",
+          "current": 0.3903800499921017,
+          "delta": -0.5363781864793109
+        },
+        {
+          "baseline": 0.5363781864793108,
+          "caseId": "rh2-general-0043",
+          "current": 0.3903800499921017,
+          "delta": -0.1459981364872091
+        },
+        {
+          "baseline": 0.9828920819566878,
+          "caseId": "rh2-general-0045",
+          "current": 0.9709286432396581,
+          "delta": -0.01196343871702965
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-general-0046",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.75369761125927,
+          "caseId": "rh2-general-0047",
+          "current": 0.3903800499921017,
+          "delta": -0.36331756126716835
+        },
+        {
+          "baseline": 0.8318724637288825,
+          "caseId": "rh2-general-0048",
+          "current": 0.0,
+          "delta": -0.8318724637288825
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-long_tail-0001",
+          "current": 0.4692787260227565,
+          "delta": -0.5307212739772436
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-long_tail-0002",
+          "current": 0.3903800499921017,
+          "delta": -0.6096199500078983
+        },
+        {
+          "baseline": 0.9469024295259745,
+          "caseId": "rh2-long_tail-0003",
+          "current": 0.7039180890341348,
+          "delta": -0.2429843404918397
+        },
+        {
+          "baseline": 0.6131471927654584,
+          "caseId": "rh2-long_tail-0004",
+          "current": 0.6131471927654584,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.7653606369886218,
+          "caseId": "rh2-long_tail-0006",
+          "current": 1.0,
+          "delta": 0.23463936301137822
+        },
+        {
+          "baseline": 0.8318724637288825,
+          "caseId": "rh2-long_tail-0007",
+          "current": 0.3903800499921017,
+          "delta": -0.4414924137367808
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-long_tail-0008",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-long_tail-0009",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.7227265726449518,
+          "caseId": "rh2-long_tail-0010",
+          "current": 0.7227265726449518,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-long_tail-0011",
+          "current": 0.4692787260227565,
+          "delta": -0.5307212739772436
+        },
+        {
+          "baseline": 0.7227265726449518,
+          "caseId": "rh2-long_tail-0012",
+          "current": 0.3391602052736162,
+          "delta": -0.3835663673713356
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-long_tail-0013",
+          "current": 0.0,
+          "delta": -1.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-long_tail-0014",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-long_tail-0016",
+          "current": 0.4935232796777482,
+          "delta": -0.5064767203222518
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-long_tail-0017",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.8318724637288825,
+          "caseId": "rh2-long_tail-0018",
+          "current": 1.0,
+          "delta": 0.16812753627111754
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-long_tail-0019",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-long_tail-0020",
+          "current": 0.3391602052736162,
+          "delta": -0.6608397947263838
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-long_tail-0022",
+          "current": 0.6131471927654584,
+          "delta": -0.38685280723454163
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-long_tail-0023",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-long_tail-0024",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.3985202681370658,
+          "caseId": "rh2-personalization-0002",
+          "current": 0.0,
+          "delta": -0.3985202681370658
+        },
+        {
+          "baseline": 0.3985202681370658,
+          "caseId": "rh2-personalization-0003",
+          "current": 0.3985202681370658,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.4441718626302019,
+          "caseId": "rh2-personalization-0004",
+          "current": 0.4441718626302019,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.2656801787580439,
+          "caseId": "rh2-personalization-0005",
+          "current": 0.0,
+          "delta": -0.2656801787580439
+        },
+        {
+          "baseline": 0.3432391242425242,
+          "caseId": "rh2-personalization-0006",
+          "current": 0.3432391242425242,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.3985202681370658,
+          "caseId": "rh2-personalization-0007",
+          "current": 0.3985202681370658,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.4135568126659915,
+          "caseId": "rh2-personalization-0008",
+          "current": 0.0,
+          "delta": -0.4135568126659915
+        },
+        {
+          "baseline": 0.3432391242425242,
+          "caseId": "rh2-personalization-0009",
+          "current": 0.0,
+          "delta": -0.3432391242425242
+        },
+        {
+          "baseline": 0.0,
+          "caseId": "rh2-personalization-0010",
+          "current": 0.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.0,
+          "caseId": "rh2-personalization-0011",
+          "current": 0.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.0,
+          "caseId": "rh2-personalization-0012",
+          "current": 0.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.0,
+          "caseId": "rh2-personalization-0013",
+          "current": 0.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.3985202681370658,
+          "caseId": "rh2-personalization-0015",
+          "current": 0.2656801787580439,
+          "delta": -0.13284008937902192
+        },
+        {
+          "baseline": 0.3985202681370658,
+          "caseId": "rh2-personalization-0016",
+          "current": 0.3985202681370658,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.3985202681370658,
+          "caseId": "rh2-personalization-0017",
+          "current": 0.3985202681370658,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.3985202681370658,
+          "caseId": "rh2-personalization-0018",
+          "current": 0.2656801787580439,
+          "delta": -0.13284008937902192
+        },
+        {
+          "baseline": 0.2656801787580439,
+          "caseId": "rh2-personalization-0019",
+          "current": 0.2656801787580439,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.3985202681370658,
+          "caseId": "rh2-personalization-0020",
+          "current": 0.3985202681370658,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.0,
+          "caseId": "rh2-personalization-0021",
+          "current": 0.3432391242425242,
+          "delta": 0.3432391242425242
+        },
+        {
+          "baseline": 0.3432391242425242,
+          "caseId": "rh2-personalization-0022",
+          "current": 0.3432391242425242,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.4135568126659915,
+          "caseId": "rh2-personalization-0023",
+          "current": 0.0,
+          "delta": -0.4135568126659915
+        },
+        {
+          "baseline": 0.0,
+          "caseId": "rh2-personalization-0024",
+          "current": 0.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.8667163765466583,
+          "caseId": "rh2-personalization-0025",
+          "current": 0.8667163765466583,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.5938524313109838,
+          "caseId": "rh2-personalization-0026",
+          "current": 0.0,
+          "delta": -0.5938524313109838
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-personalization-0027",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.15101961822780524,
+          "caseId": "rh2-personalization-0028",
+          "current": 0.0,
+          "delta": -0.15101961822780524
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-personalization-0029",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.592512031964586,
+          "caseId": "rh2-personalization-0032",
+          "current": 0.0,
+          "delta": -0.592512031964586
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-personalization-0033",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.3973220069685352,
+          "caseId": "rh2-personalization-0034",
+          "current": 0.3903800499921017,
+          "delta": -0.0069419569764335165
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-personalization-0035",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-personalization-0036",
+          "current": 0.4692787260227565,
+          "delta": -0.5307212739772436
+        },
+        {
+          "baseline": 0.8318724637288825,
+          "caseId": "rh2-personalization-0037",
+          "current": 0.0,
+          "delta": -0.8318724637288825
+        },
+        {
+          "baseline": 0.9493885684853096,
+          "caseId": "rh2-personalization-0039",
+          "current": 0.39233405721184117,
+          "delta": -0.5570545112734684
+        },
+        {
+          "baseline": 0.4692787260227565,
+          "caseId": "rh2-personalization-0040",
+          "current": 0.4692787260227565,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.13012668333070057,
+          "caseId": "rh2-personalization-0041",
+          "current": 0.0,
+          "delta": -0.13012668333070057
+        },
+        {
+          "baseline": 0.8048099750039491,
+          "caseId": "rh2-personalization-0042",
+          "current": 0.7095272044910245,
+          "delta": -0.09528277051292466
+        },
+        {
+          "baseline": 0.710675276578257,
+          "caseId": "rh2-personalization-0045",
+          "current": 0.0,
+          "delta": -0.710675276578257
+        },
+        {
+          "baseline": 0.5724250321999882,
+          "caseId": "rh2-personalization-0046",
+          "current": 0.0,
+          "delta": -0.5724250321999882
+        },
+        {
+          "baseline": 0.9047172294870752,
+          "caseId": "rh2-personalization-0047",
+          "current": 0.9047172294870752,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.9558295932317544,
+          "caseId": "rh2-personalization-0048",
+          "current": 0.9828920819566878,
+          "delta": 0.02706248872493333
+        },
+        {
+          "baseline": 0.6238471876333663,
+          "caseId": "rh2-repurchase-0001",
+          "current": 0.5148586863637863,
+          "delta": -0.10898850126958004
+        },
+        {
+          "baseline": 0.8299684921881356,
+          "caseId": "rh2-repurchase-0002",
+          "current": 0.0,
+          "delta": -0.8299684921881356
+        },
+        {
+          "baseline": 0.9870231486416438,
+          "caseId": "rh2-repurchase-0004",
+          "current": 0.2961145750868013,
+          "delta": -0.6909085735548425
+        },
+        {
+          "baseline": 0.6499585627060159,
+          "caseId": "rh2-repurchase-0005",
+          "current": 0.450698428637483,
+          "delta": -0.19926013406853293
+        },
+        {
+          "baseline": 0.5982863859603208,
+          "caseId": "rh2-repurchase-0006",
+          "current": 0.3432391242425242,
+          "delta": -0.2550472617177966
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-repurchase-0007",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.731418462438205,
+          "caseId": "rh2-repurchase-0009",
+          "current": 0.3432391242425242,
+          "delta": -0.3881793381956808
+        },
+        {
+          "baseline": 0.7827986520850378,
+          "caseId": "rh2-repurchase-0010",
+          "current": 0.0,
+          "delta": -0.7827986520850378
+        },
+        {
+          "baseline": 0.683534845007545,
+          "caseId": "rh2-repurchase-0012",
+          "current": 0.6583489300668735,
+          "delta": -0.025185914940671572
+        },
+        {
+          "baseline": 0.8855777750641619,
+          "caseId": "rh2-repurchase-0013",
+          "current": 0.0,
+          "delta": -0.8855777750641619
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-repurchase-0014",
+          "current": 0.6499585627060159,
+          "delta": -0.35004143729398407
+        },
+        {
+          "baseline": 0.7377791352534564,
+          "caseId": "rh2-repurchase-0015",
+          "current": 0.3985202681370658,
+          "delta": -0.3392588671163906
+        },
+        {
+          "baseline": 0.6499585627060159,
+          "caseId": "rh2-repurchase-0017",
+          "current": 0.2656801787580439,
+          "delta": -0.38427838394797204
+        },
+        {
+          "baseline": 0.75273768568514,
+          "caseId": "rh2-repurchase-0018",
+          "current": 0.6499585627060159,
+          "delta": -0.10277912297912406
+        },
+        {
+          "baseline": 0.6742119417311175,
+          "caseId": "rh2-repurchase-0019",
+          "current": 0.731418462438205,
+          "delta": 0.05720652070708743
+        },
+        {
+          "baseline": 0.5768867934386075,
+          "caseId": "rh2-repurchase-0020",
+          "current": 0.5327302123759168,
+          "delta": -0.044156581062690714
+        },
+        {
+          "baseline": 0.6626837309886824,
+          "caseId": "rh2-repurchase-0022",
+          "current": 0.3432391242425242,
+          "delta": -0.3194446067461582
+        },
+        {
+          "baseline": 0.7827986520850378,
+          "caseId": "rh2-repurchase-0023",
+          "current": 0.3985202681370658,
+          "delta": -0.38427838394797204
+        },
+        {
+          "baseline": 0.9923651717970704,
+          "caseId": "rh2-repurchase-0024",
+          "current": 0.37369915365112555,
+          "delta": -0.6186660181459449
+        }
+      ],
+      "currentArm": "code_assisted",
+      "meanDelta": -0.1470792411913958,
+      "missingBaselineCount": 5,
+      "missingCurrentCount": 5,
+      "pairedCaseIds": [
+        "rh2-adversarial-0001",
+        "rh2-adversarial-0002",
+        "rh2-adversarial-0005",
+        "rh2-adversarial-0006",
+        "rh2-adversarial-0007",
+        "rh2-adversarial-0008",
+        "rh2-adversarial-0010",
+        "rh2-adversarial-0011",
+        "rh2-adversarial-0012",
+        "rh2-adversarial-0013",
+        "rh2-adversarial-0014",
+        "rh2-adversarial-0015",
+        "rh2-adversarial-0016",
+        "rh2-budget_multi-0001",
+        "rh2-budget_multi-0002",
+        "rh2-budget_multi-0003",
+        "rh2-budget_multi-0004",
+        "rh2-budget_multi-0005",
+        "rh2-budget_multi-0006",
+        "rh2-budget_multi-0007",
+        "rh2-budget_multi-0008",
+        "rh2-budget_multi-0010",
+        "rh2-budget_multi-0011",
+        "rh2-budget_multi-0013",
+        "rh2-budget_multi-0014",
+        "rh2-budget_multi-0015",
+        "rh2-budget_multi-0017",
+        "rh2-budget_multi-0018",
+        "rh2-budget_multi-0019",
+        "rh2-budget_multi-0020",
+        "rh2-budget_multi-0021",
+        "rh2-budget_multi-0022",
+        "rh2-budget_multi-0024",
+        "rh2-budget_multi-0025",
+        "rh2-budget_multi-0026",
+        "rh2-budget_multi-0027",
+        "rh2-budget_multi-0029",
+        "rh2-budget_multi-0030",
+        "rh2-budget_multi-0031",
+        "rh2-budget_multi-0032",
+        "rh2-budget_multi-0034",
+        "rh2-budget_multi-0035",
+        "rh2-budget_multi-0036",
+        "rh2-budget_multi-0037",
+        "rh2-budget_multi-0038",
+        "rh2-budget_multi-0039",
+        "rh2-budget_multi-0040",
+        "rh2-general-0001",
+        "rh2-general-0002",
+        "rh2-general-0003",
+        "rh2-general-0004",
+        "rh2-general-0005",
+        "rh2-general-0006",
+        "rh2-general-0007",
+        "rh2-general-0009",
+        "rh2-general-0010",
+        "rh2-general-0011",
+        "rh2-general-0012",
+        "rh2-general-0013",
+        "rh2-general-0015",
+        "rh2-general-0016",
+        "rh2-general-0017",
+        "rh2-general-0018",
+        "rh2-general-0019",
+        "rh2-general-0021",
+        "rh2-general-0022",
+        "rh2-general-0024",
+        "rh2-general-0025",
+        "rh2-general-0026",
+        "rh2-general-0027",
+        "rh2-general-0029",
+        "rh2-general-0030",
+        "rh2-general-0031",
+        "rh2-general-0032",
+        "rh2-general-0033",
+        "rh2-general-0034",
+        "rh2-general-0035",
+        "rh2-general-0036",
+        "rh2-general-0037",
+        "rh2-general-0038",
+        "rh2-general-0039",
+        "rh2-general-0040",
+        "rh2-general-0041",
+        "rh2-general-0042",
+        "rh2-general-0043",
+        "rh2-general-0045",
+        "rh2-general-0046",
+        "rh2-general-0047",
+        "rh2-general-0048",
+        "rh2-long_tail-0001",
+        "rh2-long_tail-0002",
+        "rh2-long_tail-0003",
+        "rh2-long_tail-0004",
+        "rh2-long_tail-0006",
+        "rh2-long_tail-0007",
+        "rh2-long_tail-0008",
+        "rh2-long_tail-0009",
+        "rh2-long_tail-0010",
+        "rh2-long_tail-0011",
+        "rh2-long_tail-0012",
+        "rh2-long_tail-0013",
+        "rh2-long_tail-0014",
+        "rh2-long_tail-0016",
+        "rh2-long_tail-0017",
+        "rh2-long_tail-0018",
+        "rh2-long_tail-0019",
+        "rh2-long_tail-0020",
+        "rh2-long_tail-0022",
+        "rh2-long_tail-0023",
+        "rh2-long_tail-0024",
+        "rh2-personalization-0002",
+        "rh2-personalization-0003",
+        "rh2-personalization-0004",
+        "rh2-personalization-0005",
+        "rh2-personalization-0006",
+        "rh2-personalization-0007",
+        "rh2-personalization-0008",
+        "rh2-personalization-0009",
+        "rh2-personalization-0010",
+        "rh2-personalization-0011",
+        "rh2-personalization-0012",
+        "rh2-personalization-0013",
+        "rh2-personalization-0015",
+        "rh2-personalization-0016",
+        "rh2-personalization-0017",
+        "rh2-personalization-0018",
+        "rh2-personalization-0019",
+        "rh2-personalization-0020",
+        "rh2-personalization-0021",
+        "rh2-personalization-0022",
+        "rh2-personalization-0023",
+        "rh2-personalization-0024",
+        "rh2-personalization-0025",
+        "rh2-personalization-0026",
+        "rh2-personalization-0027",
+        "rh2-personalization-0028",
+        "rh2-personalization-0029",
+        "rh2-personalization-0032",
+        "rh2-personalization-0033",
+        "rh2-personalization-0034",
+        "rh2-personalization-0035",
+        "rh2-personalization-0036",
+        "rh2-personalization-0037",
+        "rh2-personalization-0039",
+        "rh2-personalization-0040",
+        "rh2-personalization-0041",
+        "rh2-personalization-0042",
+        "rh2-personalization-0045",
+        "rh2-personalization-0046",
+        "rh2-personalization-0047",
+        "rh2-personalization-0048",
+        "rh2-repurchase-0001",
+        "rh2-repurchase-0002",
+        "rh2-repurchase-0004",
+        "rh2-repurchase-0005",
+        "rh2-repurchase-0006",
+        "rh2-repurchase-0007",
+        "rh2-repurchase-0009",
+        "rh2-repurchase-0010",
+        "rh2-repurchase-0012",
+        "rh2-repurchase-0013",
+        "rh2-repurchase-0014",
+        "rh2-repurchase-0015",
+        "rh2-repurchase-0017",
+        "rh2-repurchase-0018",
+        "rh2-repurchase-0019",
+        "rh2-repurchase-0020",
+        "rh2-repurchase-0022",
+        "rh2-repurchase-0023",
+        "rh2-repurchase-0024"
+      ],
+      "pairedCount": 170,
+      "statisticalVerdict": "regressed",
+      "verdict": "exploratory"
+    },
+    "currentToHybrid": {
+      "baselineArm": "current",
+      "bootstrapCi95": {
+        "high": null,
+        "low": null
+      },
+      "caseDeltas": [],
+      "currentArm": "hybrid",
+      "meanDelta": null,
+      "missingBaselineCount": 0,
+      "missingCurrentCount": 175,
+      "pairedCaseIds": [],
+      "pairedCount": 0,
+      "statisticalVerdict": "not-tested",
+      "verdict": "not-tested"
+    },
+    "currentToStructured": {
+      "baselineArm": "current",
+      "bootstrapCi95": {
+        "high": null,
+        "low": null
+      },
+      "caseDeltas": [],
+      "currentArm": "structured",
+      "meanDelta": null,
+      "missingBaselineCount": 0,
+      "missingCurrentCount": 175,
+      "pairedCaseIds": [],
+      "pairedCount": 0,
+      "statisticalVerdict": "not-tested",
+      "verdict": "not-tested"
+    },
+    "structuredToCodeAssisted": {
+      "baselineArm": "structured",
+      "bootstrapCi95": {
+        "high": null,
+        "low": null
+      },
+      "caseDeltas": [],
+      "currentArm": "code_assisted",
+      "meanDelta": null,
+      "missingBaselineCount": 175,
+      "missingCurrentCount": 0,
+      "pairedCaseIds": [],
+      "pairedCount": 0,
+      "statisticalVerdict": "not-tested",
+      "verdict": "not-tested"
+    },
+    "structuredToHybrid": {
+      "baselineArm": "structured",
+      "bootstrapCi95": {
+        "high": null,
+        "low": null
+      },
+      "caseDeltas": [],
+      "currentArm": "hybrid",
+      "meanDelta": null,
+      "missingBaselineCount": 0,
+      "missingCurrentCount": 0,
+      "pairedCaseIds": [],
+      "pairedCount": 0,
+      "statisticalVerdict": "not-tested",
+      "verdict": "not-tested"
+    }
+  },
+  "datasetHash": "4fa52e596f97c60c2b067c0ca6b30345ed574fcb7ad67acb67009b344a49f87b",
+  "datasetVersion": "1.0.0",
+  "efficiency": {
+    "code_assisted": {
+      "costUsd": 0,
+      "inputTokens": 0,
+      "knownUsageCount": 0,
+      "latencyMs": {
+        "p50": 6146.0,
+        "p95": 11643.0
+      },
+      "outputTokens": 0,
+      "sampleCount": 175,
+      "unknownReason": "provider usage unavailable",
+      "unknownUsageCount": 175
+    },
+    "current": {
+      "costUsd": 0,
+      "inputTokens": 0,
+      "knownUsageCount": 0,
+      "latencyMs": {
+        "p50": 4552.0,
+        "p95": 9136.0
+      },
+      "outputTokens": 0,
+      "sampleCount": 175,
+      "unknownReason": "provider usage unavailable",
+      "unknownUsageCount": 175
+    }
+  },
+  "failureCount": 10,
+  "integrity": {
+    "code_assisted": {
+      "duplicateEvaluation": {
+        "denominator": 175,
+        "numerator": 0,
+        "rate": 0.0
+      },
+      "evaluatedCoverage": 1.0,
+      "foreignEvaluation": {
+        "denominator": 175,
+        "numerator": 0,
+        "rate": 0.0
+      },
+      "fullFallback": {
+        "denominator": 175,
+        "numerator": 0,
+        "rate": 0.0
+      },
+      "hardConstraintViolation": {
+        "denominator": 175,
+        "numerator": 0,
+        "rate": 0.0
+      },
+      "invalidScoreRows": {
+        "count": 0,
+        "sampleDenominator": 175
+      },
+      "partialFallback": {
+        "denominator": 175,
+        "numerator": 0,
+        "rate": 0.0
+      },
+      "sampleCount": 175
+    },
+    "current": {
+      "duplicateEvaluation": {
+        "denominator": 175,
+        "numerator": 0,
+        "rate": 0.0
+      },
+      "evaluatedCoverage": 1.0,
+      "foreignEvaluation": {
+        "denominator": 175,
+        "numerator": 0,
+        "rate": 0.0
+      },
+      "fullFallback": {
+        "denominator": 176,
+        "numerator": 1,
+        "rate": 0.005681818181818182
+      },
+      "hardConstraintViolation": {
+        "denominator": 175,
+        "numerator": 0,
+        "rate": 0.0
+      },
+      "invalidScoreRows": {
+        "count": 0,
+        "sampleDenominator": 175
+      },
+      "partialFallback": {
+        "denominator": 175,
+        "numerator": 0,
+        "rate": 0.0
+      },
+      "sampleCount": 175
+    }
+  },
+  "orderSeeds": [
+    11
+  ],
+  "primaryComparison": "currentToCodeAssisted",
+  "repeats": 1,
+  "sampleCount": 350,
+  "stability": {
+    "code_assisted": {
+      "pairCount": 0,
+      "spearman": null,
+      "spearmanPairCount": 0,
+      "spearmanUnavailableReason": "fewer_than_two_common_ranked_ids_or_no_pairs",
+      "top1Agreement": null,
+      "top3Jaccard": null
+    },
+    "current": {
+      "pairCount": 0,
+      "spearman": null,
+      "spearmanPairCount": 0,
+      "spearmanUnavailableReason": "fewer_than_two_common_ranked_ids_or_no_pairs",
+      "top1Agreement": null,
+      "top3Jaccard": null
+    }
+  },
+  "status": "exploratory"
+}

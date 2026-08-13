@@ -1,0 +1,51 @@
+{
+  "arms": [
+    "current",
+    "structured"
+  ],
+  "candidateCommit": "a01dae743208367e8fdeb04d01bdc33e0cbda470",
+  "candidateDirtyBeforeUnseal": false,
+  "caseCount": 24,
+  "componentWeights": {
+    "intentFit": 4,
+    "needFit": 2,
+    "profileFit": 1
+  },
+  "containsHoldoutLabels": false,
+  "datasetHash": "675520d999dc1fbf0a4b32e13914205bc61c606c9adc2f65833eb67fc133ae50",
+  "datasetVersion": "2.3.0",
+  "evaluatorCommit": "18aab4e42c790790deac33a018c3da0b79a84036",
+  "groundingArm": "validated",
+  "modelConfig": {
+    "fastModel": "gpt-5-nano",
+    "fastReasoningEffort": "minimal",
+    "maxRetries": 0,
+    "provider": "openai",
+    "smartModel": "gpt-5.6-luna",
+    "smartReasoningEffort": "medium",
+    "timeoutS": 30.0
+  },
+  "orderSeeds": [
+    11,
+    29,
+    47
+  ],
+  "promptHashes": {
+    "current": "bec5382f073bddb8a8e7c670a3e282712845e220957a8e054a655389ec66037c",
+    "structured": "a7aaddf5261780ebd62c92f2d01ff91e6003d0bd4b442a154c162af77bbfa435"
+  },
+  "rankingCaseCount": 19,
+  "rawArtifactHashes": {
+    "failures.csv": "36e43e7f44c7c7dd5ffb7e56b61505cc6016ea25380ee9b2618c1992415777ad",
+    "report.md": "b4f279fba25af8d4db46b056bd2092dca2499df67098e0f337c5f6c7f07b6212",
+    "results.json": "b2b4f226b2f5d5c9a6916a291b7d853a99151a49b23f1f67f429f7db19de93d9",
+    "run_manifest.json": "c0a9f0223550daa66816379c0875897441c7e612279c97ff4b20e22a728afa03",
+    "samples.csv": "0d4a73793b209b1d57cbe4b83089a02ee06fceb7c3efdafa02211b2b0c991f97"
+  },
+  "rawArtifactRetention": "local temporary artifact; not copied to avoid duplicating sealed relevance labels",
+  "rawArtifactsCommitted": false,
+  "release": true,
+  "repeats": 1,
+  "split": "holdout",
+  "unsealReason": "Issue #631 structured rerank release-candidate sealed holdout evaluation"
+}

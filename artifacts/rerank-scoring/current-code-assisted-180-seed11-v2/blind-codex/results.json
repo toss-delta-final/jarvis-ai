@@ -1,0 +1,322 @@
+{
+  "analysis": {
+    "caseClusteredPreferenceShare": {
+      "bootstrapSamples": 10000,
+      "bootstrapSeed": 631201,
+      "ci95": [
+        0.23841059602649006,
+        0.3443708609271523
+      ],
+      "eligibleCaseCount": 151,
+      "unit": "caseId",
+      "value": 0.2913907284768212
+    },
+    "caseOutcomes": {
+      "code_assisted": 15,
+      "current": 78,
+      "incomplete": 0,
+      "tie": 58,
+      "unstable": 19
+    },
+    "caveat": "Exploratory synthetic judge evidence; not confirmatory population superiority.",
+    "coverage": {
+      "completePairs": 170,
+      "completedPresentations": 340,
+      "failedPresentations": 0,
+      "incompletePairs": 0,
+      "plannedPairs": 170,
+      "plannedPresentations": 340
+    },
+    "decisive": {
+      "code_assistedWinRate": 0.16129032258064516,
+      "code_assistedWins": 15,
+      "currentWins": 78,
+      "denominator": 93
+    },
+    "meanConfidence": 0.8848235294117647,
+    "pairOutcomes": {
+      "code_assisted": 15,
+      "current": 78,
+      "tie": 58,
+      "unstable": 19
+    },
+    "positionBias": {
+      "displaySelectionCounts": {
+        "A": 103,
+        "B": 115,
+        "tie": 122
+      },
+      "sameDisplaySideRate": 0.07647058823529412,
+      "sameSideASelections": 4,
+      "sameSideBSelections": 9
+    },
+    "schemaVersion": "rerank-blind-analysis-v1",
+    "slices": {
+      "adversarial": {
+        "completePairs": 13,
+        "decisive": {
+          "code_assistedWinRate": 0.16666666666666666,
+          "code_assistedWins": 1,
+          "currentWins": 5,
+          "denominator": 6
+        },
+        "pairOutcomes": {
+          "code_assisted": 1,
+          "current": 5,
+          "tie": 6,
+          "unstable": 1
+        }
+      },
+      "brand_and_budget": {
+        "completePairs": 17,
+        "decisive": {
+          "code_assistedWinRate": 0.0,
+          "code_assistedWins": 0,
+          "currentWins": 4,
+          "denominator": 4
+        },
+        "pairOutcomes": {
+          "code_assisted": 0,
+          "current": 4,
+          "tie": 13,
+          "unstable": 0
+        }
+      },
+      "budget": {
+        "completePairs": 17,
+        "decisive": {
+          "code_assistedWinRate": 0.25,
+          "code_assistedWins": 1,
+          "currentWins": 3,
+          "denominator": 4
+        },
+        "pairOutcomes": {
+          "code_assisted": 1,
+          "current": 3,
+          "tie": 13,
+          "unstable": 0
+        }
+      },
+      "budget_multi": {
+        "completePairs": 34,
+        "decisive": {
+          "code_assistedWinRate": 0.125,
+          "code_assistedWins": 1,
+          "currentWins": 7,
+          "denominator": 8
+        },
+        "pairOutcomes": {
+          "code_assisted": 1,
+          "current": 7,
+          "tie": 26,
+          "unstable": 0
+        }
+      },
+      "category_intent": {
+        "completePairs": 42,
+        "decisive": {
+          "code_assistedWinRate": 0.034482758620689655,
+          "code_assistedWins": 1,
+          "currentWins": 28,
+          "denominator": 29
+        },
+        "pairOutcomes": {
+          "code_assisted": 1,
+          "current": 28,
+          "tie": 3,
+          "unstable": 10
+        }
+      },
+      "conflicting_preference": {
+        "completePairs": 13,
+        "decisive": {
+          "code_assistedWinRate": 0.16666666666666666,
+          "code_assistedWins": 1,
+          "currentWins": 5,
+          "denominator": 6
+        },
+        "pairOutcomes": {
+          "code_assisted": 1,
+          "current": 5,
+          "tie": 6,
+          "unstable": 1
+        }
+      },
+      "general": {
+        "completePairs": 42,
+        "decisive": {
+          "code_assistedWinRate": 0.034482758620689655,
+          "code_assistedWins": 1,
+          "currentWins": 28,
+          "denominator": 29
+        },
+        "pairOutcomes": {
+          "code_assisted": 1,
+          "current": 28,
+          "tie": 3,
+          "unstable": 10
+        }
+      },
+      "guest": {
+        "completePairs": 85,
+        "decisive": {
+          "code_assistedWinRate": 0.1875,
+          "code_assistedWins": 9,
+          "currentWins": 39,
+          "denominator": 48
+        },
+        "pairOutcomes": {
+          "code_assisted": 9,
+          "current": 39,
+          "tie": 27,
+          "unstable": 10
+        }
+      },
+      "long_tail": {
+        "completePairs": 21,
+        "decisive": {
+          "code_assistedWinRate": 0.4375,
+          "code_assistedWins": 7,
+          "currentWins": 9,
+          "denominator": 16
+        },
+        "pairOutcomes": {
+          "code_assisted": 7,
+          "current": 9,
+          "tie": 3,
+          "unstable": 2
+        }
+      },
+      "member": {
+        "completePairs": 85,
+        "decisive": {
+          "code_assistedWinRate": 0.13333333333333333,
+          "code_assistedWins": 6,
+          "currentWins": 39,
+          "denominator": 45
+        },
+        "pairOutcomes": {
+          "code_assisted": 6,
+          "current": 39,
+          "tie": 31,
+          "unstable": 9
+        }
+      },
+      "personalization": {
+        "completePairs": 41,
+        "decisive": {
+          "code_assistedWinRate": 0.11764705882352941,
+          "code_assistedWins": 2,
+          "currentWins": 15,
+          "denominator": 17
+        },
+        "pairOutcomes": {
+          "code_assisted": 2,
+          "current": 15,
+          "tie": 20,
+          "unstable": 4
+        }
+      },
+      "preference_helpful": {
+        "completePairs": 22,
+        "decisive": {
+          "code_assistedWinRate": 0.0,
+          "code_assistedWins": 0,
+          "currentWins": 8,
+          "denominator": 8
+        },
+        "pairOutcomes": {
+          "code_assisted": 0,
+          "current": 8,
+          "tie": 14,
+          "unstable": 0
+        }
+      },
+      "profile_overreach": {
+        "completePairs": 19,
+        "decisive": {
+          "code_assistedWinRate": 0.2222222222222222,
+          "code_assistedWins": 2,
+          "currentWins": 7,
+          "denominator": 9
+        },
+        "pairOutcomes": {
+          "code_assisted": 2,
+          "current": 7,
+          "tie": 6,
+          "unstable": 4
+        }
+      },
+      "repurchase": {
+        "completePairs": 19,
+        "decisive": {
+          "code_assistedWinRate": 0.17647058823529413,
+          "code_assistedWins": 3,
+          "currentWins": 14,
+          "denominator": 17
+        },
+        "pairOutcomes": {
+          "code_assisted": 3,
+          "current": 14,
+          "tie": 0,
+          "unstable": 2
+        }
+      },
+      "similar_to_purchase": {
+        "completePairs": 19,
+        "decisive": {
+          "code_assistedWinRate": 0.17647058823529413,
+          "code_assistedWins": 3,
+          "currentWins": 14,
+          "denominator": 17
+        },
+        "pairOutcomes": {
+          "code_assisted": 3,
+          "current": 14,
+          "tie": 0,
+          "unstable": 2
+        }
+      },
+      "sparse_category": {
+        "completePairs": 21,
+        "decisive": {
+          "code_assistedWinRate": 0.4375,
+          "code_assistedWins": 7,
+          "currentWins": 9,
+          "denominator": 16
+        },
+        "pairOutcomes": {
+          "code_assisted": 7,
+          "current": 9,
+          "tie": 3,
+          "unstable": 2
+        }
+      }
+    },
+    "status": "exploratory",
+    "swapConsistencyRate": 0.888235294117647
+  },
+  "caveat": "Codex-agent judgments avoid API judge charges but are exploratory synthetic judgments, not human review or production A/B evidence.",
+  "judge": {
+    "apiCalls": 0,
+    "mappingSeed": 631201,
+    "model": "gpt-5.6-sol",
+    "orientationIndependence": "different fresh-context agent turns",
+    "positionSwap": true,
+    "surface": "Codex fresh-context agents"
+  },
+  "schemaVersion": "rerank-codex-blind-results-v1",
+  "source": {
+    "arms": [
+      "current",
+      "code_assisted"
+    ],
+    "caseCount": 180,
+    "orderSeeds": [
+      11
+    ],
+    "pairedCaseCount": 170,
+    "presentationCount": 340
+  },
+  "status": "exploratory"
+}

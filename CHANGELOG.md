@@ -12,6 +12,19 @@
 ## [Unreleased]
 
 ### Added
+- **#631 — 구매자 rerank 순위 계산을 `current`·`structured`·`hybrid` arm으로 선택할 수 있게 했다.**
+  `structured`는 LLM의 제한된 intent/need/profile 점수를 결정론적 `4:2:1` 합산과 명시적
+  tie-break로 정렬하고, `current`는 기존 LLM 순위·파서·fallback을 그대로 유지한다.
+  `hybrid`는 원래 search rank와 scored rank를 설정 가능한 RRF
+  (`RERANK_RRF_ALPHA`, `RERANK_RRF_K`)로 결합하며, 프로필이 없으면 profile 점수를 0으로
+  강제한다. 후속 `code_assisted`는 가격·평점·리뷰·프로필 일치 등 코드 신호를 만든 뒤 LLM이
+  최종 후보와 이유를 선택한다. 순위 arm은 기존 `RERANK_GROUNDING_ARM`과 독립적으로 opt-in할
+  수 있고 API·SSE wire 계약은 바뀌지 않는다. Heuristic draft nDCG에서는 structured가 높았지만
+  position-swapped blind judge는 current를 167:15로 선호했고, 180-case code-assisted 비교에서도
+  current가 78:15로 우세했다. code-assisted는 평균 노출 2.20개로 current 3.63개보다 useful
+  coverage가 부족했다. 따라서 `RERANK_RANKING_ARM=current`를 production 기본으로 유지하고
+  structured·hybrid·code-assisted는 평가용 선택지로만 남긴다. 모델 가격표도 공식 Luna/Sol
+  단가로 갱신해 이후 평가 예산 gate가 실제 단가를 사용하게 했다.
 - **#662 — 구매자 장바구니 옵션 재질문에 대상 상품명을 표시한다**
   (api-spec §3.1·§4.1, v0.33.2). 기본·조건 좁힘·색상 미충족
   `CART_OPTION_REQUIRED`, I-1 힌트 폴백, `CART_OPTION_INVALID`의 다섯 경로에서

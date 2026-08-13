@@ -124,7 +124,10 @@ class ScriptedLLM:
             return json.dumps(self._decompose, ensure_ascii=False)
         if self._rerank_error:
             raise LLMError("rerank boom")
-        return json.dumps(self._rerank, ensure_ascii=False)
+        payload = (
+            _scored_rerank_payload(self._rerank) if _RERANK_SCORING_MARK in system else self._rerank
+        )
+        return json.dumps(payload, ensure_ascii=False)
 
     async def stream(self, *, system: str, user: str, tier: str, max_tokens: int = 1024):
         yield "네, 도와드릴게요."
@@ -158,6 +161,9 @@ _CATEGORY_SELECT_MARK = (
 _CATEGORY_SCOPE_MARK = '"scopeFree"'  # app/agents/buyer/recommendation/category_scope.py::_SYSTEM
 _NEED_PRIORITY_MARK = '"priorities"'  # app/agents/buyer/recommendation/need_priority.py::_SYSTEM
 _NEEDS_EXPANSION_MARK = '"items"'  # app/agents/buyer/recommendation/needs_expansion.py::_SYSTEM
+_RERANK_SCORING_MARK = (
+    "커머스 추천 평가기"  # app/agents/buyer/recommendation/rerank.py::_SYSTEM_STRUCTURED_SCORING
+)
 
 _USER_MESSAGE_MARKER = "USER_MESSAGE: "
 _CANDIDATES_MARKER = "CANDIDATES: "
@@ -165,6 +171,38 @@ _NEEDS_MARKER = "NEEDS: "
 # category_select.py 의 CANDIDATES 형식은 rerank 와 다르다 — `CANDIDATES:\n` 뒤에 콜론+공백이
 # 아니라 개행이 오고, JSON 이 아니라 `- 후보` 줄 목록이 끝까지 이어진다(#438 R2 F2).
 _CATEGORY_CANDIDATES_MARKER = "CANDIDATES:\n"
+
+
+def _scored_rerank_payload(payload: dict) -> dict:
+    """Adapt legacy scripted ranked rows to the production scored-rerank contract."""
+
+    if isinstance(payload.get("evaluations"), list):
+        return payload
+    ranked = payload.get("ranked")
+    if not isinstance(ranked, list):
+        return payload
+    evaluations = []
+    for index, raw_item in enumerate(ranked):
+        if not isinstance(raw_item, dict):
+            evaluations.append(raw_item)
+            continue
+        target_score = max(0, 22 - index * 2)
+        intent_fit = min(4, target_score // 4)
+        need_fit = min(3, (target_score - intent_fit * 4) // 2)
+        evaluations.append(
+            {
+                **raw_item,
+                "intentFit": intent_fit,
+                "needFit": need_fit,
+                "profileFit": 0,
+                "reasonCode": raw_item.get("reasonCode", "NO_VERIFIABLE_EVIDENCE"),
+                "evidenceFields": raw_item.get("evidenceFields", []),
+            }
+        )
+    return {
+        **{key: value for key, value in payload.items() if key != "ranked"},
+        "evaluations": evaluations,
+    }
 
 
 def _record_loadtest_usage(tier: str) -> None:
@@ -243,6 +281,8 @@ class LoadTestLLM(ScriptedLLM):
             return "needs_expansion"
         if _DECOMPOSE_MARK in system:
             return "decompose"
+        if _RERANK_SCORING_MARK in system:
+            return "rerank"
         if _RERANK_MARK in system:
             return "rerank"
         if _CATEGORY_SELECT_MARK in system:
@@ -275,7 +315,7 @@ class LoadTestLLM(ScriptedLLM):
             "filters": {},
         }
 
-    def _rerank_response(self, user: str) -> dict:
+    def _rerank_response(self, user: str, *, scored: bool) -> dict:
         """CANDIDATES 의 productId 를 등장 순서대로 되돌린다 — 실 카탈로그에서도 정상 경로를 유지한다."""
         raw_candidates = self._extract_after(user, _CANDIDATES_MARKER)
         candidates: list = []
@@ -291,7 +331,8 @@ class LoadTestLLM(ScriptedLLM):
             for item in candidates
             if isinstance(item, dict) and isinstance(item.get("productId"), int)
         ]
-        return {"ranked": ranked, "overallComment": "부하 테스트 스텁 응답"}
+        payload = {"ranked": ranked, "overallComment": "부하 테스트 스텁 응답"}
+        return _scored_rerank_payload(payload) if scored else payload
 
     def _category_select_response(self, user: str) -> dict:
         """CANDIDATES 목록의 **첫 후보**를 결정론적으로 고른다(#438 R2 F2).
@@ -346,7 +387,10 @@ class LoadTestLLM(ScriptedLLM):
         elif kind == "decompose":
             response = json.dumps(self._decompose_response(user), ensure_ascii=False)
         elif kind == "rerank":
-            response = json.dumps(self._rerank_response(user), ensure_ascii=False)
+            response = json.dumps(
+                self._rerank_response(user, scored=_RERANK_SCORING_MARK in system),
+                ensure_ascii=False,
+            )
         elif kind == "category_select":
             response = json.dumps(self._category_select_response(user), ensure_ascii=False)
         elif kind == "category_scope":

@@ -1417,6 +1417,7 @@ async def test_case3_tops_up_a_starved_need_to_expose_min(monkeypatch) -> None:
     `PICK_ONE` 인데 고를 것이 없는 목록이다(REQ-REC-096 v0.11.0 개정 근거).
     """
     settings = get_settings()
+    monkeypatch.setattr(settings, "rerank_ranking_arm", "current")
     monkeypatch.setattr(settings, "expose_min", 2)
     monkeypatch.setattr(settings, "expose_max", 3)
     push = _RecordingPush()
@@ -1542,17 +1543,30 @@ async def test_case3_split_does_not_add_llm_calls() -> None:
     assert tiers.count("fast") == 1, "decompose(fast)도 1회 — 전개는 이 턴에 트리거되지 않았다"
 
 
-async def test_production_graph_passes_validated_grounding_arm(monkeypatch) -> None:
+@pytest.mark.parametrize("ranking_arm", ["current", "structured", "hybrid"])
+async def test_production_graph_passes_independent_ranking_and_grounding_arms(
+    monkeypatch, ranking_arm: str
+) -> None:
     from app.agents.buyer.recommendation import graph as recommendation_graph
 
-    observed: list[str | None] = []
+    settings = get_settings()
+    monkeypatch.setattr(settings, "rerank_ranking_arm", ranking_arm)
+    observed: list[dict[str, object]] = []
     real_rerank = recommendation_graph.rerank
 
     async def _spy(llm, **kwargs):
-        observed.append(kwargs.get("grounding_arm"))
+        observed.append(
+            {
+                "grounding_arm": kwargs.get("grounding_arm"),
+                "ranking_arm": kwargs.get("ranking_arm"),
+                "rrf_alpha": kwargs.get("rrf_alpha"),
+                "rrf_k": kwargs.get("rrf_k"),
+            }
+        )
         # 이 테스트의 legacy fake 응답을 파싱할 수 있게 호출 관찰 뒤 A로 돌린다. C의 출력
         # 검증 자체는 test_rerank_grounding.py가 구조화 응답으로 별도 고정한다.
         kwargs["grounding_arm"] = "current"
+        kwargs["ranking_arm"] = "current"
         return await real_rerank(llm, **kwargs)
 
     monkeypatch.setattr(recommendation_graph, "rerank", _spy)
@@ -1561,7 +1575,14 @@ async def test_production_graph_passes_validated_grounding_arm(monkeypatch) -> N
         _RecordingPush(),
     )
 
-    assert observed == ["validated"]
+    assert observed == [
+        {
+            "grounding_arm": "validated",
+            "ranking_arm": ranking_arm,
+            "rrf_alpha": 0.65,
+            "rrf_k": 60,
+        }
+    ]
 
 
 async def test_case3_budget_counts_only_needs_with_candidates(monkeypatch) -> None:
@@ -3892,6 +3913,7 @@ async def test_split_turn_emits_group_notice_with_need_counts(
 ) -> None:
     """[T2] split 턴은 니즈 라벨과 노출 개수를 담은 그룹 서술 token 을 낸다."""
     settings = get_settings()
+    monkeypatch.setattr(settings, "rerank_ranking_arm", "current")
     # expose_min 을 1로 낮춘다 — 기본값이면 `_split_by_need` 가 각 니즈를 fallback(검색순서)으로
     # expose_min 까지 채워 그룹 개수가 랭킹 1건이 아니라 그 이상이 돼(가용 후보가 있는 한)
     # "1개"라는 이 테스트의 기대와 어긋난다(개수 자체는 T1/T2 관심사가 아니라 여기선 고정한다).
