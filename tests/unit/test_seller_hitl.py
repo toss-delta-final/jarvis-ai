@@ -1455,7 +1455,7 @@ def test_create_missing_field_does_not_promise_retry() -> None:
     assert "등록했습니다" not in outcome.text
 
 
-# ── [#620] update 카테고리 선차단 · INVALID_PRICE 선차단 · 상품명 길이 · 중복 필드 ──
+# ── [#620] update 카테고리 선차단 · 상품명 길이 · 중복 필드 (가격 선차단은 D47로 폐지) ──
 
 
 def test_validate_draft_update_rejects_category_change() -> None:
@@ -1473,10 +1473,10 @@ def test_validate_draft_update_rejects_category_change() -> None:
     assert "카테고리" in problem and "수정" in problem
 
 
-def test_validate_draft_update_price_over_original_price_blocked_with_row() -> None:
-    """row 가 주어지면 BE validatePriceRange 와 같은 규칙을 카드 표시 전에 선계산한다.
+def test_validate_draft_update_price_over_original_price_allowed_with_row() -> None:
+    """[D47, 2026-08-13] 정책 폐지 — 판매가가 정가를 넘어도 더 이상 선차단하지 않는다.
 
-    _ROW.original_price=18000 — 20000 원으로 바꾸면 정가를 넘는다.
+    _ROW.original_price=18000 — 20000 원으로 바꿔도(정가 초과) 카드를 그대로 통과시킨다.
     """
     record, problem = hitl.validate_draft(
         _proposal(changes=[DraftChange(field="price", before="15000", after="20000")]),
@@ -1484,8 +1484,7 @@ def test_validate_draft_update_price_over_original_price_blocked_with_row() -> N
         brand_id=3,
         row=_ROW,
     )
-    assert record is None
-    assert "정가" in problem and "20,000" in problem and "18,000" in problem
+    assert problem is None and record is not None
 
 
 def test_validate_draft_update_price_change_without_row_is_not_prechecked() -> None:
