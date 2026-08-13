@@ -335,3 +335,69 @@ async def test_scored_invalid_overall_claim_shape_reaches_downstream_validator()
     result, _ = await _call_scored(payload, ranking_arm="structured", expose_max=2)
 
     assert result.overall_claims == ({"__invalidShape": "not-an-array"},)
+
+
+def test_code_assisted_prompt_requires_a_nonempty_complete_selection() -> None:
+    from app.agents.buyer.recommendation.rerank import _SYSTEM_CODE_ASSISTED
+
+    for value in (
+        "반드시 1개 이상",
+        "빈 배열",
+        "모든 필드",
+        "JSON 정수",
+    ):
+        assert value in _SYSTEM_CODE_ASSISTED
+
+
+def test_code_assisted_empty_valid_set_reports_bounded_rejection_counts() -> None:
+    from app.agents.buyer.recommendation.rerank_code_assisted import (
+        CandidateCodeSignals,
+        CodeAssistedSchemaError,
+        parse_code_assisted_ranking,
+    )
+    from app.agents.buyer.recommendation.rerank_grounding import CandidateGroundingFacts
+
+    signals = CandidateCodeSignals(
+        product_id=101,
+        search_rank=1,
+        need=None,
+        facts=CandidateGroundingFacts(
+            product_id=101,
+            rating_level="높음",
+            review_level="많음",
+            price_level="보통",
+        ),
+        evidence=(),
+        rating_quality=2,
+        review_confidence=2,
+        condition_matched=0,
+        condition_applicable=0,
+    )
+    raw_ranked = [
+        {
+            "productId": 999,
+            "semanticIntentFit": 4,
+            "useCaseFit": 3,
+            "profileFit": 0,
+        },
+        {
+            "productId": 101,
+            "semanticIntentFit": 4,
+            "useCaseFit": 3,
+            "profileFit": 1,
+        },
+    ]
+
+    with pytest.raises(CodeAssistedSchemaError) as captured:
+        parse_code_assisted_ranking(
+            raw_ranked,
+            {101: signals},
+            profile_available=False,
+            expose_max=1,
+        )
+
+    message = str(captured.value)
+    assert "rows=2" in message
+    assert "foreign_product_id=1" in message
+    assert "profile_fit_without_profile=1" in message
+    assert "productId" not in message

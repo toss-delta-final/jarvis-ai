@@ -108,7 +108,10 @@ _SYSTEM_CODE_ASSISTED = """당신은 커머스 추천 최종 선택기입니다.
 (설명·코드펜스 금지):
 {"ranked": [{"productId": int, "semanticIntentFit": int, "useCaseFit": int, "profileFit": int, "semanticReasonCode": "DIRECT_INTENT_MATCH|USE_CASE_MATCH|PROFILE_TIEBREAK|NO_SEMANTIC_REASON", "evidenceRefs": ["후보 codeSignals.evidence[].ref 중 하나"], "rationale": "한글 40자 이내 1문장"}], "overallComment": "전체 1~2문장 코멘트", "overallClaims": [{"claimCode": "TOP_REVIEW_COUNT|ALL_RATING_HIGH|ALL_WITHIN_TOTAL_BUDGET|NO_VERIFIABLE_OVERALL_CLAIM", "scope": "FINAL_EXPOSED_PRODUCTS|FINAL_RECOMMENDATION_LISTS", "subjectProductIds": [int], "evidenceFields": ["reviewCount|ratingLevel|price|totalBudget"]}]}
 규칙:
-- ranked는 CANDIDATES 중 최종 추천할 상품만 가장 적합한 순서로 반환하고 EXPOSE_MAX를 넘지 마세요.
+- CANDIDATES가 하나라도 있으면 ranked는 반드시 1개 이상 반환하고 EXPOSE_MAX를 넘지 마세요.
+  적합한 후보가 없다고 판단해도 빈 배열을 반환하지 말고 상대적으로 가장 나은 후보를 고르세요.
+- 각 ranked 항목은 위 JSON 예시의 모든 필드를 빠짐없이 쓰고, 세 적합도 점수와 productId는
+  문자열이 아닌 JSON 정수로 쓰세요.
 - productId는 후보에 있는 값만 정확히 한 번 사용하세요.
 - semanticIntentFit은 QUERY 핵심 의미 적합도 정수 0..4입니다.
 - useCaseFit은 용도·사용 상황·trade-off 적합도 정수 0..3입니다.

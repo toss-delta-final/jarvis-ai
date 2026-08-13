@@ -1109,7 +1109,7 @@ class Settings(BaseSettings):
     # 기록해 RERANK_GROUNDING_ARM 한 줄만 바꿔도 실제 prompt와 관측값이 함께 되돌아간다.
     rerank_prompt_version: str = "rerank-grounding-v1"
     rerank_scoring_prompt_version: str = "rerank-scoring-v1"
-    rerank_code_assisted_prompt_version: str = "rerank-code-assisted-v1"
+    rerank_code_assisted_prompt_version: str = "rerank-code-assisted-v2"
     # provenance 로그 한 줄의 방어 상한 — 자연 상한은 계약 MAX_LISTS(10) × LIST_MAX_PRODUCTS(9)
     # = 90 이지만, 별도 방어선을 둬 초과분은 조용히 버리지 않고 `itemsTruncated=true` 로
     # 표시한다(silent cap 금지, 저장소 관례).

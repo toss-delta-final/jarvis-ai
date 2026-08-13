@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal, TypeAlias
@@ -425,16 +426,18 @@ def parse_code_assisted_ranking(
     if expose_max <= 0:
         raise CodeAssistedSchemaError("code-assisted expose_max must be positive")
 
+    rejection_counts: Counter[str] = Counter()
     rows_by_id: dict[int, list[tuple[int, Mapping[str, object]]]] = {}
     for llm_rank, raw_item in enumerate(raw_ranked, 1):
         if not isinstance(raw_item, Mapping):
+            rejection_counts["non_object"] += 1
             continue
         product_id = raw_item.get("productId")
-        if (
-            isinstance(product_id, bool)
-            or not isinstance(product_id, int)
-            or product_id not in signals_by_id
-        ):
+        if isinstance(product_id, bool) or not isinstance(product_id, int):
+            rejection_counts["invalid_product_id"] += 1
+            continue
+        if product_id not in signals_by_id:
+            rejection_counts["foreign_product_id"] += 1
             continue
         rows_by_id.setdefault(product_id, []).append((llm_rank, raw_item))
 
@@ -443,6 +446,7 @@ def parse_code_assisted_ranking(
     for product_id, rows in rows_by_id.items():
         signals = signals_by_id[product_id]
         if len(rows) != 1:
+            rejection_counts["duplicate_selection"] += len(rows)
             decisions.append(
                 CodeAssistedDecision(
                     product_id=product_id,
@@ -473,6 +477,7 @@ def parse_code_assisted_ranking(
         elif not profile_available and profile_fit != 0:
             failure_reason = "profile_fit_without_profile"
         if failure_reason is not None:
+            rejection_counts[failure_reason] += 1
             decisions.append(
                 CodeAssistedDecision(
                     product_id=product_id,
@@ -492,7 +497,19 @@ def parse_code_assisted_ranking(
         valid_rows.append((llm_rank, item, signals))
 
     if not valid_rows:
-        raise CodeAssistedSchemaError("code-assisted rerank has no valid selections")
+        diagnostics = {
+            "rows": len(raw_ranked),
+            "non_object": rejection_counts["non_object"],
+            "invalid_product_id": rejection_counts["invalid_product_id"],
+            "foreign_product_id": rejection_counts["foreign_product_id"],
+            "duplicate_selection": rejection_counts["duplicate_selection"],
+            "invalid_semantic_intent_fit": rejection_counts["invalid_semantic_intent_fit"],
+            "invalid_use_case_fit": rejection_counts["invalid_use_case_fit"],
+            "invalid_profile_fit": rejection_counts["invalid_profile_fit"],
+            "profile_fit_without_profile": rejection_counts["profile_fit_without_profile"],
+        }
+        summary = ", ".join(f"{key}={value}" for key, value in diagnostics.items())
+        raise CodeAssistedSchemaError(f"code-assisted rerank has no valid selections ({summary})")
 
     valid_rows.sort(key=lambda row: row[0])
     model_items_by_id: dict[int, Mapping[str, object]] = {}
