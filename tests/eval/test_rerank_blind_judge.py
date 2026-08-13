@@ -7,8 +7,16 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from evals.rerank_scoring.judge import build_presentations, load_source_pairs
-from evals.rerank_scoring.judge_schema import JudgeVerdict
+from evals.rerank_scoring.judge import (
+    analyze_judgments,
+    build_presentations,
+    load_source_pairs,
+)
+from evals.rerank_scoring.judge_schema import (
+    CoordinatorMapping,
+    JudgeResponse,
+    JudgeVerdict,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 DATASET_ROOT = ROOT / "evals/rerank_holdout_v2/dataset"
@@ -112,3 +120,171 @@ def test_judge_verdict_rejects_arm_disclosure_invalid_bounds_and_unknown_fields(
     for row, message in invalid_rows:
         with pytest.raises(ValidationError, match=message):
             JudgeVerdict.model_validate(row)
+
+
+def _mapping(
+    pair_id: str,
+    orientation: int,
+    *,
+    case_id: str,
+    order_seed: int,
+    identity: str,
+    stratum: str,
+) -> CoordinatorMapping:
+    side_a = "current" if orientation == 0 else "structured"
+    side_b = "structured" if orientation == 0 else "current"
+    return CoordinatorMapping(
+        presentation_id=f"{pair_id}-o{orientation}",
+        pair_id=pair_id,
+        orientation=orientation,
+        case_id=case_id,
+        order_seed=order_seed,
+        repeat=0,
+        side_a_arm=side_a,
+        side_b_arm=side_b,
+        slices=("ranking", stratum, identity),
+        identity=identity,
+        stratum=stratum,
+        source_response_sha256={"current": "a" * 64, "structured": "b" * 64},
+    )
+
+
+def _responses_for_outcome(
+    mappings: tuple[CoordinatorMapping, CoordinatorMapping], outcome: str
+) -> list[JudgeResponse]:
+    rows: list[JudgeResponse] = []
+    for mapping in mappings:
+        if outcome in {"current", "structured"}:
+            winner = "A" if mapping.side_a_arm == outcome else "B"
+        elif outcome == "tie":
+            winner = "tie"
+        elif outcome == "same-a":
+            winner = "A"
+        elif outcome == "same-b":
+            winner = "B"
+        else:
+            raise AssertionError(outcome)
+        rows.append(
+            JudgeResponse(
+                presentation_id=mapping.presentation_id,
+                pair_id=mapping.pair_id,
+                attempt=1,
+                latency_ms=100,
+                raw_response_sha256="c" * 64,
+                verdict={
+                    "winner": winner,
+                    "confidence": 0.8,
+                    "reasonCodes": ["TOP_ORDER_QUALITY"],
+                    "explanation": "상위 상품 순서가 더 유용하다.",
+                },
+            )
+        )
+    return rows
+
+
+def test_analysis_maps_swaps_excludes_unstable_pairs_and_clusters_by_case() -> None:
+    mappings: list[CoordinatorMapping] = []
+    responses: list[JudgeResponse] = []
+
+    specs = (
+        ("pair-a1", "case-a", 1, "guest", "general", "structured"),
+        ("pair-a2", "case-a", 2, "guest", "general", "structured"),
+        ("pair-a3", "case-a", 3, "guest", "general", "structured"),
+        ("pair-b1", "case-b", 1, "member", "personalization", "current"),
+        ("pair-c1", "case-c", 1, "guest", "general", "tie"),
+        ("pair-d1", "case-d", 1, "member", "personalization", "same-a"),
+        ("pair-e1", "case-e", 1, "member", "personalization", "same-b"),
+    )
+    for pair_id, case_id, seed, identity, stratum, outcome in specs:
+        pair_mappings = (
+            _mapping(
+                pair_id,
+                0,
+                case_id=case_id,
+                order_seed=seed,
+                identity=identity,
+                stratum=stratum,
+            ),
+            _mapping(
+                pair_id,
+                1,
+                case_id=case_id,
+                order_seed=seed,
+                identity=identity,
+                stratum=stratum,
+            ),
+        )
+        mappings.extend(pair_mappings)
+        responses.extend(_responses_for_outcome(pair_mappings, outcome))
+
+    incomplete = (
+        _mapping(
+            "pair-f1",
+            0,
+            case_id="case-f",
+            order_seed=1,
+            identity="guest",
+            stratum="general",
+        ),
+        _mapping(
+            "pair-f1",
+            1,
+            case_id="case-f",
+            order_seed=1,
+            identity="guest",
+            stratum="general",
+        ),
+    )
+    mappings.extend(incomplete)
+    responses.extend(_responses_for_outcome(incomplete, "structured")[:1])
+
+    first = analyze_judgments(
+        responses,
+        mappings,
+        bootstrap_seed=631200,
+        bootstrap_samples=2_000,
+    )
+    second = analyze_judgments(
+        responses,
+        mappings,
+        bootstrap_seed=631200,
+        bootstrap_samples=2_000,
+    )
+
+    assert first == second
+    assert first["coverage"] == {
+        "plannedPresentations": 16,
+        "completedPresentations": 15,
+        "failedPresentations": 1,
+        "plannedPairs": 8,
+        "completePairs": 7,
+        "incompletePairs": 1,
+    }
+    assert first["pairOutcomes"] == {
+        "structured": 3,
+        "current": 1,
+        "tie": 1,
+        "unstable": 2,
+    }
+    assert first["swapConsistencyRate"] == pytest.approx(5 / 7)
+    assert first["decisive"] == {
+        "denominator": 4,
+        "structuredWins": 3,
+        "currentWins": 1,
+        "structuredWinRate": 0.75,
+    }
+    assert first["positionBias"]["sameSideASelections"] == 1
+    assert first["positionBias"]["sameSideBSelections"] == 1
+    clustered = first["caseClusteredPreferenceShare"]
+    assert clustered["eligibleCaseCount"] == 3
+    assert clustered["value"] == pytest.approx(0.5)
+    assert clustered["ci95"][0] <= clustered["value"] <= clustered["ci95"][1]
+    assert first["caseOutcomes"] == {
+        "structured": 1,
+        "current": 1,
+        "tie": 1,
+        "unstable": 2,
+        "incomplete": 1,
+    }
+    assert first["slices"]["guest"]["pairOutcomes"]["structured"] == 3
+    assert first["slices"]["personalization"]["pairOutcomes"]["unstable"] == 2
