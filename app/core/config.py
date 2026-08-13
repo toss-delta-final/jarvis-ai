@@ -1083,8 +1083,9 @@ class Settings(BaseSettings):
     rerank_grounding_arm: Literal["current", "prompt_only", "validated"] = "validated"
     # [#631] grounding과 독립적인 순위 계산 arm. 68-case dev와 200-case prospective draft에서
     # structured가 current보다 높은 paired nDCG@10·순위 안정성을 보여 production graph 기본으로
-    # 채택했다. 사고 시 RERANK_RANKING_ARM=current 한 줄로 legacy LLM 순위에 즉시 롤백한다.
-    rerank_ranking_arm: Literal["current", "structured", "hybrid"] = "structured"
+    # 채택했다. code_assisted는 객관 신호를 코드가 만들고 LLM이 최종 후보만 선택하는 후속 opt-in
+    # arm이며, 새 paired 근거 전에는 기본으로 승격하지 않는다. 사고 시 current로 즉시 롤백한다.
+    rerank_ranking_arm: Literal["current", "structured", "hybrid", "code_assisted"] = "structured"
     rerank_rrf_alpha: float = Field(default=0.65, ge=0.0, le=1.0)
     rerank_rrf_k: int = Field(default=60, gt=0)
     # Scored prompt는 모든 후보를 rubric별로 비교하므로 OpenAI reasoning 모델이 JSON을 쓰기 전
@@ -1108,6 +1109,7 @@ class Settings(BaseSettings):
     # 기록해 RERANK_GROUNDING_ARM 한 줄만 바꿔도 실제 prompt와 관측값이 함께 되돌아간다.
     rerank_prompt_version: str = "rerank-grounding-v1"
     rerank_scoring_prompt_version: str = "rerank-scoring-v1"
+    rerank_code_assisted_prompt_version: str = "rerank-code-assisted-v1"
     # provenance 로그 한 줄의 방어 상한 — 자연 상한은 계약 MAX_LISTS(10) × LIST_MAX_PRODUCTS(9)
     # = 90 이지만, 별도 방어선을 둬 초과분은 조용히 버리지 않고 `itemsTruncated=true` 로
     # 표시한다(silent cap 금지, 저장소 관례).

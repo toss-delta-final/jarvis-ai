@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal, TypeAlias
 
-RankingArm: TypeAlias = Literal["current", "structured", "hybrid"]
+RankingArm: TypeAlias = Literal["current", "structured", "hybrid", "code_assisted"]
 ScoredRankingArm: TypeAlias = Literal["structured", "hybrid"]
 
 

@@ -17,6 +17,13 @@ from app.agents.buyer.recommendation.rerank_grounding import (
     GroundingDecision,
     validate_and_render_grounding,
 )
+from app.agents.buyer.recommendation.rerank_code_assisted import (
+    CodeAssistedSchemaError,
+    CodeScoringContext,
+    build_candidate_code_signals,
+    fallback_reason_for_signals,
+    parse_code_assisted_ranking,
+)
 from app.agents.buyer.recommendation.rerank_scoring import (
     RankingArm,
     ScoringSchemaError,
@@ -25,7 +32,7 @@ from app.agents.buyer.recommendation.rerank_scoring import (
 from app.agents.buyer.recommendation.state import RerankResult, extract_json
 from app.core.config import get_settings
 from app.core.llm import LLMClient, LLMError
-from app.schemas.spring import SpringProduct
+from app.schemas.spring import ProductSearchFilters, SpringProduct
 
 _SYSTEM = """당신은 커머스 추천 재랭킹기입니다. 후보 상품과 사용자 질의(+프로필)를 받아
 가장 적합한 순서로 재랭킹하고 상품마다 한글 40자 이내의 1문장 한국어 근거를 답니다.
@@ -92,6 +99,29 @@ _SYSTEM_STRUCTURED_SCORING = """당신은 커머스 추천 평가기입니다. �
 - ALL_WITHIN_TOTAL_BUDGET 는 최종 추천 조합 전체를 subjectProductIds 로 쓰고 scope 는
   FINAL_RECOMMENDATION_LISTS, evidenceFields 는 ["price", "totalBudget"]로 쓰세요.
 - 인기·가성비처럼 CANDIDATES 필드로 증명할 수 없는 최상급을 제안하지 마세요.
+- 검증 가능한 전체 주장이 없으면 NO_VERIFIABLE_OVERALL_CLAIM, FINAL_EXPOSED_PRODUCTS,
+  빈 subjectProductIds, 빈 evidenceFields 한 건만 쓰세요."""
+
+_SYSTEM_CODE_ASSISTED = """당신은 커머스 추천 최종 선택기입니다. 코드가 계산한 객관 신호와 사용자
+질의(+프로필)를 함께 보고 가장 적합한 상품만 고릅니다. codeSignals의 값과 evidence는 코드가 검증한
+권위 있는 입력이므로 다시 계산하거나 반대로 주장하지 마세요. 반드시 아래 JSON만 출력하세요
+(설명·코드펜스 금지):
+{"ranked": [{"productId": int, "semanticIntentFit": int, "useCaseFit": int, "profileFit": int, "semanticReasonCode": "DIRECT_INTENT_MATCH|USE_CASE_MATCH|PROFILE_TIEBREAK|NO_SEMANTIC_REASON", "evidenceRefs": ["후보 codeSignals.evidence[].ref 중 하나"], "rationale": "한글 40자 이내 1문장"}], "overallComment": "전체 1~2문장 코멘트", "overallClaims": [{"claimCode": "TOP_REVIEW_COUNT|ALL_RATING_HIGH|ALL_WITHIN_TOTAL_BUDGET|NO_VERIFIABLE_OVERALL_CLAIM", "scope": "FINAL_EXPOSED_PRODUCTS|FINAL_RECOMMENDATION_LISTS", "subjectProductIds": [int], "evidenceFields": ["reviewCount|ratingLevel|price|totalBudget"]}]}
+규칙:
+- ranked는 CANDIDATES 중 최종 추천할 상품만 가장 적합한 순서로 반환하고 EXPOSE_MAX를 넘지 마세요.
+- productId는 후보에 있는 값만 정확히 한 번 사용하세요.
+- semanticIntentFit은 QUERY 핵심 의미 적합도 정수 0..4입니다.
+- useCaseFit은 용도·사용 상황·trade-off 적합도 정수 0..3입니다.
+- profileFit은 QUERY 적합도가 같은 후보 사이의 개인화 tie-break 정수 0..1입니다.
+- PROFILE_SUMMARY가 '(없음)'이면 profileFit은 반드시 0입니다. 프로필 때문에 QUERY에 덜 맞는
+  후보를 우선하지 마세요.
+- evidenceRefs는 반드시 그 후보의 codeSignals.evidence에 실제로 있는 ref만 사용하세요.
+- 객관적 가격·평점·리뷰·브랜드·카테고리·속성은 codeSignals를 신뢰하고 별도 점수를 만들지 마세요.
+- DIRECT_INTENT_MATCH는 semanticIntentFit 3 이상, USE_CASE_MATCH는 useCaseFit 2 이상일 때만
+  사용하세요. PROFILE_TIEBREAK는 프로필이 있고 profileFit이 1일 때만 사용하세요.
+- rationale은 evidenceRefs와 semanticReasonCode만 자연스럽게 풀어 쓴 한글 40자 이내 문장입니다.
+  정확한 금액·평점·리뷰 수나 후보 입력에 없는 장점을 만들지 마세요.
+- overallComment는 마크다운 없는 평문 산문으로 쓰세요.
 - 검증 가능한 전체 주장이 없으면 NO_VERIFIABLE_OVERALL_CLAIM, FINAL_EXPOSED_PRODUCTS,
   빈 subjectProductIds, 빈 evidenceFields 한 건만 쓰세요."""
 
@@ -243,6 +273,29 @@ def _price_medians(
     return [medians[key] for key in keys]
 
 
+def code_assisted_fallback_reasons(
+    candidates: list[SpringProduct], context: CodeScoringContext
+) -> dict[int, str]:
+    """Render factual reasons for graph-owned search-order fallback products."""
+
+    settings = get_settings()
+    medians = _price_medians(candidates, dict(context.need_of or {}), settings)
+    facts_by_id = {
+        candidate.product_id: CandidateGroundingFacts(
+            product_id=candidate.product_id,
+            rating_level=_rating_tier(candidate, settings),
+            review_level=_review_tier(candidate, settings),
+            price_level=_price_tier(candidate.price, price_median, settings),
+        )
+        for candidate, price_median in zip(candidates, medians, strict=True)
+    }
+    signals_by_id = build_candidate_code_signals(candidates, facts_by_id, context)
+    return {
+        product_id: fallback_reason_for_signals(signals)
+        for product_id, signals in signals_by_id.items()
+    }
+
+
 def _parse_overall_claims(
     data: dict[str, object], grounding_arm: GroundingArm
 ) -> tuple[dict[str, object], ...]:
@@ -275,6 +328,7 @@ async def rerank(
     rrf_alpha: float = 0.65,
     rrf_k: int = 60,
     search_rank_by_id: Mapping[int, int] | None = None,
+    code_scoring_context: CodeScoringContext | None = None,
 ) -> RerankResult:
     """Sonnet 1회 호출로 재랭킹 결과를 산출한다(후보 외 id 는 코드로 제거).
 
@@ -314,6 +368,36 @@ async def rerank(
             need = need_of.get(item["productId"])
             if need:
                 item["need"] = need
+
+    facts_by_id = {
+        int(item["productId"]): CandidateGroundingFacts(
+            product_id=int(item["productId"]),
+            rating_level=str(item["ratingLevel"]),
+            review_level=str(item["reviewLevel"]),
+            price_level=str(item["priceLevel"]),
+        )
+        for item in cand
+    }
+    code_signals_by_id = None
+    if ranking_arm == "code_assisted":
+        if code_scoring_context is None:
+            ranks: dict[int, int] = {}
+            for rank, candidate in enumerate(candidates, 1):
+                ranks.setdefault(candidate.product_id, rank)
+            code_scoring_context = CodeScoringContext(
+                filters=ProductSearchFilters(),
+                search_rank_by_id=search_rank_by_id or ranks,
+                need_of=need_of,
+            )
+        code_signals_by_id = build_candidate_code_signals(
+            candidates,
+            facts_by_id,
+            code_scoring_context,
+        )
+        for item in cand:
+            signals = code_signals_by_id[int(item["productId"])]
+            item["searchRank"] = signals.search_rank
+            item["codeSignals"] = signals.prompt_dict()
     prof = profile_summary or "(없음)"
     # [#119] 취향은 발화를 누르지 않는다 — 프로필이 있을 때만 동점 처리 지시를 덧붙인다.
     # 프로필 없는(게스트) 경로의 프롬프트는 한 글자도 바뀌지 않는다(위 니즈 지시와 동일 규약).
@@ -333,24 +417,43 @@ async def rerank(
         )
     # [#132] 평점 명시 턴에만 — 위 두 지시와 같은 규약(user 메시지 조건부 덧붙임).
     unrated_line = _UNRATED_DISCLOSURE if rating_min_requested else ""
+    code_assisted_line = ""
+    if ranking_arm == "code_assisted":
+        code_assisted_line = (
+            f"EXPOSE_MAX: {expose_max}\n"
+            "CODE_CONTEXT: "
+            + json.dumps(
+                {
+                    "totalBudgetPresent": bool(
+                        code_scoring_context and code_scoring_context.total_budget is not None
+                    )
+                },
+                ensure_ascii=False,
+            )
+            + "\n"
+        )
     user = (
         f"PROFILE_SUMMARY: {prof}\nQUERY: {query}\n"
         f"{profile_line}"
         f"{needs_line}"
         f"{unrated_line}"
+        f"{code_assisted_line}"
         f"CANDIDATES: {json.dumps(cand, ensure_ascii=False)}"
     )
 
-    # current는 종전처럼 노출 개수만 생성한다. scored arm은 누락 여부까지 코드가 검증해야 하므로
-    # 최종 노출 상한과 무관하게 모든 후보의 평가를 받을 예산을 확보한다(#631). scored prompt는
-    # reasoning 모델이 JSON 생성 전 사고 토큰을 소비하므로 그 reserve도 scored arm에만 더한다.
-    output_item_count = expose_max if ranking_arm == "current" else len(candidates)
+    # current와 code_assisted는 최종 노출 개수만 생성한다. scored arm은 누락 여부까지 코드가
+    # 검증해야 하므로 최종 노출 상한과 무관하게 모든 후보 평가 예산을 확보한다(#631).
+    # reasoning reserve도 전 후보 표를 쓰는 structured/hybrid에만 더한다.
+    scored_arm = ranking_arm in ("structured", "hybrid")
+    output_item_count = len(candidates) if scored_arm else expose_max
     max_tokens = (
         settings.rerank_max_tokens_base + settings.rerank_max_tokens_per_item * output_item_count
     )
-    if ranking_arm != "current":
+    if scored_arm:
         max_tokens += settings.rerank_scoring_reasoning_token_reserve
-    if ranking_arm == "current":
+    if ranking_arm == "code_assisted":
+        system = _SYSTEM_CODE_ASSISTED
+    elif ranking_arm == "current":
         system = _SYSTEM if grounding_arm == "current" else _SYSTEM_STRUCTURED_GROUNDING
     else:
         system = _SYSTEM_STRUCTURED_SCORING
@@ -358,18 +461,42 @@ async def rerank(
     data = extract_json(raw)
 
     valid_ids = {c.product_id for c in candidates}
-    facts_by_id = {
-        int(item["productId"]): CandidateGroundingFacts(
-            product_id=int(item["productId"]),
-            rating_level=str(item["ratingLevel"]),
-            review_level=str(item["reviewLevel"]),
-            price_level=str(item["priceLevel"]),
-        )
-        for item in cand
-    }
     ranked: list[tuple[int, str]] = []
     grounding_decisions: list[GroundingDecision] = []
-    if ranking_arm != "current":
+    if ranking_arm == "code_assisted":
+        if code_signals_by_id is None:
+            raise LLMError("code-assisted signals unavailable")
+        try:
+            computation = parse_code_assisted_ranking(
+                data.get("ranked"),
+                code_signals_by_id,
+                profile_available=bool(profile_summary),
+                expose_max=expose_max,
+            )
+        except CodeAssistedSchemaError as exc:
+            raise LLMError(str(exc)) from exc
+
+        decisions_by_id = {
+            decision.product_id: decision for decision in computation.grounding_decisions
+        }
+        for pid in computation.ordered_product_ids:
+            item = computation.model_items_by_id[pid]
+            decision = decisions_by_id[pid]
+            rationale = (
+                decision.rendered_rationale
+                if grounding_arm == "validated"
+                else str(item.get("rationale") or "")
+            )
+            ranked.append((pid, rationale))
+        return RerankResult(
+            ranked=ranked,
+            overall_comment=str(data.get("overallComment") or ""),
+            overall_claims=_parse_overall_claims(data, grounding_arm),
+            grounding_decisions=list(computation.grounding_decisions),
+            code_assisted_decisions=list(computation.decisions),
+        )
+
+    if scored_arm:
         try:
             computation = compute_scored_ranking(
                 [candidate.product_id for candidate in candidates],
