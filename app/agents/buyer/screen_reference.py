@@ -93,8 +93,12 @@ import unicodedata
 from collections import Counter
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from app.agents.buyer.cart.negation import has_any_negation
+
+if TYPE_CHECKING:
+    from app.agents.buyer.recommendation.state import ScreenReference
 
 
 def grid_position(index: int, columns: int | None) -> tuple[int, int] | None:
@@ -113,9 +117,19 @@ def resolve_grid_index(row: int, col: int, columns: int) -> int:
     return (row - 1) * columns + (col - 1)
 
 
+def _has_explicit_row_first_grid_marker(message: str) -> bool:
+    """구조화 좌표를 소비할 최소 원문 증거: 행 축이 있고 `열`보다 먼저 나온다."""
+    row_marker = _STRUCTURED_ROW_MARKER.search(message)
+    if row_marker is None:
+        return False
+    column_marker = _STRUCTURED_COLUMN_MARKER.search(message)
+    return column_marker is None or row_marker.start() < column_marker.start()
+
+
 # 한국어 순번·좌표 표기. **튜닝 노브가 아니라 문법**이라 config 가 아니라 여기 둔다
 # (app/core/text.py 의 제어문자 정규식과 같은 성격).
-#   좌표: "3번째 줄 2번째" · "3줄 2칸" · "세 번째 줄 두 번째" 는 아직 다루지 않는다(숫자 표기만).
+#   좌표: 원문 정규식은 "3번째 줄 2번째" · "3줄 2칸" 같은 숫자 표기만 다룬다.
+#   "세 번째 줄 두 번째" 같은 한글 수사는 decompose의 구조화 JSON으로 받고 여기서 ID를 계산한다.
 #
 # **첫 숫자는 행(row)이므로 표지는 `줄`·`행` 뿐이다.** 초판은 `열` 까지 같은 자리에 넣었는데
 # 한국어에서 `열` 은 column 이라 축이 반대다 — `"2번째 열 3번째"`(col=2·row=3, index 7)를
@@ -131,6 +145,15 @@ def resolve_grid_index(row: int, col: int, columns: int) -> int:
 _COORD = re.compile(r"(\d+)\s*(?:번째\s*)?(?:줄|행)\s*(?:에\s*)?(\d+)\s*(?:번째|번|칸)")
 # 열(column) 기준 좌표 표기. **해소하지 않고 LLM 에 넘기기 위해** 따로 잡는다 — 아래 양보 (C).
 _COLUMN_FIRST = re.compile(r"\d+\s*(?:번째\s*)?열")
+# LLM이 낸 `screenReference` 자체는 사용자 원문의 증거가 아니다. 값을 소비하기 전에 최소한
+# 사용자가 **한글 순번 + 행 축**을 말했다는 사실만 확인한다. `줄`만 찾으면 기존 안전 대조군인
+# `3줄 2단 정리함`까지 좌표로 오인하므로, 한글 순번 표기만 좁게 잡는다. 숫자값 해석은 여전히
+# decompose가 맡고 이 정규식은 증거 유무·축 순서만 확인한다.
+_KOREAN_GRID_ORDINAL = (
+    r"(?:첫|두|세|네|다섯|여섯|일곱|여덟|아홉|열(?:한|두|세|네|다섯|여섯|일곱|여덟|아홉)?|스무)"
+)
+_STRUCTURED_ROW_MARKER = re.compile(rf"{_KOREAN_GRID_ORDINAL}\s*번째\s*(?:줄|행)")
+_STRUCTURED_COLUMN_MARKER = re.compile(rf"{_KOREAN_GRID_ORDINAL}\s*번째\s*열")
 # [8차 리뷰, F-11] **줄|행만 말하고 칸을 안 말한 경우** — `"3번째 줄에 있는 거 담아줘"`. `_COORD`
 # 는 두 번째 숫자가 없으면 실패하고, 그러면 바로 아래 (2) 순번이 "3"을 **배열 순번**으로 잡아
 # columns=3 일 때 실제 3번째 줄(index 6~8)과 무관한 상품(배열 3번째, index 2)을 확정한다(실제
@@ -235,6 +258,7 @@ def mentions_screen_reference(message: str, settings) -> bool:
         _COORD.search(message)
         or _COLUMN_FIRST.search(message)
         or _ROW_ONLY.search(message)
+        or _STRUCTURED_ROW_MARKER.search(message)
         or _ORDINAL.search(message)
         or any(marker and marker in message for marker in settings.screen_deictic_markers)
     )
@@ -324,6 +348,7 @@ def resolve_screen_reference(
     name_confirmation_enabled: bool,
     negation_markers: Sequence[str],
     prefix_negation_markers: Sequence[str],
+    structured_reference: ScreenReference | None = None,
 ) -> ScreenResolution | None:
     """발화의 화면 지시어를 해소한다. None = 해당 규칙 없음(LLM 산출을 그대로 둔다).
 
@@ -429,6 +454,27 @@ def resolve_screen_reference(
     # `_UNRESOLVED_SCREEN_POSITION` 문구가 그 사유를 그렇게 취급한다).
     if _ROW_ONLY.search(message):
         return ScreenResolution(None, "coordinate_without_columns")
+
+    # (1-b) [#664] 한글 수사 좌표는 decompose가 상품 ID가 아니라 row·column만 구조화한다.
+    #     원문 숫자 좌표와 행 단독 가드를 **뒤집지 않도록** 그 두 규칙 뒤에 둔다. 반대로 전체
+    #     순번 규칙보다 앞에 둬 `두번째 줄 두번째`가 LLM의 cart.productId로 빠지지 않게 한다.
+    #     kind=grid 주장은 축이 malformed여도 객체로 보존된다(decompose._parse_screen_reference) —
+    #     이 자리에서 forced-null로 닫아 함께 온 허용 목록 내 오답 productId로 폴백하지 않는다.
+    if structured_reference is None and _has_explicit_row_first_grid_marker(message):
+        # 모델이 필드를 누락해도 명시적인 행 지시를 평범한 상품 순번으로 폴백시키지 않는다.
+        return ScreenResolution(None, "coordinate_invalid")
+    if structured_reference is not None:
+        if not _has_explicit_row_first_grid_marker(message):
+            return None
+        row, col = structured_reference.row, structured_reference.column
+        if row is None or col is None:
+            return ScreenResolution(None, "coordinate_invalid")
+        if not columns:
+            return ScreenResolution(None, "coordinate_without_columns")
+        index = resolve_grid_index(row, col, columns)
+        if 0 <= index < len(products):
+            return ScreenResolution(products[index][0], "coordinate")
+        return ScreenResolution(None, "coordinate_out_of_range")
 
     # (2) 순번 — "3번째 거". 배열 순서만 있으면 풀린다.
     if ordinal := _ORDINAL.search(message):

@@ -412,6 +412,7 @@ _SCREEN_POSITION_REASONS = frozenset(
         "ordinal_out_of_range",
         "coordinate_out_of_range",
         "coordinate_without_columns",
+        "coordinate_invalid",
     }
 )
 

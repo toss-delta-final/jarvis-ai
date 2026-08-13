@@ -19,6 +19,7 @@ from app.agents.buyer.recommendation.state import (
     CartIntent,
     CategoryQuery,
     RouteDecision,
+    ScreenReference,
     extract_json,
 )
 from app.agents.buyer.recommendation.leg_head import suppress_generic_single_leg
@@ -365,6 +366,10 @@ def _screen_payload(screen: ScreenPrompt) -> dict[str, object]:
     payload: dict[str, object] = {}
     if screen.label:
         payload["화면"] = screen.label
+    if screen.columns is not None:
+        # 추천 카드는 위조 방지를 위해 상품 ID를 되돌려 보내지 않지만 FE의 실제 그리드 열 수는
+        # 좌표 의미 추출에 필요하다. 외부 키 `columns`를 내부 SCREEN 블록에도 명시적으로 투영한다.
+        payload["columns"] = screen.columns
     if screen.filters:
         payload["필터"] = dict(screen.filters)
     if screen.products:
@@ -383,14 +388,32 @@ def _screen_payload(screen: ScreenPrompt) -> dict[str, object]:
 _SCREEN_CART_RULE = (
     "\n  SCREEN.상품(지금 화면에 보이는 목록: productId·이름·순번·줄·칸)이 있으면 거기서도"
     '\n  고르세요 — "이거"·"3번째 거"·"3번째 줄 2번째"·이름 지목이 이 라벨로 풀립니다.'
+    '\n  screen이 있는 호출에서는 JSON 최상위에 "screenReference": null | {'
+    ' "kind": "grid", "row": int|null, "column": int|null } 필드도 출력하세요.'
+    "\n  SCREEN.columns는 한 행의 상품 수입니다. 사용자가 현재 상품 그리드의 행과 그 행 안의"
+    ' 상품 위치를 모두 지목할 때만 kind=grid로 두세요. 예: "두번째 줄 두번째 상품" →'
+    ' {"kind":"grid","row":2,"column":2}, "첫 번째 줄 세 번째" →'
+    ' {"kind":"grid","row":1,"column":3}. 붙여쓰기·띄어쓰기와 한글 수사를 모두 같은 정수로'
+    " 구조화하세요."
+    '\n  "두 번째 옵션"·수량·상품 순번만 말한 경우에는 screenReference=null입니다.'
+    " screenReference에서 index·productId를 계산하지 마세요 — 서버가 검증 후 계산합니다."
+)
+_CART_OUTPUT_ANCHOR = (
+    '  "cart": { "productId": int|null, "optionId": int|null, "quantity": int, '
+    '"targetQuantity": int|null },'
+)
+_SCREEN_REFERENCE_OUTPUT_FIELD = (
+    '\n  "screenReference": null | { "kind": "grid", "row": int|null, "column": int|null },'
 )
 _CART_ADD_ANCHOR = "  productId 를 고르세요. 못 고르면 productId=null. quantity 기본 1."
 # ⚠️ 이 문장은 **screen 이 실린 턴에만** 붙는다(아래 decompose 참조). screen 이 없으면 system 도
 # user 도 오늘과 바이트 동일해야 한다 — 프로브의 회귀 대조군도 그 전제로 측정했다.
-_SYSTEM_WITH_SCREEN = _SYSTEM.replace(_CART_ADD_ANCHOR, _CART_ADD_ANCHOR + _SCREEN_CART_RULE)
+_SYSTEM_WITH_SCREEN = _SYSTEM.replace(
+    _CART_OUTPUT_ANCHOR, _CART_OUTPUT_ANCHOR + _SCREEN_REFERENCE_OUTPUT_FIELD
+).replace(_CART_ADD_ANCHOR, _CART_ADD_ANCHOR + _SCREEN_CART_RULE)
 _SYSTEM_WITH_SCREEN_DEDICATED_UNDERSPECIFIED = _SYSTEM_WITH_DEDICATED_UNDERSPECIFIED.replace(
-    _CART_ADD_ANCHOR, _CART_ADD_ANCHOR + _SCREEN_CART_RULE
-)
+    _CART_OUTPUT_ANCHOR, _CART_OUTPUT_ANCHOR + _SCREEN_REFERENCE_OUTPUT_FIELD
+).replace(_CART_ADD_ANCHOR, _CART_ADD_ANCHOR + _SCREEN_CART_RULE)
 # [10차 리뷰] `assert` 가 아니라 `if`+`raise` 다 — `assert` 는 `python -O`/`PYTHONOPTIMIZE=1`
 # 로 최적화 모드 배포 시 바이트코드에서 통째로 제거된다(`assert` 문서화된 동작). 이 검사가
 # 지키는 것은 "`_CART_ADD_ANCHOR` 가 `_SYSTEM` 안에 그대로 남아 있어 `.replace()` 가 no-op 이
@@ -399,11 +422,14 @@ _SYSTEM_WITH_SCREEN_DEDICATED_UNDERSPECIFIED = _SYSTEM_WITH_DEDICATED_UNDERSPECI
 # 프롬프트에 "SCREEN.상품에서도 고르라"는 지시가 빠져(user 쪽 SCREEN JSON·F-10 방어 문구는
 # 그대로 실리는데) 화면 지시어 해소 정확도만 조용히 떨어지고, 예외가 없어 배포 후에도 한동안
 # 발견되지 않는다. `raise` 는 최적화 모드에서도 살아남으므로 기동 즉시(모듈 import 시점) 죽는다.
-if _SYSTEM_WITH_SCREEN == _SYSTEM:
+if (
+    _SYSTEM_WITH_SCREEN == _SYSTEM
+    or _SCREEN_REFERENCE_OUTPUT_FIELD not in _SYSTEM_WITH_SCREEN
+    or _SCREEN_CART_RULE not in _SYSTEM_WITH_SCREEN
+):
     raise RuntimeError(
-        "_SYSTEM_WITH_SCREEN 이 _SYSTEM 과 동일하다 — _CART_ADD_ANCHOR 문구가 _SYSTEM 에서"
-        " 바뀌어 .replace() 가 screen 규칙(_SCREEN_CART_RULE)을 붙이지 못했다."
-        " _CART_ADD_ANCHOR 를 _SYSTEM 의 현재 cart_add 문구와 다시 맞추세요."
+        "_SYSTEM_WITH_SCREEN 계약을 만들지 못했다 — cart 출력 또는 규칙 앵커가 _SYSTEM 에서"
+        " 바뀌어 screenReference 필드/규칙을 붙이지 못했다. 두 앵커를 _SYSTEM 과 맞추세요."
     )
 
 # [7차 리뷰, F-10] SCREEN.상품 이름·필터 값은 사용자 화면에서 온 데이터이지 사용자의 지시가
@@ -734,6 +760,11 @@ async def decompose(
         )
         case = int(data.get("case") or 2)
         cart = _parse_cart(data.get("cart"))
+        # screen 변형 프롬프트에서만 요구하는 내부 필드다. screen 없는 호출에서 모델이 우연히
+        # 같은 키를 만들어도 소비하지 않아 기본 프롬프트·동작 경계를 함께 지킨다.
+        screen_reference = (
+            _parse_screen_reference(data.get("screenReference")) if screen is not None else None
+        )
         raw_revert = data.get("revertCategories")
         revert_categories = (
             [
@@ -859,6 +890,7 @@ async def decompose(
         case=case,
         reply=str(data.get("reply") or ""),
         cart=cart,
+        screen_reference=screen_reference,
         revert_categories=revert_categories,
         repurchase_products=repurchase_products,
         category_queries=category_queries,
@@ -1104,6 +1136,27 @@ def _parse_target_quantity(value: object) -> int | None:
     if qty < 1 or qty > 99:
         return None
     return qty
+
+
+def _parse_screen_reference(raw: object) -> ScreenReference | None:
+    """내부 LLM JSON의 grid 좌표 주장만 보존한다.
+
+    kind가 다르면 화면 좌표 신호가 아니다. kind=grid인데 축이 누락·비정상이면 해당 축을 None으로
+    남긴다 — 하류가 이 객체의 존재를 보고 재질문해야지, 함께 온 cart.productId로 조용히
+    폴백하면 추천 목록 안의 다른 상품이 그대로 담길 수 있다.
+    """
+    if not isinstance(raw, dict) or raw.get("kind") != "grid":
+        return None
+
+    def _positive_axis(value: object) -> int | None:
+        parsed = _as_int(value)
+        return parsed if parsed is not None and parsed >= 1 else None
+
+    return ScreenReference(
+        kind="grid",
+        row=_positive_axis(raw.get("row")),
+        column=_positive_axis(raw.get("column")),
+    )
 
 
 def _parse_cart(raw: object) -> CartIntent | None:
