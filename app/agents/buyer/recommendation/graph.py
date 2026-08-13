@@ -2178,6 +2178,15 @@ async def stream_recommendation(
             # 있어 오분류된다(§2 판정 방법).
             rerank_ranked_ids = set(ranked_ids)
             reason_by_id = dict(rr.ranked)  # 상품별 근거(§4.2) — (productId, rationale) 튜플 → 맵
+            if settings.rerank_ranking_arm == "code_assisted":
+                # LLM이 선택하지 않은 expose-min 보충·지목 상품에는 semantic 이유를 붙일 수 없다.
+                # 대신 같은 code evidence에서 만든 사실 근거를 미리 채워 실제 노출 목록에 들어올 때만
+                # `_reasons()`가 꺼내 쓰게 한다. LLM이 고른 상품의 근거는 setdefault로 보존한다.
+                for product_id, fallback_reason in code_assisted_fallback_reasons(
+                    candidates,
+                    code_scoring_context,
+                ).items():
+                    reason_by_id.setdefault(product_id, fallback_reason)
             raw_overall_comment = rr.overall_comment
             raw_overall_claims = rr.overall_claims
         except LLMError:

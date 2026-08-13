@@ -1,8 +1,8 @@
 # Rerank scoring paired evaluation
 
-Issue #631의 `current`, `structured`, `hybrid` ranking arm을 같은 dev goldenset 후보에서
-비교한다. `structured`와 `hybrid`는 한 번 받은 scored provider 응답을 공유하며, hybrid만
-production `rerank()` API에 replay해 RRF 효과와 모델 샘플링 분산을 분리한다.
+Issue #631의 `current`, `structured`, `hybrid`와 후속 `code_assisted` ranking arm을 같은 dev
+goldenset 후보에서 비교한다. `structured`와 `hybrid`만 한 번 받은 scored provider 응답을 공유하며,
+`code_assisted`는 코드 신호가 포함된 별도 prompt라 독립 provider call로 실행한다.
 
 ## Dry-run
 
@@ -31,7 +31,7 @@ CLI에서 다시 열지 않는다. 출력 디렉터리는 새 경로여야 하�
 
 30개 후보를 모두 평가하는 scored prompt는 JSON 생성 전 reasoning token도 소비한다.
 `RERANK_SCORING_REASONING_TOKEN_RESERVE`(기본 4096)는 structured/hybrid에만 추가되며,
-기존 current arm의 출력 예산은 바꾸지 않는다.
+기존 current와 최종 선택만 출력하는 code_assisted arm의 출력 예산은 바꾸지 않는다.
 
 ## 보존된 live baseline
 

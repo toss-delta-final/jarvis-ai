@@ -83,7 +83,6 @@ class CandidateCodeSignals:
 
     def prompt_dict(self) -> dict[str, object]:
         return {
-            "searchRank": self.search_rank,
             "objectiveComponents": {
                 "ratingQuality": self.rating_quality,
                 "reviewConfidence": self.review_confidence,

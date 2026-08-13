@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+from app.agents.buyer.recommendation.rerank_code_assisted import CodeAssistedDecision
 from app.agents.buyer.recommendation.rerank_grounding import (
     GroundingArm,
     GroundingDecision,
@@ -58,6 +59,7 @@ class RankingSample:
     hard_constraints: Mapping[str, object]
     must_exclude_product_ids: tuple[int, ...]
     slices: tuple[str, ...]
+    code_assisted_decisions: tuple[CodeAssistedDecision, ...] = ()
     foreign_evaluation_count: int = 0
     duplicate_evaluation_count: int = 0
     invalid_score_count: int = 0

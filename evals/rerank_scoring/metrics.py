@@ -19,10 +19,16 @@ _COMPARISONS = (
     ("currentToHybrid", "current", "hybrid"),
     ("structuredToHybrid", "structured", "hybrid"),
 )
+_CODE_ASSISTED_COMPARISONS = (
+    ("currentToCodeAssisted", "current", "code_assisted"),
+    ("structuredToCodeAssisted", "structured", "code_assisted"),
+)
 
 
 def _primary_comparison(arms: Sequence[str]) -> str | None:
     available = set(arms)
+    if {"current", "code_assisted"} <= available:
+        return "currentToCodeAssisted"
     if {"current", "hybrid"} <= available:
         return "currentToHybrid"
     if {"current", "structured"} <= available:
@@ -224,8 +230,11 @@ def score_run(run: RankingProbeRun) -> dict[str, Any]:
     """Score only successful samples; failures remain separate attempt evidence."""
 
     _validate_provenance(run)
+    comparison_specs = _COMPARISONS + (
+        _CODE_ASSISTED_COMPARISONS if "code_assisted" in run.arms else ()
+    )
     comparisons = {
-        name: _comparison(run, baseline, current) for name, baseline, current in _COMPARISONS
+        name: _comparison(run, baseline, current) for name, baseline, current in comparison_specs
     }
     primary = _primary_comparison(run.arms)
     return {

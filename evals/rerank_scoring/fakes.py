@@ -30,6 +30,21 @@ def _grounding(candidate: dict[str, object]) -> tuple[str, list[str], str]:
     return "NO_VERIFIABLE_EVIDENCE", [], NEUTRAL_RATIONALE
 
 
+def _code_evidence_refs(candidate: dict[str, object]) -> list[str]:
+    signals = candidate.get("codeSignals")
+    if not isinstance(signals, dict):
+        return []
+    raw_evidence = signals.get("evidence")
+    if not isinstance(raw_evidence, list):
+        return []
+    refs: list[str] = []
+    for raw_item in raw_evidence:
+        ref = raw_item.get("ref") if isinstance(raw_item, dict) else None
+        if isinstance(ref, str):
+            refs.append(ref)
+    return refs
+
+
 class ReplayLLM:
     """Return one captured response without another provider call."""
 
@@ -51,6 +66,7 @@ class ScriptedScoringLLM:
         self.model_config = {"provider": "ScriptedScoringLLM", "mode": mode}
         self.current_calls = 0
         self.scored_calls = 0
+        self.code_assisted_calls = 0
         self.candidate_orders: list[tuple[int, ...]] = []
 
     async def complete(
@@ -71,6 +87,60 @@ class ScriptedScoringLLM:
             and not isinstance(item.get("productId"), bool)
         )
         self.candidate_orders.append(product_ids)
+        code_assisted = '"semanticIntentFit"' in system
+        if code_assisted:
+            self.code_assisted_calls += 1
+            ranked: list[dict[str, object]] = []
+            for candidate in candidates:
+                product_id = candidate.get("productId")
+                if isinstance(product_id, bool) or not isinstance(product_id, int):
+                    continue
+                if self.mode == "missing" and product_id == product_ids[0]:
+                    continue
+                semantic_intent_fit = 4
+                if self.mode == "out_of_range" and product_id == product_ids[0]:
+                    semantic_intent_fit = 5
+                ranked.append(
+                    {
+                        "productId": product_id,
+                        "semanticIntentFit": semantic_intent_fit,
+                        "useCaseFit": 3,
+                        "profileFit": 0,
+                        "semanticReasonCode": "DIRECT_INTENT_MATCH",
+                        "evidenceRefs": _code_evidence_refs(candidate)[:2],
+                        "rationale": "요청 의도와 코드 근거를 함께 고려했어요",
+                    }
+                )
+            if self.mode == "duplicate" and ranked:
+                ranked.append(dict(ranked[0]))
+            if self.mode == "out_of_candidate":
+                ranked.append(
+                    {
+                        "productId": 9_999_999,
+                        "semanticIntentFit": 4,
+                        "useCaseFit": 3,
+                        "profileFit": 0,
+                        "semanticReasonCode": "DIRECT_INTENT_MATCH",
+                        "evidenceRefs": [],
+                        "rationale": NEUTRAL_RATIONALE,
+                    }
+                )
+            return json.dumps(
+                {
+                    "ranked": ranked,
+                    "overallComment": "코드 신호와 의미 적합도를 함께 고려했어요",
+                    "overallClaims": [
+                        {
+                            "claimCode": "NO_VERIFIABLE_OVERALL_CLAIM",
+                            "scope": "FINAL_EXPOSED_PRODUCTS",
+                            "subjectProductIds": [],
+                            "evidenceFields": [],
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            )
+
         scored = '"evaluations"' in system
         if not scored:
             self.current_calls += 1

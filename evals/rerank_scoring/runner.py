@@ -13,15 +13,17 @@ from time import perf_counter
 
 from app.agents.buyer.recommendation.rerank import (
     _SYSTEM,
+    _SYSTEM_CODE_ASSISTED,
     _SYSTEM_STRUCTURED_GROUNDING,
     _SYSTEM_STRUCTURED_SCORING,
     rerank,
 )
+from app.agents.buyer.recommendation.rerank_code_assisted import CodeScoringContext
 from app.agents.buyer.recommendation.rerank_grounding import GroundingArm
 from app.agents.buyer.recommendation.rerank_scoring import RankingArm
 from app.agents.buyer.recommendation.state import extract_json
 from app.core.llm import LLMClient, LLMError
-from app.schemas.spring import SpringProduct
+from app.schemas.spring import ProductSearchFilters, SpringProduct
 from evals.goldenset.schema import GoldenCase
 from evals.metrics.metrics import hard_constraint_violations, ndcg_at_k
 from evals.metrics.runner import EvaluationFixtures
@@ -40,7 +42,7 @@ from evals.rerank_scoring.schema import (
 from evals.scoring.hard_filter import HardConstraints, apply_hard_filters
 
 _IDENTIFIER_RE = re.compile(r"\b(org|proj|user|sk)-[A-Za-z0-9_-]{6,}")
-_ARMS = frozenset({"current", "structured", "hybrid"})
+_ARMS = frozenset({"current", "structured", "hybrid", "code_assisted"})
 
 
 def _scrub_message(message: str) -> str:
@@ -113,9 +115,9 @@ class _CaptureLLM:
         return self.raw_response
 
 
-def _raw_counts(raw_response: str, candidate_ids: set[int]) -> tuple[int, int]:
+def _raw_counts(raw_response: str, candidate_ids: set[int], *, arm: RankingArm) -> tuple[int, int]:
     data = extract_json(raw_response)
-    raw = data.get("evaluations")
+    raw = data.get("ranked") if arm == "code_assisted" else data.get("evaluations")
     if not isinstance(raw, list):
         return 0, 0
     valid_ids: list[int] = []
@@ -145,6 +147,17 @@ def _hard_violation_count(case_input: RankingCaseInput, ranked_ids: Sequence[int
             case_input.must_exclude_product_ids,
             catalog,
         )
+    )
+
+
+def _code_scoring_context(case_input: RankingCaseInput) -> CodeScoringContext:
+    hard = case_input.hard_constraints
+    return CodeScoringContext(
+        filters=ProductSearchFilters(
+            price_min=hard.get("priceMin") if type(hard.get("priceMin")) is int else None,
+            price_max=hard.get("priceMax") if type(hard.get("priceMax")) is int else None,
+        ),
+        search_rank_by_id=case_input.search_rank_by_id,
     )
 
 
@@ -210,6 +223,7 @@ async def _execute_arm(
             rrf_alpha=alpha,
             rrf_k=k,
             search_rank_by_id=case_input.search_rank_by_id,
+            code_scoring_context=_code_scoring_context(case_input),
         )
     except BudgetExceeded:
         raise
@@ -232,10 +246,13 @@ async def _execute_arm(
     ranked_ids = tuple(product_id for product_id, _ in result.ranked)
     candidate_ids = {product.product_id for product in case_input.candidates}
     foreign, duplicates = (
-        _raw_counts(capture.raw_response, candidate_ids) if arm != "current" else (0, 0)
+        _raw_counts(capture.raw_response, candidate_ids, arm=arm) if arm != "current" else (0, 0)
     )
-    invalid = sum(not decision.score_valid for decision in result.ranking_decisions)
-    valid = len(result.ranking_decisions) - invalid
+    score_decisions = (
+        result.code_assisted_decisions if arm == "code_assisted" else result.ranking_decisions
+    )
+    invalid = sum(not decision.score_valid for decision in score_decisions)
+    valid = len(score_decisions) - invalid
     sample = RankingSample(
         case_id=case_input.case_id,
         arm=arm,
@@ -255,12 +272,11 @@ async def _execute_arm(
         hard_constraints=case_input.hard_constraints,
         must_exclude_product_ids=case_input.must_exclude_product_ids,
         slices=case_input.slices,
+        code_assisted_decisions=tuple(result.code_assisted_decisions),
         foreign_evaluation_count=foreign,
         duplicate_evaluation_count=duplicates,
         invalid_score_count=invalid,
-        evaluated_coverage=(
-            valid / len(result.ranking_decisions) if result.ranking_decisions else 1.0
-        ),
+        evaluated_coverage=(valid / len(score_decisions) if score_decisions else 1.0),
         partial_fallback=bool(invalid and valid),
         hard_constraint_violation_count=_hard_violation_count(case_input, ranked_ids),
         ndcg_at_10=ndcg_at_k(ranked_ids, case_input.relevance_grades, 10),
@@ -280,7 +296,7 @@ async def _execute_arm(
 def _validated_arms(arms: Sequence[str]) -> tuple[RankingArm, ...]:
     normalized = tuple(arms)
     if not normalized or len(normalized) != len(set(normalized)) or not set(normalized) <= _ARMS:
-        raise ValueError("arms must be unique current, structured, or hybrid values")
+        raise ValueError("arms must be unique current, structured, hybrid, or code_assisted values")
     return normalized  # type: ignore[return-value]
 
 
@@ -322,7 +338,7 @@ async def run_case_arms(
         )
         results["current"] = current
 
-    scored_arms = tuple(arm for arm in resolved_arms if arm != "current")
+    scored_arms = tuple(arm for arm in resolved_arms if arm in ("structured", "hybrid"))
     if scored_arms:
         owner = "structured" if "structured" in scored_arms else scored_arms[0]
         provider_result, raw_response = await _execute_arm(
@@ -390,6 +406,23 @@ async def run_case_arms(
                 k=k,
             )
             results[arm] = replayed
+
+    if "code_assisted" in resolved_arms:
+        code_assisted, _ = await _execute_arm(
+            case_input,
+            llm,
+            arm="code_assisted",
+            grounding_arm=grounding_arm,
+            expose_max=expose_max,
+            order_seed=order_seed,
+            repeat=repeat,
+            attempt=attempt,
+            candidates=candidates,
+            provider_called=True,
+            alpha=alpha,
+            k=k,
+        )
+        results["code_assisted"] = code_assisted
     return {arm: results[arm] for arm in resolved_arms}
 
 
@@ -443,15 +476,16 @@ async def run_input_probe(
                 for arm in active:
                     arm_result = arm_results[arm]
                     if arm_result.sample is not None:
-                        prompt = (
-                            _SYSTEM_STRUCTURED_SCORING
-                            if arm != "current"
-                            else (
+                        if arm == "code_assisted":
+                            prompt = _SYSTEM_CODE_ASSISTED
+                        elif arm in ("structured", "hybrid"):
+                            prompt = _SYSTEM_STRUCTURED_SCORING
+                        else:
+                            prompt = (
                                 _SYSTEM
                                 if grounding_arm == "current"
                                 else _SYSTEM_STRUCTURED_GROUNDING
                             )
-                        )
                         model_config = getattr(
                             llm,
                             "model_config",

@@ -8,6 +8,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from app.agents.buyer.recommendation.rerank_code_assisted import CodeAssistedDecision
 from app.agents.buyer.recommendation.rerank_scoring import RankingDecision
 from evals.rerank_scoring.metrics import score_run
 from evals.rerank_scoring.schema import RankingFailure, RankingProbeRun, RankingSample
@@ -26,6 +27,7 @@ _SAMPLE_FIELDS = [
     "rawResponseSha256",
     "providerCalled",
     "rankingDecisions",
+    "codeAssistedDecisions",
     "relevanceGrades",
     "hardConstraints",
     "mustExcludeProductIds",
@@ -89,6 +91,7 @@ def _sample_row(sample: RankingSample) -> dict[str, object]:
         "rawResponseSha256": sample.raw_response_sha256,
         "providerCalled": _bool(sample.provider_called),
         "rankingDecisions": _json([asdict(value) for value in sample.ranking_decisions]),
+        "codeAssistedDecisions": _json([asdict(value) for value in sample.code_assisted_decisions]),
         "relevanceGrades": _json(sample.relevance_grades),
         "hardConstraints": _json(sample.hard_constraints),
         "mustExcludeProductIds": _json(sample.must_exclude_product_ids),
@@ -267,6 +270,10 @@ def _optional_float(value: str) -> float | None:
 
 def _load_sample(row: dict[str, str]) -> RankingSample:
     decisions = tuple(RankingDecision(**value) for value in json.loads(row["rankingDecisions"]))
+    code_assisted_decisions = tuple(
+        CodeAssistedDecision(**value)
+        for value in json.loads(row.get("codeAssistedDecisions") or "[]")
+    )
     return RankingSample(
         case_id=row["caseId"],
         arm=row["arm"],  # type: ignore[arg-type]
@@ -288,6 +295,7 @@ def _load_sample(row: dict[str, str]) -> RankingSample:
         hard_constraints=json.loads(row["hardConstraints"]),
         must_exclude_product_ids=tuple(json.loads(row["mustExcludeProductIds"])),
         slices=tuple(json.loads(row["slices"])),
+        code_assisted_decisions=code_assisted_decisions,
         foreign_evaluation_count=int(row["foreignEvaluationCount"]),
         duplicate_evaluation_count=int(row["duplicateEvaluationCount"]),
         invalid_score_count=int(row["invalidScoreCount"]),

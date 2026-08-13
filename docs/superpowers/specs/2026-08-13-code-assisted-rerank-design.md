@@ -118,15 +118,17 @@ CodeScoringContext(
     "ratingLevel": "높음",
     "reviewLevel": "많음"
   },
-  "conditionEvidence": [
-    {"code": "CATEGORY_MATCH"},
-    {"code": "ATTRIBUTE_MATCH", "field": "소재", "value": "린넨"},
-    {"code": "WITHIN_BUDGET"}
-  ],
-  "objectiveComponents": {
-    "ratingQuality": 2,
-    "reviewConfidence": 2,
-    "explicitConditionCoverage": {"matched": 3, "applicable": 3}
+  "codeSignals": {
+    "evidence": [
+      {"ref": "CATEGORY_MATCH", "code": "CATEGORY_MATCH"},
+      {"ref": "ATTRIBUTE_MATCH:소재", "code": "ATTRIBUTE_MATCH", "field": "소재", "value": "린넨"},
+      {"ref": "PRICE_RANGE_MATCH", "code": "PRICE_RANGE_MATCH"}
+    ],
+    "objectiveComponents": {
+      "ratingQuality": 2,
+      "reviewConfidence": 2,
+      "explicitConditionCoverage": {"matched": 3, "applicable": 3}
+    }
   }
 }
 ```
@@ -166,7 +168,7 @@ LLM은 코드가 만든 사실과 신호를 변경하거나 재계산하지 않�
       "useCaseFit": 3,
       "profileFit": 1,
       "semanticReasonCode": "DIRECT_INTENT_MATCH",
-      "evidenceRefs": ["ATTRIBUTE_MATCH:소재", "WITHIN_BUDGET", "RATING_HIGH"]
+      "evidenceRefs": ["ATTRIBUTE_MATCH:소재", "PRICE_RANGE_MATCH", "RATING_HIGH"]
     }
   ],
   "overallComment": "요청 조건과 활용 목적을 함께 고려해 골랐어요.",
@@ -208,7 +210,7 @@ reason을 각각 검증한 뒤 최대 두 절로 조합한다.
 |---|---|
 | `ATTRIBUTE_MATCH` | `요청한 린넨 소재와 일치하고` |
 | `BRAND_MATCH` | `요청한 브랜드의 상품이며` |
-| `WITHIN_BUDGET` | `예산 범위 안에 있고` |
+| `PRICE_RANGE_MATCH` | `요청한 가격 범위 안에 있고` |
 | `RATING_HIGH` | `평점 평가가 높은 상품이에요` |
 | `REVIEW_MANY` | `리뷰 정보가 많은 상품이에요` |
 | `PRICE_RELATIVE_LOW` | `같은 후보군에서 비교적 저렴해요` |

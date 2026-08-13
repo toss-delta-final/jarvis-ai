@@ -1,4 +1,4 @@
-"""CLI for paired current/structured/hybrid rerank scoring evaluation."""
+"""CLI for paired current/structured/hybrid/code-assisted rerank evaluation."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from typing import Any, cast
 
 from app.agents.buyer.recommendation.rerank import (
     _SYSTEM,
+    _SYSTEM_CODE_ASSISTED,
     _SYSTEM_STRUCTURED_GROUNDING,
     _SYSTEM_STRUCTURED_SCORING,
 )
@@ -36,12 +37,21 @@ from evals.rerank_scoring.runner import run_input_probe, run_probe
 EXIT_OK = 0
 EXIT_REJECTED = 2
 EXIT_BUDGET = 3
-ALL_ARMS: tuple[RankingArm, ...] = ("current", "structured", "hybrid")
+ALL_ARMS: tuple[RankingArm, ...] = (
+    "current",
+    "structured",
+    "hybrid",
+    "code_assisted",
+)
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="buyer rerank scoring paired 평가")
-    parser.add_argument("--arms", required=True, help="all 또는 current,structured,hybrid")
+    parser.add_argument(
+        "--arms",
+        required=True,
+        help="all 또는 current,structured,hybrid,code_assisted",
+    )
     parser.add_argument(
         "--dataset",
         default="goldenset-dev",
@@ -83,7 +93,9 @@ def _parse_arms(raw: str) -> tuple[RankingArm, ...]:
         return ALL_ARMS
     values = tuple(value.strip() for value in raw.split(",") if value.strip())
     if not values or len(values) != len(set(values)) or not set(values) <= set(ALL_ARMS):
-        raise ValueError("--arms must be all or a unique current,structured,hybrid list")
+        raise ValueError(
+            "--arms must be all or a unique current,structured,hybrid,code_assisted list"
+        )
     return cast(tuple[RankingArm, ...], values)
 
 
@@ -144,7 +156,14 @@ def _manifest(
     base = build_run_manifest(command=command, seed=order_seeds[0])
     current_prompt = _SYSTEM if grounding_arm == "current" else _SYSTEM_STRUCTURED_GROUNDING
     scored_hash = _prompt_hash(_SYSTEM_STRUCTURED_SCORING)
-    return {
+    prompt_hashes = {
+        "current": _prompt_hash(current_prompt),
+        "structured": scored_hash,
+        "hybrid": scored_hash,
+    }
+    if "code_assisted" in arms:
+        prompt_hashes["code_assisted"] = _prompt_hash(_SYSTEM_CODE_ASSISTED)
+    manifest: dict[str, object] = {
         "gitCommit": base["commitSha"],
         "dirty": base["dirty"],
         "command": command,
@@ -156,11 +175,7 @@ def _manifest(
         "datasetHash": dataset_hash,
         "labelStatus": label_status,
         "confirmatory": confirmatory,
-        "promptHashes": {
-            "current": _prompt_hash(current_prompt),
-            "structured": scored_hash,
-            "hybrid": scored_hash,
-        },
+        "promptHashes": prompt_hashes,
         "modelConfig": model_config,
         "repeats": repeats,
         "attemptMultiplier": attempt_multiplier,
@@ -172,6 +187,18 @@ def _manifest(
         "budget": budget,
         "pacer": pacer,
     }
+    if "code_assisted" in arms:
+        manifest["codeAssistedComponentOwners"] = {
+            "code": [
+                "ratingQuality",
+                "reviewConfidence",
+                "explicitConditionCoverage",
+                "evidence",
+                "searchRank",
+            ],
+            "llm": ["semanticIntentFit", "useCaseFit", "profileFit", "finalSelection"],
+        }
+    return manifest
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -243,8 +270,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"input rejected: {exc}")
         return EXIT_REJECTED
 
-    provider_calls_per_cell = int("current" in arms) + int(
-        bool({"structured", "hybrid"} & set(arms))
+    provider_calls_per_cell = (
+        int("current" in arms)
+        + int(bool({"structured", "hybrid"} & set(arms)))
+        + int("code_assisted" in arms)
     )
     expected_calls = len(cases) * len(order_seeds) * args.repeats * provider_calls_per_cell
     max_calls = (

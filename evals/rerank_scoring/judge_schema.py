@@ -20,7 +20,7 @@ ReasonCode = Literal[
     "INSUFFICIENT_EVIDENCE",
 ]
 
-_ARM_IDENTITY_RE = re.compile(r"\b(?:current|structured|hybrid)\b", re.IGNORECASE)
+_ARM_IDENTITY_RE = re.compile(r"\b(?:current|structured|hybrid|code_assisted)\b", re.IGNORECASE)
 
 
 class CamelModel(BaseModel):
