@@ -21,6 +21,17 @@ _COMPARISONS = (
 )
 
 
+def _primary_comparison(arms: Sequence[str]) -> str | None:
+    available = set(arms)
+    if {"current", "hybrid"} <= available:
+        return "currentToHybrid"
+    if {"current", "structured"} <= available:
+        return "currentToStructured"
+    if {"structured", "hybrid"} <= available:
+        return "structuredToHybrid"
+    return None
+
+
 def _rate(numerator: int, denominator: int) -> dict[str, float | int | None]:
     return {
         "numerator": numerator,
@@ -216,8 +227,10 @@ def score_run(run: RankingProbeRun) -> dict[str, Any]:
     comparisons = {
         name: _comparison(run, baseline, current) for name, baseline, current in _COMPARISONS
     }
+    primary = _primary_comparison(run.arms)
     return {
-        "status": comparisons["currentToHybrid"]["verdict"],
+        "status": comparisons[primary]["verdict"] if primary is not None else "not-tested",
+        "primaryComparison": primary,
         "datasetVersion": run.dataset_version,
         "datasetHash": run.dataset_hash,
         "arms": list(run.arms),

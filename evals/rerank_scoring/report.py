@@ -154,7 +154,8 @@ def _validate_manifest(run: RankingProbeRun, manifest: dict[str, Any]) -> None:
 
 
 def render_report(results: dict[str, Any], manifest: dict[str, Any]) -> str:
-    comparison = results["comparisons"]["currentToHybrid"]
+    primary = results.get("primaryComparison")
+    comparison = results["comparisons"].get(primary) if primary is not None else None
     lines = [
         "# Rerank scoring paired evaluation",
         "",
@@ -164,7 +165,7 @@ def render_report(results: dict[str, Any], manifest: dict[str, Any]) -> str:
         f"- repeats/seeds: `{results['repeats']}` / `{results['orderSeeds']}`",
         f"- dry-run: `{manifest.get('dryRun', False)}`",
         "",
-        "## Primary A→C comparison",
+        f"## Primary comparison: {primary or 'not-tested'}",
         "",
         "| paired N | mean ΔnDCG@10 | CI low | CI high | verdict |",
         "|---:|---:|---:|---:|---|",
@@ -172,6 +173,8 @@ def render_report(results: dict[str, Any], manifest: dict[str, Any]) -> str:
             f"| {comparison['pairedCount']} | {comparison['meanDelta']} | "
             f"{comparison['bootstrapCi95']['low']} | {comparison['bootstrapCi95']['high']} | "
             f"{comparison['verdict']} |"
+            if comparison is not None
+            else "| 0 | None | None | None | not-tested |"
         ),
         "",
         "## Integrity",

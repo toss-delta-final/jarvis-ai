@@ -447,6 +447,20 @@ def test_hard_constraint_violation_forces_regressed_verdict() -> None:
     assert score_run(run)["comparisons"]["currentToHybrid"]["verdict"] == "regressed"
 
 
+def test_primary_comparison_uses_structured_when_hybrid_is_not_requested() -> None:
+    run = _run(
+        _sample("a", "current", ndcg=0.5),
+        _sample("b", "current", ndcg=0.5),
+        _sample("a", "structured", ndcg=0.7),
+        _sample("b", "structured", ndcg=0.7),
+    )
+
+    results = score_run(run)
+
+    assert results["primaryComparison"] == "currentToStructured"
+    assert results["status"] == "supported"
+
+
 def test_top3_jaccard_top1_agreement_and_spearman_are_grouped_by_case_arm() -> None:
     run = _run(
         _sample("a", "hybrid", ranking=(101, 102, 103), order_seed=11),
