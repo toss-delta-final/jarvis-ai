@@ -1,0 +1,44 @@
+{
+  "conclusion": "The stale manifest understated every Luna price dimension by 5x. The execution exceeded the requested USD 1 target under current official pricing; timeout billing remains unknown.",
+  "officialPricingAudit": {
+    "inferredKnownInputTokens": 1261249,
+    "inferredKnownOutputTokens": 211797,
+    "knownCallsCostRangeUsd": [
+      1.3969068999999998,
+      2.8473432499999998
+    ],
+    "knownCallsUncachedEstimateUsd": 2.532031,
+    "lengthLimitedUnknownRecorderCalls": {
+      "cacheWriteTokens": 27573,
+      "cachedInputTokens": 0,
+      "callCount": 7,
+      "costUsd": 0.09640725,
+      "inputTokens": 27594,
+      "outputTokens": 10320
+    },
+    "ratesPer1k": {
+      "cacheWritePer1k": 0.00125,
+      "cachedInputPer1k": 0.0001,
+      "inputPer1k": 0.001,
+      "outputPer1k": 0.006,
+      "source": "https://developers.openai.com/api/docs/models/gpt-5.6-luna"
+    },
+    "timeoutCallsWithUnknownBilling": 2,
+    "totalLowerBoundBeforeTimeoutsUsd": 1.4933141499999998,
+    "totalUpperBoundBeforeTimeoutsUsd": 2.9437504999999997,
+    "uncachedEstimateBeforeTimeoutsUsd": 2.62843825
+  },
+  "rankingProviderCalls": 360,
+  "recordedUsingStaleManifest": {
+    "knownCallCount": 351,
+    "ratesPer1k": {
+      "input": 0.0002,
+      "output": 0.0012
+    },
+    "recordedCostUsd": 0.5064061999999999,
+    "totalTokensForKnownCalls": 1473046,
+    "unknownCallCount": 9
+  },
+  "schemaVersion": "rerank-cost-audit-v1",
+  "targetUsd": 1.0
+}
