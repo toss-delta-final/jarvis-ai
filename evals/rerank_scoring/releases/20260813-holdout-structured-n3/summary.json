@@ -1,0 +1,142 @@
+{
+  "budget": {
+    "budgetExceeded": false,
+    "budgetExceededReason": null,
+    "callCount": 174,
+    "costGateStatus": "passed",
+    "limits": {
+      "maxCalls": 288,
+      "maxCostUsd": 1.0,
+      "maxTotalTokens": 30000000
+    },
+    "tokenGateStatus": "passed",
+    "totalCostUsd": 0.33218939999999997,
+    "totalTokens": 673027,
+    "unknownCostCallCount": 0,
+    "unknownTokenCallCount": 0
+  },
+  "efficiency": {
+    "current": {
+      "costUsd": 0,
+      "inputTokens": 0,
+      "knownUsageCount": 0,
+      "latencyMs": {
+        "p50": 6128.0,
+        "p95": 10738.0
+      },
+      "outputTokens": 0,
+      "sampleCount": 57,
+      "unknownReason": "provider usage unavailable",
+      "unknownUsageCount": 57
+    },
+    "structured": {
+      "costUsd": 0,
+      "inputTokens": 0,
+      "knownUsageCount": 0,
+      "latencyMs": {
+        "p50": 14761.0,
+        "p95": 18230.0
+      },
+      "outputTokens": 0,
+      "sampleCount": 57,
+      "unknownReason": "provider usage unavailable",
+      "unknownUsageCount": 57
+    }
+  },
+  "nonRankingCases": {
+    "caseCount": 5,
+    "failureAttemptCount": 60,
+    "reason": "five failure-boundary cases have no rerank candidates and are excluded from ranking quality"
+  },
+  "primaryComparison": "currentToStructured",
+  "quality": {
+    "bootstrapCi95": {
+      "high": 0.1696394668209063,
+      "low": -0.03845328157053388
+    },
+    "directionCounts": {
+      "improved": 8,
+      "regressed": 5,
+      "tied": 6
+    },
+    "meanDelta": 0.05750873805594542,
+    "metric": "case-mean nDCG@10 paired delta",
+    "pairedCaseCount": 19,
+    "verdict": "inconclusive"
+  },
+  "rankingIntegrity": {
+    "duplicateEvaluationsByArm": {
+      "current": {
+        "denominator": 57,
+        "numerator": 0,
+        "rate": 0.0
+      },
+      "structured": {
+        "denominator": 57,
+        "numerator": 0,
+        "rate": 0.0
+      }
+    },
+    "foreignEvaluationsByArm": {
+      "current": {
+        "denominator": 57,
+        "numerator": 0,
+        "rate": 0.0
+      },
+      "structured": {
+        "denominator": 57,
+        "numerator": 0,
+        "rate": 0.0
+      }
+    },
+    "hardConstraintViolationsByArm": {
+      "current": {
+        "denominator": 57,
+        "numerator": 0,
+        "rate": 0.0
+      },
+      "structured": {
+        "denominator": 57,
+        "numerator": 0,
+        "rate": 0.0
+      }
+    },
+    "partialFallbackByArm": {
+      "current": {
+        "denominator": 57,
+        "numerator": 0,
+        "rate": 0.0
+      },
+      "structured": {
+        "denominator": 57,
+        "numerator": 0,
+        "rate": 0.0
+      }
+    },
+    "rankingFailureAttemptCount": 0,
+    "successfulSamplesByArm": {
+      "current": 57,
+      "structured": 57
+    }
+  },
+  "releaseDecision": "keep-current",
+  "stability": {
+    "current": {
+      "pairCount": 57,
+      "spearman": 0.5614583333333333,
+      "spearmanPairCount": 48,
+      "spearmanUnavailableReason": null,
+      "top1Agreement": 0.5964912280701754,
+      "top3Jaccard": 0.7549707602339181
+    },
+    "structured": {
+      "pairCount": 57,
+      "spearman": 0.883876357560568,
+      "spearmanPairCount": 57,
+      "spearmanUnavailableReason": null,
+      "top1Agreement": 0.8596491228070176,
+      "top3Jaccard": 0.7614035087719297
+    }
+  },
+  "status": "inconclusive"
+}

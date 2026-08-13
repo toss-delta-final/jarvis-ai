@@ -16,6 +16,8 @@ from langgraph.checkpoint.memory import InMemorySaver
 from app.agents.seller import category_catalog, hitl
 from app.agents.seller.schemas import DraftChange, DraftProposal
 from app.schemas.spring import (
+    BehaviorEventsResult,
+    BehaviorProductRow,
     OrderItemStatusResult,
     ProductCreateResult,
     ProductDeleteResult,
@@ -117,6 +119,29 @@ class _StubSpring:
             toStatus=payload.to_status,
             changedAt="2026-08-05T10:00:00+09:00",
         )
+
+    # [#659] I-13 저성과 참고 문구 조회 — 기본은 "충분히 팔림"(경고 미발동)으로 두어
+    # 이 문구와 무관한 기존 update 테스트의 outcome.text 를 건드리지 않는다.
+    # 저성과 분기 자체를 검증하는 테스트만 low_sales_quantity 를 낮게 오버라이드한다.
+    low_sales_quantity: int = 999
+    events_error: Exception | None = None
+
+    async def get_events(
+        self, brand_id, from_=None, to=None, event_type=None, product_id=None, group_by=None
+    ):
+        self.calls.append(("get_events", brand_id, product_id))
+        if self.events_error is not None:
+            raise self.events_error
+        rows = []
+        if product_id is not None:
+            rows = [
+                BehaviorProductRow(
+                    productId=product_id,
+                    salesQuantity=self.low_sales_quantity,
+                    counts={"productView": 40},
+                )
+            ]
+        return BehaviorEventsResult(rows=rows)
 
     def write_calls(self) -> list[tuple]:
         return [c for c in self.calls if c[0] in ("create", "update", "delete", "ship")]
@@ -389,6 +414,48 @@ def test_confirm_executes_update_with_draft_args() -> None:
     op, brand_id, product_id, patch = writes[0]
     assert (op, brand_id, product_id) == ("update", 3, 101)
     assert patch.price == 12900  # draft after 그대로 — LLM 재개입 없음
+    assert "참고" not in outcome.text  # 기본 판매량(999)은 임계 이상 — 경고 미부착
+
+
+def test_confirm_update_appends_low_sales_note_when_below_threshold() -> None:
+    """[#659] 최근 N일 판매량이 임계 이하면 반영 완료 안내에 참고 문구가 붙는다."""
+    spring = _StubSpring()
+    spring.low_sales_quantity = 0
+    set_spring_client(spring)
+    record = _record()
+
+    async def run():
+        await hitl.start_draft(record)
+        return await hitl.confirm_draft(record.draft_id, seller_id=7, brand_id=3)
+
+    outcome = asyncio.run(run())
+
+    assert outcome.status == "executed"
+    assert "101" in outcome.text  # 기존 안내는 그대로 유지
+    assert "참고" in outcome.text
+    assert "0개" in outcome.text
+    assert "조회 40건" in outcome.text
+    assert ("get_events", 3, 101) in spring.calls
+
+
+def test_confirm_update_soft_fails_when_low_sales_query_unavailable() -> None:
+    """[#659] 판매량 조회 실패는 조용히 무시한다 — 반영 자체는 막지 않는다(soft-fail)."""
+    from app.services.spring_client import SpringUnavailableError
+
+    spring = _StubSpring()
+    spring.events_error = SpringUnavailableError("conn refused")
+    set_spring_client(spring)
+    record = _record()
+
+    async def run():
+        await hitl.start_draft(record)
+        return await hitl.confirm_draft(record.draft_id, seller_id=7, brand_id=3)
+
+    outcome = asyncio.run(run())
+
+    assert outcome.status == "executed"
+    assert "101" in outcome.text
+    assert "참고" not in outcome.text
 
 
 def test_confirm_is_idempotent() -> None:
@@ -1388,7 +1455,7 @@ def test_create_missing_field_does_not_promise_retry() -> None:
     assert "등록했습니다" not in outcome.text
 
 
-# ── [#620] update 카테고리 선차단 · INVALID_PRICE 선차단 · 상품명 길이 · 중복 필드 ──
+# ── [#620] update 카테고리 선차단 · 상품명 길이 · 중복 필드 (가격 선차단은 D47로 폐지) ──
 
 
 def test_validate_draft_update_rejects_category_change() -> None:
@@ -1406,10 +1473,10 @@ def test_validate_draft_update_rejects_category_change() -> None:
     assert "카테고리" in problem and "수정" in problem
 
 
-def test_validate_draft_update_price_over_original_price_blocked_with_row() -> None:
-    """row 가 주어지면 BE validatePriceRange 와 같은 규칙을 카드 표시 전에 선계산한다.
+def test_validate_draft_update_price_over_original_price_allowed_with_row() -> None:
+    """[D47, 2026-08-13] 정책 폐지 — 판매가가 정가를 넘어도 더 이상 선차단하지 않는다.
 
-    _ROW.original_price=18000 — 20000 원으로 바꾸면 정가를 넘는다.
+    _ROW.original_price=18000 — 20000 원으로 바꿔도(정가 초과) 카드를 그대로 통과시킨다.
     """
     record, problem = hitl.validate_draft(
         _proposal(changes=[DraftChange(field="price", before="15000", after="20000")]),
@@ -1417,8 +1484,7 @@ def test_validate_draft_update_price_over_original_price_blocked_with_row() -> N
         brand_id=3,
         row=_ROW,
     )
-    assert record is None
-    assert "정가" in problem and "20,000" in problem and "18,000" in problem
+    assert problem is None and record is not None
 
 
 def test_validate_draft_update_price_change_without_row_is_not_prechecked() -> None:

@@ -62,7 +62,7 @@ async def _prepare(
     )
 
 
-async def test_recent_memory_uses_same_thread_and_all_non_pending_statuses() -> None:
+async def test_recent_memory_uses_same_thread_completed_turns_only() -> None:
     context = await _prepare(
         [
             _turn(1, status=TurnStatus.COMPLETED),
@@ -73,7 +73,8 @@ async def test_recent_memory_uses_same_thread_and_all_non_pending_statuses() -> 
         ]
     )
 
-    assert [turn.turn_id for turn in context.recent_turns] == ["turn-1", "turn-2", "turn-3"]
+    assert [turn.turn_id for turn in context.recent_turns] == ["turn-1"]
+    assert context.compaction_turns == ()
 
 
 async def test_new_thread_has_no_same_room_memory() -> None:

@@ -41,7 +41,8 @@ from app.agents.buyer.recommendation.underspecified import (
     build_reask_question,
     within_price_range,
 )
-from app.agents.buyer.recommendation.rerank import rerank
+from app.agents.buyer.recommendation.rerank import code_assisted_fallback_reasons, rerank
+from app.agents.buyer.recommendation.rerank_code_assisted import CodeScoringContext
 from app.agents.buyer.recommendation.relaxation import (
     FIELD_TO_ATTR as RELAXATION_FIELD_TO_ATTR,
     RelaxationCandidate,
@@ -97,6 +98,28 @@ _INACTIVE_STATUSES = frozenset(
 )  # 보유 아님(철자 양쪽 — spec §4.7 혼용) → dedup 제외 대상 아님
 _SEARCH_RETRY = object()
 _SEARCH_DONE = object()
+
+
+def _rerank_prompt_version(
+    *,
+    degraded: bool,
+    ranking_arm: str,
+    grounding_arm: str,
+    grounding_prompt_version: str,
+    scoring_prompt_version: str,
+    code_assisted_prompt_version: str,
+) -> str | None:
+    """Return the prompt contract that actually produced the exposed ranking."""
+
+    if degraded:
+        return None
+    if ranking_arm == "code_assisted":
+        return code_assisted_prompt_version
+    if ranking_arm != "current":
+        return scoring_prompt_version
+    if grounding_arm != "current":
+        return grounding_prompt_version
+    return "rerank-v1"
 
 
 def _now() -> datetime:
@@ -2097,6 +2120,15 @@ async def stream_recommendation(
             if split_by_need
             else None
         )
+        search_rank_by_id: dict[int, int] = {}
+        for search_rank, candidate in enumerate(candidates, 1):
+            search_rank_by_id.setdefault(candidate.product_id, search_rank)
+        code_scoring_context = CodeScoringContext(
+            filters=effective_filters,
+            search_rank_by_id=search_rank_by_id,
+            need_of=need_of,
+            total_budget=decision.total_budget,
+        )
 
         # rerank — smart tier 1회. 실패/타임아웃/유효후보 0건 시 검색순서 상위 N 으로 degrade(하드 제약 유지).
         if observer is not None:
@@ -2113,7 +2145,10 @@ async def stream_recommendation(
             with trace_span(
                 "llm.rerank",
                 "llm",
-                {"model": resolve_model_id(settings, "smart")},
+                {
+                    "model": resolve_model_id(settings, "smart"),
+                    "rankingArm": settings.rerank_ranking_arm,
+                },
             ):
                 rr = await rerank(
                     llm,
@@ -2127,10 +2162,15 @@ async def stream_recommendation(
                     # [#132] 사용자가 평점을 명시했는지 — 무평점 후보의 근거문 고지 지시를 켠다.
                     # 완화가 적용됐으면 `effective_filters` 가 그 결과라 표시-실제가 어긋나지 않는다.
                     rating_min_requested=effective_filters.rating_min is not None,
-                    # 450-case A/B/C 실측으로 선택한 production arm. rerank()의 직접 호출 기본값과
-                    # 평가 CLI 기본 A는 유지하고 graph 경계에서만 C를 활성화한다. 운영 롤백은
-                    # RERANK_GROUNDING_ARM=current로 코드 변경 없이 수행한다.
+                    # grounding과 ranking은 독립 rollout 축이다. 기존 grounding 선택은 유지하되
+                    # ranking은 current를 시작/롤백 기본값으로 두고 graph 경계에서만 명시 전달한다.
+                    # 따라서 한 축의 실험이 다른 축의 prompt/validator 계약을 조용히 바꾸지 않는다.
                     grounding_arm=settings.rerank_grounding_arm,
+                    ranking_arm=settings.rerank_ranking_arm,
+                    rrf_alpha=settings.rerank_rrf_alpha,
+                    rrf_k=settings.rerank_rrf_k,
+                    search_rank_by_id=search_rank_by_id,
+                    code_scoring_context=code_scoring_context,
                 )
             ranked_ids = [pid for pid, _ in rr.ranked]
             # [이슈 #140] provenance rankSource 판정용 스냅샷 — pin 을 얹기 **전**의 rerank
@@ -2138,6 +2178,15 @@ async def stream_recommendation(
             # 있어 오분류된다(§2 판정 방법).
             rerank_ranked_ids = set(ranked_ids)
             reason_by_id = dict(rr.ranked)  # 상품별 근거(§4.2) — (productId, rationale) 튜플 → 맵
+            if settings.rerank_ranking_arm == "code_assisted":
+                # LLM이 선택하지 않은 expose-min 보충·지목 상품에는 semantic 이유를 붙일 수 없다.
+                # 대신 같은 code evidence에서 만든 사실 근거를 미리 채워 실제 노출 목록에 들어올 때만
+                # `_reasons()`가 꺼내 쓰게 한다. LLM이 고른 상품의 근거는 setdefault로 보존한다.
+                for product_id, fallback_reason in code_assisted_fallback_reasons(
+                    candidates,
+                    code_scoring_context,
+                ).items():
+                    reason_by_id.setdefault(product_id, fallback_reason)
             raw_overall_comment = rr.overall_comment
             raw_overall_claims = rr.overall_claims
         except LLMError:
@@ -2145,7 +2194,17 @@ async def stream_recommendation(
             if trace := current_request_trace():
                 trace.mark_degraded("rerank_fallback")
             ranked_ids = [p.product_id for p in candidates[:expose_budget]]
-            reason_by_id = {}  # degrade 경로엔 rerank 근거 없음 — reasons 는 빈 배열(계약상 선택)
+            if settings.rerank_ranking_arm == "code_assisted":
+                fallback_reasons = code_assisted_fallback_reasons(
+                    candidates,
+                    code_scoring_context,
+                )
+                reason_by_id = {
+                    product_id: fallback_reasons.get(product_id, "") for product_id in ranked_ids
+                }
+            else:
+                # 기존 arm degrade 경로엔 rerank 근거가 없다 — 선택 필드인 reasons는 비운다.
+                reason_by_id = {}
             # [#133] 품질 저하를 **고지한다**. 종전 문구("요청하신 조건으로 찾은 상품들이에요")는
             # 평상시와 구분되지 않아 개인화·근거가 통째로 사라진 사실이 사용자에게 가려졌다.
             # config 값은 운영자 주입이라 소스 리터럴이 아니다 — 정상 경로(rr.overall_comment)와
@@ -2738,14 +2797,13 @@ async def stream_recommendation(
             recommendation_request_id=recommendation_request_id,
             surface="chat",
             pipeline="search_rerank",
-            prompt_version=(
-                None
-                if rerank_degraded
-                else (
-                    "rerank-v1"
-                    if settings.rerank_grounding_arm == "current"
-                    else settings.rerank_prompt_version
-                )
+            prompt_version=_rerank_prompt_version(
+                degraded=rerank_degraded,
+                ranking_arm=settings.rerank_ranking_arm,
+                grounding_arm=settings.rerank_grounding_arm,
+                grounding_prompt_version=settings.rerank_prompt_version,
+                scoring_prompt_version=settings.rerank_scoring_prompt_version,
+                code_assisted_prompt_version=settings.rerank_code_assisted_prompt_version,
             ),
             ranker_model=None if rerank_degraded else resolve_model_id(settings, "smart"),
             personalized=bool(profile),

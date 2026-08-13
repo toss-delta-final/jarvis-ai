@@ -344,6 +344,144 @@ async def test_rerank_fallback_discloses_quality_drop() -> None:
     assert _types(events)[-1] == "done"  # degrade 는 error 가 아니라 done(§3.3)
 
 
+async def test_scored_schema_error_uses_existing_search_order_degrade(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = get_settings()
+    monkeypatch.setattr(settings, "rerank_ranking_arm", "structured")
+    push = _RecordingPush()
+    events = await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=FakeLLM(
+                rerank={
+                    "evaluations": [
+                        {
+                            "productId": 101,
+                            "intentFit": 5,
+                            "needFit": 3,
+                            "profileFit": 0,
+                        }
+                    ]
+                }
+            ),
+            search=_make_search(DEFAULT_PRODUCTS),
+            push_fn=push,
+        )
+    )
+
+    assert _only_list(push.pushes[0]).product_ids == [101, 102, 103]
+    assert _only_list(push.pushes[0]).reasons == []
+    texts = [event["data"].get("text", "") for event in events if event["type"] == "token"]
+    assert settings.rerank_fallback_notice in texts
+    assert _types(events)[-1] == "done"
+
+
+async def test_partial_scored_recovery_keeps_turn_healthy_and_candidate_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = get_settings()
+    monkeypatch.setattr(settings, "rerank_ranking_arm", "structured")
+    monkeypatch.setattr(settings, "rerank_grounding_arm", "current")
+    push = _RecordingPush()
+    events = await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=FakeLLM(
+                rerank={
+                    "evaluations": [
+                        {
+                            "productId": 999,
+                            "intentFit": 4,
+                            "needFit": 3,
+                            "profileFit": 0,
+                            "rationale": "외부 상품",
+                        },
+                        {
+                            "productId": 102,
+                            "intentFit": 4,
+                            "needFit": 3,
+                            "profileFit": 0,
+                            "rationale": "유효 상품",
+                        },
+                    ],
+                    "overallComment": "정상 scored 결과",
+                }
+            ),
+            search=_make_search(DEFAULT_PRODUCTS),
+            push_fn=push,
+        )
+    )
+
+    pushed_ids = _only_list(push.pushes[0]).product_ids
+    assert pushed_ids == [102, 101, 103]
+    assert set(pushed_ids) <= {101, 102, 103}
+    texts = [event["data"].get("text", "") for event in events if event["type"] == "token"]
+    assert settings.rerank_fallback_notice not in texts
+    assert "정상 scored 결과" in texts
+
+
+async def test_scored_invalid_grounding_does_not_change_pushed_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.agents.buyer.recommendation.rerank_grounding import NEUTRAL_RATIONALE
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "rerank_ranking_arm", "structured")
+    monkeypatch.setattr(settings, "rerank_grounding_arm", "validated")
+    products = [product.model_copy(update={"review_count": 20}) for product in DEFAULT_PRODUCTS]
+    push = _RecordingPush()
+    await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=FakeLLM(
+                rerank={
+                    "evaluations": [
+                        {
+                            "productId": 102,
+                            "intentFit": 4,
+                            "needFit": 3,
+                            "profileFit": 0,
+                            "rationale": "리뷰가 많아요",
+                            "reasonCode": "REVIEW_MANY",
+                            "evidenceFields": ["ratingLevel"],
+                        },
+                        {
+                            "productId": 101,
+                            "intentFit": 3,
+                            "needFit": 3,
+                            "profileFit": 0,
+                            "rationale": "평점이 높아요",
+                            "reasonCode": "RATING_HIGH",
+                            "evidenceFields": ["ratingLevel"],
+                        },
+                        {
+                            "productId": 103,
+                            "intentFit": 2,
+                            "needFit": 3,
+                            "profileFit": 0,
+                            "rationale": "중립",
+                            "reasonCode": "NO_VERIFIABLE_EVIDENCE",
+                            "evidenceFields": [],
+                        },
+                    ],
+                    "overallComment": "추천이에요",
+                    "overallClaims": [],
+                }
+            ),
+            search=_make_search(products),
+            push_fn=push,
+        )
+    )
+
+    entry = _only_list(push.pushes[0])
+    assert entry.product_ids == [102, 101, 103]
+    assert {reason.product_id: reason.reason for reason in entry.reasons}[102] == NEUTRAL_RATIONALE
+
+
 async def test_rerank_fallback_discloses_for_guest_too() -> None:
     """게스트 턴에도 **같은** 고지가 나간다 — 문안이 프로필 유무에 의존하지 않는다(#133).
 
@@ -2831,8 +2969,9 @@ async def test_recommendation_relaxation_chip_probe_keeps_search_retry(
     assert _types(events)[-1] == "done"
 
 
-async def test_expose_min_fill_from_search_order() -> None:
+async def test_expose_min_fill_from_search_order(monkeypatch: pytest.MonkeyPatch) -> None:
     """rerank 가 expose_min 미만을 내면 검색순서로 보충한다(REQ-REC-021 5~8개)."""
+    monkeypatch.setattr(get_settings(), "rerank_ranking_arm", "current")
     products = [
         SpringProduct(
             product_id=pid, name=f"P{pid}", price=1000 * pid, rating=4.0, category="c", brand="b"
@@ -4116,6 +4255,7 @@ async def test_recommendation_repurchase_pin_stays_in_its_fanout_need(
     from app.agents.buyer.recommendation.category_mapping import CategoryMapping
 
     _fix_now(monkeypatch)
+    monkeypatch.setattr(get_settings(), "rerank_ranking_arm", "current")
     monkeypatch.setattr(get_settings(), "embedding_rerank_limit", 3)
     monkeypatch.setattr(get_settings(), "expose_min", 1)
     monkeypatch.setattr(get_settings(), "expose_max", 2)
@@ -5570,6 +5710,39 @@ async def test_decompose_conversation_memory_is_untrusted_json_before_current_me
     assert 'RECENT_CONVERSATION: [{"user": "이전 질문"' in user
     assert 'SITUATION_MEMORY: {"topic": "제주 여행"' in user
     assert user.endswith("USER_MESSAGE: 지금 질문이 최우선이야")
+
+
+async def test_decompose_conversation_memory_treats_current_message_as_context_correction() -> None:
+    from app.agents.buyer.recommendation.decompose import decompose
+    from app.schemas.spring import ProductSearchFilters
+
+    llm = _DecomposePromptLLM()
+    await decompose(
+        llm,
+        query="나 여자야",
+        prior_filters=ProductSearchFilters(
+            category="남성의류 > 정장/슈트",
+            semantic_query="캐주얼 정장",
+        ),
+        profile_summary=None,
+        tier="fast",
+        recent_conversation=[
+            {
+                "user": "캐주얼 정장 추천해줘",
+                "assistant": "남성 캐주얼 정장을 추천할게요.",
+            }
+        ],
+    )
+
+    [(system, user)] = llm.calls
+    assert "정정·추가 조건" in system
+    assert "현재 사용자의 정정은 PRIOR_FILTERS와 이전 추천보다 우선" in system
+    assert "현재 발화에 상품명이 없어도" in system
+    assert "충돌하는 이전 조건은 유지하지 않는다" in system
+    assert "여성 캐주얼 정장" in system
+    assert '"category":"여성의류 > 정장세트"' in system
+    assert 'RECENT_CONVERSATION: [{"user": "캐주얼 정장 추천해줘"' in user
+    assert user.endswith("USER_MESSAGE: 나 여자야")
 
 
 async def test_decompose_none_memory_keeps_existing_prompt_byte_identical() -> None:

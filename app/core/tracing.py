@@ -91,6 +91,7 @@ SAFE_METADATA_KEYS = frozenset(
         "lane",
         "environment",
         "model",
+        "rankingArm",
         "promptTokens",
         "completionTokens",
         "cachedInputTokens",

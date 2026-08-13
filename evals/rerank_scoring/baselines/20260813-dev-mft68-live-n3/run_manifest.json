@@ -1,0 +1,203 @@
+{
+  "alpha": 0.65,
+  "arms": [
+    "current",
+    "structured",
+    "hybrid"
+  ],
+  "attemptMultiplier": 2,
+  "budget": {
+    "callCount": 412,
+    "shards": [
+      {
+        "budgetExceeded": false,
+        "budgetExceededReason": null,
+        "callCount": 137,
+        "costGateStatus": "unknown",
+        "limits": {
+          "maxCalls": 272,
+          "maxCostUsd": 1.5,
+          "maxTotalTokens": 30000000
+        },
+        "tokenGateStatus": "unknown",
+        "totalCostUsd": 0.380351,
+        "totalTokens": 734960,
+        "unknownCostCallCount": 2,
+        "unknownTokenCallCount": 2
+      },
+      {
+        "budgetExceeded": false,
+        "budgetExceededReason": null,
+        "callCount": 136,
+        "costGateStatus": "passed",
+        "limits": {
+          "maxCalls": 272,
+          "maxCostUsd": 1.5,
+          "maxTotalTokens": 30000000
+        },
+        "tokenGateStatus": "passed",
+        "totalCostUsd": 0.37673200000000007,
+        "totalTokens": 735155,
+        "unknownCostCallCount": 0,
+        "unknownTokenCallCount": 0
+      },
+      {
+        "budgetExceeded": false,
+        "budgetExceededReason": null,
+        "callCount": 139,
+        "costGateStatus": "unknown",
+        "limits": {
+          "maxCalls": 272,
+          "maxCostUsd": 1.5,
+          "maxTotalTokens": 30000000
+        },
+        "tokenGateStatus": "unknown",
+        "totalCostUsd": 0.37992659999999967,
+        "totalTokens": 734648,
+        "unknownCostCallCount": 4,
+        "unknownTokenCallCount": 4
+      }
+    ],
+    "totalCostUsd": 1.1370095999999998,
+    "totalTokens": 2204763,
+    "unknownCostCallCount": 6,
+    "unknownTokenCallCount": 6
+  },
+  "caseIds": [
+    "buy-budg-0001",
+    "buy-budg-0002",
+    "buy-budg-0003",
+    "buy-budg-0004",
+    "buy-budg-0005",
+    "buy-budg-0006",
+    "buy-budg-0007",
+    "buy-budg-0008",
+    "buy-budg-0009",
+    "buy-budg-0010",
+    "buy-cmap-0001",
+    "buy-cmap-0002",
+    "buy-cmap-0003",
+    "buy-cmap-0004",
+    "buy-cmap-0006",
+    "buy-cold-0001",
+    "buy-cold-0002",
+    "buy-colr-0001",
+    "buy-colr-0002",
+    "buy-colr-0003",
+    "buy-colr-0004",
+    "buy-colr-0005",
+    "buy-colr-0006",
+    "buy-gust-0001",
+    "buy-gust-0002",
+    "buy-mult-0001",
+    "buy-mult-0002",
+    "buy-mult-0003",
+    "buy-mult-0004",
+    "buy-mult-0005",
+    "buy-mult-0006",
+    "buy-mult-0007",
+    "buy-mult-0008",
+    "buy-mult-0009",
+    "buy-mult-0010",
+    "buy-over-0001",
+    "buy-over-0002",
+    "buy-over-0003",
+    "buy-pers-0001",
+    "buy-pers-0002",
+    "buy-pers-0003",
+    "buy-pers-0004",
+    "buy-pers-0005",
+    "buy-pers-0006",
+    "buy-pers-0007",
+    "buy-pers-0008",
+    "buy-pers-0009",
+    "buy-repu-0001",
+    "buy-repu-0002",
+    "buy-repu-0004",
+    "buy-repu-0005",
+    "buy-repu-0006",
+    "buy-repu-0007",
+    "buy-repu-0008",
+    "buy-srch-0001",
+    "buy-srch-0002",
+    "buy-srch-0003",
+    "buy-srch-0004",
+    "buy-srch-0005",
+    "buy-srch-0006",
+    "buy-srch-0007",
+    "buy-srch-0008",
+    "buy-srch-0009",
+    "buy-srch-0010",
+    "buy-srch-0011",
+    "buy-srch-0012",
+    "buy-srch-0013",
+    "buy-srch-0014"
+  ],
+  "command": "merge full #631 live shards: seeds 11,29,47",
+  "componentWeights": {
+    "intentFit": 4,
+    "needFit": 2,
+    "profileFit": 1
+  },
+  "datasetHash": "675520d999dc1fbf0a4b32e13914205bc61c606c9adc2f65833eb67fc133ae50",
+  "datasetVersion": "2.3.0",
+  "dirty": false,
+  "dryRun": false,
+  "gitCommit": "aa8f85b0457d9079209488a61458f1a15e5d01fc",
+  "groundingArm": "validated",
+  "k": 60,
+  "modelConfig": {
+    "fastModel": "gpt-5-nano",
+    "fastReasoningEffort": "minimal",
+    "maxRetries": 0,
+    "provider": "openai",
+    "smartModel": "gpt-5.6-luna",
+    "smartReasoningEffort": "medium",
+    "timeoutS": 30.0
+  },
+  "orderSeeds": [
+    11,
+    29,
+    47
+  ],
+  "pacer": {
+    "shards": [
+      {
+        "acquireCount": 137,
+        "estimatedTokensPerCall": 3900,
+        "maxRpm": 10,
+        "maxTpm": 16000,
+        "maxWaitS": 11.594,
+        "totalWaitS": 534.033,
+        "waitCount": 111,
+        "windowS": 60.0
+      },
+      {
+        "acquireCount": 136,
+        "estimatedTokensPerCall": 3900,
+        "maxRpm": 10,
+        "maxTpm": 16000,
+        "maxWaitS": 16.061,
+        "totalWaitS": 555.188,
+        "waitCount": 116,
+        "windowS": 60.0
+      },
+      {
+        "acquireCount": 139,
+        "estimatedTokensPerCall": 3900,
+        "maxRpm": 10,
+        "maxTpm": 16000,
+        "maxWaitS": 18.847,
+        "totalWaitS": 546.893,
+        "waitCount": 101,
+        "windowS": 60.0
+      }
+    ]
+  },
+  "promptHashes": {
+    "current": "bec5382f073bddb8a8e7c670a3e282712845e220957a8e054a655389ec66037c",
+    "hybrid": "a7aaddf5261780ebd62c92f2d01ff91e6003d0bd4b442a154c162af77bbfa435",
+    "structured": "a7aaddf5261780ebd62c92f2d01ff91e6003d0bd4b442a154c162af77bbfa435"
+  },
+  "repeats": 1
+}

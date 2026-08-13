@@ -72,6 +72,32 @@ def _only_provenance(caplog: pytest.LogCaptureFixture) -> dict:
     return records[0]
 
 
+def _scored_rerank_payload() -> dict[str, object]:
+    return {
+        "evaluations": [
+            {
+                "productId": product_id,
+                "intentFit": intent_fit,
+                "needFit": 3,
+                "profileFit": 0,
+                "rationale": "요청과의 관련도를 기준으로 추천했어요",
+                "reasonCode": "NO_VERIFIABLE_EVIDENCE",
+                "evidenceFields": [],
+            }
+            for product_id, intent_fit in ((101, 4), (102, 3), (103, 2))
+        ],
+        "overallComment": "추천이에요",
+        "overallClaims": [
+            {
+                "claimCode": "NO_VERIFIABLE_OVERALL_CLAIM",
+                "scope": "FINAL_EXPOSED_PRODUCTS",
+                "subjectProductIds": [],
+                "evidenceFields": [],
+            }
+        ],
+    }
+
+
 # ─────────── join 결정성 · 순서 복원 ───────────
 
 
@@ -148,11 +174,10 @@ async def test_algorithm_version_follows_config_not_hardcoded(
 # ─────────── 정상 경로 회귀 ───────────
 
 
-async def test_happy_path_rank_source_is_rerank_and_expose_min_fill(
+async def test_default_current_rank_source_uses_grounding_prompt_version(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """정상 rerank 성공 턴 — rerank 로 뽑힌 101/102 는 `rerank`, expose_min 보충 103 은
-    `expose_min_fill`. `degraded=false`, `rankerModel` 은 실제 smart 티어 모델 id."""
+    """기본 current 턴은 기존 순위를 유지하고 validated grounding만 적용한다."""
     from app.core.llm import resolve_model_id
 
     push = _RecordingPush()
@@ -180,11 +205,13 @@ async def test_happy_path_rank_source_is_rerank_and_expose_min_fill(
     assert source_by_id[103] == "expose_min_fill"
 
 
-async def test_current_grounding_rollback_restores_legacy_prompt_version(
+async def test_current_ranking_and_grounding_rollback_restores_legacy_prompt_version(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    monkeypatch.setattr(get_settings(), "rerank_grounding_arm", "current")
+    settings = get_settings()
+    monkeypatch.setattr(settings, "rerank_ranking_arm", "current")
+    monkeypatch.setattr(settings, "rerank_grounding_arm", "current")
     push = _RecordingPush()
     with caplog.at_level(logging.INFO, logger=_GRAPH_LOGGER):
         await _collect(
@@ -200,6 +227,71 @@ async def test_current_grounding_rollback_restores_legacy_prompt_version(
     assert _only_provenance(caplog)["promptVersion"] == "rerank-v1"
 
 
+@pytest.mark.parametrize(
+    ("ranking_arm", "grounding_arm", "expected_prompt_version"),
+    [
+        ("current", "current", "rerank-v1"),
+        ("current", "validated", "rerank-grounding-v1"),
+        ("structured", "validated", "rerank-scoring-v1"),
+        ("hybrid", "validated", "rerank-scoring-v1"),
+    ],
+)
+async def test_prompt_version_tracks_independent_ranking_and_grounding_boundaries(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    ranking_arm: str,
+    grounding_arm: str,
+    expected_prompt_version: str,
+) -> None:
+    settings = get_settings()
+    monkeypatch.setattr(settings, "rerank_ranking_arm", ranking_arm)
+    monkeypatch.setattr(settings, "rerank_grounding_arm", grounding_arm)
+    rerank_payload = _scored_rerank_payload() if ranking_arm != "current" else None
+
+    with caplog.at_level(logging.INFO, logger=_GRAPH_LOGGER):
+        await _collect(
+            run_buyer_turn(
+                _req(),
+                _member(),
+                llm=FakeLLM(rerank=rerank_payload),
+                search=_make_search(DEFAULT_PRODUCTS),
+                push_fn=_RecordingPush(),
+            )
+        )
+
+    assert _only_provenance(caplog)["promptVersion"] == expected_prompt_version
+
+
+async def test_rerank_trace_records_internal_ranking_arm_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(get_settings(), "rerank_ranking_arm", "hybrid")
+    exporter = FakeTraceExporter()
+    trace = TraceFactory(exporter=exporter, enabled=True, sampling_rate=1.0).start_request(
+        name="buyer_chat_turn",
+        request_id="req-ranking-arm",
+        conversation_id="session-ranking-arm",
+        thread_id="thread-ranking-arm",
+        lane="recommend",
+        environment="test",
+    )
+
+    with bind_request_trace(trace):
+        await _collect(
+            run_buyer_turn(
+                _req(),
+                _member(),
+                llm=FakeLLM(rerank=_scored_rerank_payload()),
+                search=_make_search(DEFAULT_PRODUCTS),
+                push_fn=_RecordingPush(),
+            )
+        )
+    await trace.finish(status="COMPLETED", error_type=None, terminal_reason="done")
+
+    rerank_span = next(node for node in exporter.exported[0] if node.name == "llm.rerank")
+    assert rerank_span.metadata["rankingArm"] == "hybrid"
+
+
 async def test_rerank_ranked_item_without_rationale_is_still_rank_source_rerank(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
@@ -207,7 +299,9 @@ async def test_rerank_ranked_item_without_rationale_is_still_rank_source_rerank(
     """[핵심 회귀] `reason_by_id` 로 rankSource 를 판정하면 빈 rationale 항목이
     `expose_min_fill` 로 오분류된다(§2) — rerank 가 골랐다는 사실(멤버십)만으로 판정해야 한다."""
     # 빈 모델 rationale 자체를 관찰하는 테스트라 C의 중립 템플릿 생성 전에 A rollback으로 고정한다.
-    monkeypatch.setattr(get_settings(), "rerank_grounding_arm", "current")
+    settings = get_settings()
+    monkeypatch.setattr(settings, "rerank_ranking_arm", "current")
+    monkeypatch.setattr(settings, "rerank_grounding_arm", "current")
     llm = FakeLLM(
         rerank={
             "ranked": [
@@ -275,8 +369,10 @@ async def test_repurchase_pin_rank_source_for_item_rerank_omitted(
     from tests.unit.test_recommendation import _fix_now, _purchases_cat
 
     _fix_now(monkeypatch)
-    monkeypatch.setattr(get_settings(), "expose_min", 1)
-    monkeypatch.setattr(get_settings(), "expose_max", 3)
+    settings = get_settings()
+    monkeypatch.setattr(settings, "rerank_ranking_arm", "current")
+    monkeypatch.setattr(settings, "expose_min", 1)
+    monkeypatch.setattr(settings, "expose_max", 3)
     monkeypatch.setattr(
         _sc_mod, "get_recent_purchases", _purchases_cat((101, "음향가전", "무선 이어폰"))
     )

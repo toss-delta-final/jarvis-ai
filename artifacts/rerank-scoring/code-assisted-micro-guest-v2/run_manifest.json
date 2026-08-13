@@ -1,0 +1,86 @@
+{
+  "alpha": 0.65,
+  "arms": [
+    "code_assisted"
+  ],
+  "attemptMultiplier": 1,
+  "budget": {
+    "budgetExceeded": false,
+    "budgetExceededReason": null,
+    "callCount": 1,
+    "costGateStatus": "passed",
+    "limits": {
+      "maxCalls": 1,
+      "maxCostUsd": 0.01,
+      "maxTotalTokens": 30000000
+    },
+    "tokenGateStatus": "passed",
+    "totalCostUsd": 0.0025574,
+    "totalTokens": 6367,
+    "unknownCostCallCount": 0,
+    "unknownTokenCallCount": 0
+  },
+  "caseIds": [
+    "rh2-general-0001"
+  ],
+  "codeAssistedComponentOwners": {
+    "code": [
+      "ratingQuality",
+      "reviewConfidence",
+      "explicitConditionCoverage",
+      "evidence",
+      "searchRank"
+    ],
+    "llm": [
+      "semanticIntentFit",
+      "useCaseFit",
+      "profileFit",
+      "finalSelection"
+    ]
+  },
+  "command": "uv run python -m evals.rerank_scoring --dataset rerank-holdout-v2 --arms code_assisted --case-ids rh2-general-0001 --order-seeds 11 --repeats 1 --attempt-multiplier 1 --allow-draft-live --max-calls 1 --max-cost-usd 0.01 --out artifacts/rerank-scoring/code-assisted-micro-guest-v2",
+  "componentWeights": {
+    "intentFit": 4,
+    "needFit": 2,
+    "profileFit": 1
+  },
+  "confirmatory": false,
+  "dataset": "rerank-holdout-v2",
+  "datasetHash": "4fa52e596f97c60c2b067c0ca6b30345ed574fcb7ad67acb67009b344a49f87b",
+  "datasetVersion": "1.0.0",
+  "dirty": false,
+  "dryRun": false,
+  "gitCommit": "d1efacecb06070c2d5a5b207791a5a9da76567b5",
+  "groundingArm": "validated",
+  "k": 60,
+  "labelStatus": "draft",
+  "modelConfig": {
+    "fastModel": "gpt-5-nano",
+    "fastReasoningEffort": "minimal",
+    "maxRetries": 0,
+    "provider": "openai",
+    "smartModel": "gpt-5.6-luna",
+    "smartReasoningEffort": "medium",
+    "timeoutS": 30.0
+  },
+  "orderSeeds": [
+    11
+  ],
+  "pacer": {
+    "acquireCount": 1,
+    "estimatedTokensPerCall": 3900,
+    "maxRpm": 45,
+    "maxTpm": 200000,
+    "maxWaitS": 0.0,
+    "totalWaitS": 0.0,
+    "waitCount": 0,
+    "windowS": 60.0
+  },
+  "promptHashes": {
+    "code_assisted": "ada769cbb709f73a387356fcd2a0f914f99d1fa6c8841c484676952c0b98e481",
+    "current": "bec5382f073bddb8a8e7c670a3e282712845e220957a8e054a655389ec66037c",
+    "hybrid": "a7aaddf5261780ebd62c92f2d01ff91e6003d0bd4b442a154c162af77bbfa435",
+    "structured": "a7aaddf5261780ebd62c92f2d01ff91e6003d0bd4b442a154c162af77bbfa435"
+  },
+  "repeats": 1
+}

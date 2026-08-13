@@ -13,6 +13,31 @@ def test_rerank_grounding_defaults_to_validated_with_current_rollback(monkeypatc
         Settings(_env_file=None, rerank_grounding_arm="unknown")
 
 
+def test_rerank_ranking_defaults_to_current_with_structured_opt_in(monkeypatch) -> None:
+    import pytest
+    from pydantic import ValidationError
+
+    defaults = Settings(_env_file=None)
+    assert defaults.rerank_ranking_arm == "current"
+    assert defaults.rerank_rrf_alpha == 0.65
+    assert defaults.rerank_rrf_k == 60
+    assert defaults.rerank_scoring_reasoning_token_reserve == 4096
+    assert defaults.rerank_scoring_prompt_version == "rerank-scoring-v1"
+
+    monkeypatch.setenv("RERANK_RANKING_ARM", "structured")
+    assert Settings(_env_file=None).rerank_ranking_arm == "structured"
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, rerank_ranking_arm="unknown")
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, rerank_rrf_alpha=-0.01)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, rerank_rrf_alpha=1.01)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, rerank_rrf_k=0)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, rerank_scoring_reasoning_token_reserve=-1)
+
+
 def test_embedding_provenance_defaults():
     s = Settings(_env_file=None)
     assert s.embedding_task_document == "RETRIEVAL_DOCUMENT"

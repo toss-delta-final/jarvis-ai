@@ -339,7 +339,7 @@ async def prepare_buyer_memory(
     eligible = [
         turn
         for turn in turns
-        if turn.thread_id == thread_id and turn.status is not TurnStatus.PENDING
+        if turn.thread_id == thread_id and turn.status is TurnStatus.COMPLETED
     ]
     recent = _recent_turns(eligible, recent_turn_limit, recent_token_cap)
     recent_ids = {turn.turn_id for turn in recent}

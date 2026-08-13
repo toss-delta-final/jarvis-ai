@@ -69,6 +69,7 @@ prompt-injection 불복종, unsupported claim 여부는 exact 문장 gold가 아
 | e2e 추천 품질(결정론) | `evals/metrics` + `evals/goldenset` | 있음 — **순위 판별력 부족** | **#333 (P0)** |
 | e2e 실모델 | `evals/model_eval` | 있음 | #144 |
 | rerank 표시 근거 grounding | `evals/rerank_grounding` (A/B/C, MFT/INV/DIR, 사람 평가 없음) | **탐색적 수동 프로브 — production 기본 current 유지** | 이번 실험 branch |
+| rerank scoring prospective holdout | `evals/rerank_holdout_v2` (ranking 200 + 별도 safety 24) | **catalog-derived draft — 실제 2인 사람 검수·봉인 전 confirmatory 아님** | #631 후속 평가 |
 | 경로 비교(ablation) | `evals/ablation` | 있음 | #146 |
 | 카테고리 매핑·선택 | 없음(골든셋 슬라이스 9건에 얹힘) | **공백** | **#331** |
 | 니즈 전개(legs) | 없음(#198 지표가 로그 관측뿐) | **공백** | **#332** |

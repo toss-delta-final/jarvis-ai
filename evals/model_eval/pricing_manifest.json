@@ -11,13 +11,22 @@
     },
     {
       "effectiveDate": "2026-08-13",
-      "cacheWritePer1k": 0.00025,
-      "cachedInPer1k": 0.00002,
-      "inPer1k": 0.0002,
+      "cacheWritePer1k": 0.00125,
+      "cachedInPer1k": 0.0001,
+      "inPer1k": 0.001,
       "model": "gpt-5.6-luna",
-      "outPer1k": 0.0012,
+      "outPer1k": 0.006,
       "source": "https://developers.openai.com/api/docs/models/gpt-5.6-luna"
+    },
+    {
+      "effectiveDate": "2026-08-13",
+      "cacheWritePer1k": 0.00625,
+      "cachedInPer1k": 0.0005,
+      "inPer1k": 0.005,
+      "model": "gpt-5.6-sol",
+      "outPer1k": 0.03,
+      "source": "https://developers.openai.com/api/docs/models/gpt-5.6-sol"
     }
   ],
-  "version": "1"
+  "version": "2"
 }

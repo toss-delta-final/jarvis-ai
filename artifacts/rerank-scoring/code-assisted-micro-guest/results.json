@@ -1,0 +1,212 @@
+{
+  "arms": [
+    "current",
+    "code_assisted"
+  ],
+  "comparisons": {
+    "currentToCodeAssisted": {
+      "baselineArm": "current",
+      "bootstrapCi95": {
+        "high": null,
+        "low": null
+      },
+      "caseDeltas": [],
+      "currentArm": "code_assisted",
+      "meanDelta": null,
+      "missingBaselineCount": 0,
+      "missingCurrentCount": 1,
+      "pairedCaseIds": [],
+      "pairedCount": 0,
+      "statisticalVerdict": "not-tested",
+      "verdict": "not-tested"
+    },
+    "currentToHybrid": {
+      "baselineArm": "current",
+      "bootstrapCi95": {
+        "high": null,
+        "low": null
+      },
+      "caseDeltas": [],
+      "currentArm": "hybrid",
+      "meanDelta": null,
+      "missingBaselineCount": 0,
+      "missingCurrentCount": 1,
+      "pairedCaseIds": [],
+      "pairedCount": 0,
+      "statisticalVerdict": "not-tested",
+      "verdict": "not-tested"
+    },
+    "currentToStructured": {
+      "baselineArm": "current",
+      "bootstrapCi95": {
+        "high": null,
+        "low": null
+      },
+      "caseDeltas": [],
+      "currentArm": "structured",
+      "meanDelta": null,
+      "missingBaselineCount": 0,
+      "missingCurrentCount": 1,
+      "pairedCaseIds": [],
+      "pairedCount": 0,
+      "statisticalVerdict": "not-tested",
+      "verdict": "not-tested"
+    },
+    "structuredToCodeAssisted": {
+      "baselineArm": "structured",
+      "bootstrapCi95": {
+        "high": null,
+        "low": null
+      },
+      "caseDeltas": [],
+      "currentArm": "code_assisted",
+      "meanDelta": null,
+      "missingBaselineCount": 0,
+      "missingCurrentCount": 0,
+      "pairedCaseIds": [],
+      "pairedCount": 0,
+      "statisticalVerdict": "not-tested",
+      "verdict": "not-tested"
+    },
+    "structuredToHybrid": {
+      "baselineArm": "structured",
+      "bootstrapCi95": {
+        "high": null,
+        "low": null
+      },
+      "caseDeltas": [],
+      "currentArm": "hybrid",
+      "meanDelta": null,
+      "missingBaselineCount": 0,
+      "missingCurrentCount": 0,
+      "pairedCaseIds": [],
+      "pairedCount": 0,
+      "statisticalVerdict": "not-tested",
+      "verdict": "not-tested"
+    }
+  },
+  "datasetHash": "4fa52e596f97c60c2b067c0ca6b30345ed574fcb7ad67acb67009b344a49f87b",
+  "datasetVersion": "1.0.0",
+  "efficiency": {
+    "code_assisted": {
+      "costUsd": 0,
+      "inputTokens": 0,
+      "knownUsageCount": 0,
+      "latencyMs": {
+        "p50": null,
+        "p95": null
+      },
+      "outputTokens": 0,
+      "sampleCount": 0,
+      "unknownReason": null,
+      "unknownUsageCount": 0
+    },
+    "current": {
+      "costUsd": 0,
+      "inputTokens": 0,
+      "knownUsageCount": 0,
+      "latencyMs": {
+        "p50": 6997.0,
+        "p95": 6997.0
+      },
+      "outputTokens": 0,
+      "sampleCount": 1,
+      "unknownReason": "provider usage unavailable",
+      "unknownUsageCount": 1
+    }
+  },
+  "failureCount": 1,
+  "integrity": {
+    "code_assisted": {
+      "duplicateEvaluation": {
+        "denominator": 0,
+        "numerator": 0,
+        "rate": null
+      },
+      "evaluatedCoverage": null,
+      "foreignEvaluation": {
+        "denominator": 0,
+        "numerator": 0,
+        "rate": null
+      },
+      "fullFallback": {
+        "denominator": 1,
+        "numerator": 1,
+        "rate": 1.0
+      },
+      "hardConstraintViolation": {
+        "denominator": 0,
+        "numerator": 0,
+        "rate": null
+      },
+      "invalidScoreRows": {
+        "count": 0,
+        "sampleDenominator": 0
+      },
+      "partialFallback": {
+        "denominator": 0,
+        "numerator": 0,
+        "rate": null
+      },
+      "sampleCount": 0
+    },
+    "current": {
+      "duplicateEvaluation": {
+        "denominator": 1,
+        "numerator": 0,
+        "rate": 0.0
+      },
+      "evaluatedCoverage": 1.0,
+      "foreignEvaluation": {
+        "denominator": 1,
+        "numerator": 0,
+        "rate": 0.0
+      },
+      "fullFallback": {
+        "denominator": 1,
+        "numerator": 0,
+        "rate": 0.0
+      },
+      "hardConstraintViolation": {
+        "denominator": 1,
+        "numerator": 0,
+        "rate": 0.0
+      },
+      "invalidScoreRows": {
+        "count": 0,
+        "sampleDenominator": 1
+      },
+      "partialFallback": {
+        "denominator": 1,
+        "numerator": 0,
+        "rate": 0.0
+      },
+      "sampleCount": 1
+    }
+  },
+  "orderSeeds": [
+    11
+  ],
+  "primaryComparison": "currentToCodeAssisted",
+  "repeats": 1,
+  "sampleCount": 1,
+  "stability": {
+    "code_assisted": {
+      "pairCount": 0,
+      "spearman": null,
+      "spearmanPairCount": 0,
+      "spearmanUnavailableReason": "fewer_than_two_common_ranked_ids_or_no_pairs",
+      "top1Agreement": null,
+      "top3Jaccard": null
+    },
+    "current": {
+      "pairCount": 0,
+      "spearman": null,
+      "spearmanPairCount": 0,
+      "spearmanUnavailableReason": "fewer_than_two_common_ranked_ids_or_no_pairs",
+      "top1Agreement": null,
+      "top3Jaccard": null
+    }
+  },
+  "status": "exploratory"
+}

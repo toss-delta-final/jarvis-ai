@@ -54,12 +54,21 @@ DEFAULT_MODEL_PRICES: tuple[ModelPriceEntry, ...] = (
     ),
     ModelPriceEntry(
         model="gpt-5.6-luna",
-        in_per_1k=0.0002,
-        cached_in_per_1k=0.00002,
-        cache_write_per_1k=0.00025,
-        out_per_1k=0.0012,
+        in_per_1k=0.001,
+        cached_in_per_1k=0.0001,
+        cache_write_per_1k=0.00125,
+        out_per_1k=0.006,
         effective_date="2026-08-13",
         source="https://developers.openai.com/api/docs/models/gpt-5.6-luna",
+    ),
+    ModelPriceEntry(
+        model="gpt-5.6-sol",
+        in_per_1k=0.005,
+        cached_in_per_1k=0.0005,
+        cache_write_per_1k=0.00625,
+        out_per_1k=0.03,
+        effective_date="2026-08-13",
+        source="https://developers.openai.com/api/docs/models/gpt-5.6-sol",
     ),
 )
 

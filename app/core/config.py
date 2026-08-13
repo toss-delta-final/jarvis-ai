@@ -683,6 +683,16 @@ class Settings(BaseSettings):
     seller_report_score_threshold: int = 21  # 보고서 검증 통과 점수(21/30)
     seller_report_max_retries: int = 3  # 검증 루프 상한
     seller_draft_ttl_minutes: int = 10  # HITL 미승인 draft 만료
+    # ── 상품 변경 시 저성과(최근 N일 판매량) 참고 문구 (이슈 #659) ────────────────
+    # 문구가 판매자에게 그대로 나가므로 즉시 끌 수 있어야 한다(seller_rule_cards_enabled
+    # 와 동일 이유의 킬스위치).
+    seller_low_sales_alert_enabled: bool = True
+    # I-13 조회 기간(일). 트리거 스캔의 seller_scan_baseline_days(브랜드 축 "직전 7일")
+    # 와 같은 7 이지만 축이 다르다 — 이 값은 상품 1건 단위 참고 문구 전용이다.
+    seller_low_sales_window_days: int = Field(default=7, ge=1)
+    # 이 값 이하이면 저성과로 판정 — 실 판매량 분포 실측 전 잠정 기본값이다(값 미정,
+    # seller_analysis_write_timeout_s 의 "실측 전 잠정치, 운영 로그로 조정" 관용과 동일).
+    seller_low_sales_quantity_threshold: int = Field(default=3, ge=0)
     # ── 이미지 기반 상품 등록 초안 (#506, api-spec §3.2 v0.31.0) ─────────────────
     # imageUrls 요청 필드 상한 — MVP 는 1장(2장째 첨부는 FE 가 교체로 처리).
     seller_image_max_count: int = 1
@@ -1116,6 +1126,16 @@ class Settings(BaseSettings):
     # 기본으로 쓰되 사고 시 RERANK_GROUNDING_ARM=current 한 줄로 A에 롤백한다. 평가 CLI의
     # arm 기본값은 비교 기준 보존을 위해 이 설정과 별개로 current다.
     rerank_grounding_arm: Literal["current", "prompt_only", "validated"] = "validated"
+    # [#631] grounding과 독립적인 순위 계산 arm. heuristic label에서는 structured가 높은
+    # nDCG@10을 보였지만 position-swapped blind judge는 current를 선호했고, 후속 code_assisted도
+    # useful coverage가 부족했다. 따라서 production 기본은 current를 유지하고 나머지는 명시적
+    # 실험 opt-in으로만 제공한다.
+    rerank_ranking_arm: Literal["current", "structured", "hybrid", "code_assisted"] = "current"
+    rerank_rrf_alpha: float = Field(default=0.65, ge=0.0, le=1.0)
+    rerank_rrf_k: int = Field(default=60, gt=0)
+    # Scored prompt는 모든 후보를 rubric별로 비교하므로 OpenAI reasoning 모델이 JSON을 쓰기 전
+    # 사고 토큰을 별도로 소비한다. 기존 current 예산은 바꾸지 않고 scored arm에만 reserve한다.
+    rerank_scoring_reasoning_token_reserve: int = Field(default=4096, ge=0)
     rerank_max_tokens_base: int = Field(default=960, ge=0)  # overallComment·JSON 골격 몫
     rerank_max_tokens_per_item: int = Field(default=60, ge=1)  # {productId, rationale} 1건 몫
     llm_call_limit: int = 2
@@ -1133,6 +1153,8 @@ class Settings(BaseSettings):
     # 구조화 grounding prompt의 provenance 버전. current 롤백은 graph가 legacy `rerank-v1`을
     # 기록해 RERANK_GROUNDING_ARM 한 줄만 바꿔도 실제 prompt와 관측값이 함께 되돌아간다.
     rerank_prompt_version: str = "rerank-grounding-v1"
+    rerank_scoring_prompt_version: str = "rerank-scoring-v1"
+    rerank_code_assisted_prompt_version: str = "rerank-code-assisted-v2"
     # provenance 로그 한 줄의 방어 상한 — 자연 상한은 계약 MAX_LISTS(10) × LIST_MAX_PRODUCTS(9)
     # = 90 이지만, 별도 방어선을 둬 초과분은 조용히 버리지 않고 `itemsTruncated=true` 로
     # 표시한다(silent cap 금지, 저장소 관례).

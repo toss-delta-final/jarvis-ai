@@ -1821,6 +1821,37 @@ def test_out_of_range_positions_reask_instead_of_guessing() -> None:
     assert no_columns is not None and no_columns.product_id is None
 
 
+@pytest.mark.parametrize(
+    "message",
+    [
+        "두 번째 옵션으로 담아줘",
+        "두 번째 열 세 번째 상품 담아줘",
+    ],
+)
+def test_structured_grid_reference_requires_explicit_row_first_evidence(message: str) -> None:
+    """LLM JSON만으로 좌표를 만들지 않고 원문에 행 우선 지시가 있을 때만 소비한다."""
+    from app.agents.buyer.recommendation.state import ScreenReference
+    from app.agents.buyer.screen_reference import resolve_screen_reference
+
+    settings = get_settings()
+    resolution = resolve_screen_reference(
+        message,
+        products=[(501, "코튼 러그"), (502, "라탄 바구니"), (503, "무선 이어폰")],
+        columns=2,
+        allowed_product_ids={501, 502, 503},
+        deictic_markers=settings.screen_deictic_markers,
+        context_reference_markers=settings.screen_context_reference_markers,
+        last_recommendation_products=[],
+        positional_order_verified=True,
+        name_confirmation_enabled=False,
+        negation_markers=settings.utterance_negation_markers,
+        prefix_negation_markers=settings.utterance_prefix_negation_markers,
+        structured_reference=ScreenReference(kind="grid", row=1, column=2),
+    )
+
+    assert resolution is None
+
+
 # ─────────── 라운드 3 — 리뷰 지적 회귀 가드 ───────────
 
 
@@ -2699,6 +2730,126 @@ async def test_reco_card_coordinate_uses_chat_screen_columns(
     action = next(e for e in events if e["type"] == "action")["data"]
     assert action["type"] == "CART_ADDED"
     assert added["product_id"] == items[5][0]
+
+
+async def test_structured_grid_reference_resolves_korean_coordinate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """LLM은 한글 수사를 행·열로만 구조화하고 서버가 전체 5번째 추천 ID를 계산한다."""
+    import app.services.spring_client as sc
+
+    added: dict = {}
+
+    async def fake_add(req):  # noqa: ANN001
+        added["product_id"] = req.product_id
+        return AddToCartResult(success=True, cart_item_id=303)
+
+    monkeypatch.setattr(sc, "add_to_cart", fake_add)
+    monkeypatch.setattr(sc, "get_cart", _empty_cart_view())
+
+    request = BuyerChatRequest.model_validate(
+        _buyer_payload(
+            message="두번째 줄 두번째 상품 담아줘",
+            threadId="t-reco-structured-coordinate",
+            screen={"pageType": "chat", "columns": 3},
+        )
+    )
+    cart_store = await get_cart_store()
+    items = [(900 + i, f"상품{i}") for i in range(5)]
+    await cart_store.set_last_reco(await _thread_key(request, _member()), items, ordinal_span=5)
+    llm = FakeLLM(
+        decompose={
+            "intent": "cart_add",
+            # LLM의 직접 상품 선택은 일부러 전체 2번째로 틀리게 둔다.
+            "cart": {"productId": items[1][0], "quantity": 1},
+            "screenReference": {"kind": "grid", "row": 2, "column": 2},
+        }
+    )
+
+    events = await _collect(_run_buyer_turn(request, _member(), llm=llm))
+
+    action = next(e for e in events if e["type"] == "action")["data"]
+    assert action["type"] == "CART_ADDED"
+    assert added["product_id"] == items[4][0]
+
+
+@pytest.mark.parametrize(
+    ("thread_id", "screen", "ordinal_span", "reference"),
+    [
+        (
+            "t-reco-structured-invalid",
+            {"pageType": "chat", "columns": 3},
+            5,
+            {"kind": "grid", "row": 0, "column": 2},
+        ),
+        (
+            "t-reco-structured-unverified",
+            {"pageType": "chat", "columns": 3},
+            None,
+            {"kind": "grid", "row": 2, "column": 2},
+        ),
+        (
+            "t-reco-structured-no-columns",
+            {"pageType": "chat"},
+            5,
+            {"kind": "grid", "row": 2, "column": 2},
+        ),
+        (
+            "t-reco-structured-out-of-range",
+            {"pageType": "chat", "columns": 3},
+            5,
+            {"kind": "grid", "row": 3, "column": 3},
+        ),
+        (
+            "t-reco-structured-omitted",
+            {"pageType": "chat", "columns": 3},
+            5,
+            None,
+        ),
+    ],
+)
+async def test_structured_grid_reference_reasks_when_position_is_not_safe(
+    monkeypatch: pytest.MonkeyPatch,
+    thread_id: str,
+    screen: dict,
+    ordinal_span: int | None,
+    reference: dict | None,
+) -> None:
+    """좌표 주장만 있고 계산 전제가 부족하면 허용 목록 안의 LLM productId도 담지 않는다."""
+    import app.services.spring_client as sc
+
+    async def fake_add(req):  # noqa: ANN001
+        raise AssertionError(f"검증되지 않은 구조화 좌표가 담기까지 도달하면 안 됨: {req}")
+
+    monkeypatch.setattr(sc, "add_to_cart", fake_add)
+
+    request = BuyerChatRequest.model_validate(
+        _buyer_payload(
+            message="두 번째 줄 두 번째 상품 담아줘",
+            threadId=thread_id,
+            screen=screen,
+        )
+    )
+    cart_store = await get_cart_store()
+    items = [(950 + i, f"상품{i}") for i in range(5)]
+    await cart_store.set_last_reco(
+        await _thread_key(request, _member()),
+        items,
+        **({"ordinal_span": ordinal_span} if ordinal_span is not None else {}),
+    )
+    llm = FakeLLM(
+        decompose={
+            "intent": "cart_add",
+            "cart": {"productId": items[1][0], "quantity": 1},
+            "screenReference": reference,
+        }
+    )
+
+    events = await _collect(_run_buyer_turn(request, _member(), llm=llm))
+
+    assert "action" not in [e["type"] for e in events]
+    token_text = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert "화면에 보이는 상품 중" in token_text
 
 
 async def test_reco_card_coordinate_reasks_when_card_order_is_unverified(

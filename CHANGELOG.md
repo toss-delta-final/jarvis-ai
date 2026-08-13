@@ -12,6 +12,19 @@
 ## [Unreleased]
 
 ### Added
+- **#631 — 구매자 rerank 순위 계산을 `current`·`structured`·`hybrid` arm으로 선택할 수 있게 했다.**
+  `structured`는 LLM의 제한된 intent/need/profile 점수를 결정론적 `4:2:1` 합산과 명시적
+  tie-break로 정렬하고, `current`는 기존 LLM 순위·파서·fallback을 그대로 유지한다.
+  `hybrid`는 원래 search rank와 scored rank를 설정 가능한 RRF
+  (`RERANK_RRF_ALPHA`, `RERANK_RRF_K`)로 결합하며, 프로필이 없으면 profile 점수를 0으로
+  강제한다. 후속 `code_assisted`는 가격·평점·리뷰·프로필 일치 등 코드 신호를 만든 뒤 LLM이
+  최종 후보와 이유를 선택한다. 순위 arm은 기존 `RERANK_GROUNDING_ARM`과 독립적으로 opt-in할
+  수 있고 API·SSE wire 계약은 바뀌지 않는다. Heuristic draft nDCG에서는 structured가 높았지만
+  position-swapped blind judge는 current를 167:15로 선호했고, 180-case code-assisted 비교에서도
+  current가 78:15로 우세했다. code-assisted는 평균 노출 2.20개로 current 3.63개보다 useful
+  coverage가 부족했다. 따라서 `RERANK_RANKING_ARM=current`를 production 기본으로 유지하고
+  structured·hybrid·code-assisted는 평가용 선택지로만 남긴다. 모델 가격표도 공식 Luna/Sol
+  단가로 갱신해 이후 평가 예산 gate가 실제 단가를 사용하게 했다.
 - **#662 — 구매자 장바구니 옵션 재질문에 대상 상품명을 표시한다**
   (api-spec §3.1·§4.1, v0.33.2). 기본·조건 좁힘·색상 미충족
   `CART_OPTION_REQUIRED`, I-1 힌트 폴백, `CART_OPTION_INVALID`의 다섯 경로에서
@@ -95,11 +108,19 @@
   포함한다. 실제 human response는 포함하지 않으며 결과는 exploratory로만 해석한다.
 
 ### Fixed
-- **#664 — 추천 카드 그리드에서 `2번째 줄 3번째 상품`이 전체 3번째 상품으로 오해되던
-  오담기를 고쳤다** (api-spec §3.1, v0.33.3). 추천 상품 ID를 FE가 다시 보내지 않는 기존
-  위조 방지 계약은 유지하고, `pageType=chat`·`columns`를 서버가 이미 아는 이번 턴 추천
-  순서와 결합한다. `ordinal_span == turn_count`로 단일 목록 순서가 증명된 경우에만 좌표를
-  확정하며, 다목록·BUY_ALL과 추천 패널이 아닌 빈 screen은 기존처럼 안전하게 되묻는다.
+- **구매자 후속 정정 발화가 직전 추천의 충돌하는 카테고리를 그대로 승계하던 문제를 고쳤다.**
+  같은 방의 최근 완료 대화 최대 3쌍을 참고하되, 현재 발화가 이전 요청의 정정·추가 조건이면
+  가장 가까운 관련 요청과 결합해 완전한 검색 의도로 재구성한다. 현재 사용자의 정정은
+  `PRIOR_FILTERS`와 이전 추천보다 우선하며, `캐주얼 정장 추천해줘` 다음의 `나 여자야`는
+  `여성 캐주얼 정장`과 여성 정장 카테고리로 해석해 기존 남성 카테고리를 승계하지 않는다.
+  부분 응답을 확정 맥락으로 오인하지 않도록 최근 대화와 상황 압축에는 `COMPLETED` 턴만 사용한다.
+- **#664 — 추천 카드 그리드의 숫자·한글 수사 좌표가 전체 순번으로 오해되던 오담기를
+  고쳤다** (api-spec §3.1, v0.33.4). 추천 상품 ID를 FE가 다시 보내지 않는 기존 위조 방지
+  계약은 유지한다. 추천 패널이 보이는 턴의 LLM은 `screenReference={kind:"grid", row, column}`
+  내부 JSON으로 행·열만 구조화하고 index·productId는 계산하지 않으며, 서버가 `pageType=chat`·
+  `columns`와 이미 아는 이번 턴 추천 순서를 결합해 ID를 계산한다. 원문에 행 우선 증거가 없거나
+  `ordinal_span == turn_count`가 성립하지 않고, 축·열 수·범위가 유효하지 않으면 함께 온
+  `cart.productId`로 폴백하지 않고 안전하게 되묻는다. 외부 와이어 계약은 바뀌지 않는다.
 - **#639 — 추천 카드에서 사용자가 상품명의 유일 토큰을 지목했는데 LLM이 같은 허용 목록 안의
   다른 상품을 골라 오담기하던 결함을 고쳤다.** 추천 카드 표면에 한해 상품명과 발화를 NFKC +
   casefold 기반 정확 토큰으로 비교하고, 숫자 전용·1글자·담기 명령·장바구니 문맥 토큰을 제외한
@@ -268,6 +289,21 @@
   명세는 `docs/specs/DESIGN-SELLER-PERIOD.md` v0.2.0 으로 개정했다.
 
 ### Docs
+- **#154 — 최종 평가 보고서와 발표용 성능 구성을 재현 가능한 산출물로 고정했다.** 편집 가능한
+  HTML·CSS와 15페이지 PDF, 주장별 근거 원장을 추가하고, 발표 평가 파트를 테스트셋 설계·추천
+  품질/실험 의사결정·안전성/신뢰성·LLM 호출 시간/토큰/비용의 4페이지로 압축했다. 별도 Evidence
+  요약 슬라이드는 제거하고 각 주장에 표본·CI·artifact·한계를 직접 붙였다. 병합된 PR #677의
+  #631 결과는 원본의 탐색적·불확실 판정을 유지하며, arm별 usage 부재와 공식 Luna 단가 충돌이
+  해소되기 전에는 해당 PR의 비용 추정치를 발표에 사용하지 않는다. 코드·API·SSE 계약 변경 없음.
+- **#259 — decompose 라우팅 A/B/C 결정을 최신 실측으로 닫았다.** 최신 구매자 경로와 동일한
+  `fast`·픽스처 v8·101셀×N=8에서 성공 표본 808개를 모두 채웠다: `mainIntent` 236/240,
+  장바구니 144/144, 화면 해소 48/48인 반면 `general` 31/48, pending cart 전환 8/16,
+  옵션 ID 28/32, 카테고리 혼합 교체 24/32, 찜 해제 24/32였다. 기존 #259 실험에서 `smart`는
+  중앙값 +1.25초·매 턴 상위 티어 비용, 분리 1차안은 장바구니 88.9·90.3%와 전환 25·6.2%를
+  보여 **현행 A를 유지**하고 B/C를 출고안에서 제외했다. 프로덕션 코드·프롬프트·설정 변경은
+  없으며, greeting context gating·상품 전환·옵션 ID·카테고리 혼합·`찜닭` lexical boundary는
+  표적 후속으로 분리했다. probe latency 꼬리는 페이서 포함 wall time이고 비용·token 212콜이
+  unknown이라 E2E TTFT나 완전한 절대비용으로 인용하지 않는다.
 - **#139 — 1차 완료(발표) 핵심 주장 4개와 claim-evidence matrix를 확정했다.** 발표(2026-08-14)가
   나흘 남은 시점에 `evals/` 17개 하네스에 이미 쌓인 baseline 을 엮어, 새 실행 없이 무엇을
   증명하는지 고정했다. **C1**(에이전트 경로가 no-op 대비 nDCG@10 유의 개선,

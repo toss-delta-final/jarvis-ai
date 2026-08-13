@@ -561,6 +561,43 @@ def test_recommendation_grid_coordinate_reaches_spring_with_resolved_product(
     assert add[0]["body"]["productId"] == 101
 
 
+def test_structured_grid_reference_reaches_spring_without_retransmitted_ids(
+    client, spring, llm
+) -> None:
+    """한글 수사 좌표는 LLM이 행·열만 추출하고 서버 추천 순서가 최종 ID를 정한다."""
+    session = "sess-reco-structured-coordinate"
+    thread = "th-reco-structured-coordinate"
+    _chat(client, session=session, thread=thread, headers=auth_header())
+
+    llm._decompose = {
+        "intent": "cart_add",
+        "reply": "",
+        "case": 2,
+        "semanticQuery": "",
+        "filters": {},
+        # 기본 추천은 102 → 101. LLM의 직접 선택은 틀리게 두고 좌표만 맞게 구조화한다.
+        "cart": {"productId": 102, "quantity": 1},
+        "screenReference": {"kind": "grid", "row": 1, "column": 2},
+    }
+    response = _chat(
+        client,
+        "첫번째 줄 두번째 상품 담아줘",
+        session=session,
+        thread=thread,
+        headers=auth_header(),
+        screen={"pageType": "chat", "columns": 2},
+    )
+    assert response.status_code == 200
+
+    events = parse_sse(response.text)
+    action = first_of(events, "action")
+    assert action is not None and action["type"] == "CART_ADDED"
+
+    add = spring.requests_to("/internal/cart/items")
+    assert len(add) == 1
+    assert add[0]["body"]["productId"] == 101
+
+
 def test_cart_view_flow_reads_spring(client, spring, llm) -> None:
     """ "뭐 담겨 있어?" — I-18 조회 결과가 token 텍스트로 응답된다 (§4.9)."""
     spring.cart_items = [

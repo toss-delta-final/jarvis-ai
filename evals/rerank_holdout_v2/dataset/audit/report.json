@@ -1,0 +1,44 @@
+{
+  "candidateCountMax": 30,
+  "candidateCountMin": 30,
+  "catalogSha256": "f98539b2d8d2fea60c586cf31499ecf9187ae815d389dd3f1312f05f3fec840d",
+  "checks": [
+    "registered_counts_and_quotas",
+    "unique_case_family_and_query",
+    "candidate_catalog_and_provenance_integrity",
+    "draft_label_coverage_and_uniqueness",
+    "positive_hard_constraint_integrity",
+    "legacy_core_query_independence",
+    "legacy_holdout_labels_unopened",
+    "safety_set_separate"
+  ],
+  "identityCounts": {
+    "guest": 100,
+    "member": 100
+  },
+  "legacyQueryCount": 133,
+  "maxLegacyQuerySimilarity": 0.4,
+  "maxLegacySimilarityCaseId": "rh2-personalization-0010",
+  "maxLegacySimilarityLegacyCaseId": "buy-mult-0004",
+  "passed": true,
+  "positiveCountMax": 6,
+  "positiveCountMin": 1,
+  "rankingCount": 200,
+  "safetyCount": 24,
+  "safetyScenarioCounts": {
+    "candidate_set_integrity": 8,
+    "catalog_prompt_injection": 8,
+    "hard_constraint_integrity": 8
+  },
+  "seed": 631200,
+  "stratumCounts": {
+    "adversarial": 16,
+    "budget_multi": 40,
+    "general": 48,
+    "long_tail": 24,
+    "personalization": 48,
+    "repurchase": 24
+  },
+  "uniqueFamilyCount": 200,
+  "uniqueQueryCount": 200
+}

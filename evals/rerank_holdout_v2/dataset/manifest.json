@@ -1,0 +1,30 @@
+{
+  "catalogSha256": "f98539b2d8d2fea60c586cf31499ecf9187ae815d389dd3f1312f05f3fec840d",
+  "catalogSourcePath": "evals/goldenset/fixtures/catalog_snapshot.json",
+  "confirmatoryEligible": false,
+  "datasetHash": "4fa52e596f97c60c2b067c0ca6b30345ed574fcb7ad67acb67009b344a49f87b",
+  "datasetVersion": "1.0.0",
+  "fileHashes": {
+    "annotations/draft_labels.jsonl": "cb6fed83212be5cdfa004f493a58aa3e7b325c29d9ce331a0f72627ce2fd8c71",
+    "audit/report.json": "b5fbcd5519fef4e7b7758591f1d26bc62395d3045086f1d82b92d0f80e22ef28",
+    "cases/ranking_core.jsonl": "3b69fc6f2a213117e805de0d275d60eaaac772d0b6d477bbf041e1870386e486",
+    "cases/safety.jsonl": "552fd80cb872696738ca067dfbe50d1a0eb826ffb717aaac81d852bb31bc9b3a"
+  },
+  "identityCounts": {
+    "guest": 100,
+    "member": 100
+  },
+  "labelStatus": "draft",
+  "rankingCount": 200,
+  "safetyCount": 24,
+  "schemaVersion": "1.0.0",
+  "seed": 631200,
+  "stratumCounts": {
+    "adversarial": 16,
+    "budget_multi": 40,
+    "general": 48,
+    "long_tail": 24,
+    "personalization": 48,
+    "repurchase": 24
+  }
+}

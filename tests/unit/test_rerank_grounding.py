@@ -188,6 +188,7 @@ class _StructuredLLM:
         self.ranked = ranked
         self.overall_claims = overall_claims
         self.systems: list[str] = []
+        self.max_tokens: list[int] = []
 
     async def complete(
         self,
@@ -199,6 +200,7 @@ class _StructuredLLM:
         json_output: bool = True,
     ) -> str:
         self.systems.append(system)
+        self.max_tokens.append(max_tokens)
         payload: dict[str, object] = {
             "ranked": self.ranked,
             "overallComment": "골라봤어요",
@@ -253,6 +255,7 @@ async def test_current_arm_keeps_legacy_prompt_and_rationale() -> None:
     assert llm.systems == [_SYSTEM]
     assert result.ranked == [(101, "legacy")]
     assert result.grounding_decisions == []
+    assert result.ranking_decisions == []
     assert result.overall_claims == ()
     assert "overallClaims" not in _SYSTEM
 

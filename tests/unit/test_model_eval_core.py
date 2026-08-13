@@ -87,7 +87,7 @@ def test_pricing_cost_and_coverage_propagate_unknown(tmp_path: Path) -> None:
 def test_repository_pricing_manifest_includes_luna() -> None:
     book = PriceBook.load()
     assert book.cost(model="gpt-5.6-luna", input_tokens=1000, output_tokens=1000) == pytest.approx(
-        0.0014
+        0.007
     )
     assert book.entries["gpt-5.6-luna"]["effectiveDate"] == "2026-08-13"
     assert (
