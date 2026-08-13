@@ -887,6 +887,13 @@ Post-implementation live smoke (6 budget MFT cases, one seed) exposed a common s
 The same failing case succeeded with a 4,096-token scored-only reserve, while the current-arm budget
 remained unchanged. Initial `alpha=0.65` quality remains experimental; the smoke is not a release gate.
 
+Full dev screening then ran all 68 eligible MFT cases with seeds `11,29,47` on clean commit
+`aa8f85b0`. Structured improved mean case-level nDCG@10 by `+0.1257` with bootstrap 95% CI
+`[+0.0801,+0.1702]`; hybrid `alpha=0.65,k=60` regressed by `-0.2470` with CI
+`[-0.3410,-0.1499]`. The immutable raw samples and manifest are preserved under
+`evals/rerank_scoring/baselines/20260813-dev-mft68-live-n3/`. This promotes structured only to a
+sealed-holdout candidate and rejects the initial hybrid setting; it does not switch production.
+
 If environment-dependent auth/PostgreSQL tests or a known hang recur, record exact node IDs and fresh output; do not count them as passed and do not hide them behind deselection unless the repository's documented command already specifies that selection.
 
 - [x] **Step 5: Inspect branch scope and commit final docs**

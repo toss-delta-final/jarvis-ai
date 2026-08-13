@@ -33,6 +33,23 @@ uv run python -m evals.rerank_scoring \
 `RERANK_SCORING_REASONING_TOKEN_RESERVE`(기본 4096)는 structured/hybrid에만 추가되며,
 기존 current arm의 출력 예산은 바꾸지 않는다.
 
+## 보존된 live baseline
+
+`baselines/20260813-dev-mft68-live-n3/`은 clean commit `aa8f85b0`, dataset `2.3.0`, eligible
+MFT 68개와 seeds `11,29,47`의 A/B/C 결과다. case별 seed 평균을 paired bootstrap했다.
+
+| 비교 | 평균 ΔnDCG@10 | 95% CI | 판정 |
+|---|---:|---:|---|
+| current → structured | +0.1257 | [+0.0801, +0.1702] | supported |
+| current → hybrid(alpha=0.65, k=60) | -0.2470 | [-0.3410, -0.1499] | regressed |
+| structured → hybrid | -0.3727 | [-0.4513, -0.2898] | regressed |
+
+Structured는 47 case 개선·8 동률·13 악화였고 hard-constraint 위반은 세 arm 모두 0건이다.
+Structured/hybrid는 204/204 표본이 생성됐으며 동일 raw response hash를 공유한다. current는
+출력 길이 오류가 두 cell에서 재시도 후에도 남아 202/204 표본이다. 이는 dev screening 결과이며
+sealed holdout이나 production 승격 결과가 아니다. 초기 RRF 0.65는 기각 대상이고, dev에서 찾은
+낮은 alpha 후보를 같은 dev 결과로 확정하면 안 된다.
+
 `samples.csv`는 후보 permutation, 원래 search rank를 담은 decision, raw response hash,
 fallback/무결성 카운트를 보존한다. profile 원문이나 credential은 기록하지 않는다.
 `results.json`은 두 CSV에서 다시 계산할 수 있으며, 데이터셋·prompt·model provenance가

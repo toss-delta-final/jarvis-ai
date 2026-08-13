@@ -393,6 +393,12 @@ A는 기존 prompt 계약이 다르므로 별도 호출하되 같은 dataset, ca
 6. 문제 발생 시 `RERANK_RANKING_ARM=current`로 즉시 복구한다.
 7. production 기본값 변경은 #631 결과와 별도 승인·rollout 변경으로 수행한다.
 
+2026-08-13 dev screening 결과는 `evals/rerank_scoring/baselines/20260813-dev-mft68-live-n3/`에
+보존한다. 68 case×3 seed에서 structured의 current 대비 평균 ΔnDCG@10은 `+0.1257`, 95% CI는
+`[+0.0801,+0.1702]`였고, hybrid `alpha=0.65,k=60`은 `-0.2470`, CI
+`[-0.3410,-0.1499]`였다. 이는 structured를 sealed holdout 후보로 올리는 dev 근거이며 production
+기본 전환 근거는 아니다. 같은 dev 응답으로 관찰한 낮은 alpha 후보는 holdout 전에 고정해야 한다.
+
 ## 위험과 완화
 
 - **LLM component가 여전히 주관적임**: 제한된 정수 범위, 검색 fusion, paired 평가로 영향력을 제한한다.

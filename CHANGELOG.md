@@ -21,8 +21,13 @@
   provider 응답을 공유하는 paired A/B/C runner와 nDCG@10·순위 안정성·fallback/무결성·비용
   artifact도 추가했다. bounded live smoke에서 30개 후보 scored 응답이 reasoning token만으로
   기존 출력 예산을 소진하는 문제를 확인해, `current` 예산은 유지하면서 structured/hybrid에만
-  설정 가능한 reasoning reserve를 추가했다. 소규모 smoke는 초기 RRF 값의 개선 근거가 아니며
-  전체 dev paired 평가 전까지 production 기본은 `current`다. API·SSE wire 계약 변경 없음.
+  설정 가능한 reasoning reserve를 추가했다. dev MFT 68개×3 permutation seed의 live paired
+  결과에서 structured는 current 대비 평균 nDCG@10 `+0.1257`(case bootstrap 95% CI
+  `[+0.0801,+0.1702]`, 개선/동률/악화 47/8/13), 초기 hybrid `alpha=0.65`는 `-0.2470`
+  (`[-0.3410,-0.1499]`)이었다. 세 arm의 hard-constraint 위반은 0건이었고 scored 204표본 중
+  partial fallback 2건, foreign row 1건이 있었다. 따라서 hybrid 0.65는 기각하고 structured는
+  holdout 후보로만 남기며 production 기본은 별도 승인 전까지 `current`다. API·SSE wire 계약
+  변경 없음.
 - **#634 관측 집계 스크립트 비용 축에 min/max·role 분해 추가** — `_cost_stats()`가 최소/최대
   비용을 반환하도록 확장하고, 비용 롤업에 `role`(seller/member/guest)·`model`(fan-in
   귀속)·`length`(`messageLength` 고정 버킷) 축을 신설했다. Markdown 비용 표에 최소/최대(USD)
