@@ -231,6 +231,7 @@ def test_route_decision_axes_are_all_classified() -> None:
         "case",
         "reply",
         "cart",
+        "screen_reference",  # 장바구니 화면 지목이라 추천 조건 판정과 무관
         "category_expanded",
         "category_legs_restored",
         "scoped_to_previous",

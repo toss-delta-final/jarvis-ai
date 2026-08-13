@@ -1620,7 +1620,9 @@ async def _run_buyer_turn_impl(
     elif (
         screen is not None
         and screen.page_type == "chat"
-        and screen.columns is not None
+        # JSON 좌표가 있으면 columns 누락도 LLM productId로 폴백하지 않고 아래 해소기에서
+        # 재질문해야 한다. 좌표가 없는 빈 chat screen은 종전대로 추천 표면으로 간주하지 않는다.
+        and (screen.columns is not None or decision.screen_reference is not None)
         and reco_cards
     ):
         surface = reco_cards
@@ -1671,6 +1673,7 @@ async def _run_buyer_turn_impl(
                 name_confirmation_enabled=surface_name_confirmation_enabled,
                 negation_markers=settings.utterance_negation_markers,
                 prefix_negation_markers=settings.utterance_prefix_negation_markers,
+                structured_reference=decision.screen_reference,
             )
             if resolved is not None:
                 logger.info(
@@ -1749,9 +1752,10 @@ async def _run_buyer_turn_impl(
     # 턴에도 추천 카드는 화면에 남아 있고, 화면 표면(`screen is not None`)이 오늘 이미 그렇게
     # 동작한다(그 항도 `screen_context_active` 로 게이트되지 않는다) — 추천 표면에 같은 규칙을
     # 적용한 것뿐이라 새 비대칭이 생기지 않는다(우연이 아니라 판단이다).
-    screen_reference_attempted = (
-        screen is not None or bool(surface)
-    ) and mentions_screen_reference(request.message, settings)
+    screen_reference_attempted = (screen is not None or bool(surface)) and (
+        mentions_screen_reference(request.message, settings)
+        or decision.screen_reference is not None
+    )
 
     if decision.intent == "cart_add":
         if trace := current_request_trace():

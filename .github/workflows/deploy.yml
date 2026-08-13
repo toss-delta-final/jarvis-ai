@@ -65,6 +65,14 @@ jobs:
             # 2. 기존 컨테이너 유지한 채 새 이미지 먼저 받아 대기
             #    여기서 실패하면 아래로 진행하지 않으므로 서비스는 그대로 유지됨
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+            # 2b. pull 전에 공간 확보 — AI 이미지가 1GB 가까워 15GB 볼륨에서
+            #     세 개만 쌓여도 pull 이 "no space left on device" 로 실패한다.
+            #     실행 중인 이미지는 도커가 거부하므로 안전하다.
+            docker images ${{ env.IMAGE }} --format '{{.ID}} {{.CreatedAt}}' \
+              | sort -k2 -r | tail -n +3 | awk '{print $1}' \
+              | xargs -r docker rmi -f 2>/dev/null || true
+
             docker pull ${{ env.IMAGE }}:${{ github.sha }}
 
             # 3. env 파일 백업 후 새 시크릿·변수 기록
@@ -230,8 +238,13 @@ jobs:
             # 7. 정상 기동 확인됨 — 이 이미지를 '마지막 정상'으로 기록
             docker inspect -f '{{.Config.Image}}' jarvis-ai > "$LAST_GOOD"
 
-            # 8. 48시간 이상 지난 미사용 이미지 정리 (sha 태그 누적 방지)
-            docker image prune -af --filter "until=48h"
+            # 8. 최신 2개만 남기고 정리 — 지금 도는 것 + 롤백 대상 하나
+            #    until 필터는 하루 여러 번 배포하면 조건 밖이 없어져 무력화된다.
+            #    AI 이미지가 1GB 가까워 15GB 볼륨에서 세 개만 쌓여도 pull 이 실패한다.
+            docker images ${{ env.IMAGE }} --format '{{.ID}} {{.CreatedAt}}' \
+              | sort -k2 -r | tail -n +3 | awk '{print $1}' \
+              | xargs -r docker rmi -f 2>/dev/null || true
+            docker image prune -f
 
   # 3단계: dev 서버 배포 — dev 브랜치 전용
   #   DB는 catalog_dev·profile_dev로 분리, 백엔드 호출은 dev 도메인으로 향한다.
@@ -260,6 +273,12 @@ jobs:
             PREV_IMAGE=$(docker inspect -f '{{.Config.Image}}' jarvis-ai 2>/dev/null || true)
 
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+            # pull 전에 공간 확보 (운영과 같은 규칙)
+            docker images ${{ env.IMAGE }} --format '{{.ID}} {{.CreatedAt}}' \
+              | sort -k2 -r | tail -n +3 | awk '{print $1}' \
+              | xargs -r docker rmi -f 2>/dev/null || true
+
             docker pull ${{ env.IMAGE }}:${{ github.sha }}
 
             umask 077
@@ -354,4 +373,9 @@ jobs:
             fi
 
             docker inspect -f '{{.Config.Image}}' jarvis-ai > "$LAST_GOOD"
-            docker image prune -af --filter "until=48h"
+
+            # 최신 2개만 남기고 정리 (운영과 같은 규칙)
+            docker images ${{ env.IMAGE }} --format '{{.ID}} {{.CreatedAt}}' \
+              | sort -k2 -r | tail -n +3 | awk '{print $1}' \
+              | xargs -r docker rmi -f 2>/dev/null || true
+            docker image prune -f
