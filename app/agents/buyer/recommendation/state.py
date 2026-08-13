@@ -78,6 +78,15 @@ class CartIntent:
     target_quantity: int | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class ScreenReference:
+    """decompose가 구조화한 화면 지목 의미. 상품 ID가 아니라 좌표만 전달한다."""
+
+    kind: Literal["grid"]
+    row: int | None
+    column: int | None
+
+
 @dataclass
 class CategoryQuery:
     """decompose 가 추출한 카테고리 추측 1건(이슈 #59, 방식 A).
@@ -127,6 +136,9 @@ class RouteDecision:
     case: int = 2
     reply: str = ""  # intent == general 일 때만 사용자에게 줄 답변
     cart: CartIntent | None = None  # intent == cart_add/cart_view 일 때
+    # [#664] LLM은 자연어의 행·열 의미만 구조화한다. 배열 index와 productId는 buyer graph가
+    # 검증된 화면 표면·columns로 계산하며, 이 내부 필드는 외부 wire나 상태 저장소로 나가지 않는다.
+    screen_reference: ScreenReference | None = None
     revert_categories: list[str] = field(default_factory=list)  # 소모품 억제 되돌리기(결정 14-F)
     # [#120] 명시 재구매/재추천 지목(상품 지칭 텍스트) — 최근 구매 exact 제외를 되돌리는 신호.
     # productId 가 아니라 **텍스트**인 이유는 graph 가 본인 구매 이력에 대해서만 해소해 신뢰

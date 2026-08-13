@@ -301,6 +301,7 @@ def test_route_decision_axes_are_all_classified() -> None:
         "case",  # 발화 유형(1/2/3)
         "reply",  # intent=general 전용 답변
         "cart",  # 담기 의도 — 추천 레인 밖
+        "screen_reference",  # 담기 화면 지목 — 추천 후보 소싱과 무관
         "scoped_to_previous",  # 직전 결과 지칭 = 멀티턴이라 prior 가 막는다
         # "다 사줘" — 세트 의도이지만 leg 없는 턴에서는 어느 경로도 세트를 만들지 못하고
         # (`buy_all_mode` 가 `split_by_need` 를 요구한다) 둘 다 PICK_ONE 으로 끝난다.
