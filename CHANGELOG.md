@@ -13,29 +13,26 @@
 
 ### Added
 - **#631 — 구매자 rerank 순위 계산을 `current`·`structured`·`hybrid` arm으로 선택할 수 있게 했다.**
-  기본 `RERANK_RANKING_ARM=structured`는 LLM의 제한된 intent/need/profile 점수를 결정론적
-  `4:2:1` 합산과 명시적 tie-break로 정렬하고, `current`는 기존 LLM 순위·파서·fallback으로
-  즉시 롤백할 수 있게 유지한다.
+  `structured`는 LLM의 제한된 intent/need/profile 점수를 결정론적 `4:2:1` 합산과 명시적
+  tie-break로 정렬하고, `current`는 기존 LLM 순위·파서·fallback을 그대로 유지한다.
   `hybrid`는 원래 search rank와 scored rank를 설정 가능한 RRF
   (`RERANK_RRF_ALPHA`, `RERANK_RRF_K`)로 결합하며, 프로필이 없으면 profile 점수를 0으로
-  강제한다. 순위 arm은 기존 `RERANK_GROUNDING_ARM`과 독립적으로 선택·롤백할 수 있다. 같은
-  provider 응답을 공유하는 paired A/B/C runner와 nDCG@10·순위 안정성·fallback/무결성·비용
-  artifact도 추가했다. bounded live smoke에서 30개 후보 scored 응답이 reasoning token만으로
-  기존 출력 예산을 소진하는 문제를 확인해, `current` 예산은 유지하면서 structured/hybrid에만
-  설정 가능한 reasoning reserve를 추가했다. dev MFT 68개×3 permutation seed의 live paired
-  결과에서 structured는 current 대비 평균 nDCG@10 `+0.1257`(case bootstrap 95% CI
-  `[+0.0801,+0.1702]`, 개선/동률/악화 47/8/13), 초기 hybrid `alpha=0.65`는 `-0.2470`
-  (`[-0.3410,-0.1499]`)이었다. 세 arm의 hard-constraint 위반은 0건이었고 scored 204표본 중
-  partial fallback 2건, foreign row 1건이 있었다. 따라서 hybrid 0.65는 기각하고 structured는
-  고정 후보로 sealed holdout을 한 번 평가했다. Holdout 순위 19건×3 seeds에서는 structured가
-  `+0.0575`, CI `[-0.0385,+0.1696]`로 방향은 양수였지만 `inconclusive`였으므로 release gate를
-  통과하지 못해 당시에는 production 기본을 `current`로 유지했다. Holdout 재튜닝·재실행 없이
-  별도로 만든 200건 prospective dataset의 heuristic draft를 명시적
-  exploratory mode로 평가했을 때 structured는 current 대비 `+0.1219`(95% CI
-  `[+0.0925,+0.1535]`, 개선/동률/악화 106/57/37)였고 member `+0.1900`, guest `+0.0537`이었다.
-  사람이 검수한 label이 아니므로 artifact 판정은 계속 `exploratory`다. 이 제한과 structured의
-  p50 지연 증가(3.992초 → 11.845초)를 명시한 상태에서 product decision으로 structured 기본을
-  채택했으며, 장애·품질 이상 시 `RERANK_RANKING_ARM=current`로 복구한다. API·SSE wire 계약 변경 없음.
+  강제한다. 후속 `code_assisted`는 가격·평점·리뷰·프로필 일치 등 코드 신호를 만든 뒤 LLM이
+  최종 후보와 이유를 선택한다. 순위 arm은 기존 `RERANK_GROUNDING_ARM`과 독립적으로 opt-in할
+  수 있고 API·SSE wire 계약은 바뀌지 않는다. Heuristic draft nDCG에서는 structured가 높았지만
+  position-swapped blind judge는 current를 167:15로 선호했고, 180-case code-assisted 비교에서도
+  current가 78:15로 우세했다. code-assisted는 평균 노출 2.20개로 current 3.63개보다 useful
+  coverage가 부족했다. 따라서 `RERANK_RANKING_ARM=current`를 production 기본으로 유지하고
+  structured·hybrid·code-assisted는 평가용 선택지로만 남긴다. 모델 가격표도 공식 Luna/Sol
+  단가로 갱신해 이후 평가 예산 gate가 실제 단가를 사용하게 했다.
+- **#662 — 구매자 장바구니 옵션 재질문에 대상 상품명을 표시한다**
+  (api-spec §3.1·§4.1, v0.33.2). 기본·조건 좁힘·색상 미충족
+  `CART_OPTION_REQUIRED`, I-1 힌트 폴백, `CART_OPTION_INVALID`의 다섯 경로에서
+  최종 확정 `productId`의 이름을 추천 상태 또는 현재 `screen.products`에서 찾아 기존
+  옵션 목록 앞에 `**상품:** <상품명>`으로 표시한다. 현재 화면 이름을 우선하고,
+  `_strip_unsafe` 정제 후 40자를 초과하면 앞 40자와 `…`를 쓴다. 이름이 없으면 기존
+  문구를 그대로 유지하며 표시 이름은 `PendingAdd`·Spring 요청에 저장하지 않는다.
+  SSE·Spring·FE·DB 계약과 옵션 선택·자동 선택·추가금·pending 동작은 불변이다.
 - **#634 관측 집계 스크립트 비용 축에 min/max·role 분해 추가** — `_cost_stats()`가 최소/최대
   비용을 반환하도록 확장하고, 비용 롤업에 `role`(seller/member/guest)·`model`(fan-in
   귀속)·`length`(`messageLength` 고정 버킷) 축을 신설했다. Markdown 비용 표에 최소/최대(USD)
@@ -111,6 +108,19 @@
   포함한다. 실제 human response는 포함하지 않으며 결과는 exploratory로만 해석한다.
 
 ### Fixed
+- **구매자 후속 정정 발화가 직전 추천의 충돌하는 카테고리를 그대로 승계하던 문제를 고쳤다.**
+  같은 방의 최근 완료 대화 최대 3쌍을 참고하되, 현재 발화가 이전 요청의 정정·추가 조건이면
+  가장 가까운 관련 요청과 결합해 완전한 검색 의도로 재구성한다. 현재 사용자의 정정은
+  `PRIOR_FILTERS`와 이전 추천보다 우선하며, `캐주얼 정장 추천해줘` 다음의 `나 여자야`는
+  `여성 캐주얼 정장`과 여성 정장 카테고리로 해석해 기존 남성 카테고리를 승계하지 않는다.
+  부분 응답을 확정 맥락으로 오인하지 않도록 최근 대화와 상황 압축에는 `COMPLETED` 턴만 사용한다.
+- **#664 — 추천 카드 그리드의 숫자·한글 수사 좌표가 전체 순번으로 오해되던 오담기를
+  고쳤다** (api-spec §3.1, v0.33.4). 추천 상품 ID를 FE가 다시 보내지 않는 기존 위조 방지
+  계약은 유지한다. 추천 패널이 보이는 턴의 LLM은 `screenReference={kind:"grid", row, column}`
+  내부 JSON으로 행·열만 구조화하고 index·productId는 계산하지 않으며, 서버가 `pageType=chat`·
+  `columns`와 이미 아는 이번 턴 추천 순서를 결합해 ID를 계산한다. 원문에 행 우선 증거가 없거나
+  `ordinal_span == turn_count`가 성립하지 않고, 축·열 수·범위가 유효하지 않으면 함께 온
+  `cart.productId`로 폴백하지 않고 안전하게 되묻는다. 외부 와이어 계약은 바뀌지 않는다.
 - **#639 — 추천 카드에서 사용자가 상품명의 유일 토큰을 지목했는데 LLM이 같은 허용 목록 안의
   다른 상품을 골라 오담기하던 결함을 고쳤다.** 추천 카드 표면에 한해 상품명과 발화를 NFKC +
   casefold 기반 정확 토큰으로 비교하고, 숫자 전용·1글자·담기 명령·장바구니 문맥 토큰을 제외한
@@ -279,6 +289,15 @@
   명세는 `docs/specs/DESIGN-SELLER-PERIOD.md` v0.2.0 으로 개정했다.
 
 ### Docs
+- **#259 — decompose 라우팅 A/B/C 결정을 최신 실측으로 닫았다.** 최신 구매자 경로와 동일한
+  `fast`·픽스처 v8·101셀×N=8에서 성공 표본 808개를 모두 채웠다: `mainIntent` 236/240,
+  장바구니 144/144, 화면 해소 48/48인 반면 `general` 31/48, pending cart 전환 8/16,
+  옵션 ID 28/32, 카테고리 혼합 교체 24/32, 찜 해제 24/32였다. 기존 #259 실험에서 `smart`는
+  중앙값 +1.25초·매 턴 상위 티어 비용, 분리 1차안은 장바구니 88.9·90.3%와 전환 25·6.2%를
+  보여 **현행 A를 유지**하고 B/C를 출고안에서 제외했다. 프로덕션 코드·프롬프트·설정 변경은
+  없으며, greeting context gating·상품 전환·옵션 ID·카테고리 혼합·`찜닭` lexical boundary는
+  표적 후속으로 분리했다. probe latency 꼬리는 페이서 포함 wall time이고 비용·token 212콜이
+  unknown이라 E2E TTFT나 완전한 절대비용으로 인용하지 않는다.
 - **#139 — 1차 완료(발표) 핵심 주장 4개와 claim-evidence matrix를 확정했다.** 발표(2026-08-14)가
   나흘 남은 시점에 `evals/` 17개 하네스에 이미 쌓인 baseline 을 엮어, 새 실행 없이 무엇을
   증명하는지 고정했다. **C1**(에이전트 경로가 no-op 대비 nDCG@10 유의 개선,

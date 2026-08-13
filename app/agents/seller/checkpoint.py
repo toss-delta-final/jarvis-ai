@@ -170,3 +170,94 @@ async def _init_checkpointer() -> BaseCheckpointSaver:
             )
             _fallback_warned = True
         return InMemorySaver()
+
+
+# ── checkpoint 정리 (이슈 #601, `08-PERSISTENCE.md` §1.1·§5 결정 63) ────────────────
+#
+# draft 1건이 checkpoint thread 1개를 만들고(`seller-draft:{draftId}`), 상태 갱신마다
+# 행이 **늘기만** 한다(`invalidate_draft`도 삭제가 아니라 새 checkpoint를 쓰는 것 —
+# 08-PERSISTENCE.md §1.1). 대화 스레드(`seller-chat:{sellerId}:{threadId}`)도 턴마다
+# 증가만 한다. 지금까지 이 둘을 지우는 코드가 없었다(§1 실측) — 여기서 신설한다.
+#
+# LangGraph 표준 스키마(`checkpoints`/`checkpoint_blobs`/`checkpoint_writes`, 전부
+# `thread_id` 컬럼 보유)를 **직접** 지운다. `checkpoint_blobs`는 `checkpoint_id`가 없어
+# (channel+version이 키) 개별 checkpoint 단위로 나이를 잴 수 없으므로, **스레드 단위로
+# 통째로** 지운다 — 대상 판정은 `checkpoints.checkpoint->>'ts'`(ISO8601, BaseCheckpointSaver
+# 계약)의 스레드별 최댓값("마지막 활동")이 보존 기간을 넘었는가로 한다. `thread_id`
+# 접두어로만 범위를 좁혀 다른 도메인(구매자·프로필) thread는 손대지 않는다
+# (08-PERSISTENCE.md §1.1 "다른 도메인 thread를 건드리지 않게 하는 것이 이 규칙의 목적").
+
+_DRAFT_THREAD_PREFIX = "seller-draft:%"
+_CHAT_THREAD_PREFIX = "seller-chat:%"
+
+_STALE_THREADS_SQL = """
+    SELECT thread_id
+    FROM checkpoints
+    WHERE thread_id LIKE %s
+    GROUP BY thread_id
+    HAVING max((checkpoint->>'ts')::timestamptz) < now() - make_interval({unit} => %s)
+    LIMIT %s
+"""
+
+
+async def _delete_stale_threads(
+    conn, *, prefix: str, unit: str, retention: int, batch_size: int
+) -> int:
+    """`prefix`에 걸리는 스레드 중 마지막 활동이 `retention`(`unit` 단위) 지난 것을 지운다.
+
+    `checkpoints`에서 대상 `thread_id` 집합을 먼저 좁힌 뒤(최대 `batch_size`개), 그 집합으로
+    세 테이블을 각각 지운다 — 세 테이블이 FK로 묶여 있지 않아(LangGraph 스키마 자체 규약)
+    코드가 원자성을 대신 챙긴다. `checkpoints` 삭제 행 수를 반환값으로 쓴다(이 함수의
+    "지운 checkpoint 수"는 대화·draft가 실제로 쌓아온 상태 스냅샷 개수를 뜻한다).
+    """
+    # AsyncPostgresSaver.from_conn_string 이 row_factory=dict_row·autocommit=True 로 연다
+    # (langgraph 계약) — 행은 튜플이 아니라 dict 이고, execute() 마다 즉시 커밋되므로 여기서
+    # 별도 트랜잭션을 열지 않는다.
+    sql = _STALE_THREADS_SQL.format(unit=unit)
+    cur = await conn.execute(sql, (prefix, retention, batch_size))
+    thread_ids = [row["thread_id"] for row in await cur.fetchall()]
+    if not thread_ids:
+        return 0
+    deleted = 0
+    for table in ("checkpoint_writes", "checkpoint_blobs", "checkpoints"):
+        result = await conn.execute(
+            f"DELETE FROM {table} WHERE thread_id = ANY(%s)",  # noqa: S608 - table은 고정 리터럴 3종
+            (thread_ids,),
+        )
+        if table == "checkpoints":
+            deleted = result.rowcount
+    return deleted
+
+
+async def cleanup_expired_checkpoints(
+    *, draft_retention_hours: int, thread_retention_days: int, batch_size: int
+) -> tuple[int, int]:
+    """draft(`seller-draft:`) 48시간 · 대화(`seller-chat:`) 30일 checkpoint 정리 1회.
+
+    `(draft_checkpoints_deleted, thread_checkpoints_deleted)`를 반환한다. checkpointer가
+    `AsyncPostgresSaver`가 아니면(dev InMemorySaver 폴백) 지울 대상이 없으므로 `(0, 0)`을
+    돌려준다 — 무인 배치 정리 단계(`cleanup.run_cleanup_batch`)의 ⑤가 이 함수를 부른다.
+    """
+    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+
+    saver = await get_checkpointer()
+    if not isinstance(saver, AsyncPostgresSaver):
+        logger.info("checkpoint 정리 스킵 — checkpointer 가 pg-profile 이 아니다(dev 폴백)")
+        return (0, 0)
+
+    conn = saver.conn
+    draft_deleted = await _delete_stale_threads(
+        conn,
+        prefix=_DRAFT_THREAD_PREFIX,
+        unit="hours",
+        retention=draft_retention_hours,
+        batch_size=batch_size,
+    )
+    thread_deleted = await _delete_stale_threads(
+        conn,
+        prefix=_CHAT_THREAD_PREFIX,
+        unit="days",
+        retention=thread_retention_days,
+        batch_size=batch_size,
+    )
+    return (draft_deleted, thread_deleted)

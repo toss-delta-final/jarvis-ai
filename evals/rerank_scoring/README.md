@@ -103,10 +103,9 @@ hard-constraint 위반은 두 arm 모두 0건이었다. 반면 p50 latency는 cu
 
 이 결과의 artifact `status/verdict`는 의도대로 `exploratory`다. 라벨이 사람이 독립 검수한
 정답이 아니라 structured 규칙과 일부 구조적 유사성을 가진 heuristic draft이므로, 양의 delta는
-일반화의 확정 근거가 아니다. 이 제한과 약 3배의 p50 latency를 수용하는 별도 product decision으로
-production graph의 기본은 `structured`로 전환했다. 이 운영 결정이 artifact를 confirmatory로
-재분류하지는 않는다. 다음 검증 gate는 독립 2인 검수와 sealed release이며, 장애·품질 이상 시
-`RERANK_RANKING_ARM=current`로 즉시 롤백한다.
+일반화의 확정 근거가 아니다. 후속 position-swapped blind judge가 current를 크게 선호했으므로
+production graph의 기본은 `current`를 유지한다. Structured·hybrid·code-assisted는 명시적으로
+설정할 때만 실행되는 평가 arm이며, 독립 검수와 sealed release 전에는 기본으로 승격하지 않는다.
 
 `samples.csv`는 후보 permutation, 원래 search rank를 담은 decision, raw response hash,
 fallback/무결성 카운트를 보존한다. profile 원문이나 credential은 기록하지 않는다.
@@ -176,15 +175,24 @@ structured가 더 길었고, 410개에서는 current 상품 집합이 structured
 정렬하는 개선을 포착했지만, 관련 상품 뒤에 붙은 저점수 tail의 사용자-facing precision 손실을
 거의 벌하지 못했다.
 
-따라서 이 branch의 structured 기본 전환을 “전체 품질이 더 좋다”는 확정 결론으로 취급하면 안
-된다. 다음 구현 gate는 structured 점수의 노출 cutoff/최소 적합도 또는 current와 동일한 선택
-단계를 분리 평가하는 것이다. 그 뒤 같은 blind protocol과 사람 blind review를 다시 통과해야 한다.
-이번 결과만으로 자동 롤백하거나 confirmatory 우월성을 주장하지는 않는다.
+따라서 structured를 “전체 품질이 더 좋다”는 확정 결론으로 취급하면 안 된다. Production 기본은
+`current`로 유지한다. 다음 구현 gate는 structured 점수의 노출 cutoff/최소 적합도 또는 current와
+동일한 선택 단계를 분리 평가하는 것이다. 그 뒤 같은 blind protocol과 사람 blind review를 다시
+통과해야 한다.
 
-총 1,198 call과 3,026,409 token이 기록됐다. `gpt-5.6-sol` 단가는 현재 committed pricing
-manifest에 없어 1,198 call 모두 cost coverage가 unknown이며, `totalCostUsd=0`을 실제 비용 0으로
-해석하면 안 된다. 정확한 shard artifact와 mapping은
+총 1,198 call과 3,026,409 token이 기록됐다. 실행 당시 `gpt-5.6-sol` 단가가 pricing manifest에
+없어 1,198 call 모두 cost coverage가 unknown으로 기록됐으며, `totalCostUsd=0`을 실제 비용 0으로
+해석하면 안 된다. 현재 manifest에는 공식 Sol 단가가 추가됐다. 정확한 shard artifact와 mapping은
 `baselines/20260813-holdout-v2-blind-judge-gpt-5.6-sol-shards/`에 보존한다.
+
+### Code-assisted 후속 평가
+
+결정론적으로 선택한 180개 case에서 `current`와 `code_assisted`를 비교했고, 생성 실패 10건을
+제외한 170쌍을 fresh-context Codex judge로 A/B·B/A 판정했다. Stable outcome은 current 78승,
+code-assisted 15승, tie 58건, position-unstable 19건이었다. Heuristic nDCG@10 delta도
+`-0.1471`이었고, 평균 노출 상품 수는 current 3.63개, code-assisted 2.20개였다. 실패 양상은
+저관련 tail 추가가 아니라 유용한 후보를 너무 적게 고르는 under-selection이었다. 결과와 비용
+감사는 `artifacts/rerank-scoring/current-code-assisted-180-seed11-v2/`에 보존한다.
 
 ## 결과 재계산
 

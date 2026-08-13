@@ -174,10 +174,10 @@ async def test_algorithm_version_follows_config_not_hardcoded(
 # ─────────── 정상 경로 회귀 ───────────
 
 
-async def test_default_structured_rank_source_covers_every_candidate(
+async def test_default_current_rank_source_uses_grounding_prompt_version(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """기본 structured 턴은 모든 후보를 코드 정렬해 rankSource=rerank로 기록한다."""
+    """기본 current 턴은 기존 순위를 유지하고 validated grounding만 적용한다."""
     from app.core.llm import resolve_model_id
 
     push = _RecordingPush()
@@ -196,13 +196,13 @@ async def test_default_structured_rank_source_covers_every_candidate(
     assert record["degraded"] is False
     assert record["degradeReason"] is None
     assert record["rankerModel"] == resolve_model_id(get_settings(), "smart")
-    assert record["promptVersion"] == "rerank-scoring-v1"
+    assert record["promptVersion"] == "rerank-grounding-v1"
     source_by_id = {
         item["productId"]: item["rankSource"] for lst in record["lists"] for item in lst["items"]
     }
     assert source_by_id[101] == "rerank"
     assert source_by_id[102] == "rerank"
-    assert source_by_id[103] == "rerank"
+    assert source_by_id[103] == "expose_min_fill"
 
 
 async def test_current_ranking_and_grounding_rollback_restores_legacy_prompt_version(

@@ -58,6 +58,8 @@ __all__ = ["cart_identity", "stream_cart_add", "stream_cart_view"]
 
 _log = logging.getLogger(__name__)
 
+_OPTION_PRODUCT_NAME_MAX_CHARS = 40
+
 
 def _option_label(option: CartOption) -> str:
     """옵션 표시 라벨 — 표시명(판매자 입력이라 정제)에 추가금이 양수면 함께 붙인다. 이름 없으면 "".
@@ -73,6 +75,22 @@ def _option_label(option: CartOption) -> str:
 
 def _has_surcharge(option: CartOption) -> bool:
     return bool(option.extra_price and option.extra_price > 0)
+
+
+def _option_product_heading(product_name: str | None) -> str:
+    """옵션 재질문의 대상 상품명을 정제하고 최대 40자로 제한한다(이슈 #662)."""
+    name = _strip_unsafe(product_name or "")
+    if not name:
+        return ""
+    if len(name) > _OPTION_PRODUCT_NAME_MAX_CHARS:
+        name = f"{name[:_OPTION_PRODUCT_NAME_MAX_CHARS]}…"
+    return f"**상품:** {name}"
+
+
+def _prepend_option_product_heading(prompt: str, product_name: str | None) -> str:
+    """상품명이 확인될 때만 기존 옵션 문구 앞에 식별 머리말을 붙인다."""
+    heading = _option_product_heading(product_name)
+    return f"{heading}\n\n{prompt}" if heading else prompt
 
 
 def _numbered_option_rows(labels: Sequence[str]) -> str:
@@ -93,7 +111,13 @@ def _options_text(options: list[CartOption]) -> str:
     return _numbered_option_rows(labels) if labels else "옵션"
 
 
-def _options_prompt(lead: str, options: list[CartOption], tail: str = "") -> str:
+def _options_prompt(
+    lead: str,
+    options: list[CartOption],
+    tail: str = "",
+    *,
+    product_name: str | None = None,
+) -> str:
     """'안내 줄 → 번호 매긴 옵션 행들 → 마무리 줄' 로 되물음 문구를 조립한다(이슈 #570, #582).
 
     이슈 #570 의 한 옵션 한 줄 원칙 위에 #582 의 1-based 번호와 완성 라벨 굵은 글씨를 더한다.
@@ -104,7 +128,7 @@ def _options_prompt(lead: str, options: list[CartOption], tail: str = "") -> str
     lines = [lead, _options_text(options)]
     if tail:
         lines.append(tail)
-    return "\n".join(lines)
+    return _prepend_option_product_heading("\n".join(lines), product_name)
 
 
 async def _load_cart_color_synonyms(settings) -> Mapping[str, Sequence[str]] | None:
@@ -140,6 +164,7 @@ def _cart_option_required_text(
     hint: OptionHint | None,
     settings,
     color_synonyms: Mapping[str, Sequence[str]] | None = None,
+    product_name: str | None = None,
 ) -> str:
     """CART_OPTION_REQUIRED 되물음 문구(이슈 #455, #454, #508) — 네 갈래.
 
@@ -174,7 +199,7 @@ def _cart_option_required_text(
                 if hint.total is not None and hint.total > len(names):
                     lines.append(f"외 {hint.total - len(names)}개")
                 lines.append("어떤 걸로 담을까요?")
-                return "\n".join(lines)
+                return _prepend_option_product_heading("\n".join(lines), product_name)
         return "지금은 고를 수 있는 옵션이 없어요. 품절된 것 같아요. 다른 상품을 보여드릴까요?"
 
     narrowing = narrow_options(
@@ -190,6 +215,7 @@ def _cart_option_required_text(
             "말씀하신 조건에 맞는 옵션이에요:",
             list(narrowing.by_condition),
             "이 중에서 고르시거나 다른 옵션을 말씀해 주세요.",
+            product_name=product_name,
         )
     if (
         color_synonyms is not None
@@ -202,8 +228,14 @@ def _cart_option_required_text(
             f"'{color_terms_text}' 조건에 맞는 옵션은 찾지 못했어요. 고를 수 있는 옵션은 이거예요:",
             options,
             "이 중에서 고르시거나 다른 상품을 말씀해 주세요.",
+            product_name=product_name,
         )
-    return _options_prompt("옵션을 선택해 주세요:", options, "어떤 걸로 담을까요?")
+    return _options_prompt(
+        "옵션을 선택해 주세요:",
+        options,
+        "어떤 걸로 담을까요?",
+        product_name=product_name,
+    )
 
 
 def _all_spans(text: str, needle: str) -> list[tuple[int, int]]:
@@ -380,6 +412,7 @@ _SCREEN_POSITION_REASONS = frozenset(
         "ordinal_out_of_range",
         "coordinate_out_of_range",
         "coordinate_without_columns",
+        "coordinate_invalid",
     }
 )
 
@@ -416,6 +449,7 @@ async def stream_cart_add(
     screen_reference_attempted: bool = False,
     screen_resolved: bool = False,
     condition_terms: Sequence[str] = (),
+    product_names: Mapping[int, str] | None = None,
     has_last_reco: bool = False,
     has_push_failed: bool = False,
     chat_session_id: str | None = None,
@@ -610,6 +644,8 @@ async def stream_cart_add(
         yield _done()
         return
 
+    product_name = product_names.get(product_id) if product_names is not None else None
+
     # 담기 전 기존 보유 확인(안내용, degrade) — 동일 상품·옵션 보유 수량. 조회 결과 자체를 들고
     # 있다가 유일 옵션 자동 선택(#114)으로 옵션이 확정되면 아래에서 그 옵션 기준으로 다시 센다.
     existing_items: list[CartViewItem] = []
@@ -674,6 +710,7 @@ async def stream_cart_add(
             hint=hint,
             settings=settings,
             color_synonyms=color_synonyms,
+            product_name=product_name,
         )
         yield sse("token", TokenData(text=text).model_dump(by_alias=True))
         yield _done()
@@ -702,7 +739,11 @@ async def stream_cart_add(
         yield sse(
             "token",
             TokenData(
-                text=_options_prompt("그 옵션을 찾지 못했어요. 다시 골라 주세요:", exc.options)
+                text=_options_prompt(
+                    "그 옵션을 찾지 못했어요. 다시 골라 주세요:",
+                    exc.options,
+                    product_name=product_name,
+                )
             ).model_dump(by_alias=True),
         )
         yield _done()

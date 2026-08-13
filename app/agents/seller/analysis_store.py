@@ -23,7 +23,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, TypeVar
 from uuid import UUID
@@ -257,7 +258,10 @@ async def _missing_tables(pool: AsyncConnectionPool) -> list[str]:
 
 
 async def _run_ddl(pool: AsyncConnectionPool) -> None:
-    """5테이블 + 인덱스를 idempotent 하게 만든다 (`db/profile/init/05_seller_analysis.sql`과 동일 정의).
+    """5테이블 + 인덱스 + 확장 컬럼을 idempotent 하게 만든다.
+
+    정의 원천은 `db/profile/init/05_seller_analysis.sql`(테이블) +
+    `06_seller_analysis_ext.sql`(이슈 #599 확장 컬럼)이다.
 
     이 SQL 파일이 정본이다 — 이후 컬럼·인덱스 변경은 `06_*.sql` 추가와 이 함수 갱신을 같은
     커밋에 넣는다(설계서 §9 "DDL이 두 곳에 존재" 위험 대응). 한 advisory 잠금·한 트랜잭션에서
@@ -413,6 +417,33 @@ async def _run_ddl(pool: AsyncConnectionPool) -> None:
                     "ON seller_analysis_outcomes (brand_id, action_type, verdict, "
                     "outcome_spec_version)"
                 )
+                # [이슈 #601] 무인 배치 실행 로그 — db/profile/init/06_seller_analysis_run_log.sql
+                # 과 같은 문장이다(그 파일이 정본, 여긴 idempotent 복제 — 05 파일의 §9 규약).
+                await conn.execute(
+                    "ALTER TABLE seller_analysis_targets "
+                    "ADD COLUMN IF NOT EXISTS last_run_at timestamptz"
+                )
+                await conn.execute(
+                    "ALTER TABLE seller_analysis_targets "
+                    "ADD COLUMN IF NOT EXISTS last_skip_reason text"
+                )
+
+                # ── 06_seller_analysis_ext.sql (이슈 #599) — 컬럼 추가는 CREATE TABLE
+                # IF NOT EXISTS 가 하지 않으므로 ALTER 로 따로 얹는다. ADD COLUMN IF NOT
+                # EXISTS 라 재적용 무해하고, 같은 트랜잭션·같은 잠금 안이라 05 와 06 이
+                # 절반씩 적용된 상태가 생기지 않는다.
+                await conn.execute(
+                    "ALTER TABLE seller_analysis_reports "
+                    "ADD COLUMN IF NOT EXISTS findings jsonb NOT NULL DEFAULT '[]'"
+                )
+                await conn.execute(
+                    "ALTER TABLE seller_analysis_targets "
+                    "ADD COLUMN IF NOT EXISTS last_run_at timestamptz"
+                )
+                await conn.execute(
+                    "ALTER TABLE seller_analysis_targets "
+                    "ADD COLUMN IF NOT EXISTS last_skip_reason text"
+                )
 
     await asyncio.wait_for(_run(), timeout=settings.state_store_migration_timeout_s)
 
@@ -437,6 +468,10 @@ async def _write(run: Callable[[AsyncConnection], Awaitable[_T]]) -> _T | None:
         try:
             async with pool.connection(timeout=settings.state_store_query_timeout_s) as conn:
                 async with conn.transaction():
+                    # SET/SET LOCAL 은 서버측 파라미터 바인딩($1)을 지원하지 않아 실 PG
+                    # 에서 SyntaxError 가 난다 — _run_ddl 과 같은 set_config 형태로 통일.
+                    # 세 번째 인자 is_local=true 라 SET LOCAL 과 동일하게 트랜잭션 종료 시
+                    # 원복된다.
                     await conn.execute(
                         "SELECT set_config('statement_timeout', %s, true)",
                         (str(write_timeout_ms),),
@@ -501,6 +536,29 @@ def note_seller_seen(context: SellerContext) -> None:
     task = asyncio.create_task(_register_quietly(context))
     _background.add(task)
     task.add_done_callback(_background.discard)
+
+
+async def update_target_run(
+    brand_id: int, *, last_run_at: datetime, last_skip_reason: str | None
+) -> None:
+    """무인 배치 1브랜드 실행 결과를 `seller_analysis_targets`에 기록한다(이슈 #601).
+
+    `last_skip_reason=None`은 "보고서를 만들었다"이지 "아무 일도 안 했다"가 아니다 —
+    실행 자체는 `last_run_at`이 증언한다. 사유가 있으면(`no_baseline_data`·
+    `snapshot_failed`·`no_findings` 등) 그 값을 남겨 R-1 `noReportReason`과 운영 로그
+    양쪽의 원천으로 쓴다(10-TRIGGER.md 결정 98). 대상이 아직 `register_target`으로
+    등록되지 않았으면(브랜드가 그 사이 삭제된 이상 상황) 0행 UPDATE로 조용히 넘어간다 —
+    이 함수가 대상을 새로 만들지는 않는다(대상 등록은 접속 시 훅 소관).
+    """
+
+    async def _run(conn: AsyncConnection) -> None:
+        await conn.execute(
+            "UPDATE seller_analysis_targets "
+            "SET last_run_at = %s, last_skip_reason = %s WHERE brand_id = %s",
+            (last_run_at, last_skip_reason, brand_id),
+        )
+
+    await _write(_run)
 
 
 async def list_active_targets(ttl_days: int | None = None) -> list[int]:
@@ -696,9 +754,9 @@ async def save_report(report: ReportRecord, recommendations: list[Recommendation
             """
             INSERT INTO seller_analysis_reports (
                 id, brand_id, trigger_type, period_from, period_to, compared_from, compared_to,
-                title, summary, report_md, segments, holds, verified, score_total, attempts,
-                snapshot_id, created_at, read_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                title, summary, report_md, segments, findings, holds, verified, score_total,
+                attempts, snapshot_id, created_at, read_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (id) DO NOTHING
             """,
             (
@@ -713,6 +771,7 @@ async def save_report(report: ReportRecord, recommendations: list[Recommendation
                 report.summary,
                 report.report_md,
                 Jsonb(report.segments),
+                Jsonb(report.findings),
                 Jsonb(report.holds),
                 report.verified,
                 report.score_total,
@@ -737,7 +796,7 @@ async def save_report(report: ReportRecord, recommendations: list[Recommendation
                     UPDATE seller_analysis_recommendations
                     SET status = 'superseded'
                     WHERE brand_id = %s AND action_type = %s AND status = 'proposed'
-                      AND product_ids && %s AND id != %s
+                      AND product_ids && %s::bigint[] AND id != %s
                     """,
                     (rec.brand_id, rec.action_type, rec.product_ids, rec.id),
                 )
@@ -777,29 +836,142 @@ async def save_report(report: ReportRecord, recommendations: list[Recommendation
 
 
 async def list_reports(
-    brand_id: int, *, limit: int, before: datetime | None = None
+    brand_id: int,
+    *,
+    limit: int,
+    before: datetime | None = None,
+    offset: int = 0,
+    unread_only: bool = False,
 ) -> list[ReportRecord]:
-    """브랜드의 보고서 목록 — 최신순, `before` 기준 커서 페이지네이션."""
+    """브랜드의 보고서 목록 — 최신순.
+
+    페이지네이션이 두 벌이다: 채팅 도구(`get_latest_report`)는 `before` 커서를 쓰고,
+    R-1 은 화면이 페이지 번호를 그리므로 `offset` 을 쓴다. 둘을 **동시에 주지 않는다** —
+    커서와 오프셋을 섞으면 "이전 페이지로" 가 조용히 어긋난다.
+
+    `unread_only` 는 R-1 의 같은 이름 쿼리 파라미터다(`read_at IS NULL`).
+    """
+    if before is not None and offset:
+        raise ValueError("list_reports: before(커서)와 offset 을 함께 쓸 수 없다")
     pool = await _get_pool()
     if pool is None:
         return []
 
+    where = ["brand_id = %s"]
+    params: list[Any] = [brand_id]
+    if before is not None:
+        where.append("created_at < %s")
+        params.append(before)
+    if unread_only:
+        where.append("read_at IS NULL")
+    params.extend((limit, offset))
+
     async def _run() -> list[ReportRecord]:
         async with pool.connection() as conn:
-            if before is None:
-                cur = await conn.execute(
-                    "SELECT * FROM seller_analysis_reports WHERE brand_id = %s "
-                    "ORDER BY created_at DESC LIMIT %s",
-                    (brand_id, limit),
-                )
-            else:
-                cur = await conn.execute(
-                    "SELECT * FROM seller_analysis_reports "
-                    "WHERE brand_id = %s AND created_at < %s "
-                    "ORDER BY created_at DESC LIMIT %s",
-                    (brand_id, before, limit),
-                )
+            cur = await conn.execute(
+                "SELECT * FROM seller_analysis_reports "
+                f"WHERE {' AND '.join(where)} "
+                "ORDER BY created_at DESC LIMIT %s OFFSET %s",
+                tuple(params),
+            )
             return [_row_to(ReportRecord, cur.description, row) for row in await cur.fetchall()]
+
+    return await run_with_query_timeout(_run())
+
+
+async def count_reports(brand_id: int, *, unread_only: bool = False) -> int:
+    """R-1 `total` — `unread_only` 필터를 **적용한 뒤**의 건수."""
+    pool = await _get_pool()
+    if pool is None:
+        return 0
+    clause = " AND read_at IS NULL" if unread_only else ""
+
+    async def _run() -> int:
+        async with pool.connection() as conn:
+            cur = await conn.execute(
+                f"SELECT count(*) FROM seller_analysis_reports WHERE brand_id = %s{clause}",
+                (brand_id,),
+            )
+            row = await cur.fetchone()
+            return int(row[0]) if row else 0
+
+    return await run_with_query_timeout(_run())
+
+
+async def count_unread_reports(brand_id: int) -> int:
+    """R-1 `unreadCount` — 목록 배지용이라 **필터와 무관하게 항상 전량 기준**이다.
+
+    `count_reports(unread_only=True)` 와 값은 같지만 의미가 다르다(이쪽은 필터 불문 고정).
+    호출부가 둘을 헷갈리지 않도록 이름을 따로 둔다.
+    """
+    return await count_reports(brand_id, unread_only=True)
+
+
+@dataclass(frozen=True)
+class TargetStatus:
+    """`seller_analysis_targets` 1행의 R-1 `noReportReason` 판정 재료.
+
+    `last_run_at`·`last_skip_reason` 은 `06_seller_analysis_ext.sql` 이 추가한 컬럼이라
+    마이그레이션 전에는 조회 자체가 실패한다 — `get_target_status()` 가 그 경우 `None` 을
+    돌려주고, 호출부는 이유를 **추정하지 않고** `noReportReason: null` 로 응답한다.
+    """
+
+    brand_id: int
+    last_seen_at: datetime
+    last_run_at: datetime | None
+    last_skip_reason: str | None
+
+
+async def get_target_status(brand_id: int) -> TargetStatus | None:
+    """등록 여부·마지막 접속·마지막 실행 기록. 미등록이면 `None`.
+
+    ⚠️ 반환 `None` 은 **두 가지**를 뜻한다 — 미등록(정상 판정: `not_registered`)과
+    조회 불가(컬럼 부재·DB 장애). 호출부가 이 둘을 구분할 수 없으므로 R-1 은 보수적으로
+    간다: 조회가 예외로 끝난 경우를 별도로 잡아 `null` 을 낸다(§보수적 폴백 규약).
+    """
+    pool = await _get_pool()
+    if pool is None:
+        return None
+
+    async def _run() -> TargetStatus | None:
+        async with pool.connection() as conn:
+            cur = await conn.execute(
+                "SELECT brand_id, last_seen_at, last_run_at, last_skip_reason "
+                "FROM seller_analysis_targets WHERE brand_id = %s",
+                (brand_id,),
+            )
+            row = await cur.fetchone()
+            if row is None:
+                return None
+            return TargetStatus(
+                brand_id=row[0], last_seen_at=row[1], last_run_at=row[2], last_skip_reason=row[3]
+            )
+
+    return await run_with_query_timeout(_run())
+
+
+async def count_recommendations_by_reports(
+    report_ids: Sequence[UUID], *, brand_id: int
+) -> dict[UUID, int]:
+    """보고서별 추천 개수 — R-1 `recommendationCount`.
+
+    목록 한 페이지(최대 100건)마다 `list_recommendations_by_report` 를 부르면 N+1 이 된다.
+    한 번의 GROUP BY 로 끝내고, 추천이 0건인 보고서는 키가 없으므로 호출부가 0 으로 읽는다.
+    """
+    if not report_ids:
+        return {}
+    pool = await _get_pool()
+    if pool is None:
+        return {}
+
+    async def _run() -> dict[UUID, int]:
+        async with pool.connection() as conn:
+            cur = await conn.execute(
+                "SELECT report_id, count(*) FROM seller_analysis_recommendations "
+                "WHERE brand_id = %s AND report_id = ANY(%s) GROUP BY report_id",
+                (brand_id, list(report_ids)),
+            )
+            return {row[0]: int(row[1]) for row in await cur.fetchall()}
 
     return await run_with_query_timeout(_run())
 
@@ -932,6 +1104,36 @@ async def mark_recommendation_applied(rec_id: UUID, *, brand_id: int, draft_id: 
         )
 
     await _write(_run)
+
+
+async def expire_recommendations(older_than_days: int, *, batch_size: int) -> int:
+    """`proposed` 추천 중 `created_at`이 `older_than_days` 지난 것을 `expired`로 전이한다.
+
+    무인 정리 배치 ④단계(08-PERSISTENCE.md §5, 결정 68) — `status`가 이미 `applied`·
+    `superseded`인 행은 건드리지 않는다(둘 다 "이미 처리됨"이라 만료 대상이 아니다).
+    `batch_size`(`seller_cleanup_batch_size`)로 1회 UPDATE 행 수를 제한해 락 보유 시간을
+    억제한다 — 서브쿼리로 대상 id를 먼저 좁혀 `LIMIT`을 적용한다(UPDATE 자체는 LIMIT을
+    지원하지 않는다).
+    """
+
+    async def _run(conn: AsyncConnection) -> int:
+        cur = await conn.execute(
+            """
+            UPDATE seller_analysis_recommendations
+            SET status = 'expired'
+            WHERE id IN (
+                SELECT id FROM seller_analysis_recommendations
+                WHERE status = 'proposed'
+                  AND created_at < now() - make_interval(days => %s)
+                LIMIT %s
+            )
+            """,
+            (older_than_days, batch_size),
+        )
+        return cur.rowcount
+
+    result = await _write(_run)
+    return result if result is not None else 0
 
 
 # ── 성과 측정 ───────────────────────────────────────────────────────────────────

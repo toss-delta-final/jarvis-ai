@@ -26,10 +26,11 @@
 전부 목록 **안**이라 그대로 담긴다. 사용자가 말하지 않은 상품이 장바구니에 들어가는 것이라
 정확도 문제가 아니라 결함이다. 그래서 이 모듈이 **LLM 산출을 덮어쓴다.**
 
-**발동 조건이 좁다는 것이 이 모듈의 안전 논거다** — `screen.products` 가 실제로 있는 턴에만 돈다.
-#234/#239/#240 이 세운 회귀 대조군은 전부 `screen` 이 없는 요청이므로 **구조적으로 영향받지
-않는다**(테스트로 고정). 옵션 되물음(`PENDING_CART`) 중에도 돌지 않는다 — 그 턴의 "2번"은 화면
-순번이 아니라 옵션 번호이기 때문이다(호출부 `graph.py` 가 그 조건을 건다).
+**발동 조건이 좁다는 것이 이 모듈의 안전 논거다** — `screen.products` 또는 서버가 이미 아는
+이번 턴 추천 카드가 있는 경우에만 돈다. #234/#239/#240 이 세운 회귀 대조군은 둘 다 없는
+요청이므로 **구조적으로 영향받지 않는다**(테스트로 고정). 옵션 되물음(`PENDING_CART`) 중에도
+돌지 않는다 — 그 턴의 "2번"은 화면 순번이 아니라 옵션 번호이기 때문이다(호출부 `graph.py`가
+그 조건을 건다).
 
 **[#435] 추천 카드(CH-5) 턴에는 이 해소기가 붙지 않았다 — #571 이 그 제약을 좁혔다.** FE 는 그
 카드를 `screen` 에서 **의도적으로 제외**한다(서버가 `listId` 로 이미 아는 목록을 되돌려주면
@@ -38,10 +39,12 @@
 이 없어도 결정적으로 풀리는 입력(순번·"이거"·이름 전체 지목)까지 LLM 에 맡길 이유가 없었다
 (#571, 아래 F-17~F-19). 그래서 이 해소기는 이제 `screen.products` **또는** 이번 턴 추천 카드
 (`last_reco[:turn_count]`)가 있는 턴에 돈다 — `resolve_screen_reference` 의 `products` 인자가
-호출부에서 어느 표면이든(화면·추천) 그 표면의 배열을 받는다. 좌표(`columns`)는 추천 표면에
-없으므로 여전히 되물음으로 떨어진다(결정 6) — "좌표는 범위 밖"이라는 이슈 원문의 처분과 같다.
-운영 로그에서 `screen_reference_resolved` 의 `extra.surface` 가 `"reco"` 로 남는 사례가 이제
-정상 동작이다(§4.2 관측 확장).
+호출부에서 어느 표면이든(화면·추천) 그 표면의 배열을 받는다. 추천 표면의 상품 ID는 계속 FE가
+보내지 않는다. 다만 FE가 추천 패널의 반응형 열 수를
+`screen={pageType: "chat", columns: N}`으로 보낸 경우, 호출부가 그 열 수와 서버의 추천 배열을
+결합한다. 이때도 `ordinal_span == turn_count`로 노출 순서가 증명돼야 좌표를 확정하며, 증명되지
+않으면 되묻는다. 운영 로그에서 `screen_reference_resolved`의 `extra.surface`가 `"reco"`로 남는
+사례가 정상 동작이다(§4.2 관측 확장).
 
 [라운드 3] 그런데 **"좁다"는 조건이 실제로는 충분히 좁지 않았다.** 읽기 전용 리뷰가 낸 3건을
 전부 재현했고, 그중 둘은 **오담기**(사용자가 말하지 않은 상품이 담김)였다 — 원인은 하나다:
@@ -64,8 +67,9 @@
     | F-17 | `"이거 담아줘"`(추천 카드 다건, `screen` 없음) | 게이트가 `screen.products` 를 요구해 추천 카드 턴에 다건 되물음이 통째로 LLM 에 맡겨져 실측 8/8 오확정 | 게이트를 추천 표면(이번 턴 카드)으로 확대 |
     | F-18 | `"3번째 거 담아줘"`(다목록 턴, 또는 승계분까지 포함해 세면 순번이 밀림) | 추천 표면의 순번을 누적 `last_reco` 전체나 dedup 된 `ranked_ids` 로 세면 승계분·BUY_ALL 중복 붕괴로 화면과 다른 카드가 확정 | `turn_count` 경계로 배열을 자르고, `ordinal_span`(표시 순서=저장 순서 증명)이 없으면 순번을 되물음으로 강제 |
     | F-19 | `"무선 블루투스 이어폰 담아줘"`(카드 이름이 발화에 통째로 있음, 추천 카드 표면) | 추천 표면에서 (B) 를 그대로 두면 이름 지목이 영원히 LLM 산출에만 맡겨짐 | 배열=이름 출처인 표면에서만 좁은 이름 확정 규칙(N) 신설 — 부정·다건·빈 이름이면 종전대로 (B) 양보 |
-    | F-20 | `"3번째 거 담아줘"`(이전 턴 추천 카드 3건, 이번 턴 `screen`은 왔지만 `screen.products == []`) | `graph.py` 의 표면 계산이 "screen 자체가 없음"과 "screen 은 왔는데 정제 후 0건"을 똑같이 falsy `[]` 로 뭉개 `elif reco_cards:` 로 새 버려, 사용자가 보고 있는(비어 있는) 화면과 무관한 이전 턴 카드가 확정 → **오담기**(PR #573 Claude 리뷰) | 폴백 조건을 `elif screen is None and reco_cards:` 로 좁힘 — 화면이 왔는데 비었으면 `surface=[]`(해소기 미호출, LLM 산출 존중) |
+    | F-20 | `"3번째 거 담아줘"`(이전 턴 추천 카드 3건, 이번 턴은 빈 검색 화면) | `graph.py`의 표면 계산이 "screen 자체가 없음"과 "추천 패널이 아닌 빈 screen"을 똑같이 처리해, 사용자가 지금 보지 않는 이전 추천 카드가 확정 → **오담기** | 추천 패널의 양성 신호인 `pageType=chat`+`columns`만 추천 표면과 결합하고, 그 밖의 빈 screen은 `surface=[]`로 유지 |
     | F-21 | `"Septwolves 지갑 담아줘"`(추천 카드 이름 일부의 유일 토큰) | 전체 상품명만 코드가 확정해, LLM이 같은 허용 목록 안의 다른 상품을 골라도 멤버십 가드가 통과 → **오담기** | NFKC·casefold 정확 토큰이 표면에서 유일하고 한 상품만 가리킬 때만 확정 — 공통·숫자·명령·부분 문자열·다중 상품·부정은 양보 |
+    | F-22 | `"2번째 줄 3번째 상품 담아줘"`(추천 카드 3열) | FE는 추천 id를 빼고 `columns=3`만 보내는데 빈 `screen.products` 때문에 해소기를 호출하지 않아 LLM이 전체 3번째를 확정 → **오담기** | 순서가 증명된 추천 표면과 chat screen의 `columns`를 결합해 전체 6번째로 결정적 해소 |
 
     **전제와 잔여 위험(F-17~F-19 공통)**: 위 세 규칙은 "`last_reco` 순서 = I-21 push 순서 =
     사용자가 본 순서"를 전제한다. 그 전제의 근거는 두 갈래다 — (1) 정본 §4.2 규약이 명시하는
@@ -89,8 +93,12 @@ import unicodedata
 from collections import Counter
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from app.agents.buyer.cart.negation import has_any_negation
+
+if TYPE_CHECKING:
+    from app.agents.buyer.recommendation.state import ScreenReference
 
 
 def grid_position(index: int, columns: int | None) -> tuple[int, int] | None:
@@ -109,9 +117,19 @@ def resolve_grid_index(row: int, col: int, columns: int) -> int:
     return (row - 1) * columns + (col - 1)
 
 
+def _has_explicit_row_first_grid_marker(message: str) -> bool:
+    """구조화 좌표를 소비할 최소 원문 증거: 행 축이 있고 `열`보다 먼저 나온다."""
+    row_marker = _STRUCTURED_ROW_MARKER.search(message)
+    if row_marker is None:
+        return False
+    column_marker = _STRUCTURED_COLUMN_MARKER.search(message)
+    return column_marker is None or row_marker.start() < column_marker.start()
+
+
 # 한국어 순번·좌표 표기. **튜닝 노브가 아니라 문법**이라 config 가 아니라 여기 둔다
 # (app/core/text.py 의 제어문자 정규식과 같은 성격).
-#   좌표: "3번째 줄 2번째" · "3줄 2칸" · "세 번째 줄 두 번째" 는 아직 다루지 않는다(숫자 표기만).
+#   좌표: 원문 정규식은 "3번째 줄 2번째" · "3줄 2칸" 같은 숫자 표기만 다룬다.
+#   "세 번째 줄 두 번째" 같은 한글 수사는 decompose의 구조화 JSON으로 받고 여기서 ID를 계산한다.
 #
 # **첫 숫자는 행(row)이므로 표지는 `줄`·`행` 뿐이다.** 초판은 `열` 까지 같은 자리에 넣었는데
 # 한국어에서 `열` 은 column 이라 축이 반대다 — `"2번째 열 3번째"`(col=2·row=3, index 7)를
@@ -127,6 +145,15 @@ def resolve_grid_index(row: int, col: int, columns: int) -> int:
 _COORD = re.compile(r"(\d+)\s*(?:번째\s*)?(?:줄|행)\s*(?:에\s*)?(\d+)\s*(?:번째|번|칸)")
 # 열(column) 기준 좌표 표기. **해소하지 않고 LLM 에 넘기기 위해** 따로 잡는다 — 아래 양보 (C).
 _COLUMN_FIRST = re.compile(r"\d+\s*(?:번째\s*)?열")
+# LLM이 낸 `screenReference` 자체는 사용자 원문의 증거가 아니다. 값을 소비하기 전에 최소한
+# 사용자가 **한글 순번 + 행 축**을 말했다는 사실만 확인한다. `줄`만 찾으면 기존 안전 대조군인
+# `3줄 2단 정리함`까지 좌표로 오인하므로, 한글 순번 표기만 좁게 잡는다. 숫자값 해석은 여전히
+# decompose가 맡고 이 정규식은 증거 유무·축 순서만 확인한다.
+_KOREAN_GRID_ORDINAL = (
+    r"(?:첫|두|세|네|다섯|여섯|일곱|여덟|아홉|열(?:한|두|세|네|다섯|여섯|일곱|여덟|아홉)?|스무)"
+)
+_STRUCTURED_ROW_MARKER = re.compile(rf"{_KOREAN_GRID_ORDINAL}\s*번째\s*(?:줄|행)")
+_STRUCTURED_COLUMN_MARKER = re.compile(rf"{_KOREAN_GRID_ORDINAL}\s*번째\s*열")
 # [8차 리뷰, F-11] **줄|행만 말하고 칸을 안 말한 경우** — `"3번째 줄에 있는 거 담아줘"`. `_COORD`
 # 는 두 번째 숫자가 없으면 실패하고, 그러면 바로 아래 (2) 순번이 "3"을 **배열 순번**으로 잡아
 # columns=3 일 때 실제 3번째 줄(index 6~8)과 무관한 상품(배열 3번째, index 2)을 확정한다(실제
@@ -231,6 +258,7 @@ def mentions_screen_reference(message: str, settings) -> bool:
         _COORD.search(message)
         or _COLUMN_FIRST.search(message)
         or _ROW_ONLY.search(message)
+        or _STRUCTURED_ROW_MARKER.search(message)
         or _ORDINAL.search(message)
         or any(marker and marker in message for marker in settings.screen_deictic_markers)
     )
@@ -320,6 +348,7 @@ def resolve_screen_reference(
     name_confirmation_enabled: bool,
     negation_markers: Sequence[str],
     prefix_negation_markers: Sequence[str],
+    structured_reference: ScreenReference | None = None,
 ) -> ScreenResolution | None:
     """발화의 화면 지시어를 해소한다. None = 해당 규칙 없음(LLM 산출을 그대로 둔다).
 
@@ -425,6 +454,27 @@ def resolve_screen_reference(
     # `_UNRESOLVED_SCREEN_POSITION` 문구가 그 사유를 그렇게 취급한다).
     if _ROW_ONLY.search(message):
         return ScreenResolution(None, "coordinate_without_columns")
+
+    # (1-b) [#664] 한글 수사 좌표는 decompose가 상품 ID가 아니라 row·column만 구조화한다.
+    #     원문 숫자 좌표와 행 단독 가드를 **뒤집지 않도록** 그 두 규칙 뒤에 둔다. 반대로 전체
+    #     순번 규칙보다 앞에 둬 `두번째 줄 두번째`가 LLM의 cart.productId로 빠지지 않게 한다.
+    #     kind=grid 주장은 축이 malformed여도 객체로 보존된다(decompose._parse_screen_reference) —
+    #     이 자리에서 forced-null로 닫아 함께 온 허용 목록 내 오답 productId로 폴백하지 않는다.
+    if structured_reference is None and _has_explicit_row_first_grid_marker(message):
+        # 모델이 필드를 누락해도 명시적인 행 지시를 평범한 상품 순번으로 폴백시키지 않는다.
+        return ScreenResolution(None, "coordinate_invalid")
+    if structured_reference is not None:
+        if not _has_explicit_row_first_grid_marker(message):
+            return None
+        row, col = structured_reference.row, structured_reference.column
+        if row is None or col is None:
+            return ScreenResolution(None, "coordinate_invalid")
+        if not columns:
+            return ScreenResolution(None, "coordinate_without_columns")
+        index = resolve_grid_index(row, col, columns)
+        if 0 <= index < len(products):
+            return ScreenResolution(products[index][0], "coordinate")
+        return ScreenResolution(None, "coordinate_out_of_range")
 
     # (2) 순번 — "3번째 거". 배열 순서만 있으면 풀린다.
     if ordinal := _ORDINAL.search(message):

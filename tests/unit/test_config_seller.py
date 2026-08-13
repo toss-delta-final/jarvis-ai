@@ -28,6 +28,10 @@ def test_seller_settings_defaults() -> None:
     assert settings.seller_report_score_threshold == 21
     assert settings.seller_report_max_retries == 3
     assert settings.seller_draft_ttl_minutes == 10
+    # [이슈 #659] 상품 변경 시 저성과(최근 N일 판매량) 참고 문구 임계값.
+    assert settings.seller_low_sales_alert_enabled is True
+    assert settings.seller_low_sales_window_days == 7
+    assert settings.seller_low_sales_quantity_threshold == 3
     assert settings.seller_history_recent_n == 5
     assert settings.seller_tool_call_limit == 8
     # [#196] I-13 상품별 rows 상한 — I-14 용 max_events(5)와 분리 신설.
@@ -46,6 +50,21 @@ def test_seller_settings_defaults() -> None:
     assert settings.seller_analysis_score_threshold == 21
     assert settings.seller_analysis_judge_timeout_s == 20.0
     assert settings.seller_branch_deadline_s == 160.0
+
+
+def test_seller_low_sales_alert_bounds_fail_fast() -> None:
+    """[이슈 #659] 조회 기간은 1일 이상, 임계는 음수 불가 — 둘 다 기동 시점에 걸린다."""
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_low_sales_window_days=0)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, seller_low_sales_quantity_threshold=-1)
+    # 경계는 유효하다 — 임계 0 은 "판매량 0 일 때만 경고"라는 유효한 설정이다.
+    assert (
+        Settings(
+            _env_file=None, seller_low_sales_quantity_threshold=0
+        ).seller_low_sales_quantity_threshold
+        == 0
+    )
 
 
 def test_seller_period_max_days_bounds_fail_fast() -> None:

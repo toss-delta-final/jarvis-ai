@@ -1592,40 +1592,49 @@ async def _run_buyer_turn_impl(
     # (`screen.products`)이 있으면 그것을 쓰고, 없고 추천 카드(이번 턴 push 분, §2 결정 1)가
     # 있으면 그것을 쓴다. 화면 표면은 순번 게이트가 항상 참(오늘과 완전히 동일 — `columns` 도
     # `screen.columns` 그대로)이고 이름 확정(N)은 꺼져 있다(화면 표면에서 (N) 을 켜면 F-8 이
-    # 되살아난다, screen_reference.py 상단 참조). 추천 표면은 좌표(`columns`)가 없어 좌표 지시는
-    # 항상 되물음으로 떨어지고(§2 결정 6), 순번 게이트는 `ordinal_span`(표시 순서 = 저장 순서
-    # 증명, §2 결정 2)이 이번 턴 카드 수와 정확히 일치할 때만 열리며, 이름 확정(N)은 켜져 있다
-    # (배열이 곧 이름 출처인 표면이라 F-8 이 재발하지 않는다, §2 결정 3). 둘 다 없으면 `surface`
-    # 가 빈 리스트라 아래 게이트가 애초에 닫힌다 — #240 대조군(screen 도 last_reco 도 없는 요청)
-    # 은 구조적으로 이 블록에 닿지 않는다.
+    # 되살아난다, screen_reference.py 상단 참조). 추천 카드 ID는 FE가 되돌려 보내지 않지만,
+    # 추천 패널이 실제로 보이는 chat screen의 `columns`는 서버가 알고 있는 이번 턴 추천 순서와
+    # 결합할 수 있다. 단, `ordinal_span`이 이번 턴 카드 수와 정확히 일치해 순서가 증명된 경우에만
+    # 좌표 해소를 연다. 둘 다 없으면 `surface`가 빈 리스트라 아래 게이트가 닫힌다.
     screen_products = (
         [(p.product_id, p.name) for p in screen.products]
         if (screen is not None and screen.products)
         else []
     )
+    # [#662] 옵션 재질문에 쓸 표시 이름만 전달한다. 추천 이름을 기본으로 두고 같은 ID가 현재
+    # 화면에도 있으면 사용자가 실제로 보고 있는 screen 이름을 우선한다. 선택·허용 판정에는 쓰지
+    # 않고 cart graph가 pending까지 반영해 최종 확정한 product_id로만 조회한다.
+    cart_product_names = {product_id: name for product_id, name in last_reco if name}
+    cart_product_names.update({product_id: name for product_id, name in screen_products if name})
     reco_cards = last_reco[: reco_state.turn_count]
+    reco_order_verified = (
+        reco_state.ordinal_span > 0 and reco_state.ordinal_span == reco_state.turn_count
+    )
     if screen_products:
         surface = screen_products
         surface_columns = screen.columns if screen is not None else None
         surface_positional_order_verified = True
         surface_name_confirmation_enabled = False
-    # [F-h, 라운드 3 리뷰] `screen is None and ...` — `screen_products`(위)는 "screen 자체가
-    # 없다"와 "screen 은 왔는데 정제 후 products 가 0건"을 똑같이 falsy `[]` 로 뭉갠다. 후자에서
-    # `elif reco_cards:` 로 그냥 넘어가면 사용자가 지금 보고 있는(비어 있는) 화면과 무관한
-    # **이전 턴 추천 카드**로 순번·이름 해소가 돌아 오담기가 난다(재현: 이전 턴 카드 A·B·C
-    # + 이번 턴 `screen.products == []` + `"3번째 거 담아줘"` → C 오확정). 바로 아래
-    # `screen_reference_attempted` 의 F29 주석이 이미 세운 구분("화면이 없다"는 FE 가 `screen`
-    # 자체를 안 보냈다는 뜻이지, 화면은 왔는데 정제 후 상품이 비었다는 뜻이 아니다)과 정확히
-    # 같은 원칙을 여기서도 지킨다 — 후자는 "표면은 있는데 확정할 게 없다"(F21 사례)이지 "다른
-    # 표면으로 갈아탄다"가 아니다. `screen is None` 으로 좁히면 화면이 왔지만 비어 있는 턴은
-    # `surface = []`(아래 else)로 떨어져 해소기를 아예 돌리지 않는다 — #571 이전 동작(LLM 산출
-    # 존중 + `allowed` 가드 유지)과 같다.
+    # [#664] 추천 패널은 상품 ID를 재전송하지 않고 chat pageType+columns만 보낸다. 추천 순서가
+    # 증명된 경우에는 좌표를 열고, 그렇지 않으면 표면은 유지하되 columns를 닫아 되묻게 한다.
+    elif (
+        screen is not None
+        and screen.page_type == "chat"
+        # JSON 좌표가 있으면 columns 누락도 LLM productId로 폴백하지 않고 아래 해소기에서
+        # 재질문해야 한다. 좌표가 없는 빈 chat screen은 종전대로 추천 표면으로 간주하지 않는다.
+        and (screen.columns is not None or decision.screen_reference is not None)
+        and reco_cards
+    ):
+        surface = reco_cards
+        surface_columns = screen.columns if reco_order_verified else None
+        surface_positional_order_verified = reco_order_verified
+        surface_name_confirmation_enabled = True
+    # 그 밖의 빈 screen은 사용자가 이전 추천 패널을 보고 있다는 증거가 아니다. 추천 패널의 양성
+    # 신호가 없으면 screen 자체가 없는 경우에만 직전 추천 표면으로 폴백한다.
     elif screen is None and reco_cards:
         surface = reco_cards
         surface_columns = None
-        surface_positional_order_verified = (
-            reco_state.ordinal_span > 0 and reco_state.ordinal_span == reco_state.turn_count
-        )
+        surface_positional_order_verified = reco_order_verified
         surface_name_confirmation_enabled = True
     else:
         surface = []
@@ -1664,6 +1673,7 @@ async def _run_buyer_turn_impl(
                 name_confirmation_enabled=surface_name_confirmation_enabled,
                 negation_markers=settings.utterance_negation_markers,
                 prefix_negation_markers=settings.utterance_prefix_negation_markers,
+                structured_reference=decision.screen_reference,
             )
             if resolved is not None:
                 logger.info(
@@ -1742,9 +1752,10 @@ async def _run_buyer_turn_impl(
     # 턴에도 추천 카드는 화면에 남아 있고, 화면 표면(`screen is not None`)이 오늘 이미 그렇게
     # 동작한다(그 항도 `screen_context_active` 로 게이트되지 않는다) — 추천 표면에 같은 규칙을
     # 적용한 것뿐이라 새 비대칭이 생기지 않는다(우연이 아니라 판단이다).
-    screen_reference_attempted = (
-        screen is not None or bool(surface)
-    ) and mentions_screen_reference(request.message, settings)
+    screen_reference_attempted = (screen is not None or bool(surface)) and (
+        mentions_screen_reference(request.message, settings)
+        or decision.screen_reference is not None
+    )
 
     if decision.intent == "cart_add":
         if trace := current_request_trace():
@@ -1761,6 +1772,7 @@ async def _run_buyer_turn_impl(
                 screen_reason=screen_reason,
                 screen_reference_attempted=screen_reference_attempted,
                 screen_resolved=screen_resolved,
+                product_names=cart_product_names,
                 # [이슈 #455] 누적 필터(prior) 우선 + 이번 턴 산출(decision.filters) — 옵션 되물음
                 # 좁히기의 조건어 원천. 담기 흐름 밖의 다른 라우팅·프롬프트는 건드리지 않는다.
                 condition_terms=cart_condition_terms(prior, decision.filters),

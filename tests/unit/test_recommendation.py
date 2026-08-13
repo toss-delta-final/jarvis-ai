@@ -5712,6 +5712,39 @@ async def test_decompose_conversation_memory_is_untrusted_json_before_current_me
     assert user.endswith("USER_MESSAGE: 지금 질문이 최우선이야")
 
 
+async def test_decompose_conversation_memory_treats_current_message_as_context_correction() -> None:
+    from app.agents.buyer.recommendation.decompose import decompose
+    from app.schemas.spring import ProductSearchFilters
+
+    llm = _DecomposePromptLLM()
+    await decompose(
+        llm,
+        query="나 여자야",
+        prior_filters=ProductSearchFilters(
+            category="남성의류 > 정장/슈트",
+            semantic_query="캐주얼 정장",
+        ),
+        profile_summary=None,
+        tier="fast",
+        recent_conversation=[
+            {
+                "user": "캐주얼 정장 추천해줘",
+                "assistant": "남성 캐주얼 정장을 추천할게요.",
+            }
+        ],
+    )
+
+    [(system, user)] = llm.calls
+    assert "정정·추가 조건" in system
+    assert "현재 사용자의 정정은 PRIOR_FILTERS와 이전 추천보다 우선" in system
+    assert "현재 발화에 상품명이 없어도" in system
+    assert "충돌하는 이전 조건은 유지하지 않는다" in system
+    assert "여성 캐주얼 정장" in system
+    assert '"category":"여성의류 > 정장세트"' in system
+    assert 'RECENT_CONVERSATION: [{"user": "캐주얼 정장 추천해줘"' in user
+    assert user.endswith("USER_MESSAGE: 나 여자야")
+
+
 async def test_decompose_none_memory_keeps_existing_prompt_byte_identical() -> None:
     from app.agents.buyer.recommendation.decompose import decompose
 

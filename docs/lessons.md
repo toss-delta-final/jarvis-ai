@@ -11,6 +11,18 @@
 - 관련: 파일/§/커밋
 ```
 
+## [2026-08-13] LLM 규칙은 출력 JSON 자리와 입력 근거가 함께 있어야 계약이 된다
+- 증상: 화면 좌표 규칙을 시스템 프롬프트에 설명했는데도 `두번째 줄 두번째 상품`이
+  `screenReference`로 나오지 않고 LLM이 `cart.productId`를 직접 골랐다.
+- 원인: 설명문만 추가하고 실제 출력 JSON 예시에 `screenReference` 필드를 넣지 않았으며,
+  FE가 보낸 `screen.columns`도 LLM 입력 payload에서 누락했다. 모델은 출력 위치와 행 너비를
+  모두 알 수 없어 기존 `cart.productId` 경로를 계속 사용했다.
+- 규칙: 구조화 출력을 추가할 때는 **출력 JSON 예시의 정확한 위치**, **판단에 필요한 입력 필드**,
+  **대표·비대상 예시**를 한 세트로 검증한다. 프롬프트 문자열 테스트는 설명문 포함 여부만 보지
+  말고 출력 예시 안의 필드와 실제 user payload 값까지 단언한다.
+- 관련: #664 `app/agents/buyer/recommendation/decompose.py::_SYSTEM_WITH_SCREEN` ·
+  `tests/unit/test_decompose.py`
+
 ## [2026-08-12] 같은 서버의 provider만 스텁으로 바꿔도 백그라운드 배치는 실 DB를 오염시킬 수 있다
 - 증상: 실제 EC2의 요청 처리 용량을 재려고 `APP_ENVIRONMENT=test`와
   `LLM_PROVIDER=scripted`만 전환하려 했지만, 요청 트래픽과 무관한 I-17 스케줄러는 계속 돌아
