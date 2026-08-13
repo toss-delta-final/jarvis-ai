@@ -1067,15 +1067,26 @@ def test_every_parsed_key_appears_in_the_output_template() -> None:
     import re
 
     from app.agents.buyer.recommendation import decompose as mod
-    from app.agents.buyer.recommendation.decompose import _SYSTEM
+    from app.agents.buyer.recommendation.decompose import (
+        _SYSTEM,
+        _SYSTEM_WITH_SCREEN,
+    )
 
     template = _SYSTEM[_SYSTEM.index("{") : _SYSTEM.index("\n}") + 2]
     source = inspect.getsource(mod)
     parsed = set(re.findall(r'data\.get\("(\w+)"', source))
     assert parsed, "파싱 키를 찾지 못했다 — 추출 정규식이 코드와 어긋났을 수 있다"
 
-    missing = sorted(k for k in parsed if f'"{k}"' not in template)
+    # screenReference는 screen이 실제로 주입된 변형 프롬프트에서만 요구·소비한다. 기본 템플릿에
+    # 넣으면 screen 없는 절대다수 호출의 바이트 동일 계약을 깨므로 이 조건부 키만 별도로 검증한다.
+    conditional_templates = {"screenReference": _SYSTEM_WITH_SCREEN}
+    missing = sorted(
+        k for k in parsed if k not in conditional_templates and f'"{k}"' not in template
+    )
     assert not missing, f"출력 템플릿에 없는 파싱 키: {missing}"
+    for key, conditional_template in conditional_templates.items():
+        assert f'"{key}"' not in template
+        assert f'"{key}"' in conditional_template
 
 
 @pytest.mark.parametrize(
@@ -1242,6 +1253,76 @@ async def test_screen_none_prompt_matches_screen_ignored_prompt() -> None:
     assert llm_a.user == llm_b.user and llm_a.system == llm_b.system
 
 
+async def test_screen_reference_json_contract_is_added_only_to_screen_prompt() -> None:
+    """screen이 있을 때만 행·열 추출 계약을 추가하고 상품 ID 계산은 모델에 맡기지 않는다."""
+    from app.agents.buyer.recommendation.decompose import _SYSTEM, build_screen_prompt, decompose
+
+    screen = build_screen_prompt(
+        _screen_context("chat", columns=3),
+        labels={"chat": "추천 상품"},
+    )
+    llm = _CapturingLLM()
+
+    await decompose(
+        llm,
+        query="두번째 줄 두번째 상품 담아줘",
+        prior_filters=None,
+        profile_summary=None,
+        tier="fast",
+        screen=screen,
+    )
+
+    assert '"screenReference": null | {' not in _SYSTEM
+    field_contract = (
+        '"screenReference": null | { "kind": "grid", "row": int|null, "column": int|null }'
+    )
+    output_template = llm.system[llm.system.index("{") : llm.system.index("\n}") + 2]
+    assert field_contract in output_template
+    assert "행과 그 행 안의" in llm.system
+    assert '"columns": 3' in llm.user
+    assert '"두 번째 옵션"' in llm.system
+    assert "index·productId를 계산하지 마세요" in llm.system
+
+
+@pytest.mark.parametrize(
+    ("raw_reference", "expected"),
+    [
+        ({"kind": "grid", "row": 2, "column": "3"}, (2, 3)),
+        ({"kind": "grid", "row": 2.0, "column": 1.0}, (2, 1)),
+        ({"kind": "grid", "row": 0, "column": 2}, (None, 2)),
+        ({"kind": "grid", "row": True, "column": -1}, (None, None)),
+        ({"kind": "ordinal", "row": 2, "column": 2}, None),
+        ([], None),
+        (None, None),
+    ],
+)
+async def test_screen_reference_json_parsing_preserves_invalid_grid_claims(
+    raw_reference: object,
+    expected: tuple[int | None, int | None] | None,
+) -> None:
+    """grid 주장은 malformed 축도 보존해 하류가 productId로 조용히 폴백하지 않게 한다."""
+    from app.agents.buyer.recommendation.decompose import build_screen_prompt
+
+    decision = await _run(
+        _raw(
+            intent="cart_add",
+            cart={"productId": 501, "quantity": 1},
+            screenReference=raw_reference,
+        ),
+        screen=build_screen_prompt(
+            _screen_context("chat", columns=3),
+            labels={"chat": "추천 상품"},
+        ),
+    )
+
+    if expected is None:
+        assert decision.screen_reference is None
+        return
+    assert decision.screen_reference is not None
+    assert decision.screen_reference.kind == "grid"
+    assert (decision.screen_reference.row, decision.screen_reference.column) == expected
+
+
 # ── 좌표 해소 산술 (정본 §3.1 `index = (row-1) × columns + (col-1)`) ──
 
 
@@ -1386,16 +1467,23 @@ def test_screen_cart_rule_is_appended_not_a_rewrite_of_the_load_bearing_cart_add
     "cart_view로 분류하지 않는 예" 블록 · repurchase 복사 금지)는 한 글자도 바뀌면 안 된다 —
     한 줄을 고칠 때마다 다른 경로가 깎이는 것이 #240 의 실측 기록이다.
     """
-    from app.agents.buyer.recommendation.decompose import _SYSTEM, _SYSTEM_WITH_SCREEN
+    from app.agents.buyer.recommendation.decompose import (
+        _SCREEN_REFERENCE_OUTPUT_FIELD,
+        _SYSTEM,
+        _SYSTEM_WITH_SCREEN,
+    )
 
     # screen 프롬프트는 원본의 **접두사를 그대로 두고 삽입만** 한다.
     anchor = "  productId 를 고르세요. 못 고르면 productId=null. quantity 기본 1."
     assert anchor in _SYSTEM
     head, tail = _SYSTEM.split(anchor, 1)
-    assert _SYSTEM_WITH_SCREEN.startswith(head + anchor)
-    assert _SYSTEM_WITH_SCREEN.endswith(tail)
+    screen_without_output_field = _SYSTEM_WITH_SCREEN.replace(_SCREEN_REFERENCE_OUTPUT_FIELD, "", 1)
+    assert screen_without_output_field.startswith(head + anchor)
+    assert screen_without_output_field.endswith(tail)
     # 삽입된 것은 SCREEN 한 규칙뿐이다.
-    inserted = _SYSTEM_WITH_SCREEN[len(head + anchor) : len(_SYSTEM_WITH_SCREEN) - len(tail)]
+    inserted = screen_without_output_field[
+        len(head + anchor) : len(screen_without_output_field) - len(tail)
+    ]
     assert "SCREEN.상품" in inserted
     assert "순번" in inserted and "줄" in inserted and "칸" in inserted
 
