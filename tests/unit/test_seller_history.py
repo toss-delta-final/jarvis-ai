@@ -24,7 +24,12 @@ from app.agents.seller.schemas import (
     ProposedChange,
     RecommendationSet,
 )
-from app.schemas.spring import SellerProductList, SellerProductRow
+from app.schemas.spring import (
+    BehaviorEventsResult,
+    BehaviorProductRow,
+    SellerProductList,
+    SellerProductRow,
+)
 from app.services.spring_client import set_spring_client
 
 _CTX = SellerContext(seller_id=7, brand_id=3)
@@ -185,6 +190,15 @@ class _StubSpring:
     async def list_products(self, brand_id, status=None, q=None, limit=None, offset=None):
         start = offset or 0
         return SellerProductList(rows=self.rows[start : start + (limit or 20)])
+
+    # [#659] 저성과 참고 문구 조회 — 임계 이상으로 두어 이 파일의 기존 반영 안내
+    # 텍스트 검증을 건드리지 않는다.
+    async def get_events(
+        self, brand_id, from_=None, to=None, event_type=None, product_id=None, group_by=None
+    ):
+        return BehaviorEventsResult(
+            rows=[BehaviorProductRow(productId=product_id, salesQuantity=999, counts={})]
+        )
 
 
 # ── parse_apply_message — 입구 ①.5 코드 선판정(엄격 전체-문장) ──────────────────
