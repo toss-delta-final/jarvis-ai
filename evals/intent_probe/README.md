@@ -71,6 +71,14 @@ uv run python -m evals.intent_probe --dump-prompt system.txt
 
 ## 기준선
 
+`baselines/fast-2026-08-13-259-decision-1/` — **#259 A/B/C 결정용 최신 A 재확인 런**.
+픽스처 v8(101셀) × N=8의 성공 표본 808개를 모두 채웠고, `mainIntent` 236/240 ·
+`cartControl` 144/144 · `screenResolution` 48/48이었다. 동시에 `general` 31/48 ·
+`switchLegacy2` 8/16 · `optionAnswer` 28/32 · `categoryMixedReplace` 24/32 ·
+`wishlistRemoveRouting` 24/32의 약축도 확인했다. **현행 A(`fast`) 유지, B(`smart`)와 C(분리)
+미채택**의 해석·비용/지연 한계는 [`DECISION-259.md`](DECISION-259.md)가 정본이다. 이 PR은
+프로덕션 코드·프롬프트·설정을 바꾸지 않는다.
+
 `baselines/fast-2026-08-04/` — 현재 `_SYSTEM`(`e5e7f9b8d844`) × `fast`(gpt-5-nano) × 앵커 B.
 후보를 잴 때 이 표와 대조한다. **단일 실행이라 채택 판정의 근거가 아니다** — 축당 ±2 흔들린다.
 
