@@ -393,11 +393,12 @@ async def run_case_arms(
     return {arm: results[arm] for arm in resolved_arms}
 
 
-async def run_probe(
+async def run_input_probe(
     llm: LLMClient,
     *,
-    cases: tuple[GoldenCase, ...],
-    fixtures: EvaluationFixtures,
+    case_inputs: tuple[RankingCaseInput, ...],
+    dataset_version: str,
+    dataset_hash: str,
     arms: tuple[str, ...],
     repeats: int,
     attempt_multiplier: int,
@@ -407,15 +408,16 @@ async def run_probe(
     alpha: float = 0.65,
     k: int = 60,
 ) -> RankingProbeRun:
-    """Fill successful samples with bounded retries and preserve every failure separately."""
+    """Evaluate prepared rerank inputs with explicit immutable dataset provenance."""
 
     resolved_arms = _validated_arms(arms)
     if repeats <= 0 or attempt_multiplier <= 0 or not order_seeds:
         raise ValueError("repeats, attempt_multiplier, and order_seeds must be positive")
+    if not dataset_version or not dataset_hash:
+        raise ValueError("dataset_version and dataset_hash must be non-empty")
     samples: list[RankingSample] = []
     failures: list[RankingFailure] = []
-    for case in cases:
-        case_input = build_case_input(case, fixtures)
+    for case_input in case_inputs:
         for order_seed in order_seeds:
             got = {arm: 0 for arm in resolved_arms}
             attempts = {arm: 0 for arm in resolved_arms}
@@ -460,7 +462,7 @@ async def run_probe(
                                 arm_result.sample,
                                 repeat=got[arm],
                                 attempt=attempts[arm],
-                                dataset_hash=str(fixtures.manifest.get("datasetHash") or "unknown"),
+                                dataset_hash=dataset_hash,
                                 prompt_hash=hashlib.sha256(prompt.encode()).hexdigest(),
                                 model_config_json=json.dumps(
                                     model_config,
@@ -481,9 +483,41 @@ async def run_probe(
         arms=resolved_arms,
         repeats=repeats,
         order_seeds=order_seeds,
+        dataset_version=dataset_version,
+        dataset_hash=dataset_hash,
+        grounding_arm=grounding_arm,
+        alpha=alpha,
+        k=k,
+    )
+
+
+async def run_probe(
+    llm: LLMClient,
+    *,
+    cases: tuple[GoldenCase, ...],
+    fixtures: EvaluationFixtures,
+    arms: tuple[str, ...],
+    repeats: int,
+    attempt_multiplier: int,
+    order_seeds: tuple[int, ...],
+    grounding_arm: GroundingArm = "validated",
+    expose_max: int = 9,
+    alpha: float = 0.65,
+    k: int = 60,
+) -> RankingProbeRun:
+    """Preserve the legacy goldenset entry point over the input-oriented probe."""
+
+    return await run_input_probe(
+        llm,
+        case_inputs=tuple(build_case_input(case, fixtures) for case in cases),
         dataset_version=str(fixtures.manifest.get("datasetVersion") or "unknown"),
         dataset_hash=str(fixtures.manifest.get("datasetHash") or "unknown"),
+        arms=arms,
+        repeats=repeats,
+        attempt_multiplier=attempt_multiplier,
+        order_seeds=order_seeds,
         grounding_arm=grounding_arm,
+        expose_max=expose_max,
         alpha=alpha,
         k=k,
     )

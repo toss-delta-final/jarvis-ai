@@ -7,8 +7,9 @@ import asyncio
 import hashlib
 import shlex
 import sys
+from collections.abc import Sequence
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 from app.agents.buyer.recommendation.rerank import (
     _SYSTEM,
@@ -25,9 +26,11 @@ from evals.metrics.run_manifest import build_run_manifest
 from evals.metrics.runner import load_evaluation_fixtures
 from evals.model_eval.budget import BudgetExceeded, BudgetLimits, BudgetTracker
 from evals.model_eval.pricing import DEFAULT_PRICING_PATH, PriceBook
+from evals.rerank_holdout_v2.adapter import build_case_input as build_holdout_case_input
+from evals.rerank_holdout_v2.io import load_dataset as load_holdout_dataset
 from evals.rerank_scoring.fakes import ScriptedScoringLLM
 from evals.rerank_scoring.report import write_artifacts
-from evals.rerank_scoring.runner import run_probe
+from evals.rerank_scoring.runner import run_input_probe, run_probe
 
 EXIT_OK = 0
 EXIT_REJECTED = 2
@@ -38,6 +41,11 @@ ALL_ARMS: tuple[RankingArm, ...] = ("current", "structured", "hybrid")
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="buyer rerank scoring paired 평가")
     parser.add_argument("--arms", required=True, help="all 또는 current,structured,hybrid")
+    parser.add_argument(
+        "--dataset",
+        default="goldenset-dev",
+        choices=("goldenset-dev", "rerank-holdout-v2"),
+    )
     parser.add_argument("--split", default="dev", choices=("dev",))
     parser.add_argument("--case-ids", help="caseId 쉼표 목록")
     parser.add_argument("--repeats", type=int, default=1)
@@ -78,16 +86,19 @@ def _parse_order_seeds(raw: str) -> tuple[int, ...]:
     return values
 
 
-def _select_cases(raw: str | None):
-    cases = tuple(load_cases("dev"))
+def _filter_cases(cases: Sequence[Any], raw: str | None):
     if raw is None:
-        return cases
+        return tuple(cases)
     requested = {value.strip() for value in raw.split(",") if value.strip()}
     known = {case.case_id for case in cases}
     missing = sorted(requested - known)
     if not requested or missing:
         raise ValueError(f"unknown case IDs: {missing or sorted(requested)}")
     return tuple(case for case in cases if case.case_id in requested)
+
+
+def _select_cases(raw: str | None):
+    return _filter_cases(tuple(load_cases("dev")), raw)
 
 
 def _prompt_hash(value: str) -> str:
@@ -103,14 +114,18 @@ def _manifest(
     command: str,
     dry_run: bool,
     arms: tuple[RankingArm, ...],
-    cases,
+    case_ids: Sequence[str],
+    dataset_name: str,
+    dataset_version: str,
+    dataset_hash: str,
+    label_status: str,
+    confirmatory: bool,
     repeats: int,
     attempt_multiplier: int,
     order_seeds: tuple[int, ...],
     alpha: float,
     k: int,
     grounding_arm: GroundingArm,
-    fixtures,
     model_config: dict[str, object],
     budget: dict[str, object],
     pacer: dict[str, object],
@@ -124,9 +139,12 @@ def _manifest(
         "command": command,
         "dryRun": dry_run,
         "arms": list(arms),
-        "caseIds": [case.case_id for case in cases],
-        "datasetVersion": fixtures.manifest.get("datasetVersion"),
-        "datasetHash": fixtures.manifest.get("datasetHash"),
+        "caseIds": list(case_ids),
+        "dataset": dataset_name,
+        "datasetVersion": dataset_version,
+        "datasetHash": dataset_hash,
+        "labelStatus": label_status,
+        "confirmatory": confirmatory,
         "promptHashes": {
             "current": _prompt_hash(current_prompt),
             "structured": scored_hash,
@@ -154,7 +172,6 @@ def main(argv: list[str] | None = None) -> int:
     try:
         arms = _parse_arms(args.arms)
         order_seeds = _parse_order_seeds(args.order_seeds)
-        cases = _select_cases(args.case_ids)
         if (
             args.repeats <= 0
             or args.attempt_multiplier <= 0
@@ -164,11 +181,45 @@ def main(argv: list[str] | None = None) -> int:
             or args.tpm <= 0
         ):
             raise ValueError("numeric limits are outside their valid ranges")
+        if args.dataset == "goldenset-dev":
+            cases = _select_cases(args.case_ids)
+            fixtures = load_evaluation_fixtures()
+            case_inputs = None
+            dataset_version = str(fixtures.manifest.get("datasetVersion") or "unknown")
+            dataset_hash = str(fixtures.manifest.get("datasetHash") or "unknown")
+            label_status = "model"
+            confirmatory = False
+        else:
+            holdout = load_holdout_dataset(label_policy="draft" if args.dry_run else "sealed")
+            if not args.dry_run and (
+                holdout.manifest.label_status != "sealed"
+                or not holdout.manifest.confirmatory_eligible
+            ):
+                raise ValueError("sealed labels required for confirmatory evaluation")
+            cases = _filter_cases(holdout.ranking_cases, args.case_ids)
+            case_inputs = tuple(
+                build_holdout_case_input(
+                    case,
+                    holdout.labels_by_case[case.case_id],
+                    holdout.catalog,
+                )
+                for case in cases
+            )
+            fixtures = None
+            dataset_version = str(holdout.manifest.dataset_version)
+            dataset_hash = str(
+                getattr(
+                    holdout.manifest,
+                    "dataset_hash",
+                    holdout.manifest.catalog_sha256,
+                )
+            )
+            label_status = str(holdout.manifest.label_status)
+            confirmatory = bool(holdout.manifest.confirmatory_eligible)
     except ValueError as exc:
         print(f"input rejected: {exc}")
         return EXIT_REJECTED
 
-    fixtures = load_evaluation_fixtures()
     provider_calls_per_cell = int("current" in arms) + int(
         bool({"structured", "hybrid"} & set(arms))
     )
@@ -214,21 +265,40 @@ def main(argv: list[str] | None = None) -> int:
         llm.model_config = model_config
 
     try:
-        run = asyncio.run(
-            run_probe(
-                llm,
-                cases=cases,
-                fixtures=fixtures,
-                arms=arms,
-                repeats=args.repeats,
-                attempt_multiplier=args.attempt_multiplier,
-                order_seeds=order_seeds,
-                grounding_arm=args.grounding_arm,
-                expose_max=9,
-                alpha=args.alpha,
-                k=args.k,
+        if case_inputs is None:
+            assert fixtures is not None
+            run = asyncio.run(
+                run_probe(
+                    llm,
+                    cases=cases,
+                    fixtures=fixtures,
+                    arms=arms,
+                    repeats=args.repeats,
+                    attempt_multiplier=args.attempt_multiplier,
+                    order_seeds=order_seeds,
+                    grounding_arm=args.grounding_arm,
+                    expose_max=9,
+                    alpha=args.alpha,
+                    k=args.k,
+                )
             )
-        )
+        else:
+            run = asyncio.run(
+                run_input_probe(
+                    llm,
+                    case_inputs=case_inputs,
+                    dataset_version=dataset_version,
+                    dataset_hash=dataset_hash,
+                    arms=arms,
+                    repeats=args.repeats,
+                    attempt_multiplier=args.attempt_multiplier,
+                    order_seeds=order_seeds,
+                    grounding_arm=args.grounding_arm,
+                    expose_max=9,
+                    alpha=args.alpha,
+                    k=args.k,
+                )
+            )
     except BudgetExceeded as exc:
         print(f"budget exceeded: {exc}")
         return EXIT_BUDGET
@@ -237,14 +307,18 @@ def main(argv: list[str] | None = None) -> int:
         command=_command(argv),
         dry_run=args.dry_run,
         arms=arms,
-        cases=cases,
+        case_ids=[case.case_id for case in cases],
+        dataset_name=args.dataset,
+        dataset_version=dataset_version,
+        dataset_hash=dataset_hash,
+        label_status=label_status,
+        confirmatory=confirmatory,
         repeats=args.repeats,
         attempt_multiplier=args.attempt_multiplier,
         order_seeds=order_seeds,
         alpha=args.alpha,
         k=args.k,
         grounding_arm=args.grounding_arm,
-        fixtures=fixtures,
         model_config=model_config,
         budget=budget.snapshot(),
         pacer=pacer.snapshot(),
