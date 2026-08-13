@@ -113,6 +113,32 @@ fallback/무결성 카운트를 보존한다. profile 원문이나 credential은
 `results.json`은 두 CSV에서 다시 계산할 수 있으며, 데이터셋·prompt·model provenance가
 섞이면 비교 전에 실패한다.
 
+## LLM blind judge
+
+저장된 200-case output은 heuristic label을 전혀 소비하지 않는 별도 LLM A/B judge로 비교할 수
+있다. judge는 query, profile summary, 두 익명 랭킹과 양쪽이 공통으로 받은 중립 상품 사실만 본다.
+arm 이름·scoring decision·search rank·candidate provenance·relevance label·ideal order는 받지 않는다.
+모든 pair는 A/B와 B/A로 두 번 판정하며, 실제 arm으로 역매핑했을 때 결과가 일치하지 않으면
+`unstable`로 남기고 decisive 승률에서 제외한다.
+
+```bash
+uv run python -m evals.rerank_scoring.judge_cli \
+  --source-dir evals/rerank_scoring/baselines/20260813-holdout-v2-draft-current-structured-n3 \
+  --dataset-root evals/rerank_holdout_v2/dataset \
+  --judge-tier smart --attempt-multiplier 3 --concurrency 1 \
+  --max-calls 3594 --max-cost-usd 20 \
+  --out artifacts/rerank-scoring/blind-judge-001
+```
+
+Live 실행은 `--max-calls`와 `--max-cost-usd`를 명시해야 한다. `RecordingLLM`의 정확한 usage
+귀속을 유지하기 위해 한 process 안의 기본 concurrency는 1이며, 병렬 실행이 필요하면 case를
+서로 겹치지 않는 process로 shard한 뒤 coordinator artifact 기준으로 합쳐야 한다. 출력은 공개
+`presentations.jsonl`, A/B-only `judge_responses.jsonl`, 비공개 조정용
+`coordinator_mapping.jsonl`, `failures.jsonl`, `results.json`, `run_manifest.json`, `report.md`다.
+
+이 평가는 arm identity와 위치 편향을 줄이지만 여전히 synthetic judge 기반 exploratory evidence다.
+사람 blind review나 production A/B를 대체하지 않고 confirmatory 우월성을 주장하지 않는다.
+
 ## 결과 재계산
 
 아래 명령은 두 raw CSV와 manifest만으로 저장된 `results.json`을 재계산한다. dry-run이면

@@ -7,11 +7,13 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from evals.rerank_scoring.judge_cli import EXIT_OK, EXIT_REJECTED, main as judge_main
 from evals.rerank_scoring.judge import (
     analyze_judgments,
     build_presentations,
     load_source_pairs,
 )
+from evals.rerank_scoring.judge_report import reproduce_analysis
 from evals.rerank_scoring.judge_schema import (
     CoordinatorMapping,
     JudgeResponse,
@@ -288,3 +290,106 @@ def test_analysis_maps_swaps_excludes_unstable_pairs_and_clusters_by_case() -> N
     }
     assert first["slices"]["guest"]["pairOutcomes"]["structured"] == 3
     assert first["slices"]["personalization"]["pairOutcomes"]["unstable"] == 2
+
+
+def test_dry_run_cli_writes_reproducible_blind_artifacts_and_report(tmp_path: Path) -> None:
+    out = tmp_path / "blind-run"
+    exit_code = judge_main(
+        [
+            "--source-dir",
+            str(SOURCE_DIR),
+            "--dataset-root",
+            str(DATASET_ROOT),
+            "--case-ids",
+            "rh2-adversarial-0001",
+            "--dry-run",
+            "--out",
+            str(out),
+        ]
+    )
+
+    assert exit_code == EXIT_OK
+    assert {path.name for path in out.iterdir()} == {
+        "presentations.jsonl",
+        "judge_responses.jsonl",
+        "coordinator_mapping.jsonl",
+        "failures.jsonl",
+        "results.json",
+        "run_manifest.json",
+        "report.md",
+    }
+    results = json.loads((out / "results.json").read_text(encoding="utf-8"))
+    assert results["status"] == "exploratory"
+    assert results["coverage"] == {
+        "plannedPresentations": 6,
+        "completedPresentations": 6,
+        "failedPresentations": 0,
+        "plannedPairs": 3,
+        "completePairs": 3,
+        "incompletePairs": 0,
+    }
+    assert results["pairOutcomes"] == {
+        "structured": 3,
+        "current": 0,
+        "tie": 0,
+        "unstable": 0,
+    }
+    assert reproduce_analysis(out) == results
+
+    public_text = (out / "presentations.jsonl").read_text(encoding="utf-8").lower()
+    response_text = (out / "judge_responses.jsonl").read_text(encoding="utf-8").lower()
+    for forbidden in (
+        "current",
+        "structured",
+        "hybrid",
+        "relevancegrades",
+        "rankingdecisions",
+        "candidateprovenance",
+        "searchrank",
+        "idealorder",
+    ):
+        assert forbidden not in public_text
+        assert forbidden not in response_text
+    mapping_text = (out / "coordinator_mapping.jsonl").read_text(encoding="utf-8")
+    assert '"sideAArm"' in mapping_text
+    assert '"structured"' in mapping_text
+    report = (out / "report.md").read_text(encoding="utf-8").lower()
+    assert "exploratory" in report
+    assert "not confirmatory" in report
+    assert "position" in report
+
+
+def test_cli_refuses_output_reuse_and_live_execution_without_explicit_budgets(
+    tmp_path: Path,
+) -> None:
+    existing = tmp_path / "existing"
+    existing.mkdir()
+    common = [
+        "--source-dir",
+        str(SOURCE_DIR),
+        "--dataset-root",
+        str(DATASET_ROOT),
+        "--case-ids",
+        "rh2-adversarial-0001",
+    ]
+
+    assert judge_main([*common, "--dry-run", "--out", str(existing)]) == EXIT_REJECTED
+    assert judge_main([*common, "--out", str(tmp_path / "live")]) == EXIT_REJECTED
+
+
+def test_source_loader_rejects_dataset_hash_drift(tmp_path: Path) -> None:
+    rows = SOURCE_SAMPLES.read_text(encoding="utf-8").splitlines()
+    header = rows[0]
+    first_case_rows = [row for row in rows[1:] if row.startswith("rh2-adversarial-0001,")][:2]
+    assert len(first_case_rows) == 2
+    bad_hash = "f" * 64
+    original_hash = "4fa52e596f97c60c2b067c0ca6b30345ed574fcb7ad67acb67009b344a49f87b"
+    path = tmp_path / "samples.csv"
+    path.write_text(
+        "\n".join([header, *(row.replace(original_hash, bad_hash) for row in first_case_rows)])
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="dataset hash mismatch"):
+        load_source_pairs(path, dataset_root=DATASET_ROOT)
