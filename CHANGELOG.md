@@ -12,6 +12,14 @@
 ## [Unreleased]
 
 ### Added
+- **#662 — 구매자 장바구니 옵션 재질문에 대상 상품명을 표시한다**
+  (api-spec §3.1·§4.1, v0.33.2). 기본·조건 좁힘·색상 미충족
+  `CART_OPTION_REQUIRED`, I-1 힌트 폴백, `CART_OPTION_INVALID`의 다섯 경로에서
+  최종 확정 `productId`의 이름을 추천 상태 또는 현재 `screen.products`에서 찾아 기존
+  옵션 목록 앞에 `**상품:** <상품명>`으로 표시한다. 현재 화면 이름을 우선하고,
+  `_strip_unsafe` 정제 후 40자를 초과하면 앞 40자와 `…`를 쓴다. 이름이 없으면 기존
+  문구를 그대로 유지하며 표시 이름은 `PendingAdd`·Spring 요청에 저장하지 않는다.
+  SSE·Spring·FE·DB 계약과 옵션 선택·자동 선택·추가금·pending 동작은 불변이다.
 - **#634 관측 집계 스크립트 비용 축에 min/max·role 분해 추가** — `_cost_stats()`가 최소/최대
   비용을 반환하도록 확장하고, 비용 롤업에 `role`(seller/member/guest)·`model`(fan-in
   귀속)·`length`(`messageLength` 고정 버킷) 축을 신설했다. Markdown 비용 표에 최소/최대(USD)
@@ -87,6 +95,11 @@
   포함한다. 실제 human response는 포함하지 않으며 결과는 exploratory로만 해석한다.
 
 ### Fixed
+- **#664 — 추천 카드 그리드에서 `2번째 줄 3번째 상품`이 전체 3번째 상품으로 오해되던
+  오담기를 고쳤다** (api-spec §3.1, v0.33.3). 추천 상품 ID를 FE가 다시 보내지 않는 기존
+  위조 방지 계약은 유지하고, `pageType=chat`·`columns`를 서버가 이미 아는 이번 턴 추천
+  순서와 결합한다. `ordinal_span == turn_count`로 단일 목록 순서가 증명된 경우에만 좌표를
+  확정하며, 다목록·BUY_ALL과 추천 패널이 아닌 빈 screen은 기존처럼 안전하게 되묻는다.
 - **#639 — 추천 카드에서 사용자가 상품명의 유일 토큰을 지목했는데 LLM이 같은 허용 목록 안의
   다른 상품을 골라 오담기하던 결함을 고쳤다.** 추천 카드 표면에 한해 상품명과 발화를 NFKC +
   casefold 기반 정확 토큰으로 비교하고, 숫자 전용·1글자·담기 명령·장바구니 문맥 토큰을 제외한
