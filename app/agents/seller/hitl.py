@@ -174,12 +174,11 @@ def validate_draft(
     받은 뒤에야 실패하는 것보다, 스트림 1에서 되묻는 쪽이 계약(보여준 것==실행)에
     부합한다. 여기서 통과한 draft 는 confirm 시점에 캐스팅이 실패하지 않는다.
 
-    `row`(#620, 선택) — op="update" 에서 price/original_price 를 건드릴 때만 호출부가
-    미리 조회해 넘긴다(추가 Spring 왕복, `api.seller`·`history.apply_recommendation`
-    경유). 있으면 BE `validatePriceRange` 와 같은 규칙(price ≤ originalPrice, 생략
-    필드는 저장된 값)을 여기서 미리 계산해 **카드를 보여주기 전에** 되묻는다 —
-    없으면(레거시 호출부·다른 필드만 바꾸는 update) 이 검사는 건너뛰고 confirm 시점
-    BE 422(`InvalidPrice`)에 맡긴다(레이스만 남는 안전망, `_execute_draft` 참조)."""
+    `row`(선택, 파라미터는 유지) — [D47, 2026-08-13] 여기서 쓰던 유일한 목적(price/
+    original_price 선차단, 구 #620)이 정책 폐지로 사라져 **함수 본문에서 더 이상
+    참조하지 않는다**. 호출부(`api.seller`·`history.apply_recommendation`)의 추가
+    Spring 왕복도 이제 이 용도로는 불필요 — 다른 이유로 그 조회가 필요한지 호출부
+    쪽에서 별도 확인 후 정리할 것(이 커밋 범위 밖)."""
     # [#297] ship(I-30 발송): 대상은 orderItemId 하나뿐이고 전이는 코드 고정
     # (ORDERED→SHIPPING)이라 상품 필드 검증·changes 캐스팅이 적용되지 않는다.
     # changes 는 LLM 산물을 버리고 빈 목록으로 정규화한다 — 카드 표시는 summary 가,
@@ -283,34 +282,9 @@ def validate_draft(
                 f"상품명이 {name_max_len}자를 넘어서 저장할 수 없어요. "
                 "조금 더 짧게 줄여서 다시 말씀해 주시겠어요?"
             )
-    if proposal.op == "update" and row is not None:
-        price_change = next((c for c in changes if c.field == "price"), None)
-        original_price_change = next((c for c in changes if c.field == "original_price"), None)
-        if price_change is not None or original_price_change is not None:
-            try:
-                effective_price = (
-                    _parse_int(price_change.after) if price_change is not None else row.price
-                )
-                effective_original_price = (
-                    _parse_int(original_price_change.after)
-                    if original_price_change is not None
-                    else row.original_price
-                )
-            except ValueError:
-                # 캐스팅 실패는 아래 공용 _typed_after 루프가 되묻는다 — 여기선 건너뛴다.
-                effective_price = effective_original_price = None
-            if (
-                effective_price is not None
-                and effective_original_price is not None
-                and effective_price > effective_original_price
-            ):
-                # [#620] BE validatePriceRange 와 동일 규칙(price ≤ originalPrice, 생략
-                # 필드는 저장된 값)을 카드 표시 전에 미리 계산 — confirm 후 422 로 처음
-                # 알리는 대신 여기서 되묻는다("선차단").
-                return None, (
-                    f"판매가({effective_price:,}원)가 정가({effective_original_price:,}원)보다 "
-                    "높아서 저장할 수 없어요. 가격을 다시 한번 확인해서 알려주시겠어요?"
-                )
+    # [D47, 2026-08-13] 판매가 상한(price ≤ originalPrice, 구 #620/BE D28) 정책 폐지 —
+    # 여기 있던 update 경로 선차단 검증을 제거했다. BE(SellerProductService)도 동일하게
+    # validatePriceRange 를 제거했으므로 confirm 경로에서도 더 이상 거부되지 않는다.
     if proposal.op == "create":
         forbidden = fields & _CREATE_FORBIDDEN_FIELDS
         if forbidden:
@@ -334,29 +308,8 @@ def validate_draft(
                 "상품을 등록하려면 상품명·가격·재고 수량·카테고리가 모두 필요해요. "
                 f"{', '.join(labels)} 항목이 빠져 있으니 알려주시겠어요?"
             )
-        # [#620] BE 는 originalPrice 생략 시 price 로 채운 뒤(동일값 → 무할인) 비교하므로
-        # (SellerProductService.create), 여기서 명시된 값끼리만 비교해도 규칙이 같다 —
-        # update 와 달리 create 는 partial 이 아니라 이 draft 의 changes 가 전체 값이라
-        # row 조회 없이 판단 가능하다.
-        create_price_change = next((c for c in changes if c.field == "price"), None)
-        create_original_price_change = next(
-            (c for c in changes if c.field == "original_price"), None
-        )
-        if create_price_change is not None and create_original_price_change is not None:
-            try:
-                create_price = _parse_int(create_price_change.after)
-                create_original_price = _parse_int(create_original_price_change.after)
-            except ValueError:
-                create_price = create_original_price = None
-            if (
-                create_price is not None
-                and create_original_price is not None
-                and create_price > create_original_price
-            ):
-                return None, (
-                    f"판매가({create_price:,}원)가 정가({create_original_price:,}원)보다 "
-                    "높아서 등록할 수 없어요. 가격을 다시 확인해서 알려주시겠어요?"
-                )
+        # [D47, 2026-08-13] create 경로의 price ≤ originalPrice 선차단도 update 와 함께
+        # 폐지했다(구 #620). BE 도 동일 검증을 제거했다.
         # [#506] image_url 값 검증 — 2차 방어(1차는 요청 스키마·FE 서버 라우트).
         # presigned URL 이 저장되면 만료 시점에 상품 이미지가 조용히 죽는다(FE 계약 §2.3).
         image_url = next((c.after for c in changes if c.field == "image_url"), None)
