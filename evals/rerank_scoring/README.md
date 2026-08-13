@@ -25,8 +25,8 @@ uv run python -m evals.rerank_scoring \
   --out artifacts/rerank-scoring/live-001
 ```
 
-`--case-ids buy-srch-0001,buy-srch-0002`로 범위를 제한할 수 있다. holdout은 이 CLI에서
-열지 않는다. 출력 디렉터리는 새 경로여야 하며 `samples.csv`, `failures.csv`,
+`--case-ids buy-srch-0001,buy-srch-0002`로 범위를 제한할 수 있다. 기존 2.3.0 holdout은 이
+CLI에서 다시 열지 않는다. 출력 디렉터리는 새 경로여야 하며 `samples.csv`, `failures.csv`,
 `results.json`, `run_manifest.json`, `report.md` 다섯 파일만 생성한다.
 
 30개 후보를 모두 평가하는 scored prompt는 JSON 생성 전 reasoning token도 소비한다.
@@ -54,6 +54,27 @@ Sealed holdout은 candidate commit `a01dae74`의 structured를 고정해 한 번
 19개 case×3 seeds에서 current 대비 평균 ΔnDCG@10은 `+0.0575`, 95% CI는
 `[-0.0385,+0.1696]`로 `inconclusive`였다. Production 기본은 current로 유지한다. Label을
 복제하지 않은 aggregate와 감사 정보는 `releases/20260813-holdout-structured-n3/`에 있다.
+
+## Prospective holdout v2 (200 ranking cases)
+
+새 `evals/rerank_holdout_v2/`는 기존 holdout을 늘리거나 재사용하지 않는 별도 dataset이다.
+랭킹 200건(guest/member 각 100)과 별도 safety 24건을 가진다. source는 production log가 아니라
+고정 local catalog snapshot이다.
+
+현재 committed label은 heuristic `draft`이므로 아래 scripted 실행만 허용한다.
+
+```bash
+uv run python -m evals.rerank_scoring \
+  --dataset rerank-holdout-v2 \
+  --arms current,structured \
+  --case-ids rh2-general-0001 \
+  --order-seeds 11 --dry-run \
+  --out /tmp/rerank-holdout-v2-dry
+```
+
+Dry-run manifest는 `labelStatus=draft`, `confirmatory=false`이고 품질 근거가 아니다. Live 실행은
+두 명의 실제 독립 사람 검수, 완전한 adjudication, sealed manifest가 없으면 provider 생성 전에
+실패한다. 생성·감사·검수·봉인 절차는 `evals/rerank_holdout_v2/README.md`가 정본이다.
 
 `samples.csv`는 후보 permutation, 원래 search rank를 담은 decision, raw response hash,
 fallback/무결성 카운트를 보존한다. profile 원문이나 credential은 기록하지 않는다.

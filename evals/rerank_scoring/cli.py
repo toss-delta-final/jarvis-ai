@@ -27,6 +27,7 @@ from evals.metrics.runner import load_evaluation_fixtures
 from evals.model_eval.budget import BudgetExceeded, BudgetLimits, BudgetTracker
 from evals.model_eval.pricing import DEFAULT_PRICING_PATH, PriceBook
 from evals.rerank_holdout_v2.adapter import build_case_input as build_holdout_case_input
+from evals.rerank_holdout_v2.io import ROOT as HOLDOUT_ROOT
 from evals.rerank_holdout_v2.io import load_dataset as load_holdout_dataset
 from evals.rerank_scoring.fakes import ScriptedScoringLLM
 from evals.rerank_scoring.report import write_artifacts
@@ -45,6 +46,11 @@ def _parser() -> argparse.ArgumentParser:
         "--dataset",
         default="goldenset-dev",
         choices=("goldenset-dev", "rerank-holdout-v2"),
+    )
+    parser.add_argument(
+        "--dataset-root",
+        type=Path,
+        help="rerank-holdout-v2 draft 또는 sealed release root",
     )
     parser.add_argument("--split", default="dev", choices=("dev",))
     parser.add_argument("--case-ids", help="caseId 쉼표 목록")
@@ -182,6 +188,8 @@ def main(argv: list[str] | None = None) -> int:
         ):
             raise ValueError("numeric limits are outside their valid ranges")
         if args.dataset == "goldenset-dev":
+            if args.dataset_root is not None:
+                raise ValueError("--dataset-root requires --dataset rerank-holdout-v2")
             cases = _select_cases(args.case_ids)
             fixtures = load_evaluation_fixtures()
             case_inputs = None
@@ -190,7 +198,10 @@ def main(argv: list[str] | None = None) -> int:
             label_status = "model"
             confirmatory = False
         else:
-            holdout = load_holdout_dataset(label_policy="draft" if args.dry_run else "sealed")
+            holdout = load_holdout_dataset(
+                args.dataset_root or HOLDOUT_ROOT,
+                label_policy="draft" if args.dry_run else "sealed",
+            )
             if not args.dry_run and (
                 holdout.manifest.label_status != "sealed"
                 or not holdout.manifest.confirmatory_eligible

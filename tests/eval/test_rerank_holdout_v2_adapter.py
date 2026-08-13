@@ -149,13 +149,22 @@ def test_dry_run_cli_accepts_one_draft_case_and_marks_non_confirmatory(
         labels_by_case=labels_by_case,
         catalog=catalog,
     )
-    monkeypatch.setattr(rerank_cli, "load_holdout_dataset", lambda *args, **kwargs: dataset)
+    selected_root = tmp_path / "selected-dataset"
+    loaded_roots = []
+
+    def fake_load(root, *args, **kwargs):
+        loaded_roots.append(root)
+        return dataset
+
+    monkeypatch.setattr(rerank_cli, "load_holdout_dataset", fake_load)
     out = tmp_path / "dry-run"
 
     code = rerank_cli.main(
         [
             "--dataset",
             "rerank-holdout-v2",
+            "--dataset-root",
+            str(selected_root),
             "--arms",
             "current,structured",
             "--case-ids",
@@ -171,6 +180,7 @@ def test_dry_run_cli_accepts_one_draft_case_and_marks_non_confirmatory(
     )
 
     assert code == rerank_cli.EXIT_OK
+    assert loaded_roots == [selected_root]
     manifest = json.loads((out / "run_manifest.json").read_text(encoding="utf-8"))
     assert manifest["dataset"] == "rerank-holdout-v2"
     assert manifest["labelStatus"] == "draft"

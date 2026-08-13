@@ -34,10 +34,10 @@
 - `evals/rerank_holdout_v2/release.py`: dual-review agreement/adjudication and sealed-release gate.
 - `evals/rerank_holdout_v2/adapter.py`: conversion into existing `RankingCaseInput` values.
 - `evals/rerank_holdout_v2/cli.py`, `__main__.py`: generate, audit, packet, and seal commands.
-- `evals/rerank_holdout_v2/cases/*.jsonl`: committed label-free ranking and safety cores.
-- `evals/rerank_holdout_v2/annotations/draft_labels.jsonl`: committed heuristic proposals.
-- `evals/rerank_holdout_v2/audit/report.json`: machine-readable validation evidence.
-- `evals/rerank_holdout_v2/manifest.json`: hashes, counts, quotas, status, and eligibility.
+- `evals/rerank_holdout_v2/dataset/cases/*.jsonl`: committed label-free ranking and safety cores.
+- `evals/rerank_holdout_v2/dataset/annotations/draft_labels.jsonl`: committed heuristic proposals.
+- `evals/rerank_holdout_v2/dataset/audit/report.json`: machine-readable validation evidence.
+- `evals/rerank_holdout_v2/dataset/manifest.json`: hashes, counts, quotas, status, and eligibility.
 - `evals/rerank_holdout_v2/README.md`: provenance, generation, annotation, and evaluation rules.
 - `evals/rerank_scoring/runner.py`: input-oriented probe loop preserving the legacy wrapper.
 - `evals/rerank_scoring/cli.py`: explicit dataset selection and release-policy preflight.
@@ -495,11 +495,11 @@ git commit -m "feat(eval): load prospective rerank cases without weakening relea
 **Files:**
 - Create: `evals/rerank_holdout_v2/cli.py`
 - Create: `evals/rerank_holdout_v2/__main__.py`
-- Create: `evals/rerank_holdout_v2/cases/ranking_core.jsonl`
-- Create: `evals/rerank_holdout_v2/cases/safety.jsonl`
-- Create: `evals/rerank_holdout_v2/annotations/draft_labels.jsonl`
-- Create: `evals/rerank_holdout_v2/audit/report.json`
-- Create: `evals/rerank_holdout_v2/manifest.json`
+- Create: `evals/rerank_holdout_v2/dataset/cases/ranking_core.jsonl`
+- Create: `evals/rerank_holdout_v2/dataset/cases/safety.jsonl`
+- Create: `evals/rerank_holdout_v2/dataset/annotations/draft_labels.jsonl`
+- Create: `evals/rerank_holdout_v2/dataset/audit/report.json`
+- Create: `evals/rerank_holdout_v2/dataset/manifest.json`
 - Test: extend `tests/eval/test_rerank_holdout_v2_generation.py`
 
 **Interfaces:**
@@ -559,8 +559,8 @@ uv run pytest tests/eval/test_rerank_holdout_v2_generation.py \
   tests/eval/test_rerank_holdout_v2_validation.py -q
 tmp=$(mktemp -d)
 uv run python -m evals.rerank_holdout_v2 generate --out "$tmp/dataset" --seed 631200
-diff -qr evals/rerank_holdout_v2/cases "$tmp/dataset/cases"
-diff -q evals/rerank_holdout_v2/annotations/draft_labels.jsonl \
+diff -qr evals/rerank_holdout_v2/dataset/cases "$tmp/dataset/cases"
+diff -q evals/rerank_holdout_v2/dataset/annotations/draft_labels.jsonl \
   "$tmp/dataset/annotations/draft_labels.jsonl"
 ```
 
