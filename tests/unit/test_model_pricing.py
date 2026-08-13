@@ -41,8 +41,8 @@ def test_default_prices_match_pricing_manifest_exactly() -> None:
         assert entry.source == manifest_entry["source"]
 
 
-def test_settings_defaults_expose_both_manifest_models() -> None:
-    """Settings() 기본값이 두 모델의 입력·출력 단가를 모두 노출하고 값이 manifest 와 같다."""
+def test_settings_defaults_expose_all_manifest_models() -> None:
+    """Settings() 기본값이 모든 모델의 입력·출력 단가를 노출하고 값이 manifest 와 같다."""
     settings = Settings(_env_file=None)
     manifest = PriceBook.load()
     for entry in manifest.entries.values():
@@ -57,10 +57,20 @@ def test_gpt_5_6_luna_uses_official_cache_aware_prices() -> None:
     """2026-08-13 공식 모델 문서 단가와 캐시 쓰기 1.25배 규칙을 고정한다."""
     entry = PriceBook.load().entries["gpt-5.6-luna"]
 
-    assert entry["inPer1k"] == 0.0002
-    assert entry["cachedInPer1k"] == 0.00002
-    assert entry["cacheWritePer1k"] == 0.00025
-    assert entry["outPer1k"] == 0.0012
+    assert entry["inPer1k"] == 0.001
+    assert entry["cachedInPer1k"] == 0.0001
+    assert entry["cacheWritePer1k"] == 0.00125
+    assert entry["outPer1k"] == 0.006
+
+
+def test_gpt_5_6_sol_uses_official_cache_aware_prices() -> None:
+    """Codex blind judge와 API judge가 같은 공식 Sol 단가를 사용한다."""
+    entry = PriceBook.load().entries["gpt-5.6-sol"]
+
+    assert entry["inPer1k"] == 0.005
+    assert entry["cachedInPer1k"] == 0.0005
+    assert entry["cacheWritePer1k"] == 0.00625
+    assert entry["outPer1k"] == 0.03
 
 
 def test_price_book_cost_separates_cached_reads_and_writes() -> None:
@@ -73,7 +83,7 @@ def test_price_book_cost_separates_cached_reads_and_writes() -> None:
         cache_write_tokens=100,
     )
 
-    assert cost == pytest.approx(0.000733)
+    assert cost == pytest.approx(0.003665)
 
 
 def test_default_price_tables_are_isolated_between_instances() -> None:
