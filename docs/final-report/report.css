@@ -28,7 +28,7 @@
 }
 
 @page front {
-  margin: 16mm 16mm 17mm;
+  margin: 15mm 14mm 16mm;
 
   @bottom-left {
     content: "Jarvis AI · 최종 보고서";
@@ -46,7 +46,7 @@
 }
 
 @page body {
-  margin: 18mm 16mm 18mm;
+  margin: 16mm 14mm 16mm;
 
   @top-left {
     content: "JARVIS · AGENTIC COMMERCE";
@@ -101,9 +101,9 @@
 html {
   font-family: "Jarvis Sans", "D2Coding", sans-serif;
   color: var(--ink);
-  font-size: 9.15pt;
-  line-height: 1.58;
-  word-break: keep-all;
+  font-size: 8.8pt;
+  line-height: 1.5;
+  overflow-wrap: break-word;
 }
 
 body {
@@ -112,7 +112,7 @@ body {
 }
 
 p {
-  margin: 0 0 2.8mm;
+  margin: 0 0 2.3mm;
   text-align: justify;
 }
 
@@ -331,8 +331,8 @@ code {
   gap: 4mm;
   align-items: flex-start;
   border-bottom: 0.35mm solid var(--line);
-  padding-bottom: 4.5mm;
-  margin-bottom: 6mm;
+  padding-bottom: 4mm;
+  margin-bottom: 5mm;
 }
 
 .chapter-no {
@@ -358,7 +358,7 @@ code {
 }
 
 h2 {
-  margin: 7mm 0 3mm;
+  margin: 5.5mm 0 2.5mm;
   color: #152344;
   font-size: 14pt;
   letter-spacing: -0.035em;
@@ -366,7 +366,7 @@ h2 {
 }
 
 h3 {
-  margin: 4.8mm 0 2mm;
+  margin: 4mm 0 1.7mm;
   color: #274063;
   font-size: 10.5pt;
   break-after: avoid;
@@ -375,7 +375,7 @@ h3 {
 .card {
   border: 0.25mm solid var(--line);
   border-radius: 2.4mm;
-  padding: 4mm;
+  padding: 3.5mm;
   background: #fff;
 }
 
@@ -394,8 +394,8 @@ h3 {
 }
 
 .callout {
-  margin: 4mm 0;
-  padding: 4mm 5mm;
+  margin: 3.5mm 0;
+  padding: 3.5mm 4.5mm;
   border-left: 1mm solid var(--blue);
   background: #f1f5fd;
   color: #283956;
@@ -460,9 +460,9 @@ li {
 table {
   width: 100%;
   border-collapse: collapse;
-  margin: 3.5mm 0 4mm;
-  font-size: 7.7pt;
-  line-height: 1.42;
+  margin: 3mm 0 3.5mm;
+  font-size: 7.4pt;
+  line-height: 1.36;
   break-inside: avoid;
 }
 
@@ -482,12 +482,12 @@ th {
   color: white;
   font-weight: 700;
   text-align: left;
-  padding: 2.2mm 2.3mm;
+  padding: 1.9mm 2mm;
   border: 0.2mm solid #263758;
 }
 
 td {
-  padding: 2mm 2.3mm;
+  padding: 1.7mm 2mm;
   border: 0.2mm solid var(--line);
   vertical-align: top;
 }
@@ -498,7 +498,7 @@ tbody tr:nth-child(even) td {
 
 .compact-table td,
 .compact-table th {
-  padding: 1.5mm 1.8mm;
+  padding: 1.25mm 1.6mm;
 }
 
 .status-pass {
@@ -512,8 +512,8 @@ tbody tr:nth-child(even) td {
 }
 
 figure {
-  margin: 4.5mm 0;
-  padding: 3.5mm;
+  margin: 4mm 0;
+  padding: 3mm;
   border: 0.25mm solid var(--line);
   border-radius: 2.5mm;
   background: #fbfcfe;
@@ -534,7 +534,7 @@ figcaption {
 }
 
 .source-note {
-  margin: 2mm 0 4mm;
+  margin: 1.5mm 0 2.5mm;
   color: #778299;
   font-size: 7.1pt;
   line-height: 1.45;
@@ -576,13 +576,13 @@ figcaption {
   display: flex;
   gap: 2mm;
   align-items: stretch;
-  margin: 4mm 0;
+  margin: 3.5mm 0;
   break-inside: avoid;
 }
 
 .step {
   flex: 1 1 0;
-  padding: 3mm 2.5mm;
+  padding: 2.7mm 2.2mm;
   border-radius: 2mm;
   background: var(--soft);
   border-top: 0.9mm solid var(--teal);
@@ -599,8 +599,8 @@ figcaption {
 }
 
 .quote {
-  margin: 4mm 0;
-  padding: 5mm 6mm;
+  margin: 3.5mm 0;
+  padding: 4.5mm 5.5mm;
   border-radius: 2mm;
   background: var(--navy);
   color: white;
@@ -679,6 +679,43 @@ figcaption {
   break-inside: avoid;
   text-align: left;
   margin-bottom: 2.5mm;
+}
+
+.search-figure svg {
+  width: 90%;
+  margin: 0 auto;
+}
+
+.compact-chapter {
+  font-size: 8.25pt;
+  line-height: 1.42;
+}
+
+.compact-chapter h2 {
+  margin-top: 4.4mm;
+  margin-bottom: 2mm;
+}
+
+.compact-chapter table {
+  font-size: 7.05pt;
+}
+
+.compact-chapter li {
+  margin-bottom: 0.8mm;
+}
+
+.compact-chapter .references {
+  font-size: 6.7pt;
+  line-height: 1.3;
+}
+
+.compact-chapter .references p {
+  margin-bottom: 1.5mm;
+}
+
+.compact-chapter .end-mark {
+  margin-top: 6mm;
+  padding-top: 3mm;
 }
 
 .end-mark {

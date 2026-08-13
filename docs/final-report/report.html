@@ -247,21 +247,18 @@
     </div>
 
     <h2>3.1 전체 아키텍처</h2>
-    <figure>
+    <figure class="search-figure">
       <svg viewBox="0 0 920 330" role="img" aria-label="Jarvis 전체 시스템 아키텍처">
         <defs>
           <marker id="arrow-a" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#3260bd"/></marker>
-          <style>
-            .a-box{fill:#fff;stroke:#9fb0c8;stroke-width:2}.a-ai{fill:#e9f7f5;stroke:#168b8d;stroke-width:3}.a-db{fill:#eef3fb;stroke:#5072a7;stroke-width:2}.a-t{font:700 20px sans-serif;fill:#172033}.a-s{font:15px sans-serif;fill:#536079}.a-l{stroke:#3260bd;stroke-width:2.5;fill:none;marker-end:url(#arrow-a)}.a-d{stroke-dasharray:8 6}
-          </style>
         </defs>
-        <rect class="a-box" x="20" y="115" width="145" height="92" rx="14"/><text class="a-t" x="92" y="150" text-anchor="middle">사용자</text><text class="a-s" x="92" y="177" text-anchor="middle">자연어 요청</text>
-        <rect class="a-box" x="210" y="90" width="155" height="142" rx="14"/><text class="a-t" x="287" y="128" text-anchor="middle">React FE</text><text class="a-s" x="287" y="157" text-anchor="middle">채팅 UI · SSE</text><text class="a-s" x="287" y="183" text-anchor="middle">상품 카드 조회</text>
-        <rect class="a-ai" x="415" y="42" width="250" height="238" rx="18"/><text class="a-t" x="540" y="79" text-anchor="middle">Jarvis AI</text><rect x="445" y="99" width="190" height="45" rx="8" fill="#fff"/><text class="a-s" x="540" y="127" text-anchor="middle">Buyer · Seller Agent</text><rect x="445" y="155" width="190" height="45" rx="8" fill="#fff"/><text class="a-s" x="540" y="183" text-anchor="middle">Profile · Search · SSE</text><rect x="445" y="211" width="190" height="42" rx="8" fill="#fff"/><text class="a-s" x="540" y="237" text-anchor="middle">JWT · Guardrail · Trace</text>
-        <rect class="a-box" x="715" y="70" width="180" height="125" rx="14"/><text class="a-t" x="805" y="108" text-anchor="middle">Spring BE</text><text class="a-s" x="805" y="138" text-anchor="middle">상품 · 주문 · 장바구니</text><text class="a-s" x="805" y="164" text-anchor="middle">원본·트랜잭션 권위</text>
-        <rect class="a-db" x="705" y="238" width="95" height="62" rx="12"/><text class="a-s" x="752" y="264" text-anchor="middle">AI</text><text class="a-s" x="752" y="285" text-anchor="middle">Postgres×2</text>
-        <rect class="a-db" x="817" y="238" width="88" height="62" rx="12"/><text class="a-s" x="861" y="264" text-anchor="middle">LLM</text><text class="a-s" x="861" y="285" text-anchor="middle">fast/smart</text>
-        <path class="a-l" d="M165 161 H210"/><path class="a-l" d="M365 161 H415"/><path class="a-l" d="M665 127 H715"/><path class="a-l" d="M715 169 H665"/><path class="a-l" d="M665 235 L705 258"/><path class="a-l a-d" d="M665 215 L817 258"/>
+        <rect x="20" y="115" width="145" height="92" rx="14" fill="#ffffff" stroke="#9fb0c8" stroke-width="2"/><text x="92" y="150" text-anchor="middle" font-family="sans-serif" font-size="20" font-weight="700" fill="#172033">사용자</text><text x="92" y="177" text-anchor="middle" font-family="sans-serif" font-size="15" fill="#536079">자연어 요청</text>
+        <rect x="210" y="90" width="155" height="142" rx="14" fill="#ffffff" stroke="#9fb0c8" stroke-width="2"/><text x="287" y="128" text-anchor="middle" font-family="sans-serif" font-size="20" font-weight="700" fill="#172033">React FE</text><text x="287" y="157" text-anchor="middle" font-family="sans-serif" font-size="15" fill="#536079">채팅 UI · SSE</text><text x="287" y="183" text-anchor="middle" font-family="sans-serif" font-size="15" fill="#536079">상품 카드 조회</text>
+        <rect x="415" y="42" width="250" height="238" rx="18" fill="#e9f7f5" stroke="#168b8d" stroke-width="3"/><text x="540" y="79" text-anchor="middle" font-family="sans-serif" font-size="20" font-weight="700" fill="#172033">Jarvis AI</text><rect x="445" y="99" width="190" height="45" rx="8" fill="#ffffff"/><text x="540" y="127" text-anchor="middle" font-family="sans-serif" font-size="15" fill="#536079">Buyer · Seller Agent</text><rect x="445" y="155" width="190" height="45" rx="8" fill="#ffffff"/><text x="540" y="183" text-anchor="middle" font-family="sans-serif" font-size="15" fill="#536079">Profile · Search · SSE</text><rect x="445" y="211" width="190" height="42" rx="8" fill="#ffffff"/><text x="540" y="237" text-anchor="middle" font-family="sans-serif" font-size="15" fill="#536079">JWT · Guardrail · Trace</text>
+        <rect x="715" y="70" width="180" height="125" rx="14" fill="#ffffff" stroke="#9fb0c8" stroke-width="2"/><text x="805" y="108" text-anchor="middle" font-family="sans-serif" font-size="20" font-weight="700" fill="#172033">Spring BE</text><text x="805" y="138" text-anchor="middle" font-family="sans-serif" font-size="15" fill="#536079">상품 · 주문 · 장바구니</text><text x="805" y="164" text-anchor="middle" font-family="sans-serif" font-size="15" fill="#536079">원본·트랜잭션 권위</text>
+        <rect x="705" y="238" width="95" height="62" rx="12" fill="#eef3fb" stroke="#5072a7" stroke-width="2"/><text x="752" y="264" text-anchor="middle" font-family="sans-serif" font-size="15" fill="#536079">AI</text><text x="752" y="285" text-anchor="middle" font-family="sans-serif" font-size="15" fill="#536079">Postgres×2</text>
+        <rect x="817" y="238" width="88" height="62" rx="12" fill="#eef3fb" stroke="#5072a7" stroke-width="2"/><text x="861" y="264" text-anchor="middle" font-family="sans-serif" font-size="15" fill="#536079">LLM</text><text x="861" y="285" text-anchor="middle" font-family="sans-serif" font-size="15" fill="#536079">fast/smart</text>
+        <path d="M165 161 H210" stroke="#3260bd" stroke-width="2.5" fill="none" marker-end="url(#arrow-a)"/><path d="M365 161 H415" stroke="#3260bd" stroke-width="2.5" fill="none" marker-end="url(#arrow-a)"/><path d="M665 127 H715" stroke="#3260bd" stroke-width="2.5" fill="none" marker-end="url(#arrow-a)"/><path d="M715 169 H665" stroke="#3260bd" stroke-width="2.5" fill="none" marker-end="url(#arrow-a)"/><path d="M665 235 L705 258" stroke="#3260bd" stroke-width="2.5" fill="none" marker-end="url(#arrow-a)"/><path d="M665 215 L817 258" stroke="#3260bd" stroke-width="2.5" stroke-dasharray="8 6" fill="none" marker-end="url(#arrow-a)"/>
       </svg>
       <figcaption>그림 1. React–AI–Spring 3-tier와 AI 내부 저장소·LLM 의존성</figcaption>
     </figure>
@@ -340,23 +337,20 @@
     </div>
 
     <h2>4.1 Buyer Agent</h2>
-    <figure>
+    <figure class="search-figure">
       <svg viewBox="0 0 920 390" role="img" aria-label="Buyer Agent 라우팅">
         <defs>
           <marker id="arrow-b" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#4065a8"/></marker>
-          <style>
-            .b-box{fill:#fff;stroke:#9fb0c8;stroke-width:2}.b-main{fill:#e8f7f5;stroke:#168b8d;stroke-width:3}.b-lane{fill:#eef3fb;stroke:#5275ad;stroke-width:2}.b-t{font:700 18px sans-serif;fill:#172033}.b-s{font:14px sans-serif;fill:#536079}.b-l{stroke:#4065a8;stroke-width:2.4;fill:none;marker-end:url(#arrow-b)}
-          </style>
         </defs>
-        <rect class="b-box" x="330" y="20" width="260" height="62" rx="12"/><text class="b-t" x="460" y="48" text-anchor="middle">POST /chat · SSE</text><text class="b-s" x="460" y="69" text-anchor="middle">JWT identity · screen · thread</text>
-        <rect class="b-main" x="330" y="112" width="260" height="72" rx="14"/><text class="b-t" x="460" y="143" text-anchor="middle">Intent Router</text><text class="b-s" x="460" y="166" text-anchor="middle">profile + prior filters + current turn</text>
-        <rect class="b-lane" x="25" y="235" width="168" height="92" rx="12"/><text class="b-t" x="109" y="267" text-anchor="middle">Recommendation</text><text class="b-s" x="109" y="292" text-anchor="middle">decompose · search</text><text class="b-s" x="109" y="313" text-anchor="middle">rerank · push</text>
-        <rect class="b-lane" x="210" y="235" width="155" height="92" rx="12"/><text class="b-t" x="287" y="267" text-anchor="middle">Cart</text><text class="b-s" x="287" y="292" text-anchor="middle">add · view · remove</text><text class="b-s" x="287" y="313" text-anchor="middle">quantity · options</text>
-        <rect class="b-lane" x="382" y="235" width="155" height="92" rx="12"/><text class="b-t" x="459" y="267" text-anchor="middle">Wishlist</text><text class="b-s" x="459" y="292" text-anchor="middle">add · view · remove</text><text class="b-s" x="459" y="313" text-anchor="middle">screen resolution</text>
-        <rect class="b-lane" x="554" y="235" width="155" height="92" rx="12"/><text class="b-t" x="631" y="267" text-anchor="middle">Order</text><text class="b-s" x="631" y="292" text-anchor="middle">verified member</text><text class="b-s" x="631" y="313" text-anchor="middle">deterministic format</text>
-        <rect class="b-lane" x="726" y="235" width="168" height="92" rx="12"/><text class="b-t" x="810" y="267" text-anchor="middle">Fallback</text><text class="b-s" x="810" y="292" text-anchor="middle">general conversation</text><text class="b-s" x="810" y="313" text-anchor="middle">safe degrade</text>
-        <path class="b-l" d="M460 82 V112"/><path class="b-l" d="M400 184 L109 235"/><path class="b-l" d="M430 184 L287 235"/><path class="b-l" d="M460 184 V235"/><path class="b-l" d="M490 184 L631 235"/><path class="b-l" d="M520 184 L810 235"/>
-        <rect x="222" y="350" width="476" height="31" rx="8" fill="#0b1635"/><text x="460" y="371" text-anchor="middle" style="font:700 14px sans-serif;fill:#fff">공통 Guardrail · Profile Buffer · Trace · SSE Lifecycle</text>
+        <rect x="330" y="20" width="260" height="62" rx="12" fill="#ffffff" stroke="#9fb0c8" stroke-width="2"/><text x="460" y="48" text-anchor="middle" font-family="sans-serif" font-size="18" font-weight="700" fill="#172033">POST /chat · SSE</text><text x="460" y="69" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#536079">JWT identity · screen · thread</text>
+        <rect x="330" y="112" width="260" height="72" rx="14" fill="#e8f7f5" stroke="#168b8d" stroke-width="3"/><text x="460" y="143" text-anchor="middle" font-family="sans-serif" font-size="18" font-weight="700" fill="#172033">Intent Router</text><text x="460" y="166" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#536079">profile + prior filters + current turn</text>
+        <rect x="25" y="235" width="168" height="92" rx="12" fill="#eef3fb" stroke="#5275ad" stroke-width="2"/><text x="109" y="267" text-anchor="middle" font-family="sans-serif" font-size="18" font-weight="700" fill="#172033">Recommendation</text><text x="109" y="292" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#536079">decompose · search</text><text x="109" y="313" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#536079">rerank · push</text>
+        <rect x="210" y="235" width="155" height="92" rx="12" fill="#eef3fb" stroke="#5275ad" stroke-width="2"/><text x="287" y="267" text-anchor="middle" font-family="sans-serif" font-size="18" font-weight="700" fill="#172033">Cart</text><text x="287" y="292" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#536079">add · view · remove</text><text x="287" y="313" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#536079">quantity · options</text>
+        <rect x="382" y="235" width="155" height="92" rx="12" fill="#eef3fb" stroke="#5275ad" stroke-width="2"/><text x="459" y="267" text-anchor="middle" font-family="sans-serif" font-size="18" font-weight="700" fill="#172033">Wishlist</text><text x="459" y="292" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#536079">add · view · remove</text><text x="459" y="313" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#536079">screen resolution</text>
+        <rect x="554" y="235" width="155" height="92" rx="12" fill="#eef3fb" stroke="#5275ad" stroke-width="2"/><text x="631" y="267" text-anchor="middle" font-family="sans-serif" font-size="18" font-weight="700" fill="#172033">Order</text><text x="631" y="292" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#536079">verified member</text><text x="631" y="313" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#536079">deterministic format</text>
+        <rect x="726" y="235" width="168" height="92" rx="12" fill="#eef3fb" stroke="#5275ad" stroke-width="2"/><text x="810" y="267" text-anchor="middle" font-family="sans-serif" font-size="18" font-weight="700" fill="#172033">Fallback</text><text x="810" y="292" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#536079">general conversation</text><text x="810" y="313" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#536079">safe degrade</text>
+        <path d="M460 82 V112" stroke="#4065a8" stroke-width="2.4" fill="none" marker-end="url(#arrow-b)"/><path d="M400 184 L109 235" stroke="#4065a8" stroke-width="2.4" fill="none" marker-end="url(#arrow-b)"/><path d="M430 184 L287 235" stroke="#4065a8" stroke-width="2.4" fill="none" marker-end="url(#arrow-b)"/><path d="M460 184 V235" stroke="#4065a8" stroke-width="2.4" fill="none" marker-end="url(#arrow-b)"/><path d="M490 184 L631 235" stroke="#4065a8" stroke-width="2.4" fill="none" marker-end="url(#arrow-b)"/><path d="M520 184 L810 235" stroke="#4065a8" stroke-width="2.4" fill="none" marker-end="url(#arrow-b)"/>
+        <rect x="222" y="350" width="476" height="31" rx="8" fill="#0b1635"/><text x="460" y="371" text-anchor="middle" font-family="sans-serif" font-size="14" font-weight="700" fill="#ffffff">공통 Guardrail · Profile Buffer · Trace · SSE Lifecycle</text>
       </svg>
       <figcaption>그림 2. Buyer intent router와 전용 실행 lane</figcaption>
     </figure>
@@ -521,7 +515,7 @@
     <div class="source-note">근거: <code>app/agents/buyer/recommendation/</code>, <code>app/agents/buyer/cart/</code>, <code>app/agents/profile/</code>, <code>app/agents/seller/</code>, <code>docs/api-spec.md</code></div>
   </section>
 
-  <section class="chapter">
+  <section class="chapter compact-chapter">
     <div class="chapter-title">
       <div class="chapter-no">6</div>
       <div>
@@ -531,22 +525,19 @@
     </div>
 
     <h2>6.1 검색·재랭킹 파이프라인</h2>
-    <figure>
+    <figure class="search-figure">
       <svg viewBox="0 0 920 320" role="img" aria-label="검색과 rerank 파이프라인">
         <defs>
           <marker id="arrow-c" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#3970b9"/></marker>
-          <style>
-            .c-box{fill:#fff;stroke:#a4b2c6;stroke-width:2}.c-data{fill:#eaf7f5;stroke:#168b8d;stroke-width:2.5}.c-check{fill:#fff3e5;stroke:#e69a3c;stroke-width:2.5}.c-t{font:700 17px sans-serif;fill:#172033}.c-s{font:13px sans-serif;fill:#59677d}.c-l{stroke:#3970b9;stroke-width:2.4;fill:none;marker-end:url(#arrow-c)}
-          </style>
         </defs>
-        <rect class="c-box" x="20" y="85" width="125" height="105" rx="12"/><text class="c-t" x="82" y="118" text-anchor="middle">자연어</text><text class="c-s" x="82" y="145" text-anchor="middle">현재 발화</text><text class="c-s" x="82" y="166" text-anchor="middle">prior profile</text>
-        <rect class="c-data" x="175" y="57" width="145" height="160" rx="12"/><text class="c-t" x="247" y="91" text-anchor="middle">Decompose</text><text class="c-s" x="247" y="120" text-anchor="middle">정확 필터</text><text class="c-s" x="247" y="143" text-anchor="middle">semantic query</text><text class="c-s" x="247" y="166" text-anchor="middle">category legs</text><text class="c-s" x="247" y="189" text-anchor="middle">budget</text>
-        <rect class="c-box" x="350" y="40" width="150" height="95" rx="12"/><text class="c-t" x="425" y="74" text-anchor="middle">Spring Search</text><text class="c-s" x="425" y="101" text-anchor="middle">가격·재고·카테고리</text><text class="c-s" x="425" y="121" text-anchor="middle">최신 후보</text>
-        <rect class="c-box" x="350" y="165" width="150" height="95" rx="12"/><text class="c-t" x="425" y="199" text-anchor="middle">pgvector</text><text class="c-s" x="425" y="226" text-anchor="middle">search_doc embedding</text><text class="c-s" x="425" y="246" text-anchor="middle">후보 압축</text>
-        <rect class="c-data" x="535" y="57" width="145" height="160" rx="12"/><text class="c-t" x="607" y="91" text-anchor="middle">Rerank</text><text class="c-s" x="607" y="120" text-anchor="middle">의미 적합성</text><text class="c-s" x="607" y="143" text-anchor="middle">개인화</text><text class="c-s" x="607" y="166" text-anchor="middle">구조화 근거</text><text class="c-s" x="607" y="189" text-anchor="middle">니즈별 순위</text>
-        <rect class="c-check" x="715" y="57" width="180" height="160" rx="12"/><text class="c-t" x="805" y="91" text-anchor="middle">Validator</text><text class="c-s" x="805" y="120" text-anchor="middle">hard constraint</text><text class="c-s" x="805" y="143" text-anchor="middle">candidate / duplicate ID</text><text class="c-s" x="805" y="166" text-anchor="middle">evidence support</text><text class="c-s" x="805" y="189" text-anchor="middle">reason sanitization</text>
-        <path class="c-l" d="M145 137 H175"/><path class="c-l" d="M320 105 L350 90"/><path class="c-l" d="M320 170 L350 210"/><path class="c-l" d="M500 90 L535 112"/><path class="c-l" d="M500 212 L535 170"/><path class="c-l" d="M680 137 H715"/>
-        <rect x="648" y="262" width="247" height="38" rx="9" fill="#0b1635"/><text x="771" y="287" text-anchor="middle" style="font:700 14px sans-serif;fill:#fff">I-21 push → products.ready</text><path class="c-l" d="M805 217 V262"/>
+        <rect x="20" y="85" width="125" height="105" rx="12" fill="#ffffff" stroke="#a4b2c6" stroke-width="2"/><text x="82" y="118" text-anchor="middle" font-family="sans-serif" font-size="17" font-weight="700" fill="#172033">자연어</text><text x="82" y="145" text-anchor="middle" font-family="sans-serif" font-size="13" fill="#59677d">현재 발화</text><text x="82" y="166" text-anchor="middle" font-family="sans-serif" font-size="13" fill="#59677d">prior profile</text>
+        <rect x="175" y="57" width="145" height="160" rx="12" fill="#eaf7f5" stroke="#168b8d" stroke-width="2.5"/><text x="247" y="91" text-anchor="middle" font-family="sans-serif" font-size="17" font-weight="700" fill="#172033">Decompose</text><text x="247" y="120" text-anchor="middle" font-family="sans-serif" font-size="13" fill="#59677d">정확 필터</text><text x="247" y="143" text-anchor="middle" font-family="sans-serif" font-size="13" fill="#59677d">semantic query</text><text x="247" y="166" text-anchor="middle" font-family="sans-serif" font-size="13" fill="#59677d">category legs</text><text x="247" y="189" text-anchor="middle" font-family="sans-serif" font-size="13" fill="#59677d">budget</text>
+        <rect x="350" y="40" width="150" height="95" rx="12" fill="#ffffff" stroke="#a4b2c6" stroke-width="2"/><text x="425" y="74" text-anchor="middle" font-family="sans-serif" font-size="17" font-weight="700" fill="#172033">Spring Search</text><text x="425" y="101" text-anchor="middle" font-family="sans-serif" font-size="13" fill="#59677d">가격·재고·카테고리</text><text x="425" y="121" text-anchor="middle" font-family="sans-serif" font-size="13" fill="#59677d">최신 후보</text>
+        <rect x="350" y="165" width="150" height="95" rx="12" fill="#ffffff" stroke="#a4b2c6" stroke-width="2"/><text x="425" y="199" text-anchor="middle" font-family="sans-serif" font-size="17" font-weight="700" fill="#172033">pgvector</text><text x="425" y="226" text-anchor="middle" font-family="sans-serif" font-size="13" fill="#59677d">search_doc embedding</text><text x="425" y="246" text-anchor="middle" font-family="sans-serif" font-size="13" fill="#59677d">후보 압축</text>
+        <rect x="535" y="57" width="145" height="160" rx="12" fill="#eaf7f5" stroke="#168b8d" stroke-width="2.5"/><text x="607" y="91" text-anchor="middle" font-family="sans-serif" font-size="17" font-weight="700" fill="#172033">Rerank</text><text x="607" y="120" text-anchor="middle" font-family="sans-serif" font-size="13" fill="#59677d">의미 적합성</text><text x="607" y="143" text-anchor="middle" font-family="sans-serif" font-size="13" fill="#59677d">개인화</text><text x="607" y="166" text-anchor="middle" font-family="sans-serif" font-size="13" fill="#59677d">구조화 근거</text><text x="607" y="189" text-anchor="middle" font-family="sans-serif" font-size="13" fill="#59677d">니즈별 순위</text>
+        <rect x="715" y="57" width="180" height="160" rx="12" fill="#fff3e5" stroke="#e69a3c" stroke-width="2.5"/><text x="805" y="91" text-anchor="middle" font-family="sans-serif" font-size="17" font-weight="700" fill="#172033">Validator</text><text x="805" y="120" text-anchor="middle" font-family="sans-serif" font-size="13" fill="#59677d">hard constraint</text><text x="805" y="143" text-anchor="middle" font-family="sans-serif" font-size="13" fill="#59677d">candidate / duplicate ID</text><text x="805" y="166" text-anchor="middle" font-family="sans-serif" font-size="13" fill="#59677d">evidence support</text><text x="805" y="189" text-anchor="middle" font-family="sans-serif" font-size="13" fill="#59677d">reason sanitization</text>
+        <path d="M145 137 H175" stroke="#3970b9" stroke-width="2.4" fill="none" marker-end="url(#arrow-c)"/><path d="M320 105 L350 90" stroke="#3970b9" stroke-width="2.4" fill="none" marker-end="url(#arrow-c)"/><path d="M320 170 L350 210" stroke="#3970b9" stroke-width="2.4" fill="none" marker-end="url(#arrow-c)"/><path d="M500 90 L535 112" stroke="#3970b9" stroke-width="2.4" fill="none" marker-end="url(#arrow-c)"/><path d="M500 212 L535 170" stroke="#3970b9" stroke-width="2.4" fill="none" marker-end="url(#arrow-c)"/><path d="M680 137 H715" stroke="#3970b9" stroke-width="2.4" fill="none" marker-end="url(#arrow-c)"/>
+        <rect x="648" y="262" width="247" height="38" rx="9" fill="#0b1635"/><text x="771" y="287" text-anchor="middle" font-family="sans-serif" font-size="14" font-weight="700" fill="#ffffff">I-21 push → products.ready</text><path d="M805 217 V262" stroke="#3970b9" stroke-width="2.4" fill="none" marker-end="url(#arrow-c)"/>
       </svg>
       <figcaption>그림 3. 정확 필터·embedding·rerank·validator의 결합</figcaption>
     </figure>
@@ -698,7 +689,7 @@
     <div class="source-note">근거: <code>tests/</code>, <code>evals/adversarial_recommendation/</code>, <code>evals/rerank_grounding/</code>, <code>evals/seller_trigger/</code></div>
   </section>
 
-  <section class="chapter">
+  <section class="chapter compact-chapter">
     <div class="chapter-title">
       <div class="chapter-no">8</div>
       <div>
@@ -778,7 +769,6 @@
       <p><strong>S11.</strong> <code>data-analysis/REPORT.md</code> — REES46 통계와 한계</p>
       <p><strong>S12.</strong> <code>docs/final-report/evidence.md</code> — 주장·수치 근거 원장</p>
     </div>
-    <div class="end-mark">END OF REPORT</div>
   </section>
 </body>
 </html>
