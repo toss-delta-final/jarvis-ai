@@ -167,14 +167,15 @@ def render_report(results: dict[str, Any], manifest: dict[str, Any]) -> str:
         "",
         f"## Primary comparison: {primary or 'not-tested'}",
         "",
-        "| paired N | mean ΔnDCG@10 | CI low | CI high | verdict |",
-        "|---:|---:|---:|---:|---|",
+        "| paired N | mean ΔnDCG@10 | CI low | CI high | verdict | statistical verdict |",
+        "|---:|---:|---:|---:|---|---|",
         (
             f"| {comparison['pairedCount']} | {comparison['meanDelta']} | "
             f"{comparison['bootstrapCi95']['low']} | {comparison['bootstrapCi95']['high']} | "
-            f"{comparison['verdict']} |"
+            f"{comparison['verdict']} | "
+            f"{comparison.get('statisticalVerdict', comparison['verdict'])} |"
             if comparison is not None
-            else "| 0 | None | None | None | not-tested |"
+            else "| 0 | None | None | None | not-tested | not-tested |"
         ),
         "",
         "## Integrity",
@@ -205,16 +206,29 @@ def score_artifacts(run: RankingProbeRun, manifest: dict[str, Any]) -> dict[str,
 
     _validate_manifest(run, manifest)
     results = score_run(run)
-    if manifest.get("dryRun") is not True:
-        return results
-    return {
-        **results,
-        "status": "not-tested",
-        "comparisons": {
-            name: {**comparison, "verdict": "not-tested"}
-            for name, comparison in results["comparisons"].items()
-        },
-    }
+    if manifest.get("dryRun") is True:
+        return {
+            **results,
+            "status": "not-tested",
+            "comparisons": {
+                name: {**comparison, "verdict": "not-tested"}
+                for name, comparison in results["comparisons"].items()
+            },
+        }
+    if manifest.get("labelStatus") == "draft":
+        return {
+            **results,
+            "status": "exploratory",
+            "comparisons": {
+                name: {
+                    **comparison,
+                    "statisticalVerdict": comparison["verdict"],
+                    "verdict": ("exploratory" if comparison["pairedCount"] else "not-tested"),
+                }
+                for name, comparison in results["comparisons"].items()
+            },
+        }
+    return results
 
 
 def write_artifacts(out: Path, *, run: RankingProbeRun, manifest: dict[str, Any]) -> None:

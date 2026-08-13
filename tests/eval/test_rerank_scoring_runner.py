@@ -561,6 +561,33 @@ def test_dry_run_artifact_status_is_not_tested(tmp_path: Path) -> None:
     assert score_artifacts(loaded, _manifest(dry_run=True)) == results
 
 
+def test_live_draft_artifact_is_exploratory_without_losing_statistical_verdict(
+    tmp_path: Path,
+) -> None:
+    out = tmp_path / "draft-live"
+    run = _run(
+        _sample("a", "current", ndcg=0.2),
+        _sample("a", "hybrid", ndcg=0.9),
+        _sample("b", "current", ndcg=0.1),
+        _sample("b", "hybrid", ndcg=0.8),
+    )
+    manifest = {
+        **_manifest(),
+        "dataset": "rerank-holdout-v2",
+        "labelStatus": "draft",
+        "confirmatory": False,
+    }
+
+    write_artifacts(out, run=run, manifest=manifest)
+
+    results = json.loads((out / "results.json").read_text())
+    comparison = results["comparisons"]["currentToHybrid"]
+    assert results["status"] == "exploratory"
+    assert comparison["verdict"] == "exploratory"
+    assert comparison["statisticalVerdict"] == "supported"
+    assert comparison["meanDelta"] == pytest.approx(0.7)
+
+
 def test_cli_dry_run_writes_five_artifacts(tmp_path: Path) -> None:
     case_id = load_cases("dev")[0].case_id
     out = tmp_path / "cli"

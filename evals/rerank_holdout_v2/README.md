@@ -152,6 +152,20 @@ uv run python -m evals.rerank_scoring \
   --out /tmp/rerank-holdout-v2-dry
 ```
 
-이 산출물은 `labelStatus=draft`, `confirmatory=false`, `status=not-tested`다. `--dry-run` 없이
-committed draft를 선택하면 live provider를 만들기 전에 거부된다. 실제 confirmatory 실행은 봉인
-release를 `--dataset-root /secure/rerank-holdout-v2-sealed`로 명시한 뒤에만 가능하다.
+이 산출물은 `labelStatus=draft`, `confirmatory=false`, `status=not-tested`다. 기본적으로
+`--dry-run` 없이 committed draft를 선택하면 live provider를 만들기 전에 거부된다.
+
+Heuristic label이 만드는 방향성만 확인하려면 명시적 opt-in으로 exploratory live 평가를 할 수
+있다. 이 경우 raw 수치와 bootstrap CI는 기록하지만 `status`와 비교 `verdict`는 항상
+`exploratory`이고 원래 통계 판정은 `statisticalVerdict`에만 남는다.
+
+```bash
+uv run python -m evals.rerank_scoring \
+  --dataset rerank-holdout-v2 --allow-draft-live \
+  --arms current,structured --order-seeds 11,29,47 \
+  --max-calls 1500 --max-cost-usd 20 \
+  --out artifacts/rerank-scoring/rerank-holdout-v2-draft-live
+```
+
+실제 confirmatory 실행은 봉인 release를
+`--dataset-root /secure/rerank-holdout-v2-sealed`로 명시한 뒤에만 가능하다.

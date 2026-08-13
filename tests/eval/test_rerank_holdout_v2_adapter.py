@@ -132,6 +132,62 @@ def test_live_cli_rejects_draft_dataset_before_provider_build(
     assert provider_called is False
 
 
+def test_live_cli_allows_explicit_exploratory_draft_run(generated, monkeypatch, tmp_path) -> None:
+    catalog, catalog_sha256, bundle = generated
+    selected = next(case for case in bundle.ranking_cases if case.stratum == "general")
+    dataset = SimpleNamespace(
+        manifest=SimpleNamespace(
+            label_status="draft",
+            confirmatory_eligible=False,
+            dataset_version="1.0.0",
+            dataset_hash=catalog_sha256,
+            catalog_sha256=catalog_sha256,
+        ),
+        ranking_cases=bundle.ranking_cases,
+        labels_by_case={labels.case_id: labels for labels in bundle.draft_labels},
+        catalog=catalog,
+    )
+    monkeypatch.setattr(
+        rerank_cli,
+        "load_holdout_dataset",
+        lambda *args, **kwargs: dataset,
+    )
+    monkeypatch.setattr(
+        rerank_cli,
+        "build_live_delegate",
+        lambda **kwargs: (
+            ScriptedScoringLLM(),
+            {"provider": "scripted", "model": "scripted-scoring"},
+        ),
+    )
+    out = tmp_path / "draft-live"
+
+    code = rerank_cli.main(
+        [
+            "--dataset",
+            "rerank-holdout-v2",
+            "--allow-draft-live",
+            "--arms",
+            "current,structured",
+            "--case-ids",
+            selected.case_id,
+            "--order-seeds",
+            "11",
+            "--attempt-multiplier",
+            "1",
+            "--out",
+            str(out),
+        ]
+    )
+
+    assert code == rerank_cli.EXIT_OK
+    manifest = json.loads((out / "run_manifest.json").read_text(encoding="utf-8"))
+    results = json.loads((out / "results.json").read_text(encoding="utf-8"))
+    assert manifest["labelStatus"] == "draft"
+    assert manifest["confirmatory"] is False
+    assert results["status"] == "exploratory"
+
+
 def test_dry_run_cli_accepts_one_draft_case_and_marks_non_confirmatory(
     generated, monkeypatch, tmp_path
 ) -> None:

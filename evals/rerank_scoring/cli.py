@@ -69,6 +69,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--rpm", type=int, default=PacerLimits.max_rpm)
     parser.add_argument("--tpm", type=int, default=PacerLimits.max_tpm)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--allow-draft-live",
+        action="store_true",
+        help="heuristic draft를 명시적으로 exploratory live 평가한다",
+    )
     parser.add_argument("--out", type=Path, required=True)
     return parser
 
@@ -187,6 +192,8 @@ def main(argv: list[str] | None = None) -> int:
             or args.tpm <= 0
         ):
             raise ValueError("numeric limits are outside their valid ranges")
+        if args.allow_draft_live and (args.dataset != "rerank-holdout-v2" or args.dry_run):
+            raise ValueError("--allow-draft-live requires a non-dry rerank-holdout-v2 run")
         if args.dataset == "goldenset-dev":
             if args.dataset_root is not None:
                 raise ValueError("--dataset-root requires --dataset rerank-holdout-v2")
@@ -198,13 +205,18 @@ def main(argv: list[str] | None = None) -> int:
             label_status = "model"
             confirmatory = False
         else:
+            label_policy = "draft" if args.dry_run or args.allow_draft_live else "sealed"
             holdout = load_holdout_dataset(
                 args.dataset_root or HOLDOUT_ROOT,
-                label_policy="draft" if args.dry_run else "sealed",
+                label_policy=label_policy,
             )
-            if not args.dry_run and (
-                holdout.manifest.label_status != "sealed"
-                or not holdout.manifest.confirmatory_eligible
+            if (
+                not args.dry_run
+                and not args.allow_draft_live
+                and (
+                    holdout.manifest.label_status != "sealed"
+                    or not holdout.manifest.confirmatory_eligible
+                )
             ):
                 raise ValueError("sealed labels required for confirmatory evaluation")
             cases = _filter_cases(holdout.ranking_cases, args.case_ids)

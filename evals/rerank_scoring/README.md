@@ -72,9 +72,12 @@ uv run python -m evals.rerank_scoring \
   --out /tmp/rerank-holdout-v2-dry
 ```
 
-Dry-run manifest는 `labelStatus=draft`, `confirmatory=false`이고 품질 근거가 아니다. Live 실행은
-두 명의 실제 독립 사람 검수, 완전한 adjudication, sealed manifest가 없으면 provider 생성 전에
-실패한다. 생성·감사·검수·봉인 절차는 `evals/rerank_holdout_v2/README.md`가 정본이다.
+Dry-run manifest는 `labelStatus=draft`, `confirmatory=false`이고 품질 근거가 아니다. 기본 live
+실행도 sealed manifest가 없으면 provider 생성 전에 실패한다. 사용자가 명시적으로
+`--allow-draft-live`를 주면 heuristic label에 대한 exploratory live 비교는 가능하지만,
+`status/verdict=exploratory`로 강제되고 raw 통계 판정은 `statisticalVerdict`에만 기록된다.
+Confirmatory 실행에는 두 명의 실제 독립 사람 검수, 완전한 adjudication, sealed manifest가
+필요하다. 생성·감사·검수·봉인 절차는 `evals/rerank_holdout_v2/README.md`가 정본이다.
 
 `samples.csv`는 후보 permutation, 원래 search rank를 담은 decision, raw response hash,
 fallback/무결성 카운트를 보존한다. profile 원문이나 credential은 기록하지 않는다.

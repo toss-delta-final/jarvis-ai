@@ -151,7 +151,8 @@ holdout label path.
 
 The loader combines a core row with labels only through an explicit label policy:
 
-- `draft`: allowed only for local exploratory dry-runs and marked in every result manifest;
+- `draft`: dry-run이 기본이며, 명시적 `--allow-draft-live`에서만 live exploratory 비교를 허용한다.
+  이 경우 수치·CI는 보존하되 claim status와 verdict를 `exploratory`로 강제한다;
 - `sealed`: required for live confirmatory runs;
 - missing labels: core inspection and annotation packet generation only.
 
