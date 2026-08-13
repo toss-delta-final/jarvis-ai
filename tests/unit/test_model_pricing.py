@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 
 import pytest
 
@@ -33,6 +34,8 @@ def test_default_prices_match_pricing_manifest_exactly() -> None:
     for entry in DEFAULT_MODEL_PRICES:
         manifest_entry = manifest.entries[entry.model]
         assert entry.in_per_1k == manifest_entry["inPer1k"]
+        assert entry.cached_in_per_1k == manifest_entry["cachedInPer1k"]
+        assert entry.cache_write_per_1k == manifest_entry["cacheWritePer1k"]
         assert entry.out_per_1k == manifest_entry["outPer1k"]
         assert entry.effective_date == manifest_entry["effectiveDate"]
         assert entry.source == manifest_entry["source"]
@@ -45,7 +48,32 @@ def test_settings_defaults_expose_both_manifest_models() -> None:
     for entry in manifest.entries.values():
         model = entry["model"]
         assert settings.model_price_in_per_1k[model] == entry["inPer1k"]
+        assert settings.model_price_cached_in_per_1k[model] == entry["cachedInPer1k"]
+        assert settings.model_price_cache_write_per_1k[model] == entry["cacheWritePer1k"]
         assert settings.model_price_out_per_1k[model] == entry["outPer1k"]
+
+
+def test_gpt_5_6_luna_uses_official_cache_aware_prices() -> None:
+    """2026-08-13 공식 모델 문서 단가와 캐시 쓰기 1.25배 규칙을 고정한다."""
+    entry = PriceBook.load().entries["gpt-5.6-luna"]
+
+    assert entry["inPer1k"] == 0.0002
+    assert entry["cachedInPer1k"] == 0.00002
+    assert entry["cacheWritePer1k"] == 0.00025
+    assert entry["outPer1k"] == 0.0012
+
+
+def test_price_book_cost_separates_cached_reads_and_writes() -> None:
+    """캐시 토큰은 전체 입력의 부분집합이며 일반 입력으로 중복 과금하지 않는다."""
+    cost = PriceBook.load().cost(
+        model="gpt-5.6-luna",
+        input_tokens=1_000,
+        output_tokens=500,
+        cached_input_tokens=400,
+        cache_write_tokens=100,
+    )
+
+    assert cost == pytest.approx(0.000733)
 
 
 def test_default_price_tables_are_isolated_between_instances() -> None:
@@ -73,6 +101,21 @@ def test_env_injection_replaces_default_price_table(monkeypatch: pytest.MonkeyPa
         assert settings.model_price_out_per_1k == DEFAULT_MODEL_PRICE_OUT_PER_1K
     finally:
         get_settings.cache_clear()
+
+
+def test_deploy_workflow_wires_all_cache_aware_price_tables() -> None:
+    """운영·dev 배포 모두 네 단가표를 env 파일에 전달하고 빈 변수는 기본값으로 되돌린다."""
+    workflow = (Path(__file__).parents[2] / ".github/workflows/deploy.yml").read_text(
+        encoding="utf-8"
+    )
+    for name in (
+        "MODEL_PRICE_IN_PER_1K",
+        "MODEL_PRICE_CACHED_IN_PER_1K",
+        "MODEL_PRICE_CACHE_WRITE_PER_1K",
+        "MODEL_PRICE_OUT_PER_1K",
+    ):
+        assert workflow.count(f"{name}=${{{{ vars.{name} }}}}") == 2
+        assert workflow.count(name) >= 4
 
 
 @pytest.mark.parametrize("blank_value", ["", "   "])

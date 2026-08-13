@@ -12,6 +12,38 @@
 ## [Unreleased]
 
 ### Added
+- **#662 — 구매자 장바구니 옵션 재질문에 대상 상품명을 표시한다**
+  (api-spec §3.1·§4.1, v0.33.2). 기본·조건 좁힘·색상 미충족
+  `CART_OPTION_REQUIRED`, I-1 힌트 폴백, `CART_OPTION_INVALID`의 다섯 경로에서
+  최종 확정 `productId`의 이름을 추천 상태 또는 현재 `screen.products`에서 찾아 기존
+  옵션 목록 앞에 `**상품:** <상품명>`으로 표시한다. 현재 화면 이름을 우선하고,
+  `_strip_unsafe` 정제 후 40자를 초과하면 앞 40자와 `…`를 쓴다. 이름이 없으면 기존
+  문구를 그대로 유지하며 표시 이름은 `PendingAdd`·Spring 요청에 저장하지 않는다.
+  SSE·Spring·FE·DB 계약과 옵션 선택·자동 선택·추가금·pending 동작은 불변이다.
+- **#634 관측 집계 스크립트 비용 축에 min/max·role 분해 추가** — `_cost_stats()`가 최소/최대
+  비용을 반환하도록 확장하고, 비용 롤업에 `role`(seller/member/guest)·`model`(fan-in
+  귀속)·`length`(`messageLength` 고정 버킷) 축을 신설했다. Markdown 비용 표에 최소/최대(USD)
+  열을 추가하고 그룹 라벨을 latency 표와 동일한 `dimension:group` 규약으로 통일했으며, CSV
+  metric에도 min/max를 포함했다. 버킷 경계는 `app/core/config.py`의 신규 튜너블
+  `observability_length_buckets`로 주입한다(실측 분포 전 추정치). 계약(api-spec) 무영향.
+- **#645 buyer `overallComment` 최종-view grounding**을 추가했다. B/C rerank 출력은 목록 전체
+  `overallClaims`를 구조화해 보존하고, production C는 repurchase pinning·노출 보충/절단·니즈
+  분할·BUY_ALL budget-set 계산 뒤의 실제 I-21 product groups에 대해 claim을 검증한 후 고정
+  template만 노출한다. 지원 범위는 raw `reviewCount` 최댓값, 전 상품 high rating, 각 BUY_ALL
+  조합의 총예산 충족이며, 정본 metric이 없는 popularity/value-for-money 최상급은 중립 문구로
+  강등한다. fixture v2는 기존 10 case와 overall 전용 12 case의 allowed/forbidden oracle을 raw
+  데이터로 재검산하고, A bounded detector·B/C 구조화 정확도·coverage·downgrade·지연·token·비용
+  artifact를 기록한다. 기존 #632 A 표본 재채점은 등록 표현 11건 중 위반 1건(9.09%)이었다.
+  현재 worktree에는 live provider credential이 없어 새 N=3 및 N=8×2는 `not tested`로 남았으며,
+  deterministic smoke만으로 병합 품질을 주장하지 않는다. `RERANK_GROUNDING_ARM=current`는 상품별
+  근거와 전체 코멘트를 함께 기존 A로 되돌리고 Spring/CH-5/SSE wire 계약은 바뀌지 않는다.
+- **#653 — 구매자 채팅에 같은 방 전용 계층형 메모리와 캐시 인지 비용 계측을 추가했다.**
+  최근 대화는 최대 3쌍·1,000 추정 토큰, 상황 요약은 400 추정 토큰으로 제한하고, 밀려난
+  고가치 대화가 1,200 추정 토큰 이상일 때만 다음 턴용 요약을 비동기로 갱신한다. 새 방에는
+  기존 취향 프로필만 전달하며 자유대화 상황은 전달하지 않고, 옵션 답변·action-only 턴과
+  메모리 저장 장애는 기존 응답 경로를 그대로 유지한다. 요청 로그는 공급자 actual usage의
+  캐시 읽기·쓰기 토큰과 메모리 압축 비용을 원문 없이 분리 기록한다. API·SSE·DB 스키마와
+  LangGraph 그래프 구조는 변경하지 않았다.
 - **#638 구매자 adversarial 데이터셋에 rerank grounding A/B/C 평가 연결**을 추가했다.
   `--arms all`로 현행·구조화 prompt-only·validator 표시 결과를 같은 case에서 기록하며, B와 C는
   같은 구조화 LLM 응답을 공유해 validator 효과가 모델 표본 차이에 섞이지 않는다. 평가 runner의
@@ -63,6 +95,11 @@
   포함한다. 실제 human response는 포함하지 않으며 결과는 exploratory로만 해석한다.
 
 ### Fixed
+- **#664 — 추천 카드 그리드에서 `2번째 줄 3번째 상품`이 전체 3번째 상품으로 오해되던
+  오담기를 고쳤다** (api-spec §3.1, v0.33.3). 추천 상품 ID를 FE가 다시 보내지 않는 기존
+  위조 방지 계약은 유지하고, `pageType=chat`·`columns`를 서버가 이미 아는 이번 턴 추천
+  순서와 결합한다. `ordinal_span == turn_count`로 단일 목록 순서가 증명된 경우에만 좌표를
+  확정하며, 다목록·BUY_ALL과 추천 패널이 아닌 빈 screen은 기존처럼 안전하게 되묻는다.
 - **#639 — 추천 카드에서 사용자가 상품명의 유일 토큰을 지목했는데 LLM이 같은 허용 목록 안의
   다른 상품을 골라 오담기하던 결함을 고쳤다.** 추천 카드 표면에 한해 상품명과 발화를 NFKC +
   casefold 기반 정확 토큰으로 비교하고, 숫자 전용·1글자·담기 명령·장바구니 문맥 토큰을 제외한
@@ -74,6 +111,11 @@
 - **#635 — 구 `GET /profile/me` HTTP 조회 표면을 제거했다.** 라우터·응답 스키마·OpenAPI·회귀 테스트와 공개 문서를 함께 정리했으며, 프로필 요약 reader는 추천 경로 내부 소비로 유지한다.
 
 ### Changed
+- **#650 — 판매자 general 레인에 경량 해석 허용 범위를 추가했다.** 단일 지표 증감·순위·
+  임계값 비교(예: "지난주보다 늘었다", "가장 많이 이탈한 단계")까지는 general 이 직접
+  답한다 — 원인 가설·복수 지표 교차·행동 추천은 여전히 금지이며, 필요하면 기존과 동일하게
+  "보고서 페이지에서 확인" 안내로 돌린다. `GENERAL_PROMPT_TEMPLATE`(prompts.py)과
+  `build_general_agent` 독스트링(workers.py)만 바꿨다 — 도구·스키마·SSE·API 계약 변경 없음.
 - **구매자 rerank 근거 표시 기본을 C(`validated`)로 승격했다.** PR #638의 450-case live A/B/C
   결과에서 등록 detector 기준 unsupported reason은 A 10.87% → C 0%였고, A/B 추천 집합은
   비교 가능한 447/447에서 보존됐으며 B/C 순위도 450/450 동일했다. 운영 동등 추정 비용은 A보다

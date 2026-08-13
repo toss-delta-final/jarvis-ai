@@ -22,6 +22,7 @@ import pytest
 
 from app.agents.profile import graph_journal, processed_events, session_activity
 from app.agents.profile import store as profile_store_module
+from app.agents.seller import analysis_store
 from app.core import conversation, pg_store, session_context
 from tests.conftest import close_pg_pools_on_loop, pg_pool_tasks
 
@@ -33,6 +34,11 @@ async def _open_processed_events() -> None:
     event_id = f"it-evt-{uuid.uuid4().hex}"
     await processed_events.mark_if_new(event_id)
     await processed_events.unmark_event(event_id)
+
+
+async def _open_seller_analysis() -> None:
+    analysis_store.set_pool(None)
+    assert await analysis_store._get_pool() is not None
 
 
 async def _open_session_activity() -> None:
@@ -69,6 +75,7 @@ async def _open_session_context() -> None:
 
 
 _PG_MODULES = [
+    pytest.param(_open_seller_analysis, analysis_store, "close_pool", id="seller_analysis"),
     pytest.param(_open_processed_events, processed_events, "close_pool", id="processed_events"),
     pytest.param(_open_session_activity, session_activity, "close_pool", id="session_activity"),
     pytest.param(_open_graph_journal, graph_journal, "close_pool", id="graph_journal"),

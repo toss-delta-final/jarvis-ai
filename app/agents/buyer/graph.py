@@ -41,6 +41,11 @@ from app.agents.buyer.cart.wishlist import (
     stream_wishlist_view,
 )
 from app.agents.buyer.fallback import stream_fallback
+from app.agents.buyer.memory import (
+    BuyerMemoryContext,
+    compact_buyer_memory,
+    prepare_buyer_memory,
+)
 from app.agents.buyer.order_status import stream_order_status
 from app.agents.buyer.recommendation.category_mapping import CategoryMapping, dedup_truncate
 from app.agents.buyer.recommendation.category_scope import classify_category_scope
@@ -98,6 +103,14 @@ _FILTERS_KEY = "filters"
 # 추가하지 않는다 — 그 모델은 decompose 가 PRIOR_FILTERS 프롬프트에 통째로 싣는 대상이라 새
 # 필드가 모든 프롬프트에 샌다(프롬프트 드리프트). 같은 네임스페이스에 별도 키로 둔다.
 _CHIP_CATEGORIES_KEY = "chip_categories"
+
+
+@dataclass(slots=True)
+class _BuyerMemoryRuntime:
+    context: BuyerMemoryContext
+    thread_key: str
+    store: BaseStore
+    compaction_task: asyncio.Task[bool] | None = None
 
 
 class ThreadFilterStore:
@@ -748,7 +761,7 @@ async def _prepare_recommendation(
     out.reverted = frozenset(reverted)
 
 
-async def run_buyer_turn(
+async def _run_buyer_turn_impl(
     request,
     identity,
     *,
@@ -762,6 +775,8 @@ async def run_buyer_turn(
     observer=None,
     request_id: str | None = None,
     turn_started_at: float | None = None,
+    memory_runtime: _BuyerMemoryRuntime | None = None,
+    thread_adoption_prechecked: bool = False,
 ) -> AsyncIterator[str]:
     """구매자 1턴을 SSE 프레임으로 스트리밍한다(open_stream 이 감싸는 inner).
 
@@ -783,11 +798,12 @@ async def run_buyer_turn(
     context_id = getattr(observer, "context_id", None)
     if not isinstance(context_id, str) or not context_id:
         raise SessionStateUnavailable
-    await ensure_thread_adopted(
-        context_id,
-        request.thread_id,
-        buyer_owner_id(identity, settings),
-    )
+    if not thread_adoption_prechecked:
+        await ensure_thread_adopted(
+            context_id,
+            request.thread_id,
+            buyer_owner_id(identity, settings),
+        )
     thread_key = context_thread_key(context_id, request.thread_id)
 
     search = search or search_service.search_catalog
@@ -1005,6 +1021,36 @@ async def run_buyer_turn(
             "productId": pending.product_id,
             "options": [{"optionId": o.option_id, "name": o.name} for o in pending.options],
         }
+    memory_context = memory_runtime.context if memory_runtime is not None else None
+    if (
+        pending_dict is None
+        and memory_context is not None
+        and memory_context.compaction_triggered
+        and memory_runtime.compaction_task is None
+    ):
+        memory_runtime.compaction_task = asyncio.create_task(
+            compact_buyer_memory(
+                memory_context,
+                store=memory_runtime.store,
+                thread_key=memory_runtime.thread_key,
+                llm=llm,
+                situation_token_cap=settings.buyer_memory_situation_token_cap,
+                max_tokens=settings.buyer_memory_compaction_max_tokens,
+                observer=observer,
+                model_id=resolve_model_id(settings, "fast"),
+            )
+        )
+    if (
+        memory_context is not None
+        and observer is not None
+        and hasattr(observer, "record_memory_context")
+    ):
+        observer.record_memory_context(
+            recent_tokens=memory_context.recent_tokens,
+            situation_tokens=memory_context.situation_tokens,
+            evicted_tokens=memory_context.evicted_tokens,
+            compaction_triggered=memory_runtime.compaction_task is not None,
+        )
     # [#118] **옵션 되물음 중에는 화면 맥락을 통째로 끈다.** 이 한 플래그를 아래 세 지점이 함께
     # 쓴다 — ① decompose 프롬프트 주입(`prompt_screen`) ② 담기 허용 목록(`allowed`)
     # ③ 코드 해소기(`resolve_screen_reference`). 셋 중 하나만 열려 있어도 구멍이 된다.
@@ -1180,6 +1226,24 @@ async def run_buyer_turn(
                             # 관대 무시로 사라졌으면(또는 되물음 턴이면, 위 prompt_screen 주석 참조)
                             # None 이라 프롬프트가 오늘과 바이트 동일하다.
                             screen=prompt_screen,
+                            recent_conversation=(
+                                [
+                                    {
+                                        "user": turn.user_text,
+                                        "assistant": turn.assistant_text,
+                                    }
+                                    for turn in memory_context.recent_turns
+                                ]
+                                if memory_context is not None and pending_dict is None
+                                else None
+                            ),
+                            situation_memory=(
+                                memory_context.situation.to_prompt()
+                                if memory_context is not None
+                                and pending_dict is None
+                                and not memory_context.situation.is_empty
+                                else None
+                            ),
                             category_fanout_max=settings.category_fanout_max,
                             repurchase_max=settings.dedup_repurchase_max,
                             leg_head_suppression=settings.category_leg_head_suppression_enabled,
@@ -1420,6 +1484,7 @@ async def run_buyer_turn(
             request_id=resolved_request_id,
         ):
             yield frame
+
         return
 
     if decision.intent == "general":
@@ -1527,40 +1592,47 @@ async def run_buyer_turn(
     # (`screen.products`)이 있으면 그것을 쓰고, 없고 추천 카드(이번 턴 push 분, §2 결정 1)가
     # 있으면 그것을 쓴다. 화면 표면은 순번 게이트가 항상 참(오늘과 완전히 동일 — `columns` 도
     # `screen.columns` 그대로)이고 이름 확정(N)은 꺼져 있다(화면 표면에서 (N) 을 켜면 F-8 이
-    # 되살아난다, screen_reference.py 상단 참조). 추천 표면은 좌표(`columns`)가 없어 좌표 지시는
-    # 항상 되물음으로 떨어지고(§2 결정 6), 순번 게이트는 `ordinal_span`(표시 순서 = 저장 순서
-    # 증명, §2 결정 2)이 이번 턴 카드 수와 정확히 일치할 때만 열리며, 이름 확정(N)은 켜져 있다
-    # (배열이 곧 이름 출처인 표면이라 F-8 이 재발하지 않는다, §2 결정 3). 둘 다 없으면 `surface`
-    # 가 빈 리스트라 아래 게이트가 애초에 닫힌다 — #240 대조군(screen 도 last_reco 도 없는 요청)
-    # 은 구조적으로 이 블록에 닿지 않는다.
+    # 되살아난다, screen_reference.py 상단 참조). 추천 카드 ID는 FE가 되돌려 보내지 않지만,
+    # 추천 패널이 실제로 보이는 chat screen의 `columns`는 서버가 알고 있는 이번 턴 추천 순서와
+    # 결합할 수 있다. 단, `ordinal_span`이 이번 턴 카드 수와 정확히 일치해 순서가 증명된 경우에만
+    # 좌표 해소를 연다. 둘 다 없으면 `surface`가 빈 리스트라 아래 게이트가 닫힌다.
     screen_products = (
         [(p.product_id, p.name) for p in screen.products]
         if (screen is not None and screen.products)
         else []
     )
+    # [#662] 옵션 재질문에 쓸 표시 이름만 전달한다. 추천 이름을 기본으로 두고 같은 ID가 현재
+    # 화면에도 있으면 사용자가 실제로 보고 있는 screen 이름을 우선한다. 선택·허용 판정에는 쓰지
+    # 않고 cart graph가 pending까지 반영해 최종 확정한 product_id로만 조회한다.
+    cart_product_names = {product_id: name for product_id, name in last_reco if name}
+    cart_product_names.update({product_id: name for product_id, name in screen_products if name})
     reco_cards = last_reco[: reco_state.turn_count]
+    reco_order_verified = (
+        reco_state.ordinal_span > 0 and reco_state.ordinal_span == reco_state.turn_count
+    )
     if screen_products:
         surface = screen_products
         surface_columns = screen.columns if screen is not None else None
         surface_positional_order_verified = True
         surface_name_confirmation_enabled = False
-    # [F-h, 라운드 3 리뷰] `screen is None and ...` — `screen_products`(위)는 "screen 자체가
-    # 없다"와 "screen 은 왔는데 정제 후 products 가 0건"을 똑같이 falsy `[]` 로 뭉갠다. 후자에서
-    # `elif reco_cards:` 로 그냥 넘어가면 사용자가 지금 보고 있는(비어 있는) 화면과 무관한
-    # **이전 턴 추천 카드**로 순번·이름 해소가 돌아 오담기가 난다(재현: 이전 턴 카드 A·B·C
-    # + 이번 턴 `screen.products == []` + `"3번째 거 담아줘"` → C 오확정). 바로 아래
-    # `screen_reference_attempted` 의 F29 주석이 이미 세운 구분("화면이 없다"는 FE 가 `screen`
-    # 자체를 안 보냈다는 뜻이지, 화면은 왔는데 정제 후 상품이 비었다는 뜻이 아니다)과 정확히
-    # 같은 원칙을 여기서도 지킨다 — 후자는 "표면은 있는데 확정할 게 없다"(F21 사례)이지 "다른
-    # 표면으로 갈아탄다"가 아니다. `screen is None` 으로 좁히면 화면이 왔지만 비어 있는 턴은
-    # `surface = []`(아래 else)로 떨어져 해소기를 아예 돌리지 않는다 — #571 이전 동작(LLM 산출
-    # 존중 + `allowed` 가드 유지)과 같다.
+    # [#664] 추천 패널은 상품 ID를 재전송하지 않고 chat pageType+columns만 보낸다. 추천 순서가
+    # 증명된 경우에는 좌표를 열고, 그렇지 않으면 표면은 유지하되 columns를 닫아 되묻게 한다.
+    elif (
+        screen is not None
+        and screen.page_type == "chat"
+        and screen.columns is not None
+        and reco_cards
+    ):
+        surface = reco_cards
+        surface_columns = screen.columns if reco_order_verified else None
+        surface_positional_order_verified = reco_order_verified
+        surface_name_confirmation_enabled = True
+    # 그 밖의 빈 screen은 사용자가 이전 추천 패널을 보고 있다는 증거가 아니다. 추천 패널의 양성
+    # 신호가 없으면 screen 자체가 없는 경우에만 직전 추천 표면으로 폴백한다.
     elif screen is None and reco_cards:
         surface = reco_cards
         surface_columns = None
-        surface_positional_order_verified = (
-            reco_state.ordinal_span > 0 and reco_state.ordinal_span == reco_state.turn_count
-        )
+        surface_positional_order_verified = reco_order_verified
         surface_name_confirmation_enabled = True
     else:
         surface = []
@@ -1696,6 +1768,7 @@ async def run_buyer_turn(
                 screen_reason=screen_reason,
                 screen_reference_attempted=screen_reference_attempted,
                 screen_resolved=screen_resolved,
+                product_names=cart_product_names,
                 # [이슈 #455] 누적 필터(prior) 우선 + 이번 턴 산출(decision.filters) — 옵션 되물음
                 # 좁히기의 조건어 원천. 담기 흐름 밖의 다른 라우팅·프롬프트는 건드리지 않는다.
                 condition_terms=cart_condition_terms(prior, decision.filters),
@@ -1899,3 +1972,111 @@ async def run_buyer_turn(
             turn_started_at=turn_started_at,
         ):
             yield frame
+
+
+async def _prepare_memory_runtime(
+    request,
+    observer,
+    settings,
+) -> _BuyerMemoryRuntime | None:  # noqa: ANN001
+    """관측 저장소에서 같은 방의 bounded 메모리를 준비한다. 모든 장애는 무기억으로 강등한다."""
+    if not settings.buyer_memory_enabled:
+        return None
+    condition_actions = getattr(request, "condition_actions", None) or []
+    if condition_actions and not request.message.strip():
+        return None
+    conversation_store = getattr(observer, "store", None)
+    conversation_key_value = getattr(observer, "pending_key", None)
+    context_id = getattr(observer, "context_id", None)
+    if (
+        conversation_store is None
+        or not isinstance(conversation_key_value, str)
+        or not isinstance(context_id, str)
+        or not context_id
+    ):
+        return None
+    thread_key = context_thread_key(context_id, request.thread_id)
+    try:
+        turns = await conversation_store.turns_for(conversation_key_value)
+        state_store = await pg_store.get_store()
+        context = await prepare_buyer_memory(
+            turns,
+            thread_id=request.thread_id,
+            thread_key=thread_key,
+            store=state_store,
+            recent_turn_limit=settings.buyer_memory_recent_turns,
+            recent_token_cap=settings.buyer_memory_recent_token_cap,
+            situation_token_cap=settings.buyer_memory_situation_token_cap,
+            compaction_trigger_tokens=settings.buyer_memory_compaction_trigger_tokens,
+            compaction_input_token_cap=settings.buyer_memory_compaction_input_token_cap,
+        )
+        return _BuyerMemoryRuntime(context, thread_key, state_store)
+    except Exception:
+        logger.warning("buyer memory preparation failed code=BUYER_MEMORY_PREPARE_FAILED")
+        return None
+
+
+async def run_buyer_turn(
+    request,
+    identity,
+    *,
+    llm=None,
+    search=None,
+    push_fn=None,
+    map_categories=None,
+    order_status_fn=None,
+    expand_needs=None,
+    popular_fn=None,
+    observer=None,
+    request_id: str | None = None,
+    turn_started_at: float | None = None,
+) -> AsyncIterator[str]:
+    """메모리 준비·다음 턴용 압축을 기존 구매자 스트림과 겹쳐 실행하는 공개 진입점."""
+    settings = get_settings()
+    context_id = getattr(observer, "context_id", None)
+    thread_adoption_prechecked = False
+    memory_runtime = None
+    if isinstance(context_id, str) and context_id:
+        await ensure_thread_adopted(
+            context_id,
+            request.thread_id,
+            buyer_owner_id(identity, settings),
+        )
+        thread_adoption_prechecked = True
+        memory_runtime = await _prepare_memory_runtime(request, observer, settings)
+    try:
+        async for frame in _run_buyer_turn_impl(
+            request,
+            identity,
+            llm=llm,
+            search=search,
+            push_fn=push_fn,
+            map_categories=map_categories,
+            order_status_fn=order_status_fn,
+            expand_needs=expand_needs,
+            popular_fn=popular_fn,
+            observer=observer,
+            request_id=request_id,
+            turn_started_at=turn_started_at,
+            memory_runtime=memory_runtime,
+            thread_adoption_prechecked=thread_adoption_prechecked,
+        ):
+            yield frame
+    except asyncio.CancelledError:
+        compaction_task = memory_runtime.compaction_task if memory_runtime is not None else None
+        if compaction_task is not None:
+            compaction_task.cancel()
+            try:
+                await compaction_task
+            except asyncio.CancelledError:
+                pass
+        raise
+    finally:
+        compaction_task = memory_runtime.compaction_task if memory_runtime is not None else None
+        if compaction_task is not None and not compaction_task.cancelled():
+            try:
+                await compaction_task
+            except Exception:
+                logger.warning(
+                    "buyer memory compaction task failed code=BUYER_MEMORY_COMPACTION_TASK_FAILED"
+                )

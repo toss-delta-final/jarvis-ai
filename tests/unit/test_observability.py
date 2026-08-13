@@ -887,6 +887,126 @@ async def test_observation_logs_lane_degrade_cost_and_tool_calls(
     assert record["toolCalls"] == 2
 
 
+async def test_observation_prices_and_logs_cached_input_and_cache_writes(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """캐시 읽기·쓰기는 전체 입력에서 분리 과금되고 원문 없이 숫자만 로그에 남는다."""
+    monkeypatch.setattr(
+        observability,
+        "get_settings",
+        lambda: types.SimpleNamespace(
+            pii_hash_pepper="test-pepper",
+            model_price_in_per_1k={"priced-model": 0.01},
+            model_price_cached_in_per_1k={"priced-model": 0.001},
+            model_price_cache_write_per_1k={"priced-model": 0.0125},
+            model_price_out_per_1k={"priced-model": 0.02},
+        ),
+    )
+    observation = await _obs("cache-cost")
+    observation.record_model_call(
+        "priced-model",
+        prompt_tokens=1_000,
+        completion_tokens=500,
+        cached_input_tokens=400,
+        cache_write_tokens=100,
+    )
+
+    with caplog.at_level(logging.INFO, logger="observability"):
+        await observation.finish(1.0, TurnStatus.COMPLETED)
+
+    record = next(
+        json.loads(item.getMessage())
+        for item in caplog.records
+        if item.name == "observability" and item.getMessage().startswith("{")
+    )
+    assert record["promptTokens"] == 1_000
+    assert record["cachedInputTokens"] == 400
+    assert record["cacheWriteTokens"] == 100
+    assert record["costUsd"] == pytest.approx(0.01665)
+
+
+async def test_bound_model_call_receives_usage_without_touching_same_model_placeholder() -> None:
+    """동시 fast 호출도 예약 call ID를 쓰면 같은 모델의 일반 placeholder와 섞이지 않는다."""
+    from app.core import llm as llm_mod
+    from app.core.tracing import bind_model_call_usage, bind_request_trace
+
+    trace = _trace(FakeTraceExporter())
+    observation = await _obs("bound-call", trace=trace)
+    reserved_id = observation.record_model_call("fast-model", usage_reserved=True)
+    ordinary_id = observation.record_model_call("fast-model")
+
+    with bind_request_trace(trace), bind_model_call_usage(reserved_id):
+        llm_mod._record_usage(
+            types.SimpleNamespace(
+                usage_metadata={"input_tokens": 12, "output_tokens": 4},
+                response_metadata={},
+            ),
+            "fast-model",
+        )
+
+    assert observation.model_calls[reserved_id].prompt_tokens == 12
+    assert observation.model_calls[reserved_id].completion_tokens == 4
+    assert observation.model_calls[ordinary_id].prompt_tokens == 0
+    assert observation.model_calls[ordinary_id].completion_tokens == 0
+
+
+async def test_memory_context_and_compaction_cost_are_logged_without_content(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """메모리 로그는 숫자·boolean만 담고 예약 압축 호출 비용을 정확히 분리한다."""
+    monkeypatch.setattr(
+        observability,
+        "get_settings",
+        lambda: types.SimpleNamespace(
+            pii_hash_pepper="test-pepper",
+            model_price_in_per_1k={"fast-model": 0.01},
+            model_price_cached_in_per_1k={"fast-model": 0.001},
+            model_price_cache_write_per_1k={"fast-model": 0.0125},
+            model_price_out_per_1k={"fast-model": 0.02},
+        ),
+    )
+    observation = await _obs("memory-metrics")
+    observation.record_memory_context(
+        recent_tokens=120,
+        situation_tokens=80,
+        evicted_tokens=1_300,
+        compaction_triggered=True,
+    )
+    call_id = observation.record_model_call(
+        "fast-model",
+        usage_reserved=True,
+        purpose="memory_compaction",
+    )
+    observation.record_model_usage(
+        "fast-model",
+        prompt_tokens=1_000,
+        completion_tokens=100,
+        call_id=call_id,
+        cached_input_tokens=400,
+        cache_write_tokens=100,
+    )
+
+    with caplog.at_level(logging.INFO, logger="observability"):
+        await observation.finish(1.0, TurnStatus.COMPLETED)
+
+    record = next(
+        json.loads(item.getMessage())
+        for item in caplog.records
+        if item.name == "observability" and item.getMessage().startswith("{")
+    )
+    assert record["recentHistoryTokens"] == 120
+    assert record["situationMemoryTokens"] == 80
+    assert record["evictedHistoryTokens"] == 1_300
+    assert record["memoryCompactionTriggered"] is True
+    assert record["memoryCompactionPromptTokens"] == 1_000
+    assert record["memoryCompactionCompletionTokens"] == 100
+    assert record["memoryCompactionCostUsd"] == pytest.approx(0.00865)
+    assert record["costUsd"] == record["memoryCompactionCostUsd"]
+    assert "memory-metrics" not in json.dumps(record, ensure_ascii=False)
+
+
 async def test_unregistered_model_costs_zero_and_warns(
     caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
@@ -977,6 +1097,32 @@ async def test_cost_failure_does_not_drop_chat_request(
     assert record["costUsd"] == 0
     assert "MODEL_COST_CALCULATION_FAILED" in caplog.text
     assert "PRIVATE-COST-CANARY" not in caplog.text
+
+
+async def test_settings_failure_does_not_drop_chat_request(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """단가 설정 전체 조회 실패도 압축 비용 단계에서 요청 로그를 유실시키지 않는다."""
+    observation = await _obs("settings-failure")
+
+    def fail_settings():
+        raise RuntimeError("PRIVATE-SETTINGS-CANARY")
+
+    monkeypatch.setattr(observability, "get_settings", fail_settings)
+
+    with caplog.at_level(logging.INFO, logger="observability"):
+        await observation.finish(1.0, TurnStatus.COMPLETED)
+
+    record = next(
+        json.loads(item.getMessage())
+        for item in caplog.records
+        if item.name == "observability" and item.getMessage().startswith("{")
+    )
+    assert record["costUsd"] == 0
+    assert record["memoryCompactionCostUsd"] == 0
+    assert "MODEL_COST_CALCULATION_FAILED" in caplog.text
+    assert "PRIVATE-SETTINGS-CANARY" not in caplog.text
 
 
 def test_message_fingerprint_is_not_raw() -> None:

@@ -315,7 +315,7 @@ def test_validate_draft_create_forbids_status() -> None:
         seller_id=7,
         brand_id=3,
     )
-    assert record is None and "status" in problem
+    assert record is None and "판매 상태" in problem
 
 
 def test_validate_draft_create_rejects_presigned_or_long_image_url() -> None:
@@ -330,7 +330,7 @@ def test_validate_draft_create_rejects_presigned_or_long_image_url() -> None:
         seller_id=7,
         brand_id=3,
     )
-    assert record is None and "이미지" in problem
+    assert record is None and "사진" in problem
 
 
 def test_validate_draft_create_nullifies_product_id() -> None:
@@ -538,7 +538,7 @@ def test_confirm_missing_product_is_stale() -> None:
     """I-9 재조회에서 상품 미발견(삭제 등, 짧은 페이지까지 다 돌았음) — 실행 중단 + 되묻기.
 
     [#622] `_find_product`가 (None, False) — 목록의 진짜 끝까지 다 돌았다 — 를 반환하는
-    경로다. 안내 문구는 "대상 상품(...)을 상품 목록에서 찾을 수 없어"(exhausted=False 전용).
+    경로다. 안내 문구는 "해당 상품을 목록에서 찾지 못해서..."(exhausted=False 전용).
     """
     spring = _StubSpring(rows=[])
     set_spring_client(spring)
@@ -551,7 +551,7 @@ def test_confirm_missing_product_is_stale() -> None:
     outcome = asyncio.run(run())
 
     assert outcome.status == "stale"
-    assert "상품 목록에서 찾을 수 없" in outcome.text
+    assert "목록에서 찾지 못해" in outcome.text
     assert hitl.PRODUCT_LOOKUP_EXHAUSTED_TEXT not in outcome.text
     assert spring.write_calls() == []
 
@@ -597,7 +597,7 @@ def test_confirm_delete_maps_to_i12() -> None:
     outcome = asyncio.run(run())
 
     assert outcome.status == "executed"
-    assert "DELETED" in outcome.text
+    assert "삭제했어요" in outcome.text
     # 삭제를 숨김으로 안내하면 판매자가 되돌릴 수 있는 조작으로 오인한 채 승인한다.
     assert "숨김(판매정지)과 달리" in outcome.text
     assert spring.write_calls() == [("delete", 3, 101)]
@@ -675,8 +675,8 @@ def test_confirm_delete_already_deleted_reports_already_done() -> None:
     outcome = asyncio.run(run())
 
     assert outcome.status == "already_done"
-    assert "이미 삭제된 상품" in outcome.text
-    assert "다시 시도해도 결과가 같습니다" in outcome.text
+    assert "이미 삭제되어 있어요" in outcome.text
+    assert "다시 요청하셔도 결과는 같을 거예요" in outcome.text
 
 
 def test_confirm_update_on_deleted_product_reports_already_done() -> None:
@@ -693,7 +693,7 @@ def test_confirm_update_on_deleted_product_reports_already_done() -> None:
     outcome = asyncio.run(run())
 
     assert outcome.status == "already_done"
-    assert "이미 삭제된 상품이라 수정할 수 없습니다" in outcome.text
+    assert "이미 삭제된 상품이라 수정할 수 없어요" in outcome.text
 
 
 def test_confirm_create_maps_to_i10_without_image() -> None:
@@ -719,7 +719,7 @@ def test_confirm_create_maps_to_i10_without_image() -> None:
 
     outcome = asyncio.run(run())
 
-    assert outcome.status == "executed" and "999" in outcome.text
+    assert outcome.status == "executed" and "등록했어요" in outcome.text
     payload = spring.write_calls()[0][2]
     assert (payload.name, payload.price, payload.stock_quantity) == ("한라봉청", 20000, 50)
     assert payload.image_url is None
@@ -902,7 +902,7 @@ def test_confirm_ship_executes_i30_after_approval() -> None:
     op, brand_id, order_item_id, payload = spring.write_calls()[0]
     assert (op, brand_id, order_item_id) == ("ship", 3, 5551)
     assert payload.to_status == "SHIPPING"
-    assert "발송 처리했습니다" in outcome.text
+    assert "발송 처리를 완료했어요" in outcome.text
     assert "반품" in outcome.text  # 발송 후 역전이 불가·구매자 구제 고지
 
 
@@ -920,7 +920,7 @@ def test_confirm_ship_already_shipped_is_already_done_not_success() -> None:
     outcome = asyncio.run(run())
 
     assert outcome.status == "already_done"
-    assert "이미 발송 처리된" in outcome.text
+    assert "이미 발송 처리가" in outcome.text
 
 
 def test_confirm_ship_invalid_transition_reports_stale() -> None:
@@ -937,7 +937,7 @@ def test_confirm_ship_invalid_transition_reports_stale() -> None:
     outcome = asyncio.run(run())
 
     assert outcome.status == "stale"
-    assert "발송 처리할 수 없는 상태" in outcome.text
+    assert "발송 처리를 할 수 없는 상태" in outcome.text
 
 
 def test_confirm_ship_not_found_hides_existence() -> None:
@@ -954,7 +954,7 @@ def test_confirm_ship_not_found_hides_existence() -> None:
     outcome = asyncio.run(run())
 
     assert outcome.status == "stale"
-    assert "찾을 수 없어" in outcome.text
+    assert "찾지 못해" in outcome.text
 
 
 def test_confirm_ship_spring_down_raises_and_allows_retry() -> None:
@@ -1099,6 +1099,25 @@ def test_quantity_mode_rejects_per_option_intent(monkeypatch) -> None:
     record = _record(
         changes=[DraftChange(field="stock_quantity", before="5", after="10", option_name="블랙/M")],
         summary="블랙/M 재고 10건",
+    )
+    outcome = _run_confirm(record)
+    assert outcome.status == "stale"
+    assert spring.write_calls() == []
+
+
+def test_quantity_mode_rejects_optioned_product_even_without_option_name(monkeypatch) -> None:
+    """[#624] 옵션 상품은 option_name 이 없어도 quantity 모드에서 막는다.
+
+    이전엔 이 경로가 그대로 stockQuantity 정수로 나가 BE 가 optionId=null 재고 행을
+    찾다가(옵션 상품엔 그런 행이 없음) 422 INVALID_STOCK 을 던졌다 — 승인 이후에야
+    터지고 안내도 "옵션 변경 레이스"로 잘못 나갔다. 승인 전에 걸러야 한다.
+    """
+    _stock_mode(monkeypatch, "quantity")
+    spring = _StubSpring(rows=[_OPTIONED_ROW])
+    set_spring_client(spring)
+    record = _record(
+        changes=[DraftChange(field="stock_quantity", before="5", after="10")],
+        summary="재고 10건",
     )
     outcome = _run_confirm(record)
     assert outcome.status == "stale"
@@ -1263,7 +1282,11 @@ def test_stock_drift_note_wording_unchanged_for_optionless(monkeypatch) -> None:
     )
     outcome = _run_confirm(record)
     assert outcome.status == "executed"
-    assert " 참고: 초안 작성 후 재고가 100건으로 변동되어 있었습니다(주문 처리 등)." in outcome.text
+    # 옵션 없는 상품은 옵션명이 섞이지 않고 수량만 나온다(회귀 고정) — 문구 톤은
+    # 별개로 갱신됐지만 "옵션 라벨 없음" 이라는 계약은 그대로다.
+    assert (
+        " 참고로, 초안을 만든 뒤 주문 처리 등으로 재고가 100건으로 바뀌어 있었어요." in outcome.text
+    )
 
 
 def test_stocks_mode_partial_update_omits_untouched_option(monkeypatch) -> None:
@@ -1294,7 +1317,28 @@ def test_update_invalid_stock_stops_without_success_report(monkeypatch) -> None:
     )
     outcome = _run_confirm(record)
     assert outcome.status == "stale"
-    assert "옵션이 변경되어" in outcome.text
+    assert "옵션이 바뀌어서" in outcome.text
+    assert "반영했어요" not in outcome.text
+
+
+def test_update_invalid_stock_quantity_mode_message_does_not_claim_race(monkeypatch) -> None:
+    """[#624] quantity 모드의 INVALID_STOCK 은 "옵션 변경 레이스"로 단정하지 않는다.
+
+    quantity 모드에는 옵션 상품을 사전 차단하는 가드가 없던 시절의 잔재 문구였다 —
+    이제 hitl 이 옵션 상품을 이미 걸러내므로, 그래도 여기 도달했다면 원인을 안다고
+    잘못 안내하지 않는다. stocks 모드 문구(옵션 레이스)와는 달라야 한다.
+    """
+    _stock_mode(monkeypatch, "quantity")
+    spring = _StubSpring()  # 옵션 없는 기본 _ROW — 사전 차단 가드를 우회해 실제 BE 거부만 검증
+    spring.update_error = InvalidStock("INVALID_STOCK")
+    set_spring_client(spring)
+    record = _record(
+        changes=[DraftChange(field="stock_quantity", before="100", after="80")],
+        summary="재고 80건",
+    )
+    outcome = _run_confirm(record)
+    assert outcome.status == "stale"
+    assert "옵션이 변경되어" not in outcome.text
     assert "반영했습니다" not in outcome.text
 
 
@@ -1417,7 +1461,7 @@ def test_confirm_update_empty_changes_reports_already_done() -> None:
     record = _record()
     outcome = _run_confirm(record)
     assert outcome.status == "already_done"
-    assert "바뀐 내용이 없습니다" in outcome.text
+    assert "바뀐 내용은 없었어요" in outcome.text
 
 
 def test_validate_draft_rejects_duplicate_non_stock_field() -> None:

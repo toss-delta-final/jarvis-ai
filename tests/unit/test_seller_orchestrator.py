@@ -46,6 +46,14 @@ def _settings(timeout_s: float = 5.0) -> SimpleNamespace:
         seller_analysis_score_threshold=21,
         seller_analysis_judge_timeout_s=timeout_s,
         seller_branch_deadline_s=160.0,  # config.py 기본값(PR 리뷰 반영)과 정합
+        # ── 차트 레인 (이슈 #600) ──
+        # graph(축 선언) 전용 타임아웃 — seller_worker_timeout_s 와 분리(09-CHART.md §8).
+        seller_chart_agent_timeout_s=timeout_s,
+        # 이 파일의 기존 테스트는 #600 이전에 작성돼 해석 에이전트를 스텁하지 않는다 —
+        # 비활성으로 두어 run_chart_interpret 이 즉시 None 을 반환하고(고정 문구 폴백),
+        # run_graph/차트 조립 계약만 그대로 검증한다. 해석 자체 회귀는
+        # tests/unit/test_seller_pipeline.py·test_seller_workers.py 소관.
+        seller_chart_interpret_enabled=False,
     )
 
 
@@ -1029,7 +1037,7 @@ def test_pipeline_scope_refusal_short_circuits(monkeypatch: pytest.MonkeyPatch) 
     )
 
     assert result.kind == "refused"
-    assert "제공할 수 없습니다" in result.text
+    assert "도와드리기 어려운 영역" in result.text
     assert tokens == []  # planner 진입 전 차단
 
 

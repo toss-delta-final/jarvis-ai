@@ -382,7 +382,7 @@ def test_compose_response_chart_requested_but_missing_appends_notice() -> None:
     """요청했는데 차트가 없으면(graph 실패·G1 전건 드랍) 그 경우만 안내한다(D-5)."""
     text = pipeline.compose_response("본문", RecommendationSet(), None, chart_requested=True)
     assert "[차트 안내]" in text
-    assert "요청하신 차트를 만들지 못했습니다" in text
+    assert "요청하신 차트는 이번엔 만들어 드리지 못했어요" in text
 
     empty_charts_text = pipeline.compose_response(
         "본문", RecommendationSet(), ChartSet(charts=[]), chart_requested=True
@@ -484,6 +484,99 @@ def test_format_graph_input_contract() -> None:
     assert "[판매자 질문]\n지난달 매출 추이 보여줘" in text
 
 
+# ── chart 해석 입력 포맷 (이슈 #600, 09-CHART.md §2.2·§2.3·§3.1·§3.2) ─────────────
+
+
+def _line_chart(*, title: str = "일별 매출 추이", summary: str = "") -> ChartSpec:
+    return ChartSpec(
+        title=title,
+        chart_type="line",
+        unit="KRW",
+        aggregate="sum",
+        series=[
+            ChartSeries(
+                label="매출",
+                points=[
+                    ChartPoint(x="07-13", y=1240000.0),
+                    ChartPoint(x="07-14", y=980000.0),
+                ],
+            )
+        ],
+        summary=summary,
+    )
+
+
+def test_display_number_uses_display_form_not_raw_float() -> None:
+    """결정 88 — 정수값이면 정수, 아니면 소수 1자리. float 원본을 그대로 쓰지 않는다."""
+    assert pipeline._display_number(1240000.0) == "1,240,000"
+    assert pipeline._display_number(4.55) == "4.5"  # round() 은행원 규칙(0.5 짝수 반올림)
+    assert pipeline._display_number(-270000.0) == "-270,000"
+
+
+def test_format_chart_points_uses_display_form() -> None:
+    """format_chart_input(LLM 입력)과 같은 표기를 D2 허용 집합에도 써야 한다(결정 88)."""
+    charts = ChartSet(charts=[_line_chart()])
+    lines = pipeline.format_chart_points(charts)
+    assert len(lines) == 1
+    assert "07-13=1,240,000" in lines[0]
+    assert "1240000.0" not in lines[0]  # 정규화 안 된 float 표기가 새면 D2 가 전건 실패한다
+
+
+def test_format_chart_facts_and_points_share_display_form() -> None:
+    """format_chart_input 과 format_chart_evidence 가 같은 함수(_display_number)로
+    숫자를 만든다 — 두 출력의 좌표 표기가 바이트 단위로 같아야 한다."""
+    from app.agents.seller.charts import chart_facts as _chart_facts
+
+    spec = _line_chart()
+    charts = ChartSet(charts=[spec])
+    facts = [_chart_facts(spec)]
+
+    chart_from, chart_to = dt.date(2026, 7, 13), dt.date(2026, 7, 14)
+    llm_input = pipeline.format_chart_input(charts, facts, chart_from, chart_to, "매출 그래프")
+    evidence = pipeline.format_chart_evidence(charts, facts)
+
+    assert "07-13=1,240,000" in llm_input
+    assert any("07-13=1,240,000" in line for line in evidence)
+    assert "[판매자 질문]\n매출 그래프" in llm_input
+
+
+def test_format_chart_input_includes_code_computed_block() -> None:
+    """[코드 계산] 블록 — 합계·평균·최고·최저·처음→끝 이 LLM 입력에 실린다(§2.2)."""
+    from app.agents.seller.charts import chart_facts as _chart_facts
+
+    spec = _line_chart(summary="2026-07-13~2026-07-14 기간의 매출입니다.")
+    charts = ChartSet(charts=[spec])
+    facts = [_chart_facts(spec)]
+    text = pipeline.format_chart_input(
+        charts, facts, dt.date(2026, 7, 13), dt.date(2026, 7, 14), "질문"
+    )
+    assert "[코드 계산 — 이 값만 인용한다]" in text
+    assert "합계 2,220,000" in text
+    assert "처음→끝 1,240,000 → 980,000" in text
+    assert "안내: 2026-07-13~2026-07-14 기간의 매출입니다." in text
+
+
+def test_format_chart_rewrite_input_injects_feedback() -> None:
+    """재작성 입력 — 이전 해석문 + 개선 지시(chart_verify 실패 사유)를 합산 주입."""
+    from app.agents.seller.charts import chart_facts as _chart_facts
+
+    spec = _line_chart()
+    charts = ChartSet(charts=[spec])
+    facts = [_chart_facts(spec)]
+    text = pipeline.format_chart_rewrite_input(
+        charts,
+        facts,
+        dt.date(2026, 7, 13),
+        dt.date(2026, 7, 14),
+        "매출 그래프",
+        "이전 해석문 본문",
+        "근거 없는 수치 999999 — [코드 계산] 값만 인용할 것",
+    )
+    assert "[이전 해석문]\n이전 해석문 본문" in text
+    assert "[개선 지시]\n근거 없는 수치 999999" in text
+    assert "처음부터 다시 작성하라" in text
+
+
 def test_worker_progress_tokens_cover_all_analysis_types() -> None:
     """진행 token 은 AnalysisType 5종 전부를 커버한다(누락 시 모듈 로드도 실패)."""
     assert set(pipeline.WORKER_PROGRESS_TOKENS) == set(get_args(AnalysisType))
@@ -498,7 +591,7 @@ def test_progress_token_stages() -> None:
         "recommend",
         "graph",
     }
-    assert pipeline.ALL_WORKERS_FAILED_TOKEN.startswith("죄송합니다")
+    assert pipeline.ALL_WORKERS_FAILED_TOKEN.startswith("지금 데이터를 불러오는 중에")
 
 
 # ── split_report_summary (이슈 #296 — report SSE summary 분리, §5.1 규칙) ────────

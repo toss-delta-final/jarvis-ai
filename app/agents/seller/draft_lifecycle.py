@@ -40,7 +40,8 @@ from app.agents.seller.vision import ProductImageAnalysis
 # 그래서 draft *발급* 경로만 막는다 — 조회(search)·분석(analysis)·confirm 은 이 상태와
 # 무관하게 정상 진행한다(모듈독스트링).
 UNKNOWN_STATE_BLOCK_TEXT = (
-    "초안 상태를 확인하지 못해 상품 변경을 진행할 수 없습니다. 잠시 후 다시 시도해 주세요."
+    "지금 작성 중인 초안 상태를 확인하는 데 문제가 있어서 진행이 어려워요. "
+    "잠시 후 다시 시도해 주시겠어요?"
 )
 
 

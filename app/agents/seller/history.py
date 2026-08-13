@@ -277,9 +277,9 @@ def _option_stock_blocker(
     if len(named) <= 1:
         return None
     return (
-        f"'{title}' 추천은 재고 변경인데 이 상품은 옵션별로 재고가 관리됩니다"
-        f"({' · '.join(option_labels(row.stocks))}). "
-        "어느 옵션의 재고를 얼마로 바꿀지 말씀해 주시면 초안을 만들어 드리겠습니다."
+        f"'{title}' 추천은 재고를 바꾸는 내용인데, 이 상품은 옵션별로 재고가 따로 "
+        f"관리되고 있어요({' · '.join(option_labels(row.stocks))}). 어느 옵션의 재고를 "
+        "얼마로 바꿀지 알려주시면 바로 초안을 만들어 드릴게요."
     )
 
 
@@ -305,28 +305,33 @@ async def apply_recommendation(
     reports = await analysis_store.list_reports(context.brand_id, limit=1)
     if not reports:
         return None, (
-            "적용할 분석 추천 이력이 없습니다. 먼저 분석을 요청하시면 추천을 만들어 드립니다."
+            "아직 적용할 만한 분석 추천이 없어요. 먼저 분석을 요청해 주시면 추천을 만들어 드릴게요."
         )
     report = reports[0]
     items = await analysis_store.list_recommendations_by_report(
         report.id, brand_id=context.brand_id
     )
     if not items:
-        return None, "가장 최근 분석에는 적용할 추천이 없었습니다. 새 분석을 요청해 주세요."
+        return (
+            None,
+            "가장 최근 분석에는 적용할 만한 추천이 없었어요. 새로 분석을 요청해 주시겠어요?",
+        )
     if not 1 <= n <= len(items):
-        return None, (f"최근 분석의 추천은 1번~{len(items)}번까지입니다. 몇 번을 적용할까요?")
+        return None, (
+            f"최근 분석의 추천은 1번부터 {len(items)}번까지 있어요. 몇 번을 적용해 드릴까요?"
+        )
     rec = items[n - 1]
     changes = [ProposedChange.model_validate(c) for c in rec.changes]
     if not changes:
         return None, (
-            f"'{rec.title}' 추천은 자동 적용할 필드 변경이 없는 유형입니다. "
-            "구체적으로 무엇을 바꿀지 말씀해 주시면 초안을 만들어 드리겠습니다."
+            f"'{rec.title}' 추천은 자동으로 반영할 항목이 딱히 없는 유형이에요. "
+            "구체적으로 무엇을 바꾸고 싶으신지 말씀해 주시면 초안을 만들어 드릴게요."
         )
     product_id = rec.product_ids[0] if rec.product_ids else None
     if product_id is None:
         return None, (
-            f"'{rec.title}' 추천에 대상 상품이 지정되어 있지 않습니다. "
-            "구체적으로 어느 상품을 바꿀지 말씀해 주시면 초안을 만들어 드리겠습니다."
+            f"'{rec.title}' 추천에는 대상 상품이 따로 지정돼 있지 않네요. "
+            "어느 상품을 바꿀지 알려주시면 초안을 만들어 드릴게요."
         )
 
     row, exhausted = await hitl._find_product(context.brand_id, product_id)
@@ -338,8 +343,9 @@ async def apply_recommendation(
         # 옮겨진 것 같습니다")과 통일한다 — #590 전에는 이 함수만 "삭제되었을 수 있어요"라는
         # 더 부정확한 자체 문구를 달고 있었다.
         return None, (
-            f"추천 대상 상품(productId={product_id})을 상품 목록에서 찾을 수 없습니다. "
-            "이미 삭제되었거나 다른 브랜드로 옮겨진 것 같습니다. 다시 확인 후 요청해 주세요."
+            f"추천에 있던 상품을 목록에서 찾지 못했어요(상품ID {product_id}). 이미 "
+            "삭제됐거나 다른 브랜드로 옮겨진 것 같아요 — 상품을 다시 확인한 뒤 "
+            "요청해 주시겠어요?"
         )
 
     if problem := _option_stock_blocker(rec.title, changes, row):

@@ -9,20 +9,28 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
+from app.agents.seller.analysis.daily_batch import run_manual_analysis
 from app.api.deps import verify_service_token
 from app.core.config import get_settings
 from app.core.errors import get_request_id
 from app.core.tracing import bind_request_trace, start_request_trace_safely
+from app.schemas.chat import CamelModel
 from app.schemas.recommendations import HomeRecommendationRequest, HomeRecommendationResponse
 from app.services.home_recommendation import rank_home
 
 router = APIRouter(tags=["internal"])
 
+_log = logging.getLogger(__name__)
+
 # [#469] fire-and-forget finish 태스크 보관 — 참조가 없으면 GC 가 실행 중 태스크를 수거할 수 있다.
 _trace_finish_tasks: set[asyncio.Task] = set()
+# [#601] 수동 실행 백그라운드 태스크 보관 — 같은 근거(GC 가 실행 중 태스크를 조용히 수거).
+_manual_run_tasks: set[asyncio.Task] = set()
 
 
 def _finish_trace_detached(trace, *, status: str, error_type: str | None, terminal: str) -> None:
@@ -97,3 +105,61 @@ async def home_recommendations(
         trace, status="COMPLETED", error_type=None, terminal=response.outcome.lower()
     )
     return response
+
+
+class SellerAnalysisRunRequest(CamelModel):
+    """수동 실행 요청 본문 — 전부 선택. 생략 시 예약 배치와 같은 기본 기간("전날 1일")."""
+
+    period_from: date | None = None
+    period_to: date | None = None
+
+
+class SellerAnalysisRunResponse(CamelModel):
+    accepted: bool
+    brand_id: int
+    trigger_type: str = "manual"
+
+
+async def _run_manual_analysis_detached(
+    brand_id: int, *, period_from: date | None, period_to: date | None
+) -> None:
+    try:
+        outcome = await run_manual_analysis(brand_id, period_from=period_from, period_to=period_to)
+        _log.info(
+            "brand_id=%s 수동 실행 완료 report_generated=%s skip_reason=%s",
+            brand_id,
+            outcome.report_generated,
+            outcome.skip_reason,
+        )
+    except Exception:  # noqa: BLE001 - 응답을 이미 202로 보낸 뒤라 예외를 삼키고 로그만 남긴다
+        _log.exception("brand_id=%s 수동 실행 실패", brand_id)
+
+
+@router.post(
+    "/internal/seller/{brand_id}/analysis/run",
+    response_model=SellerAnalysisRunResponse,
+    status_code=202,
+)
+async def run_seller_analysis(
+    brand_id: int,
+    request: SellerAnalysisRunRequest | None = None,
+    _token: None = Depends(verify_service_token),
+) -> SellerAnalysisRunResponse:
+    """무인 판매자 분석 수동 실행 (⑤, 이슈 #601 · `10-TRIGGER.md` §5.1) — 데모·재현 용도.
+
+    스캔 게이트 없이 심층 분석을 즉시 시작한다(`daily_batch.run_manual_analysis`, 예약
+    배치와 같은 `mutation_lock` — 그 브랜드의 예약 배치가 마침 도는 중이면 끝날 때까지
+    직렬 대기 후 실행된다). 파이프라인 총 소요가 4워커 팬아웃 + 보고서 검증 재작성
+    루프로 수 분에 달할 수 있어 **동기 응답을 기다리지 않는다** — 202 Accepted 로 즉시
+    받아들이고 실제 실행은 백그라운드 태스크로 흘린다(이 파일의 `_finish_trace_detached`
+    와 같은 fire-and-forget 관행). 결과는 이 엔드포인트의 폴링이 아니라 저장된 보고서
+    (`GET /seller/reports` 등 기존 조회 경로)로 확인한다.
+    """
+    period_from = request.period_from if request is not None else None
+    period_to = request.period_to if request is not None else None
+    task = asyncio.create_task(
+        _run_manual_analysis_detached(brand_id, period_from=period_from, period_to=period_to)
+    )
+    _manual_run_tasks.add(task)
+    task.add_done_callback(_manual_run_tasks.discard)
+    return SellerAnalysisRunResponse(accepted=True, brand_id=brand_id)

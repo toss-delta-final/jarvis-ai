@@ -20,12 +20,18 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Literal, NamedTuple
 
+from apscheduler.triggers.cron import CronTrigger
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 # 모델 단가표 기본값의 단일 출처(#437) — model_pricing 은 최상단에서 config 를 import 하지
 # 않으므로 여기서 최상단 import 해도 순환이 생기지 않는다.
-from app.core.model_pricing import DEFAULT_MODEL_PRICE_IN_PER_1K, DEFAULT_MODEL_PRICE_OUT_PER_1K
+from app.core.model_pricing import (
+    DEFAULT_MODEL_PRICE_CACHE_WRITE_PER_1K,
+    DEFAULT_MODEL_PRICE_CACHED_IN_PER_1K,
+    DEFAULT_MODEL_PRICE_IN_PER_1K,
+    DEFAULT_MODEL_PRICE_OUT_PER_1K,
+)
 
 # 고객 피처 스펙의 단일 출처(#593) — 기본값을 여기서 다시 적으면 스냅샷 각인과 코드가
 # 조용히 어긋난다. features/spec.py 는 math 만 import 하는 상수 모듈이고 그 패키지
@@ -312,11 +318,23 @@ class Settings(BaseSettings):
     model_price_in_per_1k: Annotated[dict[str, float], NoDecode] = Field(
         default_factory=lambda: dict(DEFAULT_MODEL_PRICE_IN_PER_1K)
     )
+    model_price_cached_in_per_1k: Annotated[dict[str, float], NoDecode] = Field(
+        default_factory=lambda: dict(DEFAULT_MODEL_PRICE_CACHED_IN_PER_1K)
+    )
+    model_price_cache_write_per_1k: Annotated[dict[str, float], NoDecode] = Field(
+        default_factory=lambda: dict(DEFAULT_MODEL_PRICE_CACHE_WRITE_PER_1K)
+    )
     model_price_out_per_1k: Annotated[dict[str, float], NoDecode] = Field(
         default_factory=lambda: dict(DEFAULT_MODEL_PRICE_OUT_PER_1K)
     )
 
-    @field_validator("model_price_in_per_1k", "model_price_out_per_1k", mode="before")
+    @field_validator(
+        "model_price_in_per_1k",
+        "model_price_cached_in_per_1k",
+        "model_price_cache_write_per_1k",
+        "model_price_out_per_1k",
+        mode="before",
+    )
     @classmethod
     def _empty_model_price_table_uses_default(cls, value: object, info) -> object:
         # deploy.yml 은 미설정 vars 를 빈 문자열로 env 파일에 쓴다. 우리가 운영자에게 이 두
@@ -738,6 +756,47 @@ class Settings(BaseSettings):
     # _require_management_lane_within_stream_cap)이 90s 캡 안에 들어오게 한다.
     seller_product_agent_timeout_s: float = 40.0
 
+    # ── chart 레인 해석 에이전트 (이슈 #600, `09-CHART.md` §8) ────────────────────────
+    # 해석은 chart_only 턴에서 유일하게 새로 도는 LLM이다 — 문제가 생기면 false 하나로
+    # #504 시점 동작(고정 문구 3종)으로 되돌린다(§4 실패 규약).
+    seller_chart_interpret_enabled: bool = True
+    # 해석 1회 상한 — 워커 60s(seller_worker_timeout_s)를 쓰지 않는다. chart_only 턴은
+    # 대화형(stream_total_timeout_s=90s) 예산 안이라 배치 상한을 그대로 물려받으면
+    # §6.1의 budget 초과를 더 키운다.
+    seller_chart_interpret_timeout_s: float = 20.0
+    # 재작성 상한 — seller_report_max_retries(3)와 분리한다(결정 91: judge 없이 1회뿐).
+    seller_chart_interpret_max_retries: int = 1
+    # 해석문 길이 상한(자) — §2.6 "전체 6문장 이내"의 코드 측 근거(D-check).
+    seller_chart_interpret_max_chars: int = 800
+    # graph_agent(축 선언, ChartPlanSet) 전용 타임아웃 — 지금까지는 seller_worker_timeout_s
+    # (60s)를 재사용했는데, 해석이 추가되며 그 값이 §6.1 예산 초과의 절반을 차지한다.
+    # 축 선언은 findings·보고서·질문만 보고 좌표를 만들지 않아 워커보다 훨씬 가볍다.
+    seller_chart_agent_timeout_s: float = 25.0
+    # C4(chart_claims_bounded, §3.5) 금지 어휘 4묶음 — seller_report_causal_terms 와
+    # 같은 규약(과탐 시 목록만 조정). 판정 조건(어느 차트가 있을 때 검사하는지)은
+    # chart_verify.py 코드 소관 — 여기는 어휘 목록만.
+    seller_chart_forbidden_terms: Annotated[dict[str, list[str]], NoDecode] = Field(
+        default_factory=lambda: {
+            # C4-a — 스냅샷(aggregate=="none") 차트에 추세 어휘.
+            "snapshot_trend": [
+                "추세",
+                "증가",
+                "감소",
+                "늘었",
+                "줄었",
+                "상승",
+                "하락",
+                "이후",
+            ],
+            # C4-b — 버킷(3일/1주) 묶음 차트에 하루 단위 서술.
+            "daily_bucket": ["하루", "일별", "당일"],
+            # C4-c — 상위 N 절단 차트에서 하위 단정.
+            "bottom_rank": ["가장 적", "최저", "꼴찌", "가장 안 팔", "제일 안"],
+            # C4-d — 행동 유형별(4종) 차트를 "전체 행동"으로 서술.
+            "behavior_all": ["전체 행동", "모든 행동", "행동 전체"],
+        }
+    )
+
     # ── SOP 스텝 타임아웃 (이슈 #589, `OPS-RUNTIME.md` T-3 / `01-ARCHITECTURE.md` §4.4) ──
     # 상주 analysis 파이프라인(채팅 밖)의 스텝별 상한. 대화형 예산(90s)과 무관한 배치
     # 경로라 워커 타임아웃(60s)을 재사용하지 않고 스텝 성격별로 나눈다 — 초과 시
@@ -890,6 +949,7 @@ class Settings(BaseSettings):
         "seller_amount_bucket_map",
         "seller_customer_cluster_group_weights",
         "seller_customer_label_thresholds",
+        "seller_chart_forbidden_terms",
         mode="before",
     )
     @classmethod
@@ -918,6 +978,40 @@ class Settings(BaseSettings):
     )
     # report_md 길이 상한(자) — 상주 보고서 L2(3000자 이내) 완료 조건의 코드 측 근거.
     seller_report_max_chars: int = Field(default=3000, gt=0)
+
+    # ── 판매자 무인 배치 — 스캔 배선 + 스케줄러 체인 + 배치 정리 + 수동 실행 (이슈 #601) ──
+    # 10-TRIGGER.md §5.1~5.2 결정 95·100: 잡을 2개(스냅샷/스캔)로 쪼개지 않고 브랜드 1개당
+    # "스냅샷 → 스캔 → (열리면 심층 분석) → 정리"를 한 체인으로 묶는다. 시각은 KST 고정
+    # (`CronTrigger(..., timezone=...)` 명시 — 컨테이너 TZ 에 기대지 않는다, 결정 95).
+    seller_analysis_daily_cron: str = "20 0 * * *"  # KST 00:20 — 전날 23:5x 집계 반영 여유
+    seller_analysis_weekly_cron: str = "0 5 * * 1"  # KST 월요일 05:00 — 신호 무관 주간 정기
+    seller_analysis_cron_timezone: str = "Asia/Seoul"
+    # 티어2 킬스위치 — false 면 티어1이 열려도 티어2(추가 Spring 조회)를 생략한다.
+    seller_trigger_tier2_enabled: bool = True
+    # I-38 스냅샷 조회 창(일) — 고객 축 30일(10-TRIGGER.md §5.3, 브랜드 축 7일과 다른 축).
+    seller_snapshot_period_days: int = Field(default=30, ge=1)
+    # 브랜드 순회 동시성 상한 — Spring 부하 억제. 예시 계산(§5.1 "브랜드당 600초·3 병렬·
+    # 10 브랜드 ≈ 32분")의 그 3이다.
+    seller_batch_concurrency: int = Field(default=3, ge=1)
+    # 브랜드 1개의 배치 체인 총 예산(스냅샷+스캔+심층 분석). 초과분은 그 밤은 실패로 남기고
+    # 다음 배치(24시간 뒤)가 이어받는다 — 브랜드 단위 격리(OPS-RUNTIME F-8과 같은 원칙).
+    seller_batch_brand_timeout_s: float = Field(default=900.0, gt=0)
+    # F-9 일 상한 — 오늘 이미 이만큼 보고서를 만들었으면 신호가 있어도 심층 분석을
+    # 생략한다(analysis_store.count_reports_today 가 이미 있었으나 소비처가 없었다).
+    seller_report_daily_cap: int = Field(default=1, ge=1)
+
+    # ── 판매자 무인 배치 정리 (08-PERSISTENCE.md §5·§8, 결정 62·63·68) ───────────────
+    # draft/대화 checkpoint 는 seller-draft:/seller-chat: thread_id 접두어로만 범위를
+    # 좁혀 지운다(다른 도메인 thread 무접촉). 삭제 기준은 checkpoint.py 참조.
+    seller_draft_retention_hours: int = Field(default=48, ge=1)
+    seller_thread_retention_days: int = Field(default=30, ge=1)
+    # proposed → expired 전이 기준(일) — applied·superseded 는 건드리지 않는다.
+    seller_rec_expire_days: int = Field(default=14, ge=1)
+    # 성과 측정 정의 각인 — 이 이슈(#601)는 측정 자체를 구현하지 않는다(placeholder, PR
+    # 설명 참조). 값만 먼저 등록해 뒤 이슈가 같은 키를 쓰게 한다(08 §8 신설 목록).
+    seller_outcome_spec_version: str = "oc_v1"
+    # 정리 배치 1회 삭제 행 수 상한 — 락 보유 시간 억제(추천 만료 UPDATE 에 적용).
+    seller_cleanup_batch_size: int = Field(default=1000, ge=1)
 
     # ── 판매자 대화 스레드 (thread.py — checkpointer 기반 멀티턴 누적) ──
     # supervisor/planner 입력 주입 상한: 최근 턴(user+assistant 쌍) 수와 메시지당 절단.
@@ -2359,6 +2453,15 @@ class Settings(BaseSettings):
     # 단일 호출 실측 p95는 4.3s다. 이 값을 올릴 때는 구매자 상한과의 관계도 함께 검토한다.
     llm_timeout_s: float = 30.0
     llm_max_retries: int = 1
+    # 같은 구매자 채팅방의 선택적 계층형 메모리(#653). 프롬프트에 실리는 원문·상황 요약과
+    # 별도 압축 호출을 각각 유계로 둔다. 비활성화하면 기존 무기억 동작으로 즉시 돌아간다.
+    buyer_memory_enabled: bool = True
+    buyer_memory_recent_turns: int = Field(default=3, ge=1, le=10)
+    buyer_memory_recent_token_cap: int = Field(default=1_000, ge=64, le=8_000)
+    buyer_memory_situation_token_cap: int = Field(default=400, ge=64, le=2_000)
+    buyer_memory_compaction_trigger_tokens: int = Field(default=1_200, ge=1, le=20_000)
+    buyer_memory_compaction_input_token_cap: int = Field(default=4_000, ge=64, le=20_000)
+    buyer_memory_compaction_max_tokens: int = Field(default=256, ge=32, le=2_000)
 
     # ── 관측 집계 SLO·degrade 알림 (scripts/aggregate_observability.py 주입, EVAL-OBS §3.3·§5) ──
     # 런타임 동작을 바꾸지 않는 **집계 리포트 전용 목표치**다. 위의 스트림 상한은 "언제 끊나"이고
@@ -2372,6 +2475,9 @@ class Settings(BaseSettings):
     degrade_rate_alert_threshold: float = Field(default=0.10, ge=0.0, le=1.0)
     # 표본이 적으면 비율이 요동치므로(1/3 = 33%) 이 표본 수 미만이면 알림하지 않는다(오탐 방지).
     degrade_alert_min_samples: int = Field(default=50, ge=0)
+    # messageLength(문자수) 축을 고정 버킷으로 묶는 경계값 — <50 / 50-150 / 150-400 / 400+.
+    # 실측 분포 없이 잡은 추정치(#634)라 나중에 실제 로그 분포로 튜닝이 필요하다.
+    observability_length_buckets: tuple[int, ...] = (50, 150, 400)
 
     # ── 레이트 리밋 (api-spec §2.8, 토큰 sub 스코프, 인메모리·단일 인스턴스 전제) ──
     rate_limit_per_min: int = Field(default=10, gt=0)
@@ -3710,6 +3816,26 @@ class Settings(BaseSettings):
             raise ValueError("SELLER_DB_WRITE_RETRIES must be non-negative")
         if self.seller_analysis_target_ttl_days <= 0:
             raise ValueError("SELLER_ANALYSIS_TARGET_TTL_DAYS must be positive")
+        # 무인 배치(#601) — 브랜드 1개 예산이 심층 분석 1브랜치 예산(worker+judge+재실행+judge,
+        # seller_branch_deadline_s)보다 짧으면 resident.run_analysis 가 끝나기 전에
+        # asyncio.wait_for 가 그 브랜드를 통째로 잘라 매일 밤 조용히 실패한다.
+        if self.seller_batch_brand_timeout_s < self.seller_branch_deadline_s:
+            raise ValueError(
+                "SELLER_BATCH_BRAND_TIMEOUT_S 는 SELLER_BRANCH_DEADLINE_S 이상이어야 합니다"
+                f" (batch={self.seller_batch_brand_timeout_s},"
+                f" branch_deadline={self.seller_branch_deadline_s})"
+            )
+        try:
+            CronTrigger.from_crontab(
+                self.seller_analysis_daily_cron, timezone=self.seller_analysis_cron_timezone
+            )
+            CronTrigger.from_crontab(
+                self.seller_analysis_weekly_cron, timezone=self.seller_analysis_cron_timezone
+            )
+        except Exception as exc:
+            raise ValueError(
+                f"SELLER_ANALYSIS_DAILY_CRON/SELLER_ANALYSIS_WEEKLY_CRON 파싱 실패 ({exc})"
+            ) from exc
         # 고객 축 피처·군집(#593) — 스냅샷에 각인되는 정의라, 어긋난 채 기동해 다른
         # 정의로 만든 숫자를 나중에 비교하는 사고를 부팅 시점에 막는다(04 §6.2).
         if tuple(self.seller_cluster_input_keys) != CLUSTER_INPUT_KEYS:
