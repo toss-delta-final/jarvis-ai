@@ -8,6 +8,7 @@ import pytest
 from pydantic import ValidationError
 
 from evals.rerank_scoring.judge_cli import EXIT_OK, EXIT_REJECTED, main as judge_main
+from evals.rerank_scoring.judge_merge_cli import main as judge_merge_main
 from evals.rerank_scoring.judge import (
     analyze_judgments,
     build_presentations,
@@ -393,3 +394,75 @@ def test_source_loader_rejects_dataset_hash_drift(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="dataset hash mismatch"):
         load_source_pairs(path, dataset_root=DATASET_ROOT)
+
+
+def test_merge_cli_combines_disjoint_shards_and_reproduces_analysis(tmp_path: Path) -> None:
+    shards: list[Path] = []
+    for index, seed in enumerate((11, 29)):
+        shard = tmp_path / f"shard-{index}"
+        assert (
+            judge_main(
+                [
+                    "--source-dir",
+                    str(SOURCE_DIR),
+                    "--dataset-root",
+                    str(DATASET_ROOT),
+                    "--case-ids",
+                    "rh2-adversarial-0001",
+                    "--order-seeds",
+                    str(seed),
+                    "--dry-run",
+                    "--out",
+                    str(shard),
+                ]
+            )
+            == EXIT_OK
+        )
+        shards.append(shard)
+
+    out = tmp_path / "merged"
+    assert (
+        judge_merge_main(
+            [
+                "--shards",
+                ",".join(str(path) for path in shards),
+                "--out",
+                str(out),
+            ]
+        )
+        == EXIT_OK
+    )
+    results = json.loads((out / "results.json").read_text(encoding="utf-8"))
+    manifest = json.loads((out / "run_manifest.json").read_text(encoding="utf-8"))
+    assert results["coverage"]["plannedPairs"] == 2
+    assert results["coverage"]["plannedPresentations"] == 4
+    assert reproduce_analysis(out) == results
+    assert manifest["merge"]["shardCount"] == 2
+    assert len(manifest["merge"]["shardManifestSha256"]) == 2
+
+
+def test_merge_cli_rejects_overlapping_presentations(tmp_path: Path) -> None:
+    shard = tmp_path / "shard"
+    assert (
+        judge_main(
+            [
+                "--source-dir",
+                str(SOURCE_DIR),
+                "--dataset-root",
+                str(DATASET_ROOT),
+                "--case-ids",
+                "rh2-adversarial-0001",
+                "--order-seeds",
+                "11",
+                "--dry-run",
+                "--out",
+                str(shard),
+            ]
+        )
+        == EXIT_OK
+    )
+
+    assert (
+        judge_merge_main(["--shards", f"{shard},{shard}", "--out", str(tmp_path / "merged")])
+        == EXIT_REJECTED
+    )

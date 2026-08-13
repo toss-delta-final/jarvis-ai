@@ -136,6 +136,15 @@ Live 실행은 `--max-calls`와 `--max-cost-usd`를 명시해야 한다. `Record
 `presentations.jsonl`, A/B-only `judge_responses.jsonl`, 비공개 조정용
 `coordinator_mapping.jsonl`, `failures.jsonl`, `results.json`, `run_manifest.json`, `report.md`다.
 
+서로 겹치지 않는 shard는 아래처럼 합친다. merge는 dataset, source samples, judge model/prompt,
+mapping seed, bootstrap 설정이 모두 같은지와 presentation ID가 disjoint인지 확인한다.
+
+```bash
+uv run python -m evals.rerank_scoring.judge_merge_cli \
+  --shards artifacts/blind-shard-a,artifacts/blind-shard-b \
+  --out artifacts/rerank-scoring/blind-judge-merged
+```
+
 이 평가는 arm identity와 위치 편향을 줄이지만 여전히 synthetic judge 기반 exploratory evidence다.
 사람 blind review나 production A/B를 대체하지 않고 confirmatory 우월성을 주장하지 않는다.
 
