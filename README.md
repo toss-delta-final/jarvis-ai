@@ -1,361 +1,299 @@
 # 🛒 Jarvis — 에이전틱 커머스 AI 서버
 
-> 자연어 대화로 상품을 추천하고 장바구니에 담아주는 **에이전틱 커머스(Agentic Commerce)** AI 에이전트 서버.
-> 구매자·판매자 양쪽을 위한 LangGraph 멀티 에이전트와 개인화 프로필 파이프라인을 제공한다.
+> 자연어 쇼핑 요청을 **검증 가능한 검색·추천·커머스 행동**으로 연결하는 AI 에이전트 서버.
+> 구매자, 판매자, 개인화 에이전트와 평가·관측 파이프라인을 제공한다.
 
 <p>
-  <img alt="CI" src="https://github.com/hyunseo-and-children/jarvis-ai/actions/workflows/ci.yml/badge.svg">
+  <a href="https://github.com/toss-delta-final/jarvis-ai/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/toss-delta-final/jarvis-ai/actions/workflows/ci.yml/badge.svg"></a>
   <img alt="Python" src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white">
-  <img alt="FastAPI" src="https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi&logoColor=white">
-  <img alt="LangGraph" src="https://img.shields.io/badge/LangGraph-0.2-1C3C3C">
+  <img alt="FastAPI" src="https://img.shields.io/badge/FastAPI-async%20SSE-009688?logo=fastapi&logoColor=white">
+  <img alt="LangGraph" src="https://img.shields.io/badge/LangGraph-agent%20orchestration-1C3C3C">
   <img alt="PostgreSQL" src="https://img.shields.io/badge/PostgreSQL-pgvector-4169E1?logo=postgresql&logoColor=white">
-  <img alt="LLM" src="https://img.shields.io/badge/LLM-OpenAI%20%C2%B7%20Claude%20%ED%86%A0%EA%B8%80-412991?logo=openai&logoColor=white">
-  <img alt="status" src="https://img.shields.io/badge/status-MVP%20개발%20중-yellow">
   <img alt="License" src="https://img.shields.io/badge/License-MIT-green">
 </p>
 
 ---
 
-## 📌 프로젝트 개요
+## 프로젝트 개요
 
-일반 커머스 검색은 **키워드 매칭**에 머문다. Jarvis는 사용자의 자연어 의도("유럽 여행 가는데 기내 반입 되는 파우치 추천해줘")를 구조화 필터 + 시맨틱 쿼리로 분해하고, 개인 취향 프로필로 재랭킹해 **근거와 함께** 상품을 제안한다. "담아줘" 한마디로 장바구니까지 이어지는 **대화형 쇼핑 경험**이 목표다.
+Jarvis는 “유럽 여행에서 기내에 들고 갈 파우치와 어댑터를 총 8만 원 아래로 추천해 줘”처럼
+상황·복수 니즈·예산이 섞인 요청을 구조화한다. 최신 상품 후보는 Spring에서 조회하고, AI 검색
+산출물과 개인화 프로필을 이용해 순서를 조정한 뒤, 검증된 상품 ID만 장바구니·찜·주문 조회 같은
+후속 행동으로 연결한다.
 
-이 저장소는 3-tier 아키텍처 중 **AI 에이전트 서버**를 담당한다 (React 프론트엔드 · Spring 백엔드는 별도).
+핵심 원칙은 **LLM과 코드의 책임 분리**다.
 
-| 역할 | 담당 |
+- LLM은 자연어 의도, 니즈, 의미 적합성, 설명 초안을 해석한다.
+- 코드는 인증·권한, hard constraint, 후보 ID, 중복, 근거, 멱등성, 타임아웃을 검증한다.
+- 가격·재고·상품·주문·장바구니의 원본과 트랜잭션 권위는 Spring 백엔드가 유지한다.
+- AI PostgreSQL에는 대화 상태, 프로필, 체크포인트, 검색 문서·임베딩 등 AI 산출물만 저장한다.
+
+### 현재 구현 범위
+
+| 영역 | 구현 내용 |
 |---|---|
-| **AI 서버 (이 저장소)** | 대화형 추천/장바구니 에이전트, 판매자 챗봇, 개인화 프로필, 상품 시맨틱 인덱싱 |
-| React 프론트엔드 | 채팅 UI, 상품 리스트 렌더, SSE 스트림 소비 |
-| Spring 백엔드 | 회원·상품·주문·장바구니 등 커머스 트랜잭션, 상품 원본 데이터 소유 |
-
-### 핵심 기능
-
-- 🔎 **대화형 상품 추천** — 의도 분해 → 검색 → 프로필 재랭킹 → 근거 생성 (멀티턴 조건 누적·완화)
-- 🛍️ **자연어 장바구니** — "담아줘" 의도 확정 + 옵션 되물음 + 장바구니 조회, 게스트 지원
-- 📊 **판매자 챗봇** — 매출/판매 통계 Q&A + 상품 상세 수정 draft 제안
-- 🧠 **개인화 프로필 파이프라인** — 대화·구매 이력에서 취향 신호를 추출해 백그라운드로 축적 (OKF 스타일 자연어 위키)
-- ⚡ **SSE 실시간 스트리밍** — 토큰 단위 응답, 취소·타임아웃·동시 스트림 제어
+| **구매자 Agent** | 추천, 멀티턴 조건 누적·정정, 장바구니 담기·조회·삭제·수량 변경, 찜 추가·조회·삭제, 주문 상태 조회, 일반 대화 |
+| **추천 파이프라인** | decompose → Spring 검색 → embedding rerank → LLM rerank → 결정론적 validator → 추천 목록 push |
+| **판매자 Agent** | 통계 Q&A, 분석 보고서·차트, 상품 등록·수정·삭제 draft, 주문 발송 draft, 명시적 confirm 기반 실행 |
+| **판매자 상주 분석** | 매출·전환·이탈·재구매·세그먼트 계산, 통계 검증, 보고서 저장, 예약/수동 실행 |
+| **개인화** | 세션 신호 수집, 반복성·현저성·명시성 gate, 장기 취향 그래프, 조회·수정·삭제·초기화·중지/재개 |
+| **품질·운영** | SSE 진행 상태, 취소·timeout·retry·degrade, 구조화 로그·LangSmith 추적, rate limit, 평가 하네스 |
 
 ---
 
-## 🏗️ 시스템 아키텍처
+## 시스템 아키텍처
 
 ```mermaid
 flowchart LR
-    User(("👤 사용자"))
-    FE["React FE<br/>채팅 UI · 상품 리스트"]
-    subgraph AI["🤖 Jarvis AI 서버 (이 저장소)"]
-        direction TB
-        Chat["POST /chat<br/>구매자 그래프"]
-        Seller["POST /seller/chat<br/>판매자 그래프"]
-        Profile["프로필 파이프라인<br/>(백그라운드)"]
-        PG[("AI Postgres ×2<br/>AI 생성물 · 프로필")]
-        Chat --- PG
-        Profile --- PG
+    User((사용자)) --> FE[React FE]
+    FE -- 세션·스트림 티켓 --> Spring[Spring BE]
+    FE -- JWT + SSE --> AI
+    FE -- 최신 상품 카드 조회 --> Spring
+
+    subgraph AI[Jarvis AI Server]
+        Buyer[Buyer Agent]
+        Seller[Seller Agent]
+        Profile[Profile Pipeline]
+        Guard[Auth · Guardrail · Trace]
+        Catalog[(pg-catalog\nsearch_doc · embedding)]
+        ProfileDB[(pg-profile\nprofile · checkpoint · report)]
+        Buyer --- Guard
+        Seller --- Guard
+        Profile --- Guard
+        Buyer --- Catalog
+        Buyer --- ProfileDB
+        Seller --- ProfileDB
+        Profile --- ProfileDB
     end
-    Spring["☕ Spring BE<br/>상품 · 주문 · 장바구니 · 회원"]
-    LLM["2-tier LLM · fast/smart<br/>OpenAI 기본 · Claude 토글"]
 
-    User --> FE
-    FE -- "① JWT 발급/재발급" --> Spring
-    FE -- "② SSE 직접 호출 (JWT)" --> Chat
-    FE -- "② SSE 직접 호출 (JWT)" --> Seller
-    Chat -- "검색·이력·장바구니·목록 push (질의 시점)" --> Spring
-    FE -- "③ 상품 목록 GET (경로 B)" --> Spring
-    Chat & Seller & Profile -.-> LLM
-    Spring -. "변경분 pull 배치 (I-8)" .-> PG
+    AI -- 검색·상품·주문·장바구니·찜·통계 --> Spring
+    Spring -- session event · 홈 추천 · 프로필 위임 --> AI
+    AI -. fast/smart .-> LLM[OpenAI · Anthropic · Scripted]
+    AI -. embedding .-> Gemini[Google gemini-embedding-001]
 ```
 
-**설계 하이라이트**
+### 추천 결과 표시: 경로 B
 
-- **FE ↔ AI 직접 호출** — FE가 Spring에서 발급받은 JWT로 AI 서버를 직접 호출(SSE). AI는 `RS256 + JWKS`로 토큰을 로컬 검증하고, **신원은 요청 본문이 아닌 JWT `sub` 클레임에서만** 도출한다(IDOR 방지).
-- **경로 B (상품 리스트 분리)** — SSE에는 상품 카드를 싣지 않는다. AI가 랭크 목록을 Spring에 push하면 FE가 Spring에서 가격·이미지·리뷰수가 채워진 목록을 GET. 표시 데이터의 권위를 Spring에 일원화.
-- **질의 시점 검색 위임** — AI는 상품 원본 사본을 두지 않고, 질의 시점에 Spring 검색을 위임해 최신 가격·재고를 확보한다. AI Postgres에는 **AI 생성물(extras·search_doc·임베딩)만** 저장.
-- **데이터 소유 분리** — 커머스 원본은 Spring/MySQL, AI 산출물은 AI/PostgreSQL(pgvector). 동기화는 이벤트가 아닌 **pull 배치**(`GET /products/changes`).
+1. FE가 Spring에서 발급받은 스트림 티켓으로 `POST /chat`을 호출한다.
+2. AI가 검증된 JWT `sub`에서 신원을 도출하고 추천 후보를 계산한다.
+3. AI가 최종 상품 ID 목록을 Spring에 push한다.
+4. AI는 SSE에 상품 카드를 싣지 않고 `products.ready` 상관키만 보낸다.
+5. FE가 Spring에서 최신 가격·재고·이미지가 포함된 카드를 조회한다.
+
+이 구조는 AI가 오래된 표시 데이터를 복제하지 않게 하고, 상품 표시 권위를 Spring에 일원화한다.
+
+### 기본 검색·재랭킹 흐름
+
+```text
+자연어 + 최근 대화 + 장기 프로필
+  → 의도/조건/니즈/semantic query 분해
+  → Spring 최신 후보 검색
+  → Google query embedding + pgvector 후보 재정렬
+  → LLM rerank 및 구조화 근거 생성
+  → hard constraint·후보 ID·중복·근거 validator
+  → Spring I-21 목록 push
+  → products.ready
+```
+
+기본 검색 백엔드는 `embedding_rerank`다. Query embedding이나 catalog artifact를 사용할 수 없으면
+Spring 검색 순서를 유지하는 degrade 경로로 내려가며, 구조화 필터와 최신 가격·재고의 권위는 항상
+Spring에 남는다. 비교용 `spring`, `vector` 백엔드도 구현되어 있지만 `vector`는 오프라인 평가용이다.
 
 ---
 
-## 🧰 기술 스택 & 선택 이유
+## 기술 스택
 
-| 영역 | 기술 | 선택 이유 |
+| 영역 | 기술 | 역할 |
 |---|---|---|
-| 언어/런타임 | **Python 3.12** | LLM·에이전트 생태계 표준, 타입 힌트 성숙 |
-| 웹 프레임워크 | **FastAPI** + Uvicorn | async 네이티브 → SSE 스트리밍·동시 LLM 호출에 적합 |
-| 에이전트 오케스트레이션 | **LangGraph** | 조건부 분기·멀티턴 상태·checkpointer를 그래프로 명시. intent router → 서브그래프 구조에 자연스러움 |
-| LLM | **2-tier provider 토글**<br/>(fast/smart · `LLM_PROVIDER`) | 호출부는 tier(fast/smart) 추상화, provider가 모델 해석. 기본 **OpenAI**(gpt-5-nano/gpt-5.6-luna) · **Claude**(haiku/sonnet) 토글. 비용/품질 분리 — 라우팅·분해·enrichment=fast, 재랭킹·응답=smart |
-| 데이터베이스 | **PostgreSQL ×2** + pgvector | 정확 필터(WHERE) + 벡터 유사도를 단일 SQL로. 카탈로그 인덱스 / 프로필 스토어 분리 |
-| 임베딩 | **한국어 특화 오픈소스**<br/>(self-host, 1024-dim, CPU) | 한국어 커머스 도메인 품질 + 비용 통제. `snowflake-arctic-embed-l-v2.0-ko` |
-| 인증 | **PyJWT + RS256/JWKS** | Spring 발급 토큰의 무상태 로컬 검증 (JWKS 공개키 캐싱) |
-| 상태 저장 | **LangGraph PostgresSaver** | 멀티턴 대화·세션 종료 기반 프로필 트리거 |
-| 패키지 관리 | **uv** | 빠른 의존성 해석, 임베딩(torch) 선택적 그룹 분리 |
-| 검증 | **Pydantic v2** (CamelModel) | 와이어 포맷 camelCase ↔ 파이썬 snake_case 자동 정합 |
+| Runtime | Python 3.12, uv | async 실행과 lockfile 기반 재현성 |
+| API | FastAPI, Uvicorn, SSE | 사용자/내부 API와 스트리밍 |
+| Agent | LangGraph, provider-agnostic agent orchestration | 구매자 상태·분기와 LLM/tool 조율 |
+| Schema | Pydantic v2 | camelCase 와이어 계약과 내부 snake_case 정합 |
+| LLM | OpenAI, Anthropic, ScriptedLLM | fast/smart tier, 로컬·부하 테스트용 결정론 provider |
+| Embedding | Google `gemini-embedding-001` | 1,536차원 검색 임베딩 |
+| Data | PostgreSQL ×2, pgvector, psycopg | catalog artifact와 profile/checkpoint/report 분리 |
+| Seller analytics | pandas, SciPy, statsmodels, scikit-learn | 시계열·비율·이상치·군집 계산 |
+| Quality | pytest, Ruff, eval harness | 회귀, 정적 검사, 확률적 품질 평가 분리 |
+
+LLM 모델 ID, 추론 강도, 가격표와 실험 arm은 코드에 고정하지 않고 [`.env.example`](.env.example)과
+`app/core/config.py`에서 주입한다.
 
 ---
 
-## 💡 주요 기술적 도전 & 설계 결정
+## 프로젝트 구조
 
-포트폴리오 관점에서 특히 고민한 지점들 — 상세 의사결정 로그는 [`docs/`](docs/)와 기획 저장소 결정 원장 참조.
-
-1. **동기화 방식: 이벤트(CDC) vs 배치** — 실시간 웹훅 대신, AI가 필요 시 당겨오는 **pull 배치**로 확정. Spring의 스케줄러·재시도 부담을 없애고, 유실 시 다음 주기가 자연 복구. 상품 원본은 복제하지 않고 AI 생성물만 upsert.
-2. **검색 아키텍처 OPEN** — ①AI 벡터 검색 → Spring id 조회 ②Spring 검색 → 임베딩 재랭킹, 두 방식을 `SearchBackend` 인터페이스 뒤에 두고 **골든셋 실측으로 확정**하도록 교체 가능하게 설계.
-3. **SSE 스트림 수명주기** — 방(`threadId`)당 활성 스트림 1개(`409`), 클라이언트 취소(`AbortController`) 감지 시 **LLM 스트림 즉시 중단(토큰 비용 차단)**, 계층별 타임아웃, 대화 저장 상태(`COMPLETED/FAILED/CANCELLED`) 관리.
-4. **개인화 프로필** — 매 발화 저장이 아닌 **반복성·현저성·명시성 게이트** 통과 시에만 승격. Spring의 `logout`/`newConversation` 통지 또는 AI가 판단한 10분 비활동 뒤 공통 finalizer로 병합한다. idle은 같은 sessionId가 다시 활동할 수 있는 checkpoint이며 탭 닫기 신호는 사용하지 않는다. 저장 포맷은 OKF 스타일 자연어 위키.
-5. **계약 우선 개발** — 3팀 병렬 개발을 위해 API 계약(`api-spec`)을 코드보다 먼저 확정하고 버전 관리. 스텁마다 `api-spec §` 참조 주석으로 코드↔명세를 연결.
-
----
-
-## 📂 프로젝트 구조
-
-```
+```text
 app/
-├── main.py              # FastAPI 팩토리 — CORS + 라우터 + /health
-├── api/                 # 엔드포인트: chat · seller · profile · events + 인증 deps
+├── main.py                         # FastAPI 팩토리, lifespan, middleware, /health
+├── api/                            # chat, seller, events, internal, profile graph
 ├── agents/
-│   ├── buyer/           # 구매자 그래프 + 서브그래프(recommendation · cart · fallback)
-│   ├── seller/          # 판매자 챗봇 그래프 (통계 Q&A + draft)
-│   └── profile/         # 프로필 reader · builder · gate (백그라운드)
-├── core/                # config(설정 주입) · auth(RS256/JWKS) · logging
-├── services/            # search_service(교체형 백엔드) · spring_client(역방향 호출)
-├── pipelines/           # AI 생성물 배치 — enrichment · embedding · 초기 구축
-└── schemas/             # Pydantic 요청/응답 · SSE 페이로드 · Spring 계약 모델
-db/catalog/init/         # 초기 SQL
-deploy/                  # 데모 docker-compose + 시드
-tests/                   # pytest (unit · integration)
+│   ├── buyer/
+│   │   ├── recommendation/         # decompose, 검색, 완화, rerank, grounding
+│   │   ├── cart/                   # 담기·조회·삭제·수량·찜·옵션
+│   │   ├── graph.py                # intent router와 buyer lane 조율
+│   │   ├── memory.py               # 같은 방 최근 대화·상황 요약
+│   │   └── order_status.py         # 주문 상태 응답
+│   ├── seller/                     # 분석·도구·draft/HITL·report·상주 분석 SOP
+│   └── profile/                    # 세션 finalizer, gate, 취향 그래프, 저장소
+├── core/                            # 설정, 인증, 스트림, 관측, PII, rate limit
+├── pipelines/                       # catalog pull, enrichment, embedding, scheduler
+├── services/                        # Spring client, 검색 backend, 홈 추천
+└── schemas/                         # 공개/내부 API와 SSE Pydantic 모델
+
+db/                                  # pg-catalog·pg-profile 초기화/마이그레이션
+evals/                               # 추천·필터·grounding·성능·판매자 평가 하네스
+tests/                               # unit, integration, eval, smoke
+docs/                                # API 계약, SPEC, 운영·평가·최종 보고서
+deploy/                              # 데모 compose와 배포 보조 파일
+scripts/                             # 데이터 적재·검증·평가·운영 도구
 ```
 
 ---
 
-## 🚀 시작하기
+## 시작하기
+
+### 요구 사항
+
+- Python 3.12
+- [uv](https://docs.astral.sh/uv/)
+- Docker + Docker Compose
+- 전체 채팅 통합 시 실행 중인 Spring 백엔드와 선택한 LLM provider 키
+
+### 로컬 실행
 
 ```bash
-# 1. 의존성 설치 (임베딩 의존성도 main deps — 별도 그룹 없음)
+# 1. 의존성 설치
 uv sync
 
-# 2. PostgreSQL ×2 기동 (catalog=5433, profile=5434)
-docker compose up -d pg-catalog pg-profile
-
-# 3. 환경변수 (.env.example → .env 복사 후 채움)
+# 2. 환경변수 준비
 cp .env.example .env
 
-# 4. 개발 서버 실행 (AUTH_MODE=dev: 헤더 없으면 게스트)
-uv run uvicorn app.main:app --reload
+# 3. AI 저장소 기동 (host: catalog 5433, profile 5434)
+docker compose up -d pg-catalog pg-profile
 
-# 5. Git hook 설치 (1회 — 커밋 시 lint + 커밋 메시지 형식 자동 검사)
-uv run pre-commit install
-
-# 6. 테스트 · 린트
-uv run pytest
-uv run ruff check
+# 4. 개발 서버
+uv run uvicorn app.main:app --reload --port 8000
 ```
 
-- 헬스 체크: `GET http://localhost:8000/health`
-- API 문서: `http://localhost:8000/docs` (FastAPI 자동 생성)
+```bash
+curl http://localhost:8000/health
+# {"status":"ok"}
+```
 
-### API 요약
+- OpenAPI UI: `http://localhost:8000/docs`
+- 전체 Docker 실행: `docker compose up --build`
+- 배포·운영 설정: [`DEPLOY.md`](DEPLOY.md)
+
+> `AUTH_MODE=dev`에서는 로컬 편의를 위해 무토큰 요청을 게스트로 처리한다. 운영에서는
+> `AUTH_MODE=jwks`와 `JWKS_URL`, `JWT_ISSUER`, `JWT_AUDIENCE`, `JWT_SCOPE`,
+> `INTERNAL_API_TOKEN`, `PII_HASH_PEPPER`를 올바르게 주입해야 한다.
+
+### 주요 환경변수
+
+| 변수 | 설명 |
+|---|---|
+| `LLM_PROVIDER` | `openai`(기본), `anthropic`, `scripted` |
+| `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | 선택한 채팅 provider 인증 |
+| `GOOGLE_API_KEY` | catalog 증분 embedding 및 query embedding |
+| `SPRING_BASE_URL` | AI가 역호출할 Spring 주소 |
+| `INTERNAL_API_TOKEN` | AI↔Spring `X-Internal-Token` 공용 값 |
+| `CATALOG_DB_URL` / `PROFILE_DB_URL` | 두 PostgreSQL 연결 문자열 |
+| `AUTH_MODE` / `JWKS_URL` | 로컬 dev 또는 RS256/JWKS 인증 모드 |
+| `RERANK_GROUNDING_ARM` | 추천 근거 표시 arm, 기본 `validated` |
+| `RERANK_RANKING_ARM` | 순위 계산 arm, 기본 `current` |
+| `LANGSMITH_TRACING` | 선택적 LangSmith trace 전송 |
+
+전체 설정과 안전한 기본값은 [`.env.example`](.env.example)을 참조한다.
+
+---
+
+## API 표면
+
+### 사용자·판매자 API
 
 | 메서드 | 경로 | 설명 |
 |---|---|---|
-| POST | `/chat` | 구매자 챗봇 (SSE) — 추천 · 장바구니 · 폴백 |
-| POST | `/seller/chat` | 판매자 챗봇 (SSE) — 통계 Q&A · draft, 판매자 스코프 필수 |
-| POST | `/events/session-end` | 명시적 세션 종료 통지 수신 (Spring → AI, `logout`/`newConversation`) |
-| GET | `/health` | 헬스 체크 |
+| `POST` | `/chat` | 구매자 Agent SSE — 추천·장바구니·찜·주문·일반 대화 |
+| `POST` | `/seller/chat` | 판매자 Agent SSE — 분석·상품/주문 draft·confirm |
+| `GET` | `/seller/reports` | 저장된 판매자 분석 보고서 목록 |
+| `GET` | `/seller/reports/{report_id}` | 판매자 분석 보고서 상세 |
+| `GET`, `HEAD` | `/health` | 컨테이너·업타임 헬스 체크 |
 
-SSE 이벤트 — 구매자: `token`·`conditions`·`action`·`suggestions`·`budget`·`products.ready`·`done`·`error` / 판매자: `token`·`draft`·`done`·`error` (camelCase).
+### Spring → AI 내부 API
 
-### 환경변수 · 키 세팅
+| 메서드 | 경로 | 설명 |
+|---|---|---|
+| `POST` | `/events/session-claim` | guest 세션을 회원에게 귀속 |
+| `POST` | `/events/session-end` | logout/newConversation 프로필 finalizer 트리거 |
+| `POST` | `/internal/recommendations/home` | 홈 개인화 추천 랭킹 위임 |
+| `POST` | `/internal/seller/{brand_id}/analysis/run` | 판매자 분석 수동 실행(202 Accepted) |
+| `GET` | `/internal/profile/{user_id}/graph` | 취향 그래프 조회 |
+| `PATCH`, `DELETE` | `/internal/profile/{user_id}/graph/edges/{edge_id}` | 취향 수정·삭제 |
+| `POST` | `/internal/profile/{user_id}/graph/reset` | 취향 그래프 전체 초기화 |
+| `PUT` | `/internal/profile/{user_id}/personalization` | 개인화 중지·재개 |
 
-전체 목록은 [`.env.example`](.env.example) 참조. **AI 서버는 단독 실행이 불가하다** — 후보 검색·장바구니·이력·목록 push를 Spring에 역호출하므로(api-spec §1.2 레인 c), 실행 모드에 따라 필요한 값이 다르다.
+정확한 요청·응답, 인증, 오류 코드와 SSE 순서는 [`docs/api-spec.md`](docs/api-spec.md)가 저장소의
+동기화 사본이다. 계약 변경은 정본 개정 후 코드와 이 사본을 함께 갱신한다.
 
-| 변수 | 로컬/CI | 운영 | 설명 |
-|---|---|---|---|
-| `LLM_PROVIDER` | `openai`(기본) | `openai`/`anthropic` | LLM 백엔드 선택. `openai`(기본)는 `OPENAI_API_KEY`, `anthropic`은 `ANTHROPIC_API_KEY` 필요. 호출부는 tier(fast/smart) 추상화 — provider 가 모델 해석. `.env`/OS env 가 config 기본값보다 우선 (이슈 #40) |
-| `OPENAI_API_KEY` | 불필요 | OpenAI 활성 시 **필수** | 미설정 시 구매자·판매자 스트림은 네트워크 호출 없이 `LLM_UNAVAILABLE` 반환 (E2E는 주입형 fake로 대체) |
-| `ANTHROPIC_API_KEY` | 불필요 | Anthropic 활성 시 **필수** | `LLM_PROVIDER=anthropic`일 때 사용. 미설정 동작은 OpenAI와 동일 |
-| `AUTH_MODE` | `dev` | `jwks` | `dev`=서명 검증 없이 클레임만 읽고 헤더 없으면 게스트(로컬 전용) |
-| `JWKS_URL` | — | **필수** | Spring `/.well-known/jwks.json` — `jwks` 모드에서 미설정 시 기동 실패 |
-| `JWT_ISSUER`·`JWT_AUDIENCE` | 기본값 | 확정값 주입 | 스트림 티켓 `iss`/`aud` 검증(§2.3) |
-| `JWT_SCOPE` | 미설정 | **주입 권장** | 미설정 시 scope 검증 생략 + 기동 경고. 값은 C-1 확정 후(제안 `chat:stream`) |
-| `INTERNAL_API_TOKEN` | 선택 | **필수** | AI→Spring `X-Internal-Token`(아웃바운드) + Spring→AI 이벤트 검증(인바운드) 공용 |
-| `SPRING_BASE_URL` | 기본 `localhost:8080` | 필수 | 역호출 대상. AI→Spring 타임아웃은 전 구간 3s |
-| `PROFILE_SESSION_IDLE_TIMEOUT_S` | `600` | 조정 가능 | 마지막 저장 회원 발화 뒤 프로필 버퍼를 inactivity 종료로 보는 시간(초) |
-| `PROFILE_IDLE_SWEEP_INTERVAL_S` | `60` | 조정 가능 | 비활성 세션 bounded sweep 실행 주기(초). 탭 닫기 신호를 대신하지 않고 자체 활동 시각만 사용 |
-| `PROFILE_IDLE_SWEEP_BATCH_SIZE` | `10` | 조정 가능 | sweep 1회가 원자 선점하는 최대 세션 수 |
-| `PROFILE_IDLE_MAX_CONCURRENCY` | `2` | 조정 가능 | timeout finalizer 최대 동시 실행 수 |
-| `PROFILE_IDLE_CLAIM_TTL_S` | `900` | 조정 가능 | 처리 중 crash 복구용 activity claim lease(초) |
-| `PII_HASH_PEPPER` | 선택 | **필수** | 로그 PII 지문용 — `jwks` 모드에서 미설정 시 기동 실패 |
+### SSE 이벤트
+
+- 구매자: `progress`, `token`, `conditions`, `suggestions`, `action`, `products.ready`, `done`, `error`
+- 판매자: `meta`, `progress`, `token`, `draft`, `report`, `done`, `error`
+
+모든 프레임은 `data: {"type": "...", "data": {...}}` 형태의 camelCase JSON이다.
+
+---
+
+## 검증과 평가
 
 ```bash
-cp .env.example .env    # 이후 위 표를 참고해 채운다 (.env 는 커밋 금지)
+# CI와 같은 기본 검증
+uv run ruff check
+uv run pytest
+
+# 구매자 adversarial dataset 무결성
+uv run python scripts/validate_dataset.py
+uv run python -m evals.adversarial_recommendation.generator --check
 ```
 
-### E2E 스모크 하니스 (구매자 라인)
+README 갱신 기준 최신 `origin/dev`에서 기본 pytest 선택 집합은 **7,453 passed / 229 deselected**다.
+기본 설정은 외부 과금 API를 호출하지 않으며, 실제 provider·인프라가 필요한 검증은 `smoke`,
+`integration`, `slow` marker로 분리한다.
 
-`tests/integration/`은 **라이브 Spring·LLM provider 없이** AI↔Spring 전 구간을 결정적으로 돌린다 — Spring은 `httpx.MockTransport` stub(`_stubs.py`), LLM은 주입형 `ScriptedLLM`. `spring_client` 함수를 patch하지 않고 **HTTP 경계에서만** 대역을 넣으므로 URL 조립·`X-Internal-Token` 헤더·응답 envelope 파싱이 실코드로 검증된다.
+주요 평가 자산:
 
-```bash
-uv run pytest tests/integration -q          # 전체 스모크
-uv run pytest tests/integration/test_buyer_flow_e2e.py -q
-```
+- 210 family, 450 minimal-mutation case의 구매자 adversarial dataset
+- 추천 근거 A/B/C grounding 평가와 결정론적 validator
+- ranking holdout, blind pairwise 수집·분석 도구
+- intent, filter axis, category, needs, personalization, latency/cost probe
+- 판매자 trigger·이상치·군집 안정성 회귀
 
-| 파일 | 검증 범위 |
-|---|---|
-| `test_buyer_flow_e2e.py` | 발화→decompose→검색(I-1)→rerank→push(I-21)→`products.ready`→**카드 조회(CH-5)** — 경로 B 종단, dedup(I-19), 멀티턴, 담기(I-2)·조회(I-18) |
-| `test_profile_flow_e2e.py` | 발화 누적→`session-end`(I-20)→델타·게이트 승격→consolidation→프로필 저장소 요약 확인, 멱등·"기억해" hot-path |
-| `test_batch_flow_e2e.py` | I-17 pull→enrich→search_doc→임베딩→upsert, `hasMore` 페이지네이션·커서 전진·`HIDDEN`·full_rebuild |
-| `test_degrade_e2e.py` | `SEARCH_FAILED`·`LLM_UNAVAILABLE`/`LLM_TIMEOUT`·rerank 폴백·push 실패(`done` 종료)·이력 실패·옵션 되물음 |
-| `test_auth_e2e_flow.py` | **운영 인증 레인** — RS256 스트림 티켓 + JWKS 로컬 검증 위에서 같은 흐름 완주, 신원=검증된 `sub`(IDOR), 무토큰 401 |
-
-실 Spring·실 OpenAI/Anthropic 키로 돌리는 수동 검증은 활성 provider에 맞춰 위 환경변수를 채우고 `docker compose up -d pg-catalog pg-profile` 후 `uv run uvicorn app.main:app --reload`로 서버를 띄워 진행한다 — CI 스모크는 항상 fake/stub 경로로 결정적으로 돈다.
+평가 수치의 해석 범위와 재현 규약은 [`evals/README.md`](evals/README.md)와
+[`docs/final-report/`](docs/final-report/)에서 확인한다.
 
 ---
 
-## 🔀 Git 워크플로 & 커밋 규칙
+## 문서
 
-**3인 팀** 기준 경량 흐름. **배포 라인 `main` + 통합 라인 `dev`** 두 보호 브랜치와 짧게 사는 topic 브랜치를 쓴다 — 배포팀이 `main` push 기준 CD(EC2 자동배포)를 붙이므로, 매 기능 머지가 곧장 실서버로 나가지 않도록 `dev`를 통합 버퍼로 둔다. `develop`/`release`/`hotfix`까지 계층화하는 정식 Git Flow는 3인에 여전히 과하다.
-
-### 브랜치 전략
-
-- `main` — **배포(production) 라인**. 보호 브랜치, **직접 push 금지**, PR로만 병합. 여기 머지 = **EC2 자동배포**. 항상 실서버와 일치.
-- `dev` — **통합(integration) 라인**. 보호 브랜치, **직접 push 금지**, PR로만 병합. 일상 개발이 모이는 곳. **CI(`lint-test`) 통과는 필수, 사람 승인 리뷰는 면제** — 봇이 문지기, 리뷰는 선택.
-- 일상 개발은 topic 브랜치에서 → **`dev`로 PR** → **CI 통과 → 병합**(사람 리뷰는 선택, 필요하면 요청). topic은 [mvp-todo.md](docs/mvp-todo.md) 주제와 정렬.
-- **사람 1인 리뷰 게이트는 `dev → main` 승격 PR에 위치** — 실서버로 나가는 경계에서만 사람이 확인한다.
-- **배포는 `dev → main` 승격 PR** 로만 — 배포할 준비가 된 `dev`를 `main`으로 올리는 PR을 잘라 머지하면 CD가 배포한다.
-- 이름 규칙: `<type>/<topic>` (예: `feat/recommend-graph`, `feat/cart-i2`, `fix/sse-timeout`, `docs/api-spec-sync`)
-- **이슈 단위 작업**: 기능/버그는 먼저 이슈로 등록(`.github/ISSUE_TEMPLATE`)한다. 브랜치는 그 이슈에 대응(`feat/<topic>`), PR 본문에 `Closes #이슈번호`를 넣어 머지 시 이슈 자동 종료. mvp-todo 주제 ↔ 이슈 ↔ 브랜치 ↔ PR 로 추적성 유지.
-- **짧게 유지** — 주제 단위로 잘게 쪼개 자주 병합한다. 오래 사는 브랜치는 3인 사이 충돌·정체를 부른다(장수 브랜치 금지).
-
-### 병렬 작업 (동시에 여러 기능)
-
-기능마다 브랜치 하나. 두 기능을 동시에 하면 **각자 `dev`에서 딴 별도 `feat/` 브랜치**로 병렬 진행한다.
-
-- **분기는 항상 최신 `dev`에서** — 다른 `feat/` 브랜치나 `main`에서 따지 않는다(안 끝난 코드나 배포분이 딸려온다).
-  ```bash
-  git checkout dev && git pull
-  git checkout -b feat/<topic>
-  ```
-- **먼저 병합된 쪽을 뒤 브랜치가 따라잡는다** — 자주 당길수록 충돌이 작다.
-  ```bash
-  git checkout feat/<topic> && git merge origin/dev   # 또는 rebase
-  ```
-- **공통 파일은 조율** — 주제별 파일은 대체로 분리(`agents/buyer/cart/` vs `.../recommendation/`)돼 충돌이 적지만, `services/spring_client.py`·`schemas/`·`main.py`·`core/config.py`는 여러 기능이 함께 건드린다. 작게·자주 병합하거나 뼈대→기능 순서를 정한다.
-- 두 기능이 **같은 코드를 깊게 얽어** 고쳐야 하면 억지로 나누지 말고 한 브랜치에서 순차로 한다.
-
-### 커밋 메시지 — [Conventional Commits](https://www.conventionalcommits.org)
-
-```
-<type>(<scope>): <subject>
-
-<본문 — 왜(why) 중심. 계약 변경 시 api-spec § 참조>
-```
-
-- **type**: `feat` · `fix` · `docs` · `refactor` · `test` · `chore` · `style` · `perf`
-- **scope**: 주제/모듈 — `recommend` · `cart` · `seller` · `profile` · `batch` · `auth` · `infra` · `api-spec`
-- **subject**: 한국어 간결 명령형, 마침표 없음 (예: `feat(cart): I-2 담기 + 옵션 되물음 멀티턴`)
-- 계약(스키마·엔드포인트·SSE 이벤트) 변경은 **명세 개정 커밋을 먼저/함께** — 코드 단독 변경 금지.
-- **커밋 워크플로**: 구현 후 `git diff` 검토 → `pytest` 통과 확인 → diff 근거로 메시지 생성 → 관련 파일만 스테이징해 커밋(한 커밋 = 한 논리 단위). 상세는 `CLAUDE.md`.
-
-```
-feat(recommend): decompose→search→rerank 파이프라인 연결
-fix(auth): JWKS 캐시 만료 시 재조회 누락 수정
-docs(api-spec): v0.7.0 동기화 — 스트림 수명주기(§2.9)
-test(cart): 게스트 담기 · 옵션 되물음 케이스 추가
-```
-
-### PR 규칙
-
-- **일상 개발 PR 대상 = `dev`** — **CI 필수·사람 승인 리뷰 면제**(리뷰는 원하면 요청). (`main` 직접 PR은 `dev → main` 승격 PR만.)
-- **`dev → main` 승격 PR = 사람 1인 리뷰 필수** + CI. 실서버로 나가는 경계라 여기서만 사람이 확인한다.
-- 병합 전 **`uv run pytest` + `uv run ruff check` 통과** (테스트 없이 "완료" 금지 — `CLAUDE.md`).
-- 계약 변경 PR은 `docs/api-spec.md` 사본 동기화를 포함.
-- **Squash merge** 권장 — 히스토리를 PR 단위로 정리. 단 **`dev → main` 승격 PR은 merge commit**으로 — 두 라인 히스토리를 보존한다.
-- **CI 자동 검증**: `dev`·`main` 양쪽 PR마다 `.github/workflows/ci.yml`이 `ruff`+`pytest` 실행하고, **두 브랜치 보호에서 이 체크(`lint-test`)를 필수로 강제**한다(strict — 최신 base 요구). **PR 템플릿**(`.github/PULL_REQUEST_TEMPLATE.md`)이 CHANGELOG·계약 동기화 체크리스트를 띄운다.
-- 브랜치 보호 요약: **dev = PR+CI 필수·리뷰 0**, **main = PR+CI 필수·리뷰 1인**. (`enforce_admins`는 off — 긴급 시 admin 우회 여지.)
-
-### 배포 (dev → main 승격)
-
-- `main` push = 배포팀 CD가 EC2에 자동배포([`jarvis-backend/.github/workflows/deploy.yml`](https://github.com/toss-delta-final/jarvis-backend) 패턴). 그래서 `main` 머지는 **배포 행위**다.
-- 배포할 준비가 된 `dev`를 `main`으로 올리는 **승격 PR**을 잘라 머지한다. 릴리스 단위로 CHANGELOG `[Unreleased]`를 확정하고 버전 태그를 남긴다.
-- **핫픽스**: 프로덕션 긴급 수정은 `main`에서 `fix/*`를 따 `main`으로 PR한 뒤, **즉시 `main`을 `dev`로 백머지**해 두 라인이 갈라지지 않게 한다.
-- **Git hook(pre-commit)**: `uv run pre-commit install` 한 번이면 커밋마다 로컬에서 **ruff(lint+format)** + **커밋 메시지 형식(Conventional Commits)** 을 자동 검사한다(사람·Claude 모두). 설정은 [`.pre-commit-config.yaml`](.pre-commit-config.yaml). CI는 서버 측 재검증이라 상호보완.
-
-### 에디터 자동 포맷 (선택 — 저장 시 자동 lint)
-
-에디터 설정(`.vscode`/`.idea`)은 개인별이라 저장소에 커밋하지 않는다. **필요하면** 각자 **저장 시 자동 포맷**을 켜두면 커밋 전에 이미 정리돼 pre-commit이 조용히 통과한다.
-
-- **VS Code**: [Ruff 확장](https://marketplace.visualstudio.com/items?itemName=charliermarsh.ruff) 설치 후, 프로젝트 루트 `.vscode/settings.json`(gitignore됨) 또는 개인 전역 설정에:
-  ```json
-  {
-    "[python]": {
-      "editor.defaultFormatter": "charliermarsh.ruff",
-      "editor.formatOnSave": true,
-      "editor.codeActionsOnSave": { "source.fixAll.ruff": "explicit" }
-    }
-  }
-  ```
-- **PyCharm/JetBrains**: Ruff 플러그인 설치 → *Run ruff on save* 체크.
-- 팀이 공유를 원하면 `.gitignore`의 `.vscode/` 를 풀고 `.vscode/settings.json`만 커밋하는 방법도 있다(합의 필요).
-
-### 위생 (Hygiene)
-
-- 커밋은 **논리 단위로 작게**, 각 커밋이 테스트 통과 상태.
-- **시크릿 금지** — `.env`·키 파일은 `.gitignore` + `.claude/settings.json` deny로 이중 차단.
-- 생성물/캐시(`.venv`, `__pycache__`, `*.pyc`)는 커밋 제외.
-- Claude Code 보조 커밋은 co-author 트레일러를 남길 수 있다.
+- [`docs/api-spec.md`](docs/api-spec.md) — API/SSE 계약 동기화 사본
+- [`docs/specs/`](docs/specs/) — Buyer, Seller, Profile, Catalog 상세 SPEC
+- [`docs/final-report/`](docs/final-report/) — 최종 보고서 원본·PDF·근거 원장
+- [`docs/local-integration-guide.md`](docs/local-integration-guide.md) — Spring/DB 연동 가이드
+- [`DEPLOY.md`](DEPLOY.md) — Docker/GHCR/EC2 배포와 운영 설정
+- [`CHANGELOG.md`](CHANGELOG.md) — 기능·계약·평가 변경 이력
 
 ---
 
-## 📊 진행 상황
+## 개발 워크플로
 
-| 영역 | 상태 |
-|---|---|
-| API 계약 명세 (api-spec v0.7.0) | ✅ 확정 |
-| 아키텍처 결정 (인증·경로 B·검색 위임·동기화) | ✅ 확정 |
-| FastAPI 스캐폴드 · 인증 · 스키마 · 스텁 스트림 | ✅ 부팅 검증 |
-| 구매자 추천 그래프 (decompose→search→rerank→push) | 🚧 구현 중 |
-| 장바구니 (I-2 담기 · I-9 조회 · 옵션 되물음) | 🚧 구현 중 |
-| 판매자 그래프 (I-6 통계 · I-7 draft) | 🚧 구현 중 |
-| 프로필 파이프라인 · AI 생성물 배치 (I-8) | 🚧 구현 중 |
-| SSE 스트림 수명주기 (§2.9) · 대화 저장 · 모니터링 | 📋 예정 |
-
-> 현재 MVP 스캐폴드 단계 — 부팅·스텁 응답으로 FE 조기 통합을 지원하며, LangGraph 그래프 실제 로직을 SPEC 구현 단계에서 채우는 중.
+- 일상 작업: 최신 `dev`에서 topic branch 생성 → `dev` 대상 PR
+- 배포: `dev → main` 승격 PR; `main` push가 EC2 배포를 실행
+- PR 검증: GitHub Actions `lint-test`에서 Ruff + pytest
+- 커밋 전 로컬 검증: `uv run pre-commit install`
+- 커밋 형식: Conventional Commits (`feat`, `fix`, `docs`, `refactor`, `test`, `chore` 등)
 
 ---
 
-## 👥 팀
+## 라이선스
 
-3-tier 협업 프로젝트. *(아래는 템플릿 — 실제 이름/링크로 교체)*
-
-| 이름 | 역할 | 담당 | GitHub |
-|---|---|---|---|
-| _(이름)_ | **AI 서버** | LangGraph 에이전트 · 추천/프로필 파이프라인 · API 계약 | [@id](#) |
-| _(이름)_ | Backend | Spring · 커머스 트랜잭션 · 상품/주문/장바구니 API | [@id](#) |
-| _(이름)_ | Backend | Spring · 인증(JWT/JWKS) · 검색 API | [@id](#) |
-| _(이름)_ | Frontend | React · 채팅 UI · SSE 소비 · 상품 리스트 | [@id](#) |
-
----
-
-## 📎 문서 · 계약
-
-- **API 계약 정본**: 기획 저장소 `project-planning/my-project/docs/api-spec.md` (v0.7.0) — 엔드포인트·SSE 이벤트·오류 코드의 단일 소스
-- **로컬 동기화 사본**: [`docs/api-spec.md`](docs/api-spec.md) — 이 저장소에서 참조용. 정본과 어긋나면 정본 우선
-- **소유 SPEC 사본**: [`docs/specs/`](docs/specs/) — RECOMMEND-001(추천 로직) · PROFILE-001(프로필) · CATALOG-DATA-001(생성물 배치). 그래프 노드 내부 규칙의 상세
-- 코드의 각 스텁 주석에 대응 `api-spec §` 번호를 명시 — 코드↔명세 추적성 유지
-
----
-
-### 🧰 개발 도구 (MCP)
-
-팀 공유 MCP 서버를 [`.mcp.json`](.mcp.json)에 등록 — clone 후 Claude Code가 자동 연결한다.
-
-| 서버 | 용도 |
-|---|---|
-| **context7** | LangGraph·FastAPI·Pydantic 등 라이브러리 최신 문서/예제 조회 (학습 데이터 시점 이후 변경 반영) |
-| **sequential-thinking** | 그래프·파이프라인 설계 등 복잡한 문제의 단계적 추론 |
-
-> 개인 전용 MCP는 `.mcp.json` 대신 user 스코프에 두어 팀 설정과 분리한다.
-
-팀 공유 **스킬**: `/implement-topic [주제]` — MVP 주제 하나를 계약 우선 절차(계약 읽기 → TDD → ruff/pytest → 커밋)로 구현. `.claude/skills/implement-topic/`.
-
----
-
-<sub>🤖 개발에 Claude Code를 활용합니다. 팀 공유 지침 [`CLAUDE.md`](CLAUDE.md) · 설정 [`.claude/settings.json`](.claude/settings.json) · MCP [`.mcp.json`](.mcp.json) · 실수 로그 [`docs/lessons.md`](docs/lessons.md) · 변경 기록 [`CHANGELOG.md`](CHANGELOG.md).</sub>
+[MIT License](LICENSE)
