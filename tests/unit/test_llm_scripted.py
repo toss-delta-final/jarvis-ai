@@ -30,6 +30,7 @@ from app.core.llm_scripted import (
     _NEED_PRIORITY_MARK,
     _NEEDS_EXPANSION_MARK,
     _RERANK_MARK,
+    _RERANK_SCORING_MARK,
     LoadTestLLM,
 )
 from app.schemas.spring import SpringProduct
@@ -305,6 +306,29 @@ async def test_loadtest_llm_rerank_survives_arbitrary_real_catalog_ids() -> None
     assert [pid for pid, _ in result.ranked] == [777, 888, 999]
 
 
+async def test_loadtest_llm_supports_production_structured_ranking_default() -> None:
+    from app.agents.buyer.recommendation.rerank import rerank
+
+    candidates = [
+        SpringProduct(product_id=777, name="여행용 크로스백"),
+        SpringProduct(product_id=888, name="접이식 캐리어"),
+        SpringProduct(product_id=999, name="기내용 파우치"),
+    ]
+
+    result = await rerank(
+        LoadTestLLM(),
+        query="여행 가방 추천해줘",
+        candidates=candidates,
+        profile_summary=None,
+        tier="smart",
+        expose_max=3,
+        ranking_arm="structured",
+    )
+
+    assert [pid for pid, _ in result.ranked] == [777, 888, 999]
+    assert len(result.ranking_decisions) == 3
+
+
 async def test_scripted_llm_baseline_degrades_on_same_real_catalog_ids() -> None:
     """대조군 — `ScriptedLLM`(고정 101/102)은 후보에 없는 id만 내 항상 degrade로 떨어진다.
 
@@ -341,6 +365,7 @@ def test_markers_are_present_in_real_system_prompts() -> None:
     assert _DECOMPOSE_MARK in decompose_mod._SYSTEM
     assert _DECOMPOSE_MARK in decompose_mod._SYSTEM_WITH_SCREEN
     assert _RERANK_MARK in rerank_mod._SYSTEM
+    assert _RERANK_SCORING_MARK in rerank_mod._SYSTEM_STRUCTURED_SCORING
     assert _CATEGORY_SELECT_MARK in category_select_mod._SYSTEM
     assert _CATEGORY_SCOPE_MARK in category_scope_mod._SYSTEM
     assert _NEED_PRIORITY_MARK in need_priority_mod._SYSTEM

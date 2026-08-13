@@ -174,11 +174,10 @@ async def test_algorithm_version_follows_config_not_hardcoded(
 # ─────────── 정상 경로 회귀 ───────────
 
 
-async def test_happy_path_rank_source_is_rerank_and_expose_min_fill(
+async def test_default_structured_rank_source_covers_every_candidate(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """정상 rerank 성공 턴 — rerank 로 뽑힌 101/102 는 `rerank`, expose_min 보충 103 은
-    `expose_min_fill`. `degraded=false`, `rankerModel` 은 실제 smart 티어 모델 id."""
+    """기본 structured 턴은 모든 후보를 코드 정렬해 rankSource=rerank로 기록한다."""
     from app.core.llm import resolve_model_id
 
     push = _RecordingPush()
@@ -197,20 +196,22 @@ async def test_happy_path_rank_source_is_rerank_and_expose_min_fill(
     assert record["degraded"] is False
     assert record["degradeReason"] is None
     assert record["rankerModel"] == resolve_model_id(get_settings(), "smart")
-    assert record["promptVersion"] == "rerank-grounding-v1"
+    assert record["promptVersion"] == "rerank-scoring-v1"
     source_by_id = {
         item["productId"]: item["rankSource"] for lst in record["lists"] for item in lst["items"]
     }
     assert source_by_id[101] == "rerank"
     assert source_by_id[102] == "rerank"
-    assert source_by_id[103] == "expose_min_fill"
+    assert source_by_id[103] == "rerank"
 
 
-async def test_current_grounding_rollback_restores_legacy_prompt_version(
+async def test_current_ranking_and_grounding_rollback_restores_legacy_prompt_version(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    monkeypatch.setattr(get_settings(), "rerank_grounding_arm", "current")
+    settings = get_settings()
+    monkeypatch.setattr(settings, "rerank_ranking_arm", "current")
+    monkeypatch.setattr(settings, "rerank_grounding_arm", "current")
     push = _RecordingPush()
     with caplog.at_level(logging.INFO, logger=_GRAPH_LOGGER):
         await _collect(
@@ -298,7 +299,9 @@ async def test_rerank_ranked_item_without_rationale_is_still_rank_source_rerank(
     """[핵심 회귀] `reason_by_id` 로 rankSource 를 판정하면 빈 rationale 항목이
     `expose_min_fill` 로 오분류된다(§2) — rerank 가 골랐다는 사실(멤버십)만으로 판정해야 한다."""
     # 빈 모델 rationale 자체를 관찰하는 테스트라 C의 중립 템플릿 생성 전에 A rollback으로 고정한다.
-    monkeypatch.setattr(get_settings(), "rerank_grounding_arm", "current")
+    settings = get_settings()
+    monkeypatch.setattr(settings, "rerank_ranking_arm", "current")
+    monkeypatch.setattr(settings, "rerank_grounding_arm", "current")
     llm = FakeLLM(
         rerank={
             "ranked": [
@@ -366,8 +369,10 @@ async def test_repurchase_pin_rank_source_for_item_rerank_omitted(
     from tests.unit.test_recommendation import _fix_now, _purchases_cat
 
     _fix_now(monkeypatch)
-    monkeypatch.setattr(get_settings(), "expose_min", 1)
-    monkeypatch.setattr(get_settings(), "expose_max", 3)
+    settings = get_settings()
+    monkeypatch.setattr(settings, "rerank_ranking_arm", "current")
+    monkeypatch.setattr(settings, "expose_min", 1)
+    monkeypatch.setattr(settings, "expose_max", 3)
     monkeypatch.setattr(
         _sc_mod, "get_recent_purchases", _purchases_cat((101, "음향가전", "무선 이어폰"))
     )

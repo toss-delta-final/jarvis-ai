@@ -1417,6 +1417,7 @@ async def test_case3_tops_up_a_starved_need_to_expose_min(monkeypatch) -> None:
     `PICK_ONE` 인데 고를 것이 없는 목록이다(REQ-REC-096 v0.11.0 개정 근거).
     """
     settings = get_settings()
+    monkeypatch.setattr(settings, "rerank_ranking_arm", "current")
     monkeypatch.setattr(settings, "expose_min", 2)
     monkeypatch.setattr(settings, "expose_max", 3)
     push = _RecordingPush()
@@ -3912,6 +3913,7 @@ async def test_split_turn_emits_group_notice_with_need_counts(
 ) -> None:
     """[T2] split 턴은 니즈 라벨과 노출 개수를 담은 그룹 서술 token 을 낸다."""
     settings = get_settings()
+    monkeypatch.setattr(settings, "rerank_ranking_arm", "current")
     # expose_min 을 1로 낮춘다 — 기본값이면 `_split_by_need` 가 각 니즈를 fallback(검색순서)으로
     # expose_min 까지 채워 그룹 개수가 랭킹 1건이 아니라 그 이상이 돼(가용 후보가 있는 한)
     # "1개"라는 이 테스트의 기대와 어긋난다(개수 자체는 T1/T2 관심사가 아니라 여기선 고정한다).

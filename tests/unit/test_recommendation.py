@@ -2969,8 +2969,9 @@ async def test_recommendation_relaxation_chip_probe_keeps_search_retry(
     assert _types(events)[-1] == "done"
 
 
-async def test_expose_min_fill_from_search_order() -> None:
+async def test_expose_min_fill_from_search_order(monkeypatch: pytest.MonkeyPatch) -> None:
     """rerank 가 expose_min 미만을 내면 검색순서로 보충한다(REQ-REC-021 5~8개)."""
+    monkeypatch.setattr(get_settings(), "rerank_ranking_arm", "current")
     products = [
         SpringProduct(
             product_id=pid, name=f"P{pid}", price=1000 * pid, rating=4.0, category="c", brand="b"
@@ -4254,6 +4255,7 @@ async def test_recommendation_repurchase_pin_stays_in_its_fanout_need(
     from app.agents.buyer.recommendation.category_mapping import CategoryMapping
 
     _fix_now(monkeypatch)
+    monkeypatch.setattr(get_settings(), "rerank_ranking_arm", "current")
     monkeypatch.setattr(get_settings(), "embedding_rerank_limit", 3)
     monkeypatch.setattr(get_settings(), "expose_min", 1)
     monkeypatch.setattr(get_settings(), "expose_max", 2)

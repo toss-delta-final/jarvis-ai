@@ -13,9 +13,10 @@
 
 ### Added
 - **#631 — 구매자 rerank 순위 계산을 `current`·`structured`·`hybrid` arm으로 선택할 수 있게 했다.**
-  기본 `RERANK_RANKING_ARM=current`는 기존 LLM 순위·파서·fallback을 그대로 유지하고,
-  `structured`는 LLM의 제한된 intent/need/profile 점수를 결정론적 `4:2:1` 합산과 명시적
-  tie-break로 정렬한다. `hybrid`는 원래 search rank와 scored rank를 설정 가능한 RRF
+  기본 `RERANK_RANKING_ARM=structured`는 LLM의 제한된 intent/need/profile 점수를 결정론적
+  `4:2:1` 합산과 명시적 tie-break로 정렬하고, `current`는 기존 LLM 순위·파서·fallback으로
+  즉시 롤백할 수 있게 유지한다.
+  `hybrid`는 원래 search rank와 scored rank를 설정 가능한 RRF
   (`RERANK_RRF_ALPHA`, `RERANK_RRF_K`)로 결합하며, 프로필이 없으면 profile 점수를 0으로
   강제한다. 순위 arm은 기존 `RERANK_GROUNDING_ARM`과 독립적으로 선택·롤백할 수 있다. 같은
   provider 응답을 공유하는 paired A/B/C runner와 nDCG@10·순위 안정성·fallback/무결성·비용
@@ -28,12 +29,13 @@
   partial fallback 2건, foreign row 1건이 있었다. 따라서 hybrid 0.65는 기각하고 structured는
   고정 후보로 sealed holdout을 한 번 평가했다. Holdout 순위 19건×3 seeds에서는 structured가
   `+0.0575`, CI `[-0.0385,+0.1696]`로 방향은 양수였지만 `inconclusive`였으므로 release gate를
-  통과하지 못했다. Holdout 재튜닝·재실행 없이 production 기본은 `current`로 유지한다. API·SSE
-  wire 계약 변경 없음. 별도로 만든 200건 prospective dataset의 heuristic draft를 명시적
+  통과하지 못해 당시에는 production 기본을 `current`로 유지했다. Holdout 재튜닝·재실행 없이
+  별도로 만든 200건 prospective dataset의 heuristic draft를 명시적
   exploratory mode로 평가했을 때 structured는 current 대비 `+0.1219`(95% CI
   `[+0.0925,+0.1535]`, 개선/동률/악화 106/57/37)였고 member `+0.1900`, guest `+0.0537`이었다.
-  다만 사람이 검수한 label이 아니므로 artifact 판정은 `exploratory`로 강제했고 production gate는
-  열지 않았다.
+  사람이 검수한 label이 아니므로 artifact 판정은 계속 `exploratory`다. 이 제한과 structured의
+  p50 지연 증가(3.992초 → 11.845초)를 명시한 상태에서 product decision으로 structured 기본을
+  채택했으며, 장애·품질 이상 시 `RERANK_RANKING_ARM=current`로 복구한다. API·SSE wire 계약 변경 없음.
 - **#634 관측 집계 스크립트 비용 축에 min/max·role 분해 추가** — `_cost_stats()`가 최소/최대
   비용을 반환하도록 확장하고, 비용 롤업에 `role`(seller/member/guest)·`model`(fan-in
   귀속)·`length`(`messageLength` 고정 버킷) 축을 신설했다. Markdown 비용 표에 최소/최대(USD)

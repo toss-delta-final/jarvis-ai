@@ -1081,9 +1081,10 @@ class Settings(BaseSettings):
     # 기본으로 쓰되 사고 시 RERANK_GROUNDING_ARM=current 한 줄로 A에 롤백한다. 평가 CLI의
     # arm 기본값은 비교 기준 보존을 위해 이 설정과 별개로 current다.
     rerank_grounding_arm: Literal["current", "prompt_only", "validated"] = "validated"
-    # [#631] grounding과 독립적인 순위 계산 arm. 구현·평가 가능성과 production 채택을 분리하려고
-    # 기본은 기존 LLM ranked 배열을 그대로 쓰는 current다. structured/hybrid는 명시 opt-in이다.
-    rerank_ranking_arm: Literal["current", "structured", "hybrid"] = "current"
+    # [#631] grounding과 독립적인 순위 계산 arm. 68-case dev와 200-case prospective draft에서
+    # structured가 current보다 높은 paired nDCG@10·순위 안정성을 보여 production graph 기본으로
+    # 채택했다. 사고 시 RERANK_RANKING_ARM=current 한 줄로 legacy LLM 순위에 즉시 롤백한다.
+    rerank_ranking_arm: Literal["current", "structured", "hybrid"] = "structured"
     rerank_rrf_alpha: float = Field(default=0.65, ge=0.0, le=1.0)
     rerank_rrf_k: int = Field(default=60, gt=0)
     # Scored prompt는 모든 후보를 rubric별로 비교하므로 OpenAI reasoning 모델이 JSON을 쓰기 전

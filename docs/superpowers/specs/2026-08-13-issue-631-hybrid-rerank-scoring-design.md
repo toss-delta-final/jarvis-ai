@@ -14,9 +14,10 @@ fusion을 기존 경로 옆에 선택 가능한 arm으로 추가한다.
 - `structured`: LLM이 후보별 제한된 component만 평가하고 코드가 순위를 계산한다.
 - `hybrid`: `structured` 순위와 기존 검색 순위를 RRF로 결합한다.
 
-Production 기본 ranking arm은 실험 결과와 무관하게 `current`로 둔다. 기존
-`RERANK_GROUNDING_ARM`과 새 `RERANK_RANKING_ARM`은 독립 축이다. 구현 완료만으로 production
-기본값을 바꾸지 않는다.
+초기 구현은 production 기본 ranking arm을 `current`로 유지했다. 이후 dev 68-case와 prospective
+draft 200-case의 paired 결과 및 별도 product 승인을 근거로 production graph 기본을
+`structured`로 전환했다. 기존 `RERANK_GROUNDING_ARM`과 `RERANK_RANKING_ARM`은 계속 독립 축이며,
+`current`는 즉시 롤백 경로로 보존한다.
 
 ## 문제 정의
 
@@ -83,13 +84,13 @@ scoring metadata가 잘못되면 해당 후보의 LLM 순위를 복구한다. gr
 
 | Settings | Environment | 기본값 | 유효 범위 |
 |---|---|---:|---|
-| `rerank_ranking_arm` | `RERANK_RANKING_ARM` | `current` | `current\|structured\|hybrid` |
+| `rerank_ranking_arm` | `RERANK_RANKING_ARM` | `structured` | `current\|structured\|hybrid` |
 | `rerank_rrf_alpha` | `RERANK_RRF_ALPHA` | `0.65` | `0.0 <= value <= 1.0` |
 | `rerank_rrf_k` | `RERANK_RRF_K` | `60` | 양의 정수 |
 | `rerank_scoring_reasoning_token_reserve` | `RERANK_SCORING_REASONING_TOKEN_RESERVE` | `4096` | 0 이상 정수 |
 
-함수 `rerank()`의 `ranking_arm` 기본값도 `current`로 둔다. Production graph는 Settings 값을
-명시적으로 전달한다. 설정 오류는 Pydantic 검증으로 기동 전에 거부한다.
+함수 `rerank()`의 직접 호출 기본값은 호환성을 위해 `current`로 둔다. Production graph는 기본이
+`structured`인 Settings 값을 명시적으로 전달한다. 설정 오류는 Pydantic 검증으로 기동 전에 거부한다.
 
 기존 `RERANK_GROUNDING_ARM=current|prompt_only|validated`는 변경하지 않는다. 조합의 의미는 다음과
 같다.
@@ -367,7 +368,7 @@ A는 기존 prompt 계약이 다르므로 별도 호출하되 같은 dataset, ca
 
 ### Graph/config tests
 
-- Settings 기본 `current`;
+- Settings 기본 `structured`와 env `current` 롤백;
 - 세 arm 허용 및 알 수 없는 arm 거부;
 - alpha/k 유효 범위;
 - production graph의 명시적 arm 전달;
@@ -385,13 +386,13 @@ A는 기존 prompt 계약이 다르므로 별도 호출하되 같은 dataset, ca
 
 ## Rollout
 
-1. 구현과 deterministic tests를 완료해도 기본은 `RERANK_RANKING_ARM=current`다.
-2. scripted smoke로 current 호환성과 fallback을 확인한다.
-3. 고정 dev dataset에서 A/B/C screening을 실행한다.
-4. hard gate를 통과한 경우에만 반복 live run과 CI를 생성한다.
-5. production에서 수동 선택이 필요하면 환경변수로 `structured` 또는 `hybrid`를 명시한다.
+1. 초기 구현과 deterministic tests 단계에서는 `RERANK_RANKING_ARM=current`를 유지했다.
+2. scripted smoke로 current 호환성과 fallback을 확인했다.
+3. 고정 dev dataset에서 A/B/C screening과 CI를 생성했다.
+4. 별도 200-case prospective draft에서 current/structured 방향성과 안정성을 확인했다.
+5. artifact의 exploratory 한계와 latency 증가를 명시한 별도 승인으로 기본을 `structured`로 바꿨다.
 6. 문제 발생 시 `RERANK_RANKING_ARM=current`로 즉시 복구한다.
-7. production 기본값 변경은 #631 결과와 별도 승인·rollout 변경으로 수행한다.
+7. 독립 2인 검수·sealed 평가를 후속 검증 gate로 유지한다.
 
 2026-08-13 dev screening 결과는 `evals/rerank_scoring/baselines/20260813-dev-mft68-live-n3/`에
 보존한다. 68 case×3 seed에서 structured의 current 대비 평균 ΔnDCG@10은 `+0.1257`, 95% CI는
@@ -404,10 +405,16 @@ holdout 순위 19 case의 평균 ΔnDCG@10은 `+0.0575`, 95% CI는 `[-0.0385,+0.
 포함하므로 release 판정은 `inconclusive`이며 production 기본을 변경하지 않는다. 결과 확인 뒤
 holdout으로 가중치·prompt·arm을 다시 튜닝하거나 두 번째 후보를 실행하지 않는다.
 
+이후 별도로 생성한 prospective draft 200 case×3 seed에서 structured는 current 대비 평균
+ΔnDCG@10 `+0.1219`, 95% CI `[+0.0925,+0.1535]`였고 seed별 방향도 일치했다. member는
+`+0.1900`, guest는 `+0.0537`, top-1 agreement는 `0.9250` 대 `0.6388`이었다. 다만 heuristic
+draft라는 이유로 결과 status는 `exploratory`이며, structured p50 latency는 `11.845s`로 current
+`3.992s`보다 높다. 이 한계를 수용한 product approval로 Settings 기본을 `structured`로 바꿨다.
+
 ## 위험과 완화
 
 - **LLM component가 여전히 주관적임**: 제한된 정수 범위, 검색 fusion, paired 평가로 영향력을 제한한다.
-- **구조화 prompt가 token/latency를 늘림**: current 기본 유지, 비용·지연을 release gate와 함께 보고한다.
+- **구조화 prompt가 token/latency를 늘림**: 비용·지연을 관측하고 임계 초과나 장애 시 current로 롤백한다.
 - **프로필이 현재 요청을 침범함**: 최대 1점, profile 없음 0 강제, intent/need 우선 회귀 테스트를 둔다.
 - **부분 출력이 특정 후보를 제거함**: 무효·누락 후보를 searchRank로 복구한다.
 - **RRF 상수가 임의 튜닝됨**: config와 manifest에 기록하고 고정 dataset paired 결과만 근거로 사용한다.
@@ -418,7 +425,7 @@ holdout으로 가중치·prompt·arm을 다시 튜닝하거나 두 번째 후보
 ## 수용 기준
 
 1. `RERANK_RANKING_ARM=current|structured|hybrid`를 기동 시 검증하고 production graph에서 선택할 수 있다.
-2. 기본값과 `rerank()` 직접 호출 기본값은 `current`다.
+2. Settings 기본값은 `structured`, `rerank()` 직접 호출 기본값은 호환성을 위해 `current`다.
 3. current ranking + 기존 grounding의 prompt, 순위, fallback, wire contract 회귀가 통과한다.
 4. structured scoring이 component 범위, 후보 ID, 중복, profile availability를 결정적으로 검증한다.
 5. hybrid가 config 기반 RRF를 동일 입력에 대해 결정적으로 계산한다.
@@ -428,7 +435,7 @@ holdout으로 가중치·prompt·arm을 다시 튜닝하거나 두 번째 후보
 9. nDCG@10, safety, stability, latency, token, cost와 95% CI가 raw artifact로 보존된다.
 10. 결과와 재현 명령이 #154에서 소비 가능한 형태로 연결된다.
 11. 관련 unit/integration/eval tests, Ruff, format, diff check가 통과한다.
-12. 평가 결과 없이 production ranking 기본값을 바꾸지 않는다.
+12. 기본값 전환 근거·exploratory 한계·latency 비용·current 롤백 경로를 함께 기록한다.
 
 ## 결정 근거 요약
 
@@ -437,7 +444,7 @@ holdout으로 가중치·prompt·arm을 다시 튜닝하거나 두 번째 후보
 - **RRF**: 서로 calibration되지 않은 search/LLM 원점수 대신 순위를 결합한다.
 - **부분 fallback**: 현재 rerank의 유효 ID 보존 성질을 유지하고 단일 오류의 blast radius를 줄인다.
 - **B/C 응답 공유**: 모델 표본 변동과 fusion 효과를 분리한다.
-- **current 기본**: 구현 가능성과 production 채택 근거를 분리한다.
+- **structured 기본 + current 롤백**: 채택 결정과 실험의 증거 수준을 구분하면서 복구 경로를 유지한다.
 
 ## Self-Review
 
@@ -446,5 +453,5 @@ holdout으로 가중치·prompt·arm을 다시 튜닝하거나 두 번째 후보
 - `current` 경로 보존, 독립 grounding, scored prompt 조합 사이의 책임이 모순되지 않는다.
 - scoring 오류와 grounding 오류의 fallback 경계를 각각 명시했다.
 - prompt permutation과 searchRank를 분리해 position-bias 측정이 fusion 정의를 오염하지 않게 했다.
-- production 기본값 변경과 구현 완료를 분리했다.
+- production 기본값 변경을 구현 완료와 분리해 별도 결과·승인·롤백 결정으로 기록했다.
 - 새 dependency나 관련 없는 graph refactor를 범위에 넣지 않았다.

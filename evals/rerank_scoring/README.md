@@ -54,6 +54,8 @@ Sealed holdout은 candidate commit `a01dae74`의 structured를 고정해 한 번
 19개 case×3 seeds에서 current 대비 평균 ΔnDCG@10은 `+0.0575`, 95% CI는
 `[-0.0385,+0.1696]`로 `inconclusive`였다. Production 기본은 current로 유지한다. Label을
 복제하지 않은 aggregate와 감사 정보는 `releases/20260813-holdout-structured-n3/`에 있다.
+이는 19-case sealed holdout을 확인한 당시의 판정 기록이며, 아래 200-case exploratory 결과와
+별도의 product 승인 전까지 적용된 상태다.
 
 ## Prospective holdout v2 (200 ranking cases)
 
@@ -100,9 +102,11 @@ hard-constraint 위반은 두 arm 모두 0건이었다. 반면 p50 latency는 cu
 `11.845s`로 약 3배였다. 총 1,209 provider call, 약 516.6만 token, `$2.5761`이 들었다.
 
 이 결과의 artifact `status/verdict`는 의도대로 `exploratory`다. 라벨이 사람이 독립 검수한
-정답이 아니라 structured 규칙과 일부 구조적 유사성을 가진 heuristic draft이므로, 양의 delta를
-production 승격이나 일반화의 확정 근거로 사용하면 안 된다. 다음 gate는 독립 2인 검수와 sealed
-release에서 같은 고정 candidate를 한 번 confirmatory 평가하는 것이다.
+정답이 아니라 structured 규칙과 일부 구조적 유사성을 가진 heuristic draft이므로, 양의 delta는
+일반화의 확정 근거가 아니다. 이 제한과 약 3배의 p50 latency를 수용하는 별도 product decision으로
+production graph의 기본은 `structured`로 전환했다. 이 운영 결정이 artifact를 confirmatory로
+재분류하지는 않는다. 다음 검증 gate는 독립 2인 검수와 sealed release이며, 장애·품질 이상 시
+`RERANK_RANKING_ARM=current`로 즉시 롤백한다.
 
 `samples.csv`는 후보 permutation, 원래 search rank를 담은 decision, raw response hash,
 fallback/무결성 카운트를 보존한다. profile 원문이나 credential은 기록하지 않는다.

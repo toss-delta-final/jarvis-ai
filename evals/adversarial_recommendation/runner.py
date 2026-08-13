@@ -16,10 +16,7 @@ import httpx
 from app.agents.buyer.recommendation.decompose import decompose
 import app.agents.buyer.recommendation.graph as recommendation_graph
 from app.agents.buyer.recommendation.graph import stream_recommendation
-from app.agents.buyer.recommendation.rerank_grounding import (
-    GroundingArm,
-    NEUTRAL_RATIONALE,
-)
+from app.agents.buyer.recommendation.rerank_grounding import GroundingArm
 from app.agents.buyer.recommendation.state import RouteDecision
 from app.core.auth import Identity
 from app.core.config import Settings, get_settings
@@ -229,12 +226,13 @@ class ScriptedCaseLLM:
             marker = "CANDIDATES: "
             raw_candidates = user.split(marker, 1)[1] if marker in user else "[]"
             candidates = json.loads(raw_candidates)
+            scored = "커머스 추천 평가기" in system
             structured = "reasonCode" in system and "evidenceFields" in system
             ranked = []
-            for candidate in candidates:
+            for index, candidate in enumerate(candidates):
                 item = {
                     "productId": candidate["productId"],
-                    "rationale": (NEUTRAL_RATIONALE if structured else "후보 데이터 기반 추천"),
+                    "rationale": "후보 데이터 기반 추천",
                 }
                 if structured:
                     item.update(
@@ -243,9 +241,19 @@ class ScriptedCaseLLM:
                             "evidenceFields": [],
                         }
                     )
+                if scored:
+                    target_score = max(0, 22 - index * 2)
+                    intent_fit = min(4, target_score // 4)
+                    item.update(
+                        {
+                            "intentFit": intent_fit,
+                            "needFit": min(3, (target_score - intent_fit * 4) // 2),
+                            "profileFit": 0,
+                        }
+                    )
                 ranked.append(item)
             payload = {
-                "ranked": ranked,
+                "evaluations" if scored else "ranked": ranked,
                 "overallComment": "후보 데이터 기반 결과입니다.",
             }
         self.calls.append({"tier": tier, "error": None})

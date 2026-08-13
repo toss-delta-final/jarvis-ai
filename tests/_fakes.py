@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 
+from app.agents.buyer.recommendation.rerank import _SYSTEM_STRUCTURED_SCORING
 from app.core.llm import LLMError
 from app.schemas.spring import ProductSearchResult, SpringProduct
 
@@ -57,6 +58,34 @@ DEFAULT_PRODUCTS = [
 ]
 
 
+def _scored_fixture(payload: dict) -> dict:
+    """Translate legacy ranked fixtures when the production default requests scored rows."""
+
+    ranked = payload.get("ranked")
+    if not isinstance(ranked, list):
+        return payload
+    evaluations = []
+    for index, item in enumerate(ranked):
+        if not isinstance(item, dict):
+            evaluations.append(item)
+            continue
+        target_score = max(0, 22 - index * 2)
+        intent_fit = min(4, target_score // 4)
+        need_fit = (target_score - intent_fit * 4) // 2
+        evaluations.append(
+            {
+                **item,
+                "intentFit": intent_fit,
+                "needFit": need_fit,
+                "profileFit": 0,
+            }
+        )
+    return {
+        **{key: value for key, value in payload.items() if key != "ranked"},
+        "evaluations": evaluations,
+    }
+
+
 class FakeLLM:
     """tier(fast/smart)로 decompose/rerank 를 분기하는 fake. error 플래그로 실패도 주입."""
 
@@ -94,7 +123,10 @@ class FakeLLM:
             return json.dumps(self._decompose, ensure_ascii=False)
         if self._rerank_error:
             raise LLMError("rerank boom")
-        return json.dumps(self._rerank, ensure_ascii=False)
+        payload = (
+            _scored_fixture(self._rerank) if system == _SYSTEM_STRUCTURED_SCORING else self._rerank
+        )
+        return json.dumps(payload, ensure_ascii=False)
 
     async def stream(self, *, system: str, user: str, tier: str, max_tokens: int = 1024):
         yield "x"
