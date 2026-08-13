@@ -278,6 +278,7 @@ class DatasetManifest(CamelModel):
     seed: int
     catalog_source_path: str = Field(min_length=1)
     catalog_sha256: str
+    dataset_hash: str
     ranking_count: int = Field(ge=0)
     safety_count: int = Field(ge=0)
     identity_counts: dict[str, int]
@@ -286,7 +287,7 @@ class DatasetManifest(CamelModel):
     confirmatory_eligible: bool
     file_hashes: dict[str, str]
 
-    @field_validator("catalog_sha256")
+    @field_validator("catalog_sha256", "dataset_hash")
     @classmethod
     def _catalog_hash_is_sha256(cls, value: str) -> str:
         if not _SHA256_RE.fullmatch(value):

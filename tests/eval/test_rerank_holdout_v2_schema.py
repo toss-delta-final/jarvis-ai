@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from evals.rerank_holdout_v2.io import load_dataset, sha256_file, write_jsonl
+from evals.rerank_holdout_v2.io import dataset_hash, load_dataset, sha256_file, write_jsonl
 from evals.rerank_holdout_v2.schema import DraftLabels, RankingCaseCore
 
 
@@ -94,6 +94,11 @@ def _write_minimal_dataset(root: Path) -> Path:
         "seed": 631200,
         "catalogSourcePath": "catalog.json",
         "catalogSha256": sha256_file(catalog_path),
+        "datasetHash": dataset_hash(
+            files,
+            catalog_sha256=sha256_file(catalog_path),
+            seed=631200,
+        ),
         "rankingCount": 1,
         "safetyCount": 0,
         "identityCounts": {"guest": 1, "member": 0},
@@ -107,6 +112,28 @@ def _write_minimal_dataset(root: Path) -> Path:
         encoding="utf-8",
     )
     return root
+
+
+def test_manifest_requires_a_dataset_hash(tmp_path: Path) -> None:
+    root = _write_minimal_dataset(tmp_path / "dataset")
+    manifest_path = root / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    del manifest["datasetHash"]
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="datasetHash"):
+        load_dataset(root, label_policy="draft")
+
+
+def test_loader_rejects_a_manifest_dataset_hash_mismatch(tmp_path: Path) -> None:
+    root = _write_minimal_dataset(tmp_path / "dataset")
+    manifest_path = root / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["datasetHash"] = "c" * 64
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="datasetHash mismatch"):
+        load_dataset(root, label_policy="draft")
 
 
 def test_ranking_core_requires_exactly_thirty_distinct_candidates() -> None:

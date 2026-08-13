@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import json
 from collections import Counter
+from pathlib import Path
 
 import pytest
 
 from evals.goldenset.loader import ROOT as GOLDENSET_ROOT
+from evals.rerank_holdout_v2.cli import GENERATED_FILES, main
 from evals.rerank_holdout_v2.generator import generate_bundle, serialize_bundle
-from evals.rerank_holdout_v2.io import sha256_file
+from evals.rerank_holdout_v2.io import ROOT, load_dataset, sha256_file
 
 CATALOG_PATH = GOLDENSET_ROOT / "fixtures/catalog_snapshot.json"
 
@@ -108,3 +110,35 @@ def test_generation_queries_and_families_are_unique(bundle) -> None:
     families = [case.family_id for case in bundle.ranking_cases]
     assert len(queries) == len(set(queries)) == 200
     assert len(families) == len(set(families)) == 200
+
+
+def test_committed_dataset_is_complete_and_audited() -> None:
+    dataset = load_dataset(ROOT, label_policy="draft")
+
+    assert len(dataset.ranking_cases) == 200
+    assert len(dataset.labels_by_case) == 200
+    assert len(dataset.safety_cases) == 24
+    assert dataset.manifest.confirmatory_eligible is False
+    assert dataset.manifest.label_status == "draft"
+    assert dataset.manifest.ranking_count == 200
+    assert dataset.manifest.safety_count == 24
+
+
+def test_committed_artifacts_match_fresh_generation(tmp_path: Path) -> None:
+    destination = tmp_path / "dataset"
+
+    assert main(["generate", "--out", str(destination), "--seed", "631200"]) == 0
+
+    for relative in GENERATED_FILES:
+        assert (destination / relative).read_bytes() == (ROOT / relative).read_bytes()
+
+
+def test_generate_refuses_an_existing_destination(tmp_path: Path) -> None:
+    destination = tmp_path / "dataset"
+    destination.mkdir()
+
+    assert main(["generate", "--out", str(destination)]) == 2
+
+
+def test_audit_command_accepts_committed_dataset() -> None:
+    assert main(["audit", "--root", str(ROOT)]) == 0

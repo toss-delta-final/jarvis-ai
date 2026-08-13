@@ -20,7 +20,7 @@ from evals.rerank_holdout_v2.schema import (
     SealedLabels,
 )
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent / "dataset"
 ModelT = TypeVar("ModelT", bound=BaseModel)
 
 
@@ -29,6 +29,14 @@ def sha256_file(path: Path) -> str:
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
+    return digest.hexdigest()
+
+
+def dataset_hash(file_hashes: Mapping[str, str], *, catalog_sha256: str, seed: int) -> str:
+    digest = hashlib.sha256()
+    digest.update(f"catalog\0{catalog_sha256}\nseed\0{seed}\n".encode())
+    for relative, file_hash in sorted(file_hashes.items()):
+        digest.update(f"{relative}\0{file_hash}\n".encode())
     return digest.hexdigest()
 
 
@@ -90,6 +98,13 @@ def _verify_files(root: Path, manifest: DatasetManifest) -> None:
         actual = sha256_file(path)
         if actual != expected:
             raise ValueError(f"dataset file hash mismatch: {relative}")
+    expected_dataset_hash = dataset_hash(
+        manifest.file_hashes,
+        catalog_sha256=manifest.catalog_sha256,
+        seed=manifest.seed,
+    )
+    if manifest.dataset_hash != expected_dataset_hash:
+        raise ValueError("manifest datasetHash mismatch")
 
 
 def _resolve_catalog(root: Path, source: str, override: Path | None) -> Path:

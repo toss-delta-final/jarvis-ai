@@ -10,8 +10,9 @@ import pytest
 
 from evals.goldenset.loader import ROOT as GOLDENSET_ROOT
 from evals.rerank_holdout_v2.annotation import load_review, write_review_packet
+from evals.rerank_holdout_v2.cli import main
 from evals.rerank_holdout_v2.generator import GenerationBundle, generate_bundle
-from evals.rerank_holdout_v2.io import sha256_file
+from evals.rerank_holdout_v2.io import ROOT, load_dataset, sha256_file
 from evals.rerank_holdout_v2.release import build_sealed_labels
 
 CATALOG_PATH = GOLDENSET_ROOT / "fixtures/catalog_snapshot.json"
@@ -223,3 +224,59 @@ def test_release_seals_only_after_complete_adjudication(bundle, catalog, tmp_pat
     assert all(
         label.reviewer_ids == ["human-reviewer-a", "human-reviewer-b"] for label in release.labels
     )
+
+
+def test_seal_command_writes_a_confirmatory_eligible_copy(bundle, catalog, tmp_path: Path) -> None:
+    grades = _draft_grades(bundle)
+    packet_a = write_review_packet(
+        bundle.ranking_cases,
+        catalog,
+        reviewer_slot="A",
+        out=tmp_path / "seal-packet-a.csv",
+    )
+    packet_b = write_review_packet(
+        bundle.ranking_cases,
+        catalog,
+        reviewer_slot="B",
+        out=tmp_path / "seal-packet-b.csv",
+    )
+    review_a_path = _complete_packet(
+        packet_a,
+        tmp_path / "seal-review-a.csv",
+        reviewer_id="human-reviewer-a",
+        grades_by_key=grades,
+    )
+    review_b_path = _complete_packet(
+        packet_b,
+        tmp_path / "seal-review-b.csv",
+        reviewer_id="human-reviewer-b",
+        grades_by_key=grades,
+    )
+    adjudications = tmp_path / "adjudications.json"
+    adjudications.write_text("[]\n", encoding="utf-8")
+    out = tmp_path / "sealed"
+
+    assert (
+        main(
+            [
+                "seal",
+                "--root",
+                str(ROOT),
+                "--review-a",
+                str(review_a_path),
+                "--review-b",
+                str(review_b_path),
+                "--adjudications",
+                str(adjudications),
+                "--sealed-at",
+                "2026-08-13T14:00:00+09:00",
+                "--out",
+                str(out),
+            ]
+        )
+        == 0
+    )
+    sealed = load_dataset(out, label_policy="sealed")
+    assert sealed.manifest.confirmatory_eligible is True
+    assert sealed.manifest.label_status == "sealed"
+    assert len(sealed.labels_by_case) == 200
