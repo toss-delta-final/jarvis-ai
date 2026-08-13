@@ -586,6 +586,9 @@ def test_live_draft_artifact_is_exploratory_without_losing_statistical_verdict(
     assert comparison["verdict"] == "exploratory"
     assert comparison["statisticalVerdict"] == "supported"
     assert comparison["meanDelta"] == pytest.approx(0.7)
+    report = (out / "report.md").read_text()
+    assert "label status: `draft`" in report
+    assert "not confirmatory evidence" in report
 
 
 def test_cli_dry_run_writes_five_artifacts(tmp_path: Path) -> None:

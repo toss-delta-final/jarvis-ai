@@ -61,7 +61,7 @@ Sealed holdout은 candidate commit `a01dae74`의 structured를 고정해 한 번
 랭킹 200건(guest/member 각 100)과 별도 safety 24건을 가진다. source는 production log가 아니라
 고정 local catalog snapshot이다.
 
-현재 committed label은 heuristic `draft`이므로 아래 scripted 실행만 허용한다.
+현재 committed label은 heuristic `draft`이므로 아래 scripted 실행이 기본 경로다.
 
 ```bash
 uv run python -m evals.rerank_scoring \
@@ -78,6 +78,31 @@ Dry-run manifest는 `labelStatus=draft`, `confirmatory=false`이고 품질 근�
 `status/verdict=exploratory`로 강제되고 raw 통계 판정은 `statisticalVerdict`에만 기록된다.
 Confirmatory 실행에는 두 명의 실제 독립 사람 검수, 완전한 adjudication, sealed manifest가
 필요하다. 생성·감사·검수·봉인 절차는 `evals/rerank_holdout_v2/README.md`가 정본이다.
+
+### 보존된 200-case exploratory live baseline
+
+`baselines/20260813-holdout-v2-draft-current-structured-n3/`은 clean commit `11f37f70`, ranking
+200건과 seeds `11,29,47`의 `current`/`structured` 결과다. 1,200개 목표 cell 중 1,199개가
+성공했고, `rh2-adversarial-0016`의 current seed 11 한 cell만 세 번 실패했다. 해당 case에는
+나머지 두 seed가 있어 case 평균 paired N은 200을 유지한다.
+
+| 범위 | N | current | structured | 평균 ΔnDCG@10 | 개선/동률/악화 |
+|---|---:|---:|---:|---:|---:|
+| 전체 | 200 | 0.7139 | 0.8358 | +0.1219 | 106/57/37 |
+| guest | 100 | 0.7835 | 0.8372 | +0.0537 | 42/36/22 |
+| member | 100 | 0.6443 | 0.8344 | +0.1900 | 64/21/15 |
+
+전체 case bootstrap 95% CI는 `[+0.0925,+0.1535]`이고 raw 통계 판정은 `supported`다. seed별
+평균 delta도 `+0.1245`(N=199), `+0.1202`, `+0.1215`로 방향이 일치했다. 특히
+personalization은 `+0.3017`, repurchase는 `+0.1098`이었지만 long-tail은 `-0.0096`이었다.
+Structured의 seed 간 top-1 agreement는 `0.9250`으로 current `0.6388`보다 높았고,
+hard-constraint 위반은 두 arm 모두 0건이었다. 반면 p50 latency는 current `3.992s`, structured
+`11.845s`로 약 3배였다. 총 1,209 provider call, 약 516.6만 token, `$2.5761`이 들었다.
+
+이 결과의 artifact `status/verdict`는 의도대로 `exploratory`다. 라벨이 사람이 독립 검수한
+정답이 아니라 structured 규칙과 일부 구조적 유사성을 가진 heuristic draft이므로, 양의 delta를
+production 승격이나 일반화의 확정 근거로 사용하면 안 된다. 다음 gate는 독립 2인 검수와 sealed
+release에서 같은 고정 candidate를 한 번 confirmatory 평가하는 것이다.
 
 `samples.csv`는 후보 permutation, 원래 search rank를 담은 decision, raw response hash,
 fallback/무결성 카운트를 보존한다. profile 원문이나 credential은 기록하지 않는다.

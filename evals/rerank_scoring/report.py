@@ -164,6 +164,8 @@ def render_report(results: dict[str, Any], manifest: dict[str, Any]) -> str:
         f"- arms: `{','.join(results['arms'])}`",
         f"- repeats/seeds: `{results['repeats']}` / `{results['orderSeeds']}`",
         f"- dry-run: `{manifest.get('dryRun', False)}`",
+        f"- label status: `{manifest.get('labelStatus', 'unspecified')}`",
+        f"- confirmatory: `{manifest.get('confirmatory', False)}`",
         "",
         f"## Primary comparison: {primary or 'not-tested'}",
         "",
@@ -192,9 +194,19 @@ def render_report(results: dict[str, Any], manifest: dict[str, Any]) -> str:
             f"{value['duplicateEvaluation']['numerator']} | "
             f"{value['partialFallback']['numerator']}/{value['fullFallback']['numerator']} |"
         )
+    if manifest.get("dryRun") is True:
+        claim_note = (
+            "Dry-run verifies the harness only; it is never evidence of production quality."
+        )
+    elif manifest.get("labelStatus") == "draft":
+        claim_note = (
+            "Heuristic draft labels make this exploratory only; it is not confirmatory evidence."
+        )
+    else:
+        claim_note = "Interpret this run under the label and release status recorded above."
     lines += [
         "",
-        "Dry-run verifies the harness only; it is never evidence of production quality.",
+        claim_note,
         "Initial 4:2:1 weights and RRF alpha/k remain experimental until a live paired run supports them.",
         "",
     ]

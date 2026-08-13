@@ -168,8 +168,8 @@ unless sealed labels pass manifest/hash validation. It never silently falls back
   validation, preventing partial datasets.
 - Existing output directories remain immutable; reruns require a new destination.
 - A catalog hash mismatch stops loading and generation before any cases are returned.
-- A draft-label live run exits with the existing CLI rejection code and performs zero provider
-  calls.
+- A draft-label live run without `--allow-draft-live` exits with the existing CLI rejection code and
+  performs zero provider calls; explicit opt-in is always marked exploratory.
 
 ## 10. Verification and completion criteria
 
@@ -180,7 +180,8 @@ Completion requires fresh evidence for all of the following:
    rows from the pinned snapshot.
 3. Regeneration is byte-identical and leaves `git diff` empty.
 4. The audit report records all quota, candidate-depth, provenance, leakage, and label-status checks.
-5. Draft labels cannot pass the confirmatory release gate or trigger provider calls.
+5. Draft labels cannot pass the confirmatory release gate; only explicit exploratory live runs may
+   trigger provider calls, and their claim status/verdict is suppressed to `exploratory`.
 6. Existing goldenset and rerank-scoring tests remain green.
 7. Ruff, targeted tests, the applicable full test suite, and all pre-commit hooks pass.
 8. Commits follow Conventional Commits plus the repository Lore trailers.

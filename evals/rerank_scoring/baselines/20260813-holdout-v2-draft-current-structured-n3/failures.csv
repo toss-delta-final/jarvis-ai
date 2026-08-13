@@ -1,0 +1,11 @@
+caseId,arm,orderSeed,repeat,attempt,errorType,message,fullFallback
+rh2-adversarial-0016,current,11,0,1,LLMError,rerank 가 유효한 후보 id 를 내지 않음,true
+rh2-adversarial-0016,current,11,0,2,LLMError,rerank 가 유효한 후보 id 를 내지 않음,true
+rh2-adversarial-0016,current,11,0,3,LLMError,rerank 가 유효한 후보 id 를 내지 않음,true
+rh2-personalization-0032,current,11,0,1,LLMError,"Could not parse response content as the length limit was reached - CompletionUsage(completion_tokens=1500, prompt_tokens=3669, total_tokens=5169, completion_tokens_details=CompletionTokensDetails(accepted_prediction_tokens=0, audio_tokens=0, reasoning_tokens=1500, rejected_prediction_tokens=0), prompt_tokens_details=PromptTokensDetails(audio_tokens=0, cache_write_tokens=3666, cached_tokens=0))",false
+rh2-budget_multi-0034,current,29,0,1,LLMError,rerank 가 유효한 후보 id 를 내지 않음,true
+rh2-budget_multi-0040,current,29,0,1,LLMError,rerank 가 유효한 후보 id 를 내지 않음,true
+rh2-adversarial-0016,current,47,0,1,LLMError,rerank 가 유효한 후보 id 를 내지 않음,true
+rh2-budget_multi-0034,current,47,0,1,LLMError,rerank 가 유효한 후보 id 를 내지 않음,true
+rh2-budget_multi-0034,current,47,0,2,LLMError,rerank 가 유효한 후보 id 를 내지 않음,true
+rh2-budget_multi-0040,current,47,0,1,LLMError,rerank 가 유효한 후보 id 를 내지 않음,true

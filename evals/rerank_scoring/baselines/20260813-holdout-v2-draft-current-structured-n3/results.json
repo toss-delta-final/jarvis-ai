@@ -1,0 +1,1584 @@
+{
+  "arms": [
+    "current",
+    "structured"
+  ],
+  "comparisons": {
+    "currentToHybrid": {
+      "baselineArm": "current",
+      "bootstrapCi95": {
+        "high": null,
+        "low": null
+      },
+      "caseDeltas": [],
+      "currentArm": "hybrid",
+      "meanDelta": null,
+      "missingBaselineCount": 0,
+      "missingCurrentCount": 200,
+      "pairedCaseIds": [],
+      "pairedCount": 0,
+      "statisticalVerdict": "not-tested",
+      "verdict": "not-tested"
+    },
+    "currentToStructured": {
+      "baselineArm": "current",
+      "bootstrapCi95": {
+        "high": 0.1534501324698942,
+        "low": 0.0925461671532019
+      },
+      "caseDeltas": [
+        {
+          "baseline": 0.8230929086742522,
+          "caseId": "rh2-adversarial-0001",
+          "current": 0.8996302861770755,
+          "delta": 0.0765373775028233
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-adversarial-0002",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.7420981285103055,
+          "caseId": "rh2-adversarial-0003",
+          "current": 0.9732402630493958,
+          "delta": 0.23114213453909027
+        },
+        {
+          "baseline": 0.35838741292147497,
+          "caseId": "rh2-adversarial-0004",
+          "current": 0.9511721576476084,
+          "delta": 0.5927847447261334
+        },
+        {
+          "baseline": 0.7420981285103055,
+          "caseId": "rh2-adversarial-0005",
+          "current": 1.0,
+          "delta": 0.25790187148969446
+        },
+        {
+          "baseline": 0.6131471927654584,
+          "caseId": "rh2-adversarial-0006",
+          "current": 1.0,
+          "delta": 0.38685280723454163
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-adversarial-0007",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-adversarial-0008",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.7260273689842461,
+          "caseId": "rh2-adversarial-0009",
+          "current": 0.9852765310772514,
+          "delta": 0.2592491620930053
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-adversarial-0010",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.6131471927654584,
+          "caseId": "rh2-adversarial-0011",
+          "current": 1.0,
+          "delta": 0.38685280723454163
+        },
+        {
+          "baseline": 0.6131471927654584,
+          "caseId": "rh2-adversarial-0012",
+          "current": 1.0,
+          "delta": 0.38685280723454163
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-adversarial-0013",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-adversarial-0014",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.6366824387328316,
+          "caseId": "rh2-adversarial-0015",
+          "current": 0.9558295932317544,
+          "delta": 0.31914715449892284
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-adversarial-0016",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0001",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0002",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0003",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.7420981285103055,
+          "caseId": "rh2-budget_multi-0004",
+          "current": 1.0,
+          "delta": 0.25790187148969446
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0005",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0006",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.6131471927654584,
+          "caseId": "rh2-budget_multi-0007",
+          "current": 1.0,
+          "delta": 0.38685280723454163
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0008",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0009",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0010",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.7653606369886218,
+          "caseId": "rh2-budget_multi-0011",
+          "current": 0.9891559944963898,
+          "delta": 0.22379535750776802
+        },
+        {
+          "baseline": 0.43971571816630756,
+          "caseId": "rh2-budget_multi-0012",
+          "current": 0.8262373741149446,
+          "delta": 0.386521655948637
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0013",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0014",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.6131471927654584,
+          "caseId": "rh2-budget_multi-0015",
+          "current": 1.0,
+          "delta": 0.38685280723454163
+        },
+        {
+          "baseline": 0.6131471927654584,
+          "caseId": "rh2-budget_multi-0016",
+          "current": 1.0,
+          "delta": 0.38685280723454163
+        },
+        {
+          "baseline": 0.8435737579924144,
+          "caseId": "rh2-budget_multi-0017",
+          "current": 1.0,
+          "delta": 0.1564262420075856
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0018",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0019",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0020",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0021",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0022",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0023",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0024",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0025",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0026",
+          "current": 0.7956176024115139,
+          "delta": -0.2043823975884861
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0027",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0028",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0029",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.6131471927654584,
+          "caseId": "rh2-budget_multi-0030",
+          "current": 1.0,
+          "delta": 0.38685280723454163
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0031",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0032",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0033",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0034",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0035",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0036",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0037",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0038",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0039",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-budget_multi-0040",
+          "current": 0.8769765845238191,
+          "delta": -0.1230234154761809
+        },
+        {
+          "baseline": 0.5165641154950239,
+          "caseId": "rh2-general-0001",
+          "current": 0.3707939824574927,
+          "delta": -0.14577013303753122
+        },
+        {
+          "baseline": 0.8318724637288825,
+          "caseId": "rh2-general-0002",
+          "current": 0.8782245235658076,
+          "delta": 0.04635205983692514
+        },
+        {
+          "baseline": 0.6315170894733989,
+          "caseId": "rh2-general-0003",
+          "current": 0.6039173106601275,
+          "delta": -0.02759977881327136
+        },
+        {
+          "baseline": 0.8048099750039491,
+          "caseId": "rh2-general-0004",
+          "current": 0.6096199500078984,
+          "delta": -0.19519002499605076
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-general-0005",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.5545816424859217,
+          "caseId": "rh2-general-0006",
+          "current": 0.834054116797562,
+          "delta": 0.27947247431164035
+        },
+        {
+          "baseline": 0.33320100074320175,
+          "caseId": "rh2-general-0007",
+          "current": 0.7239637414310476,
+          "delta": 0.39076274068784583
+        },
+        {
+          "baseline": 0.8347237394760315,
+          "caseId": "rh2-general-0008",
+          "current": 0.9558295932317544,
+          "delta": 0.12110585375572291
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-general-0009",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.5657222560012,
+          "caseId": "rh2-general-0010",
+          "current": 0.7928696461780791,
+          "delta": 0.22714739017687913
+        },
+        {
+          "baseline": 0.49881895276768545,
+          "caseId": "rh2-general-0011",
+          "current": 0.12315119437036498,
+          "delta": -0.3756677583973205
+        },
+        {
+          "baseline": 0.9535156075729433,
+          "caseId": "rh2-general-0012",
+          "current": 0.7606395682357036,
+          "delta": -0.19287603933723974
+        },
+        {
+          "baseline": 0.3903800499921017,
+          "caseId": "rh2-general-0013",
+          "current": 0.5714979418053172,
+          "delta": 0.18111789181321553
+        },
+        {
+          "baseline": 0.6425031035960834,
+          "caseId": "rh2-general-0014",
+          "current": 0.7045057227504282,
+          "delta": 0.062002619154344796
+        },
+        {
+          "baseline": 0.6702569425854872,
+          "caseId": "rh2-general-0015",
+          "current": 0.830440900306369,
+          "delta": 0.1601839577208818
+        },
+        {
+          "baseline": 0.6688412101247572,
+          "caseId": "rh2-general-0016",
+          "current": 0.9295026640310479,
+          "delta": 0.2606614539062907
+        },
+        {
+          "baseline": 0.3969914927959872,
+          "caseId": "rh2-general-0017",
+          "current": 0.23436205991485992,
+          "delta": -0.1626294328811273
+        },
+        {
+          "baseline": 0.22926493415917026,
+          "caseId": "rh2-general-0018",
+          "current": 0.19519002499605084,
+          "delta": -0.03407490916311942
+        },
+        {
+          "baseline": 0.7328286204777911,
+          "caseId": "rh2-general-0019",
+          "current": 0.848293163849052,
+          "delta": 0.11546454337126089
+        },
+        {
+          "baseline": 0.8812193092310556,
+          "caseId": "rh2-general-0020",
+          "current": 0.6836127878533237,
+          "delta": -0.19760652137773194
+        },
+        {
+          "baseline": 0.7966610174072356,
+          "caseId": "rh2-general-0021",
+          "current": 0.9709286432396581,
+          "delta": 0.1742676258324225
+        },
+        {
+          "baseline": 0.5792988535261512,
+          "caseId": "rh2-general-0022",
+          "current": 0.592512031964586,
+          "delta": 0.013213178438434836
+        },
+        {
+          "baseline": 0.0,
+          "caseId": "rh2-general-0023",
+          "current": 0.19519002499605084,
+          "delta": 0.19519002499605084
+        },
+        {
+          "baseline": 0.45254964655644275,
+          "caseId": "rh2-general-0024",
+          "current": 0.6465502026355452,
+          "delta": 0.19400055607910244
+        },
+        {
+          "baseline": 0.3191471544989228,
+          "caseId": "rh2-general-0025",
+          "current": 0.27523430330035126,
+          "delta": -0.04391285119857152
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-general-0026",
+          "current": 0.9008322849050066,
+          "delta": -0.09916771509499345
+        },
+        {
+          "baseline": 0.8318724637288825,
+          "caseId": "rh2-general-0027",
+          "current": 0.9596739840728045,
+          "delta": 0.127801520343922
+        },
+        {
+          "baseline": 0.6392650694358117,
+          "caseId": "rh2-general-0028",
+          "current": 0.6578961951973016,
+          "delta": 0.018631125761489842
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-general-0029",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.4050192951305365,
+          "caseId": "rh2-general-0030",
+          "current": 0.7877020569606369,
+          "delta": 0.38268276183010036
+        },
+        {
+          "baseline": 0.3423541629083111,
+          "caseId": "rh2-general-0031",
+          "current": 0.25487865849158453,
+          "delta": -0.08747550441672658
+        },
+        {
+          "baseline": 0.6366824387328316,
+          "caseId": "rh2-general-0032",
+          "current": 0.7150265085704497,
+          "delta": 0.0783440698376181
+        },
+        {
+          "baseline": 0.5834912023896083,
+          "caseId": "rh2-general-0033",
+          "current": 0.8404487334797371,
+          "delta": 0.25695753109012887
+        },
+        {
+          "baseline": 0.8081281652311562,
+          "caseId": "rh2-general-0034",
+          "current": 0.9349366583346498,
+          "delta": 0.12680849310349362
+        },
+        {
+          "baseline": 0.34134995833991527,
+          "caseId": "rh2-general-0035",
+          "current": 0.4517623092632536,
+          "delta": 0.11041235092333834
+        },
+        {
+          "baseline": 0.9348043257445182,
+          "caseId": "rh2-general-0036",
+          "current": 0.9698834394760335,
+          "delta": 0.03507911373151529
+        },
+        {
+          "baseline": 0.5413996682199069,
+          "caseId": "rh2-general-0037",
+          "current": 0.4668345792971065,
+          "delta": -0.07456508892280045
+        },
+        {
+          "baseline": 0.7048697689068785,
+          "caseId": "rh2-general-0038",
+          "current": 0.6752970688653774,
+          "delta": -0.029572700041501032
+        },
+        {
+          "baseline": 0.29166624428982985,
+          "caseId": "rh2-general-0039",
+          "current": 0.6886342695939197,
+          "delta": 0.39696802530408987
+        },
+        {
+          "baseline": 0.5347338234989691,
+          "caseId": "rh2-general-0040",
+          "current": 0.32031833647731484,
+          "delta": -0.2144154870216543
+        },
+        {
+          "baseline": 0.731730008332017,
+          "caseId": "rh2-general-0041",
+          "current": 0.7365896932159578,
+          "delta": 0.00485968488394084
+        },
+        {
+          "baseline": 0.9251138734910708,
+          "caseId": "rh2-general-0042",
+          "current": 0.6533933590057492,
+          "delta": -0.27172051448532153
+        },
+        {
+          "baseline": 0.424992249243559,
+          "caseId": "rh2-general-0043",
+          "current": 0.927961169374314,
+          "delta": 0.502968920130755
+        },
+        {
+          "baseline": 0.5835433789128045,
+          "caseId": "rh2-general-0044",
+          "current": 0.5724250321999882,
+          "delta": -0.011118346712816307
+        },
+        {
+          "baseline": 0.8510297022507428,
+          "caseId": "rh2-general-0045",
+          "current": 0.9709286432396581,
+          "delta": 0.11989894098891529
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-general-0046",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.7263071913563826,
+          "caseId": "rh2-general-0047",
+          "current": 0.6595629128335778,
+          "delta": -0.06674427852280473
+        },
+        {
+          "baseline": 0.932552209214086,
+          "caseId": "rh2-general-0048",
+          "current": 0.9255878975817177,
+          "delta": -0.006964311632368325
+        },
+        {
+          "baseline": 0.8435737579924144,
+          "caseId": "rh2-long_tail-0001",
+          "current": 0.513022083819235,
+          "delta": -0.33055167417317943
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-long_tail-0002",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-long_tail-0003",
+          "current": 0.9823008098419915,
+          "delta": -0.01769919015800847
+        },
+        {
+          "baseline": 0.6131471927654584,
+          "caseId": "rh2-long_tail-0004",
+          "current": 0.7153383915597015,
+          "delta": 0.1021911987942431
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-long_tail-0005",
+          "current": 0.8159523447644564,
+          "delta": -0.18404765523554356
+        },
+        {
+          "baseline": 0.9217868789962073,
+          "caseId": "rh2-long_tail-0006",
+          "current": 0.892920743153392,
+          "delta": -0.028866135842815277
+        },
+        {
+          "baseline": 0.7577882924885544,
+          "caseId": "rh2-long_tail-0007",
+          "current": 0.7801274087835842,
+          "delta": 0.022339116295029826
+        },
+        {
+          "baseline": 0.9783119889927795,
+          "caseId": "rh2-long_tail-0008",
+          "current": 0.9891559944963898,
+          "delta": 0.01084400550361031
+        },
+        {
+          "baseline": 0.9686751451782275,
+          "caseId": "rh2-long_tail-0009",
+          "current": 0.9686751451782275,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.7227265726449518,
+          "caseId": "rh2-long_tail-0010",
+          "current": 0.8151510484299678,
+          "delta": 0.092424475785016
+        },
+        {
+          "baseline": 0.8230929086742522,
+          "caseId": "rh2-long_tail-0011",
+          "current": 0.8077329147552396,
+          "delta": -0.01535999391901266
+        },
+        {
+          "baseline": 0.7227265726449518,
+          "caseId": "rh2-long_tail-0012",
+          "current": 0.6455806565989448,
+          "delta": -0.07714591604600696
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-long_tail-0013",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-long_tail-0014",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-long_tail-0015",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.8500988348916838,
+          "caseId": "rh2-long_tail-0016",
+          "current": 0.9586719078345989,
+          "delta": 0.10857307294291507
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-long_tail-0017",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.9439574879096275,
+          "caseId": "rh2-long_tail-0018",
+          "current": 1.0,
+          "delta": 0.056042512090372476
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-long_tail-0019",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.5594401368490775,
+          "caseId": "rh2-long_tail-0020",
+          "current": 0.4465415150229653,
+          "delta": -0.11289862182611216
+        },
+        {
+          "baseline": 0.8500988348916838,
+          "caseId": "rh2-long_tail-0021",
+          "current": 0.9946016260094358,
+          "delta": 0.144502791117752
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-long_tail-0022",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-long_tail-0023",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-long_tail-0024",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.3985202681370658,
+          "caseId": "rh2-personalization-0001",
+          "current": 0.9754752764122182,
+          "delta": 0.5769550082751524
+        },
+        {
+          "baseline": 0.13284008937902195,
+          "caseId": "rh2-personalization-0002",
+          "current": 0.7337713275623327,
+          "delta": 0.6009312381833107
+        },
+        {
+          "baseline": 0.3985202681370658,
+          "caseId": "rh2-personalization-0003",
+          "current": 0.9359349344169138,
+          "delta": 0.537414666279848
+        },
+        {
+          "baseline": 0.444171862630202,
+          "caseId": "rh2-personalization-0004",
+          "current": 0.9901170183508862,
+          "delta": 0.5459451557206842
+        },
+        {
+          "baseline": 0.30996020855105116,
+          "caseId": "rh2-personalization-0005",
+          "current": 0.8919478197221425,
+          "delta": 0.5819876111710913
+        },
+        {
+          "baseline": 0.3432391242425242,
+          "caseId": "rh2-personalization-0006",
+          "current": 0.9777253311928525,
+          "delta": 0.6344862069503283
+        },
+        {
+          "baseline": 0.3985202681370658,
+          "caseId": "rh2-personalization-0007",
+          "current": 0.7045553853446348,
+          "delta": 0.306035117207569
+        },
+        {
+          "baseline": 0.4135568126659915,
+          "caseId": "rh2-personalization-0008",
+          "current": 1.0,
+          "delta": 0.5864431873340086
+        },
+        {
+          "baseline": 0.3432391242425242,
+          "caseId": "rh2-personalization-0009",
+          "current": 0.8014030029275562,
+          "delta": 0.458163878685032
+        },
+        {
+          "baseline": 0.0,
+          "caseId": "rh2-personalization-0010",
+          "current": 0.5396736922631981,
+          "delta": 0.5396736922631981
+        },
+        {
+          "baseline": 0.0,
+          "caseId": "rh2-personalization-0011",
+          "current": 0.6499585627060159,
+          "delta": 0.6499585627060159
+        },
+        {
+          "baseline": 0.0,
+          "caseId": "rh2-personalization-0012",
+          "current": 0.46440284878549437,
+          "delta": 0.46440284878549437
+        },
+        {
+          "baseline": 0.22882608282834946,
+          "caseId": "rh2-personalization-0013",
+          "current": 0.874310076095373,
+          "delta": 0.6454839932670235
+        },
+        {
+          "baseline": 0.3432391242425242,
+          "caseId": "rh2-personalization-0014",
+          "current": 0.8624852406189802,
+          "delta": 0.5192461163764561
+        },
+        {
+          "baseline": 0.35424023834405854,
+          "caseId": "rh2-personalization-0015",
+          "current": 0.904321766677812,
+          "delta": 0.5500815283337535
+        },
+        {
+          "baseline": 0.3985202681370658,
+          "caseId": "rh2-personalization-0016",
+          "current": 0.9659959008168117,
+          "delta": 0.5674756326797459
+        },
+        {
+          "baseline": 0.3985202681370658,
+          "caseId": "rh2-personalization-0017",
+          "current": 0.8785798331043022,
+          "delta": 0.4800595649672364
+        },
+        {
+          "baseline": 0.3985202681370658,
+          "caseId": "rh2-personalization-0018",
+          "current": 0.7177189047411406,
+          "delta": 0.3191986366040748
+        },
+        {
+          "baseline": 0.17712011917202927,
+          "caseId": "rh2-personalization-0019",
+          "current": 0.4200912552236518,
+          "delta": 0.24297113605162254
+        },
+        {
+          "baseline": 0.3985202681370658,
+          "caseId": "rh2-personalization-0020",
+          "current": 0.9359349344169138,
+          "delta": 0.537414666279848
+        },
+        {
+          "baseline": 0.0,
+          "caseId": "rh2-personalization-0021",
+          "current": 0.5256196966505743,
+          "delta": 0.5256196966505743
+        },
+        {
+          "baseline": 0.3432391242425242,
+          "caseId": "rh2-personalization-0022",
+          "current": 0.9114779874893694,
+          "delta": 0.5682388632468451
+        },
+        {
+          "baseline": 0.27570454177732767,
+          "caseId": "rh2-personalization-0023",
+          "current": 0.7524700048368115,
+          "delta": 0.4767654630594838
+        },
+        {
+          "baseline": 0.0,
+          "caseId": "rh2-personalization-0024",
+          "current": 0.9539980644858689,
+          "delta": 0.9539980644858689
+        },
+        {
+          "baseline": 0.8576955469716806,
+          "caseId": "rh2-personalization-0025",
+          "current": 0.739746633338599,
+          "delta": -0.11794891363308158
+        },
+        {
+          "baseline": 0.5169962973017446,
+          "caseId": "rh2-personalization-0026",
+          "current": 0.6886342695939197,
+          "delta": 0.17163797229217514
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-personalization-0027",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.21276476966594848,
+          "caseId": "rh2-personalization-0028",
+          "current": 0.442196681235115,
+          "delta": 0.22943191156916654
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-personalization-0029",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.6096199500078984,
+          "caseId": "rh2-personalization-0030",
+          "current": 0.81100179563424,
+          "delta": 0.20138184562634165
+        },
+        {
+          "baseline": 0.537544187904362,
+          "caseId": "rh2-personalization-0031",
+          "current": 0.7456586315967534,
+          "delta": 0.2081144436923914
+        },
+        {
+          "baseline": 0.466042647367014,
+          "caseId": "rh2-personalization-0032",
+          "current": 0.4521703965081431,
+          "delta": -0.013872250858870894
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-personalization-0033",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.5723233645658156,
+          "caseId": "rh2-personalization-0034",
+          "current": 0.8843252268199594,
+          "delta": 0.31200186225414384
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-personalization-0035",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-personalization-0036",
+          "current": 1.0,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.9301468901603721,
+          "caseId": "rh2-personalization-0037",
+          "current": 0.9408896557880331,
+          "delta": 0.010742765627660966
+        },
+        {
+          "baseline": 0.7343238163629645,
+          "caseId": "rh2-personalization-0038",
+          "current": 0.544556608342548,
+          "delta": -0.18976720802041647
+        },
+        {
+          "baseline": 0.4814103424190867,
+          "caseId": "rh2-personalization-0039",
+          "current": 0.421405413972183,
+          "delta": -0.060004928446903694
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-personalization-0040",
+          "current": 0.8752349893434473,
+          "delta": -0.12476501065655266
+        },
+        {
+          "baseline": 0.1254763573571435,
+          "caseId": "rh2-personalization-0041",
+          "current": 0.5204732013389002,
+          "delta": 0.3949968439817567
+        },
+        {
+          "baseline": 0.7430648235658058,
+          "caseId": "rh2-personalization-0042",
+          "current": 0.752902765601258,
+          "delta": 0.009837942035452185
+        },
+        {
+          "baseline": 0.5001175565301335,
+          "caseId": "rh2-personalization-0043",
+          "current": 0.8932547230000344,
+          "delta": 0.39313716646990093
+        },
+        {
+          "baseline": 0.29884626920794605,
+          "caseId": "rh2-personalization-0044",
+          "current": 0.5413996682199069,
+          "delta": 0.24255339901196088
+        },
+        {
+          "baseline": 0.8176791752838829,
+          "caseId": "rh2-personalization-0045",
+          "current": 0.9178287402913373,
+          "delta": 0.10014956500745442
+        },
+        {
+          "baseline": 0.6061101410567745,
+          "caseId": "rh2-personalization-0046",
+          "current": 0.5749135036336186,
+          "delta": -0.031196637423155926
+        },
+        {
+          "baseline": 0.8663746850461429,
+          "caseId": "rh2-personalization-0047",
+          "current": 0.9558295932317544,
+          "delta": 0.08945490818561153
+        },
+        {
+          "baseline": 0.97387125238171,
+          "caseId": "rh2-personalization-0048",
+          "current": 0.7606395682357036,
+          "delta": -0.21323168414600646
+        },
+        {
+          "baseline": 0.5303111665030856,
+          "caseId": "rh2-repurchase-0001",
+          "current": 0.7057623788590544,
+          "delta": 0.17545121235596872
+        },
+        {
+          "baseline": 0.8167369814322667,
+          "caseId": "rh2-repurchase-0002",
+          "current": 0.8910260412059143,
+          "delta": 0.07428905977364764
+        },
+        {
+          "baseline": 0.6642252275193051,
+          "caseId": "rh2-repurchase-0003",
+          "current": 0.8003350002691029,
+          "delta": 0.13610977274979774
+        },
+        {
+          "baseline": 0.9488388970965129,
+          "caseId": "rh2-repurchase-0004",
+          "current": 0.9913487657610958,
+          "delta": 0.04250986866458284
+        },
+        {
+          "baseline": 0.6325658425392101,
+          "caseId": "rh2-repurchase-0005",
+          "current": 0.5840178199553583,
+          "delta": -0.048548022583851824
+        },
+        {
+          "baseline": 0.4229466905745077,
+          "caseId": "rh2-repurchase-0006",
+          "current": 0.4920725302235041,
+          "delta": 0.06912583964899643
+        },
+        {
+          "baseline": 0.9217868789962073,
+          "caseId": "rh2-repurchase-0007",
+          "current": 1.0,
+          "delta": 0.07821312100379274
+        },
+        {
+          "baseline": 0.7235948902551552,
+          "caseId": "rh2-repurchase-0008",
+          "current": 0.7789443341521296,
+          "delta": 0.05534944389697438
+        },
+        {
+          "baseline": 0.6583489300668736,
+          "caseId": "rh2-repurchase-0009",
+          "current": 0.7832566149016241,
+          "delta": 0.12490768483475057
+        },
+        {
+          "baseline": 0.7827986520850377,
+          "caseId": "rh2-repurchase-0010",
+          "current": 0.7827986520850377,
+          "delta": 0.0
+        },
+        {
+          "baseline": 0.8175016380214281,
+          "caseId": "rh2-repurchase-0011",
+          "current": 0.8811300889428842,
+          "delta": 0.06362845092145619
+        },
+        {
+          "baseline": 0.8562737911867079,
+          "caseId": "rh2-repurchase-0012",
+          "current": 0.8180990504461407,
+          "delta": -0.03817474074056715
+        },
+        {
+          "baseline": 0.814344381800291,
+          "caseId": "rh2-repurchase-0013",
+          "current": 0.9148931533584911,
+          "delta": 0.10054877155820008
+        },
+        {
+          "baseline": 1.0,
+          "caseId": "rh2-repurchase-0014",
+          "current": 0.9918580661666353,
+          "delta": -0.0081419338333647
+        },
+        {
+          "baseline": 0.7466463527162556,
+          "caseId": "rh2-repurchase-0015",
+          "current": 0.8839292896429338,
+          "delta": 0.13728293692667826
+        },
+        {
+          "baseline": 0.18011306124746185,
+          "caseId": "rh2-repurchase-0016",
+          "current": 0.5910443838577252,
+          "delta": 0.4109313226102633
+        },
+        {
+          "baseline": 0.6233569103176183,
+          "caseId": "rh2-repurchase-0017",
+          "current": 0.7299362657655556,
+          "delta": 0.10657935544793729
+        },
+        {
+          "baseline": 0.6877013460205196,
+          "caseId": "rh2-repurchase-0018",
+          "current": 0.8529408472278687,
+          "delta": 0.1652395012073491
+        },
+        {
+          "baseline": 0.7642684723548485,
+          "caseId": "rh2-repurchase-0019",
+          "current": 0.9777253311928525,
+          "delta": 0.21345685883800403
+        },
+        {
+          "baseline": 0.3616158171442943,
+          "caseId": "rh2-repurchase-0020",
+          "current": 0.4232008732484442,
+          "delta": 0.06158505610414988
+        },
+        {
+          "baseline": 0.5303352132397098,
+          "caseId": "rh2-repurchase-0021",
+          "current": 0.8880491047887208,
+          "delta": 0.357713891549011
+        },
+        {
+          "baseline": 0.6354373529170326,
+          "caseId": "rh2-repurchase-0022",
+          "current": 0.768848217915167,
+          "delta": 0.13341086499813437
+        },
+        {
+          "baseline": 0.8170583597447458,
+          "caseId": "rh2-repurchase-0023",
+          "current": 0.8603820674644106,
+          "delta": 0.04332370771966476
+        },
+        {
+          "baseline": 0.7698086676243358,
+          "caseId": "rh2-repurchase-0024",
+          "current": 0.9505359307163218,
+          "delta": 0.18072726309198606
+        }
+      ],
+      "currentArm": "structured",
+      "meanDelta": 0.12187363360771485,
+      "missingBaselineCount": 0,
+      "missingCurrentCount": 0,
+      "pairedCaseIds": [
+        "rh2-adversarial-0001",
+        "rh2-adversarial-0002",
+        "rh2-adversarial-0003",
+        "rh2-adversarial-0004",
+        "rh2-adversarial-0005",
+        "rh2-adversarial-0006",
+        "rh2-adversarial-0007",
+        "rh2-adversarial-0008",
+        "rh2-adversarial-0009",
+        "rh2-adversarial-0010",
+        "rh2-adversarial-0011",
+        "rh2-adversarial-0012",
+        "rh2-adversarial-0013",
+        "rh2-adversarial-0014",
+        "rh2-adversarial-0015",
+        "rh2-adversarial-0016",
+        "rh2-budget_multi-0001",
+        "rh2-budget_multi-0002",
+        "rh2-budget_multi-0003",
+        "rh2-budget_multi-0004",
+        "rh2-budget_multi-0005",
+        "rh2-budget_multi-0006",
+        "rh2-budget_multi-0007",
+        "rh2-budget_multi-0008",
+        "rh2-budget_multi-0009",
+        "rh2-budget_multi-0010",
+        "rh2-budget_multi-0011",
+        "rh2-budget_multi-0012",
+        "rh2-budget_multi-0013",
+        "rh2-budget_multi-0014",
+        "rh2-budget_multi-0015",
+        "rh2-budget_multi-0016",
+        "rh2-budget_multi-0017",
+        "rh2-budget_multi-0018",
+        "rh2-budget_multi-0019",
+        "rh2-budget_multi-0020",
+        "rh2-budget_multi-0021",
+        "rh2-budget_multi-0022",
+        "rh2-budget_multi-0023",
+        "rh2-budget_multi-0024",
+        "rh2-budget_multi-0025",
+        "rh2-budget_multi-0026",
+        "rh2-budget_multi-0027",
+        "rh2-budget_multi-0028",
+        "rh2-budget_multi-0029",
+        "rh2-budget_multi-0030",
+        "rh2-budget_multi-0031",
+        "rh2-budget_multi-0032",
+        "rh2-budget_multi-0033",
+        "rh2-budget_multi-0034",
+        "rh2-budget_multi-0035",
+        "rh2-budget_multi-0036",
+        "rh2-budget_multi-0037",
+        "rh2-budget_multi-0038",
+        "rh2-budget_multi-0039",
+        "rh2-budget_multi-0040",
+        "rh2-general-0001",
+        "rh2-general-0002",
+        "rh2-general-0003",
+        "rh2-general-0004",
+        "rh2-general-0005",
+        "rh2-general-0006",
+        "rh2-general-0007",
+        "rh2-general-0008",
+        "rh2-general-0009",
+        "rh2-general-0010",
+        "rh2-general-0011",
+        "rh2-general-0012",
+        "rh2-general-0013",
+        "rh2-general-0014",
+        "rh2-general-0015",
+        "rh2-general-0016",
+        "rh2-general-0017",
+        "rh2-general-0018",
+        "rh2-general-0019",
+        "rh2-general-0020",
+        "rh2-general-0021",
+        "rh2-general-0022",
+        "rh2-general-0023",
+        "rh2-general-0024",
+        "rh2-general-0025",
+        "rh2-general-0026",
+        "rh2-general-0027",
+        "rh2-general-0028",
+        "rh2-general-0029",
+        "rh2-general-0030",
+        "rh2-general-0031",
+        "rh2-general-0032",
+        "rh2-general-0033",
+        "rh2-general-0034",
+        "rh2-general-0035",
+        "rh2-general-0036",
+        "rh2-general-0037",
+        "rh2-general-0038",
+        "rh2-general-0039",
+        "rh2-general-0040",
+        "rh2-general-0041",
+        "rh2-general-0042",
+        "rh2-general-0043",
+        "rh2-general-0044",
+        "rh2-general-0045",
+        "rh2-general-0046",
+        "rh2-general-0047",
+        "rh2-general-0048",
+        "rh2-long_tail-0001",
+        "rh2-long_tail-0002",
+        "rh2-long_tail-0003",
+        "rh2-long_tail-0004",
+        "rh2-long_tail-0005",
+        "rh2-long_tail-0006",
+        "rh2-long_tail-0007",
+        "rh2-long_tail-0008",
+        "rh2-long_tail-0009",
+        "rh2-long_tail-0010",
+        "rh2-long_tail-0011",
+        "rh2-long_tail-0012",
+        "rh2-long_tail-0013",
+        "rh2-long_tail-0014",
+        "rh2-long_tail-0015",
+        "rh2-long_tail-0016",
+        "rh2-long_tail-0017",
+        "rh2-long_tail-0018",
+        "rh2-long_tail-0019",
+        "rh2-long_tail-0020",
+        "rh2-long_tail-0021",
+        "rh2-long_tail-0022",
+        "rh2-long_tail-0023",
+        "rh2-long_tail-0024",
+        "rh2-personalization-0001",
+        "rh2-personalization-0002",
+        "rh2-personalization-0003",
+        "rh2-personalization-0004",
+        "rh2-personalization-0005",
+        "rh2-personalization-0006",
+        "rh2-personalization-0007",
+        "rh2-personalization-0008",
+        "rh2-personalization-0009",
+        "rh2-personalization-0010",
+        "rh2-personalization-0011",
+        "rh2-personalization-0012",
+        "rh2-personalization-0013",
+        "rh2-personalization-0014",
+        "rh2-personalization-0015",
+        "rh2-personalization-0016",
+        "rh2-personalization-0017",
+        "rh2-personalization-0018",
+        "rh2-personalization-0019",
+        "rh2-personalization-0020",
+        "rh2-personalization-0021",
+        "rh2-personalization-0022",
+        "rh2-personalization-0023",
+        "rh2-personalization-0024",
+        "rh2-personalization-0025",
+        "rh2-personalization-0026",
+        "rh2-personalization-0027",
+        "rh2-personalization-0028",
+        "rh2-personalization-0029",
+        "rh2-personalization-0030",
+        "rh2-personalization-0031",
+        "rh2-personalization-0032",
+        "rh2-personalization-0033",
+        "rh2-personalization-0034",
+        "rh2-personalization-0035",
+        "rh2-personalization-0036",
+        "rh2-personalization-0037",
+        "rh2-personalization-0038",
+        "rh2-personalization-0039",
+        "rh2-personalization-0040",
+        "rh2-personalization-0041",
+        "rh2-personalization-0042",
+        "rh2-personalization-0043",
+        "rh2-personalization-0044",
+        "rh2-personalization-0045",
+        "rh2-personalization-0046",
+        "rh2-personalization-0047",
+        "rh2-personalization-0048",
+        "rh2-repurchase-0001",
+        "rh2-repurchase-0002",
+        "rh2-repurchase-0003",
+        "rh2-repurchase-0004",
+        "rh2-repurchase-0005",
+        "rh2-repurchase-0006",
+        "rh2-repurchase-0007",
+        "rh2-repurchase-0008",
+        "rh2-repurchase-0009",
+        "rh2-repurchase-0010",
+        "rh2-repurchase-0011",
+        "rh2-repurchase-0012",
+        "rh2-repurchase-0013",
+        "rh2-repurchase-0014",
+        "rh2-repurchase-0015",
+        "rh2-repurchase-0016",
+        "rh2-repurchase-0017",
+        "rh2-repurchase-0018",
+        "rh2-repurchase-0019",
+        "rh2-repurchase-0020",
+        "rh2-repurchase-0021",
+        "rh2-repurchase-0022",
+        "rh2-repurchase-0023",
+        "rh2-repurchase-0024"
+      ],
+      "pairedCount": 200,
+      "statisticalVerdict": "supported",
+      "verdict": "exploratory"
+    },
+    "structuredToHybrid": {
+      "baselineArm": "structured",
+      "bootstrapCi95": {
+        "high": null,
+        "low": null
+      },
+      "caseDeltas": [],
+      "currentArm": "hybrid",
+      "meanDelta": null,
+      "missingBaselineCount": 0,
+      "missingCurrentCount": 200,
+      "pairedCaseIds": [],
+      "pairedCount": 0,
+      "statisticalVerdict": "not-tested",
+      "verdict": "not-tested"
+    }
+  },
+  "datasetHash": "4fa52e596f97c60c2b067c0ca6b30345ed574fcb7ad67acb67009b344a49f87b",
+  "datasetVersion": "1.0.0",
+  "efficiency": {
+    "current": {
+      "costUsd": 0,
+      "inputTokens": 0,
+      "knownUsageCount": 0,
+      "latencyMs": {
+        "p50": 3992.0,
+        "p95": 7505.0
+      },
+      "outputTokens": 0,
+      "sampleCount": 599,
+      "unknownReason": "provider usage unavailable",
+      "unknownUsageCount": 599
+    },
+    "structured": {
+      "costUsd": 0,
+      "inputTokens": 0,
+      "knownUsageCount": 0,
+      "latencyMs": {
+        "p50": 11845.0,
+        "p95": 15995.0
+      },
+      "outputTokens": 0,
+      "sampleCount": 600,
+      "unknownReason": "provider usage unavailable",
+      "unknownUsageCount": 600
+    }
+  },
+  "failureCount": 10,
+  "integrity": {
+    "current": {
+      "duplicateEvaluation": {
+        "denominator": 599,
+        "numerator": 0,
+        "rate": 0.0
+      },
+      "evaluatedCoverage": 1.0,
+      "foreignEvaluation": {
+        "denominator": 599,
+        "numerator": 0,
+        "rate": 0.0
+      },
+      "fullFallback": {
+        "denominator": 608,
+        "numerator": 9,
+        "rate": 0.014802631578947368
+      },
+      "hardConstraintViolation": {
+        "denominator": 599,
+        "numerator": 0,
+        "rate": 0.0
+      },
+      "invalidScoreRows": {
+        "count": 0,
+        "sampleDenominator": 599
+      },
+      "partialFallback": {
+        "denominator": 599,
+        "numerator": 0,
+        "rate": 0.0
+      },
+      "sampleCount": 599
+    },
+    "structured": {
+      "duplicateEvaluation": {
+        "denominator": 600,
+        "numerator": 0,
+        "rate": 0.0
+      },
+      "evaluatedCoverage": 0.9996666666666666,
+      "foreignEvaluation": {
+        "denominator": 600,
+        "numerator": 1,
+        "rate": 0.0016666666666666668
+      },
+      "fullFallback": {
+        "denominator": 600,
+        "numerator": 0,
+        "rate": 0.0
+      },
+      "hardConstraintViolation": {
+        "denominator": 600,
+        "numerator": 0,
+        "rate": 0.0
+      },
+      "invalidScoreRows": {
+        "count": 6,
+        "sampleDenominator": 600
+      },
+      "partialFallback": {
+        "denominator": 600,
+        "numerator": 3,
+        "rate": 0.005
+      },
+      "sampleCount": 600
+    }
+  },
+  "orderSeeds": [
+    11,
+    29,
+    47
+  ],
+  "primaryComparison": "currentToStructured",
+  "repeats": 1,
+  "sampleCount": 1199,
+  "stability": {
+    "current": {
+      "pairCount": 598,
+      "spearman": 0.5163249031670084,
+      "spearmanPairCount": 418,
+      "spearmanUnavailableReason": null,
+      "top1Agreement": 0.6387959866220736,
+      "top3Jaccard": 0.7375139353400223
+    },
+    "structured": {
+      "pairCount": 600,
+      "spearman": 0.9196121747668139,
+      "spearmanPairCount": 582,
+      "spearmanUnavailableReason": null,
+      "top1Agreement": 0.925,
+      "top3Jaccard": 0.8786666666666667
+    }
+  },
+  "status": "exploratory"
+}

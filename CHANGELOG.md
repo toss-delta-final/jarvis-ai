@@ -29,7 +29,11 @@
   고정 후보로 sealed holdout을 한 번 평가했다. Holdout 순위 19건×3 seeds에서는 structured가
   `+0.0575`, CI `[-0.0385,+0.1696]`로 방향은 양수였지만 `inconclusive`였으므로 release gate를
   통과하지 못했다. Holdout 재튜닝·재실행 없이 production 기본은 `current`로 유지한다. API·SSE
-  wire 계약 변경 없음.
+  wire 계약 변경 없음. 별도로 만든 200건 prospective dataset의 heuristic draft를 명시적
+  exploratory mode로 평가했을 때 structured는 current 대비 `+0.1219`(95% CI
+  `[+0.0925,+0.1535]`, 개선/동률/악화 106/57/37)였고 member `+0.1900`, guest `+0.0537`이었다.
+  다만 사람이 검수한 label이 아니므로 artifact 판정은 `exploratory`로 강제했고 production gate는
+  열지 않았다.
 - **#634 관측 집계 스크립트 비용 축에 min/max·role 분해 추가** — `_cost_stats()`가 최소/최대
   비용을 반환하도록 확장하고, 비용 롤업에 `role`(seller/member/guest)·`model`(fan-in
   귀속)·`length`(`messageLength` 고정 버킷) 축을 신설했다. Markdown 비용 표에 최소/최대(USD)
